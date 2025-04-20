@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: scooterlacroix/stans-ml-stack:latest
+    image: bartholemewii/stans-ml-stack:latest
     container_name: stans-ml-stack
     volumes:
       - ./data:/workspace/Stans_MLStack/data

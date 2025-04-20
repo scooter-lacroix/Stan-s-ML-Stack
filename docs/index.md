@@ -173,10 +173,10 @@ For a containerized installation, you have several options:
 
 ```bash
 # Pull the Docker image
-docker pull scooterlacroix/stans-ml-stack:latest
+docker pull bartholemewii/stans-ml-stack:latest
 
 # Run the container
-docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it scooterlacroix/stans-ml-stack:latest
+docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it bartholemewii/stans-ml-stack:latest
 ```
 
 #### Option 2: Build from Dockerfile
