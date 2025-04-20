@@ -16,12 +16,6 @@ ENV GPU_MAX_ALLOC_PERCENT=100
 ENV HSA_TOOLS_LIB=1
 ENV ROCM_HOME=$ROCM_PATH
 ENV CUDA_HOME=$ROCM_PATH
-ENV MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
-ENV MIOPEN_FIND_MODE=3
-ENV MIOPEN_FIND_ENFORCE=3
-ENV TORCH_CUDA_ARCH_LIST="7.0;8.0;9.0"
-ENV PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"
-ENV PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -36,15 +30,6 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     libopenmpi-dev \
     openmpi-bin \
-    libomp-dev \
-    libpng-dev \
-    libjpeg-dev \
-    libopenblas-dev \
-    pkg-config \
-    libssl-dev \
-    libffi-dev \
-    libsndfile1 \
-    ffmpeg \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -68,13 +53,6 @@ RUN pip3 install --upgrade pip \
 # Install MIGraphX
 RUN pip3 install migraphx
 
-# Build ONNX Runtime from source with ROCm support
-RUN git clone --recursive https://github.com/microsoft/onnxruntime.git /workspace/onnxruntime \
-    && cd /workspace/onnxruntime \
-    && git checkout v1.17.0 \
-    && ./build.sh --config Release --build_wheel --update --build --parallel --cmake_extra_defines CMAKE_INSTALL_PREFIX=/usr/local --use_rocm --rocm_home=$ROCM_PATH --use_mpi \
-    && pip3 install /workspace/onnxruntime/build/Linux/Release/dist/*.whl
-
 # Set up working directory
 WORKDIR /workspace/Stans_MLStack
 
@@ -85,7 +63,6 @@ RUN chmod +x /workspace/Stans_MLStack/scripts/*.sh
 RUN echo "Running basic verification..." \
     && python3 -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())" \
     && python3 -c "import onnx; print('ONNX version:', onnx.__version__)" \
-    && python3 -c "import onnxruntime; print('ONNX Runtime version:', onnxruntime.__version__); print('Available providers:', onnxruntime.get_available_providers())" \
     && python3 -c "import migraphx; print('MIGraphX is available')" \
     && python3 -c "import wandb; print('Weights & Biases version:', wandb.__version__)"
 
