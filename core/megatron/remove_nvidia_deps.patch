@@ -1,0 +1,20 @@
+# Author: Stanley Chisango (Scooter Lacroix)
+# Email: scooterlacroix@gmail.com
+# GitHub: https://github.com/scooter-lacroix
+# X: https://x.com/scooter_lacroix
+# Patreon: https://patreon.com/ScooterLacroix
+# 
+# If this code saved you time, consider buying me a coffee! ☕
+# "Code is like humor. When you have to explain it, it's bad!" - Cory House
+
+diff --git a/requirements/pytorch_25.03/requirements.txt b/requirements/pytorch_25.03/requirements.txt
+index 1234567..abcdefg 100644
+--- a/requirements/pytorch_25.03/requirements.txt
++++ b/requirements/pytorch_25.03/requirements.txt
+@@ -12,4 +12,4 @@ wrapt
+ zarr
+ wandb
+ tensorstore!=0.1.46,!=0.1.72
+-torch
+-nvidia-modelopt[torch]>=0.23.2; sys_platform != "darwin"
++torch

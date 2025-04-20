@@ -1,0 +1,119 @@
+
+*$py.class
+*.a
+*.app
+*.arrow
+# Benchmark results
+benchmark_results/
+*.bin
+build/
+# Build artifacts
+.coverage
+*.csv
+data/
+# Data files
+develop-eggs/
+dist/
+*.dll
+downloads/
+.DS_Store
+*.dylib
+*.egg
+*.egg-info/
+.eggs/
+eggs/
+ENV/
+.env
+env/
+env.bak/
+.env.development.local
+# Environment files
+.env.local
+.env.production.local
+.env.test.local
+!example.env
+# Except example environment file
+excluded/
+*.exe
+*.feather
+*.h5
+*.hdf5
+htmlcov/
+.idea/
+# IDE files
+.installed.cfg
+.ipynb_checkpoints
+*.json
+*.jsonl
+# Jupyter Notebook
+*.lib
+lib/
+lib64/
+*.log
+# Logs
+logs/
+MANIFEST
+*.mlmodel
+# Model files
+models/
+*.npy
+*.npz
+*.o
+*.obj
+*.onnx
+# ONNX Runtime build
+onnxruntime_build/
+*.out
+*.parquet
+parts/
+*.pb
+*.pickle
+*.pkl
+*.pt
+*.pth
+*.pyc
+__pycache__
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+.pytest_cache/
+# Python
+.Python
+.rocm-smi/
+# ROCm specific
+sdist/
+*.so
+*.swo
+*.swp
+*.temp
+# Temporary files
+# Test results
+test_results/
+*.tflite
+Thumbs.db
+*.tmp
+.tox/
+*.tsv
+var/
+.venv
+venv/
+venv.bak/
+# Virtual Environments
+# vLLM build
+vllm_build/
+.vscode/
+wheels/
+
+# Large media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# Manim environment
+manim_env/
+
+# Wandb
+wandb/
