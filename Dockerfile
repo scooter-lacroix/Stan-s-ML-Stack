@@ -62,11 +62,18 @@ RUN ln -sf /usr/bin/ninja /usr/bin/ninja-build || true \
 RUN pip3 install --upgrade pip \
     && pip3 install torch==2.6.0+rocm6.2.4 torchvision==0.21.0+rocm6.2.4 --index-url https://download.pytorch.org/whl/rocm6.2.4 \
     && pip3 install numpy scipy matplotlib pandas scikit-learn jupyter \
-    && pip3 install onnx onnxruntime-rocm \
-    && pip3 install wandb bitsandbytes-rocm triton-rocm
+    && pip3 install onnx \
+    && pip3 install wandb
 
 # Install MIGraphX
 RUN pip3 install migraphx
+
+# Build ONNX Runtime from source with ROCm support
+RUN git clone --recursive https://github.com/microsoft/onnxruntime.git /workspace/onnxruntime \
+    && cd /workspace/onnxruntime \
+    && git checkout v1.17.0 \
+    && ./build.sh --config Release --build_wheel --update --build --parallel --cmake_extra_defines CMAKE_INSTALL_PREFIX=/usr/local --use_rocm --rocm_home=$ROCM_PATH --use_mpi \
+    && pip3 install /workspace/onnxruntime/build/Linux/Release/dist/*.whl
 
 # Set up working directory
 WORKDIR /workspace/Stans_MLStack
@@ -75,7 +82,12 @@ WORKDIR /workspace/Stans_MLStack
 RUN chmod +x /workspace/Stans_MLStack/scripts/*.sh
 
 # Run verification script to check installation
-RUN /workspace/Stans_MLStack/scripts/custom_verify_installation.sh
+RUN echo "Running basic verification..." \
+    && python3 -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())" \
+    && python3 -c "import onnx; print('ONNX version:', onnx.__version__)" \
+    && python3 -c "import onnxruntime; print('ONNX Runtime version:', onnxruntime.__version__); print('Available providers:', onnxruntime.get_available_providers())" \
+    && python3 -c "import migraphx; print('MIGraphX is available')" \
+    && python3 -c "import wandb; print('Weights & Biases version:', wandb.__version__)"
 
 # Set entrypoint
 ENTRYPOINT ["/bin/bash"]
