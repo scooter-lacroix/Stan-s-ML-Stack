@@ -167,7 +167,19 @@ If you prefer to install components manually, follow these steps:
 
 ### Docker Installation
 
-For a containerized installation, use the provided Dockerfile:
+For a containerized installation, you have several options:
+
+#### Option 1: Pull the Pre-built Image
+
+```bash
+# Pull the Docker image
+docker pull scooterlacroix/stans-ml-stack:latest
+
+# Run the container
+docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it scooterlacroix/stans-ml-stack:latest
+```
+
+#### Option 2: Build from Dockerfile
 
 ```bash
 # Build the Docker image
@@ -176,6 +188,21 @@ docker build -t stans-ml-stack .
 # Run the container
 docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack
 ```
+
+#### Option 3: Use Docker Compose
+
+```bash
+# Start the container
+docker-compose up -d
+
+# Access the container
+docker-compose exec ml-stack bash
+
+# Stop the container
+docker-compose down
+```
+
+The Docker container includes all the necessary components of Stan's ML Stack, pre-configured and ready to use with AMD GPUs.
 
 ## Environment Setup
 
@@ -514,4 +541,7 @@ Stan's ML Stack is licensed under the MIT License. See the [LICENSE](LICENSE) fi
 - X: https://x.com/scooter_lacroix
 - Patreon: https://patreon.com/ScooterLacroix
 
-If this code saved you time, consider buying me a coffee! ☕
+If this code saved you time, consider supporting the project! ☕
+
+
+

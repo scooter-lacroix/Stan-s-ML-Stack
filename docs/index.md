@@ -541,4 +541,4 @@ Stan's ML Stack is licensed under the MIT License. See the [LICENSE](LICENSE) fi
 - X: https://x.com/scooter_lacroix
 - Patreon: https://patreon.com/ScooterLacroix
 
-If this code saved you time, consider buying me a coffee! ☕
+If this code saved you time, consider supporting the project! ☕
