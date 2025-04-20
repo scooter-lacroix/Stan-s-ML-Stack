@@ -1,0 +1,5 @@
+theme: jekyll-theme-cayman
+title: Stan's ML Stack
+description: A complete ML stack for AMD GPUs
+logo: /docs/images/ml_stack_logo.png
+show_downloads: false
