@@ -1,0 +1,27 @@
+version: '3'
+
+services:
+  ml-stack:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scooterlacroix/stans-ml-stack:latest
+    container_name: stans-ml-stack
+    volumes:
+      - ./data:/workspace/Stans_MLStack/data
+      - ./models:/workspace/Stans_MLStack/models
+      - ./logs:/workspace/Stans_MLStack/logs
+    environment:
+      - HIP_VISIBLE_DEVICES=0,1
+      - CUDA_VISIBLE_DEVICES=0,1
+      - PYTORCH_ROCM_DEVICE=0,1
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: amd
+              capabilities: [gpu]
+    command: /bin/bash
+    stdin_open: true
+    tty: true
