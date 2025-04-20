@@ -60,7 +60,7 @@ RUN ln -sf /usr/bin/ninja /usr/bin/ninja-build || true \
 
 # Install Python dependencies
 RUN pip3 install --upgrade pip \
-    && pip3 install torch==2.6.0+rocm6.2.4 torchvision==0.17.0+rocm6.2.4 --index-url https://download.pytorch.org/whl/rocm6.2.4 \
+    && pip3 install torch==2.6.0+rocm6.2.4 torchvision==0.21.0+rocm6.2.4 --index-url https://download.pytorch.org/whl/rocm6.2.4 \
     && pip3 install numpy scipy matplotlib pandas scikit-learn jupyter \
     && pip3 install onnx onnxruntime-rocm \
     && pip3 install wandb bitsandbytes-rocm triton-rocm
