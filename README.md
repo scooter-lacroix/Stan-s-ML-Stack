@@ -10,6 +10,8 @@ Stan's ML Stack is a comprehensive machine learning environment optimized for AM
 
 This stack is designed to work with AMD's ROCm platform, providing CUDA compatibility through HIP, allowing you to run most CUDA-based machine learning code on AMD GPUs with minimal modifications.
 
+For a detailed guide to help you get started from the ground up, head over to [Beginners Guide](docs/guides/beginners_guide.md) and you'll find all the resources you need!
+
 ### Key Features
 
 - **AMD GPU Optimization**: Fully optimized for AMD GPUs, including the 7900 XTX and 7800 XT
