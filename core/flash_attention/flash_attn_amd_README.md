@@ -31,7 +31,8 @@ Flash Attention is an efficient attention algorithm that reduces memory usage an
 
 2. Install the package:
    ```bash
-   pip install -e .
+   GPU_ARCHS=gfx=""(Your gpu specific architecture) python setup.py develop 
+pip install matplotlib pandas
    ```
 
 ## Usage
