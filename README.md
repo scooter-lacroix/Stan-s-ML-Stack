@@ -170,29 +170,32 @@ If you prefer to install components manually, follow these steps:
 
 For a containerized installation, you have several options:
 
-#### Option 1: Pull the Pre-built Image
+### Option 1: Pull the Pre-built Image
 
 ```bash
 # Pull the Docker image
 docker pull bartholemewii/stans-ml-stack:latest
 
-# Run the container
-docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it bartholemewii/stans-ml-stack:latest
-```
+# Run the container with GPU access
+docker run --device=/dev/kfd --device=/dev/dri --group-add video -it bartholemewii/stans-ml-stack:latest
 
-#### Option 2: Build from Dockerfile
+# To verify the installation, run the following command inside the container
+/workspace/verify_ml_stack.sh
 
-```bash
+The pre-built image includes the core components of Stan's ML Stack. After starting the container, you'll need to install PyTorch with ROCm support and MIGraphX using the provided scripts in /workspace/Stans_MLStack/scripts/.
+
+Option 2: Build from Dockerfile
+
 # Build the Docker image
 docker build -t stans-ml-stack .
 
-# Run the container
+# Run the container with GPU access
 docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack
-```
 
-#### Option 3: Use Docker Compose
+Building from the Dockerfile allows you to customize the installation according to your needs.
 
-```bash
+Option 3: Use Docker Compose
+
 # Start the container
 docker-compose up -d
 
@@ -201,9 +204,26 @@ docker-compose exec ml-stack bash
 
 # Stop the container
 docker-compose down
-```
 
-The Docker container includes all the necessary components of Stan's ML Stack, pre-configured and ready to use with AMD GPUs.
+Docker Image Contents
+The Docker container includes:
+
+ONNX Runtime
+Transformers
+DeepSpeed
+MPI
+All necessary scripts to install PyTorch with ROCm support and MIGraphX
+Architecture Support
+The Docker image is optimized for AMD GPUs and requires:
+
+AMD GPU with ROCm support
+Docker with GPU passthrough capabilities
+Troubleshooting
+If you encounter architecture compatibility issues, ensure your system architecture matches the Docker image architecture. The image is built for x86_64/amd64 systems.
+
+For large model training, consider using the --shm-size=8g flag to increase shared memory:
+
+docker run --device=/dev/kfd --device=/dev/dri --group-add video --shm-size=8g -it bartholemewii/stans-ml-stack:latest
 
 ## Environment Setup
 
