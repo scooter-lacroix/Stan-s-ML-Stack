@@ -192,7 +192,7 @@ docker build -t stans-ml-stack .
 # Run the container with GPU access
 docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack
 
-Building from the Dockerfile allows you to customize the installation according to your needs.
+# Building from the Dockerfile allows you to customize the installation according to your needs.
 
 Option 3: Use Docker Compose
 
@@ -221,7 +221,7 @@ Docker with GPU passthrough capabilities
 Troubleshooting
 If you encounter architecture compatibility issues, ensure your system architecture matches the Docker image architecture. The image is built for x86_64/amd64 systems.
 
-For large model training, consider using the --shm-size=8g flag to increase shared memory:
+### For large model training, consider using the --shm-size=8g flag to increase shared memory:
 
 docker run --device=/dev/kfd --device=/dev/dri --group-add video --shm-size=8g -it bartholemewii/stans-ml-stack:latest
 
