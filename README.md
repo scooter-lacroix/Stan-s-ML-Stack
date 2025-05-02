@@ -86,6 +86,7 @@ git clone https://github.com/scooter-lacroix/Stans_MLStack.git
 cd Stans_MLStack
 
 # Run the installation script
+chmod +x install_ml_stack_ui.py #Take ownership of the script in order to grant it permission to run
 ./scripts/install_ml_stack_ui.py
 ```
 
