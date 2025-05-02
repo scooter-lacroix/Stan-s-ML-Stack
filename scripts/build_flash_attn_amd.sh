@@ -135,7 +135,7 @@ create_amd_implementation() {
     mkdir -p $HOME/flash-attention-amd
     git clone https://github.com/ROCm/triton.git
     cd triton/python
-    GPU_ARCHS=gfx="" python setup.py install
+    GPU_ARCHS=gfx"" python setup.py install
     pip install matplotlib pandas
     cd $HOME/flash-attention-amd
     
