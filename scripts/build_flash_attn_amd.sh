@@ -133,6 +133,10 @@ create_amd_implementation() {
     # Create directory for AMD implementation
     print_step "Creating directory for AMD implementation..."
     mkdir -p $HOME/flash-attention-amd
+    git clone https://github.com/ROCm/triton.git
+    cd triton/python
+    GPU_ARCHS=gfx="" python setup.py install
+    pip install matplotlib pandas
     cd $HOME/flash-attention-amd
     
     # Create Python implementation file
