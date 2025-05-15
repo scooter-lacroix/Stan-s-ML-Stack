@@ -25,13 +25,14 @@ Flash Attention is an efficient attention algorithm that reduces memory usage an
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/user/flash-attention-amd.git
+   git clone https://github.com/ROCm/triton.git
    cd flash-attention-amd
    ```
 
 2. Install the package:
    ```bash
-   pip install -e .
+   GPU_ARCHS=gfx=""(Your gpu specific architecture) python setup.py develop 
+pip install matplotlib pandas
    ```
 
 ## Usage

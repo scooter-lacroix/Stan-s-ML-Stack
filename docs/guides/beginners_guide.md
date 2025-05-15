@@ -1,13 +1,13 @@
-# User's ML Stack: Beginner's Guide
+# Stan's ML Stack: Beginner's Guide
 
-Welcome to User's ML Stack! This guide is designed to help absolute beginners get started with machine learning on AMD GPUs. We'll walk through everything step by step, using simple language and plenty of examples.
+Welcome to Stan's ML Stack! This guide is designed to help absolute beginners get started with machine learning on AMD GPUs. We'll walk through everything step by step, using simple language and plenty of examples.
 
 ## Table of Contents
 
 - [Introduction](#introduction)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
-- [Underuserding the Components](#underuserding-the-components)
+- [UnderStanding the Components](#underStanding-the-components)
 - [Your First ML Project](#your-first-ml-project)
 - [Common Issues and Solutions](#common-issues-and-solutions)
 - [Glossary](#glossary)
@@ -16,9 +16,9 @@ Welcome to User's ML Stack! This guide is designed to help absolute beginners ge
 
 ## Introduction
 
-### What is User's ML Stack?
+### What is Stan's ML Stack?
 
-User's ML Stack is a collection of software tools that work together to help you build and run machine learning (ML) models on AMD graphics cards (GPUs). Think of it as a complete toolkit that has everything you need to create AI applications.
+Stan's ML Stack is a collection of software tools that work together to help you build and run machine learning (ML) models on AMD graphics cards (GPUs). Think of it as a complete toolkit that has everything you need to create AI applications.
 
 ### Why Use AMD GPUs for Machine Learning?
 
@@ -26,7 +26,7 @@ AMD GPUs like the RX 7900 XTX and RX 7800 XT are powerful and cost-effective for
 
 ### What Can You Do With This Stack?
 
-With User's ML Stack, you can:
+With Stan's ML Stack, you can:
 - Train neural networks (a type of AI model)
 - Run large language models (like ChatGPT)
 - Process images, text, and other data
@@ -55,7 +55,7 @@ Before you begin, you'll need:
 - **Operating System**: Ubuntu 25.04 (or another Linux distribution)
 - **Basic Knowledge**: 
   - How to use the terminal/command line
-  - Basic underuserding of what machine learning is
+  - Basic underStanding of what machine learning is
 
 Don't worry if you're not an expert! This guide explains everything in simple terms.
 
@@ -72,12 +72,12 @@ sudo apt upgrade
 
 ### Step 2: Get the ML Stack
 
-Download User's ML Stack:
+Download Stan's ML Stack:
 
 ```bash
 cd ~/Desktop
-git clone https://github.com/user/ml-stack.git Users_MLStack
-cd Users_MLStack
+git clone https://github.com/Stan/ml-stack.git Stans_MLStack
+cd Stans_MLStack
 ```
 
 ### Step 3: Run the Installation Script
@@ -100,7 +100,7 @@ You'll see a colorful menu like this:
  ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝    ╚═╝     ╚═╝╚══════╝    ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
 
 A Complete Machine Learning Stack for AMD GPUs
-https://github.com/user/ml-stack
+https://github.com/Stan/ml-stack
 
 Which components would you like to install?
 1. Core Components
@@ -145,7 +145,7 @@ After installation completes, verify that everything is working:
 This will check all components and show you a summary:
 
 ```
-User's ML Stack Verification Summary:
+Stan's ML Stack Verification Summary:
 
 Components Verified: 12
 Components Installed: 12
@@ -174,7 +174,7 @@ Extension Components:
 
 If any component shows as "Not installed," you can run the installation script again and select just that component.
 
-## Underuserding the Components
+## UnderStanding the Components
 
 Let's break down what each part of the ML stack does in simple terms:
 
@@ -599,7 +599,7 @@ It will also save the test image as `test_image.png` so you can see what digit w
 
 - [Dive into Deep Learning](https://d2l.ai/)
 - [Fast.ai Practical Deep Learning](https://course.fast.ai/)
-- [Userford CS231n: Convolutional Neural Networks](http://cs231n.userford.edu/)
+- [Stanford CS231n: Convolutional Neural Networks](http://cs231n.Stanford.edu/)
 
 ### Advanced Resources
 
@@ -615,7 +615,7 @@ It will also save the test image as `test_image.png` so you can see what digit w
 A: Basic Python knowledge is helpful, but you can start with the examples and learn as you go.
 
 **Q: How much math do I need to know?**  
-A: Basic underuserding of algebra and statistics helps, but you can start without it and learn the concepts as needed.
+A: Basic underStanding of algebra and statistics helps, but you can start without it and learn the concepts as needed.
 
 **Q: Can I use this for commercial projects?**  
 A: Yes, the stack is open-source and can be used for commercial projects.
@@ -629,7 +629,7 @@ A: The RX 7900 XTX offers the best performance, but the RX 7800 XT is also excel
 A: Yes, the stack supports multi-GPU training with RCCL and MPI.
 
 **Q: Do I need a special cooling system?**  
-A: Userdard GPU cooling is sufficient, but ensure good airflow in your case for long training sessions.
+A: Standard GPU cooling is sufficient, but ensure good airflow in your case for long training sessions.
 
 ### Software Questions
 
