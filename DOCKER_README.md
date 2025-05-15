@@ -4,11 +4,12 @@ This Docker image provides a lightweight environment for Stan's ML Stack, a comp
 
 ## Features
 
-- Based on the latest ROCm 6.3.4 image
+- Based on the latest ROCm image
 - Pre-installed PyTorch with ROCm support
 - Stan's ML Stack installer included as a pip package
 - Minimal size with only essential dependencies
 - Ready for AMD GPU acceleration
+- Security-hardened with latest package updates
 
 ## Quick Start
 
@@ -41,8 +42,8 @@ ml-stack-install
 ## Available Tags
 
 - `latest`: The latest version of Stan's ML Stack
-- `0.1.3`: Version 0.1.3 of Stan's ML Stack
-- `rocm-6.3.4`: Built with ROCm 6.3.4
+- `0.1.4-secure`: Security-hardened version with vulnerability fixes
+- `rocm-latest`: Built with the latest ROCm version
 
 ## Building the Image Locally
 
@@ -78,6 +79,17 @@ The following environment variables are set in the container:
 - 8888: Jupyter Notebook
 - 6006: TensorBoard
 - 8080: Web services
+
+## Security Features
+
+This image includes several security enhancements:
+
+1. **Updated Base Image**: Uses the latest ROCm image with security patches
+2. **System Package Updates**: All system packages are updated to their latest versions
+3. **Secure Python Packages**:
+   - setuptools ≥ 70.0.0 (fixes CVE-2022-40897 and CVE-2024-6345)
+   - wheel ≥ 0.38.1 (fixes CVE-2022-40898)
+4. **Minimal Attack Surface**: Only essential dependencies are installed
 
 ## Troubleshooting
 

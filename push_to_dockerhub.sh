@@ -34,8 +34,8 @@ print_warning() {
 }
 
 # Set variables
-VERSION="0.1.3"
-ROCM_VERSION="6.3.4"
+VERSION="0.1.4-secure"
+ROCM_VERSION="latest"
 IMAGE_NAME="bartholemewii/stans-ml-stack"
 
 print_header "Pushing Stan's ML Stack Docker Image v${VERSION} to Docker Hub"
