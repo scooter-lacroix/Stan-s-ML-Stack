@@ -1,7 +1,7 @@
 # Stan's ML Stack
 
 <p align="center">
-  <img src="docs/images/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
+  <img src="assets/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
 </p>
 
 ## Overview
@@ -14,13 +14,17 @@ For a detailed guide to help you get started from the ground up, head over to [B
 
 ### Key Features
 
-- **AMD GPU Optimization**: Fully optimized for AMD GPUs, including the 7900 XTX and 7800 XT
+- **AMD GPU Optimization**: Fully optimized for AMD GPUs, including the 7900 XTX, 7800 XT and 7700 XT
 - **ROCm Integration**: Seamless integration with AMD's ROCm platform
 - **PyTorch Support**: PyTorch with ROCm support for deep learning
 - **ONNX Runtime**: Optimized inference with ROCm support
 - **LLM Tools**: Support for training and deploying large language models
 - **Automatic Hardware Detection**: Scripts automatically detect and configure for your hardware
 - **Comprehensive Documentation**: Detailed guides and troubleshooting information
+- **DeepSpeed Integration**: Optimized training for large models with AMD GPU support
+- **Flash Attention**: High-performance attention mechanisms with Triton and CK optimizations
+- **UV Package Management**: Modern, fast Python package management for all dependencies
+- **Repair Capabilities**: Automated detection and fixing of common installation issues
 
 ## Hardware Requirements
 
@@ -34,7 +38,7 @@ For a detailed guide to help you get started from the ground up, head over to [B
 
 ### Recommended Hardware
 
-- **GPU**: AMD Radeon RX 7900 XTX, 7800 XT, or newer
+- **GPU**: AMD Radeon RX 7900 XTX, 7800 XT, 7700 XT, or newer
 - **CPU**: 8+ cores, AMD Ryzen or Intel Core i7/i9
 - **RAM**: 32GB+
 - **Storage**: 100GB+ SSD
@@ -46,6 +50,7 @@ This stack has been tested and optimized for the following hardware:
 
 - **AMD Radeon RX 7900 XTX**
 - **AMD Radeon RX 7800 XT**
+- **AMD Radeon RX 7700 XT**
 
 ## Components
 
@@ -56,7 +61,7 @@ The ML Stack consists of the following core components:
 | Component | Description | Version |
 |-----------|-------------|---------|
 | **ROCm** | AMD's open software platform for GPU computing | 6.4.43482 |
-| **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.2.4 |
+| **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.4.43482 |
 | **ONNX Runtime** | Cross-platform inference accelerator | 1.22.0 |
 | **MIGraphX** | AMD's graph optimization library | 2.12.0 |
 | **Flash Attention** | Efficient attention computation | 2.5.6 |
@@ -80,7 +85,7 @@ The ML Stack provides several installation options to suit your needs.
 
 ### Automatic Installation (Recommended)
 
-The easiest way to install the ML Stack is to use the automatic installation script:
+The easiest way to install the ML Stack is to use the automatic installation script with the curses-based UI:
 
 ```bash
 # Clone the repository
@@ -88,8 +93,8 @@ git clone https://github.com/scooter-lacroix/Stans_MLStack.git
 cd Stans_MLStack
 
 # Run the installation script
-chmod +x install_ml_stack_ui.py #Take ownership of the script in order to grant it permission to run
-./scripts/install_ml_stack_ui.py
+chmod +x scripts/install_ml_stack_curses.py #Take ownership of the script in order to grant it permission to run
+./scripts/install_ml_stack_curses.py
 ```
 
 This script will:
@@ -98,6 +103,8 @@ This script will:
 3. Set up the environment
 4. Install all selected components
 5. Verify the installation
+
+The curses-based UI provides a responsive, interactive experience with real-time feedback during the installation process.
 
 ### Manual Installation
 
@@ -274,7 +281,7 @@ export ROCM_HOME=$ROCM_PATH
 export CUDA_HOME=$ROCM_PATH
 
 # ONNX Runtime
-export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
+export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
 ```
 
 ### Persistent Environment Setup
@@ -353,7 +360,7 @@ export PYTHONPATH=/path/to/module:$PYTHONPATH
 For ONNX Runtime specifically:
 
 ```bash
-export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
+export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
 ```
 
 #### GPU Not Detected
@@ -548,6 +555,99 @@ Contributions to Stan's ML Stack are welcome! Please follow these steps:
 ## License
 
 Stan's ML Stack is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Changelog
+
+### v0.1.2 (Nirvana)
+
+#### Installation Process Improvements
+- Migrated from Textual UI to Curses-based UI for improved responsiveness and stability
+- Added real-time feedback during component installation
+- Implemented proper error handling and recovery mechanisms
+- Added automatic dependency resolution with UV package manager
+- Improved sudo authentication with secure password handling
+- Enhanced hardware detection for better compatibility with various AMD GPU configurations
+
+#### Verification Process Enhancements
+- Added comprehensive verification of all installed components
+- Implemented detailed diagnostics for troubleshooting
+- Added support for detecting components in non-standard locations
+- Improved error reporting with actionable suggestions
+- Added verification of environment variables and system configuration
+
+#### Testing Workflow Improvements
+- Added automated testing of PyTorch with ROCm
+- Implemented ONNX Runtime validation tests
+- Added Flash Attention performance benchmarks
+- Improved MIGraphX testing with real-world models
+- Added DeepSpeed integration tests
+
+#### Troubleshooting Simplifications
+- Added repair scripts for common issues
+- Implemented automatic detection and fixing of environment problems
+- Added detailed logging for better diagnostics
+- Improved error messages with clear explanations
+- Added recovery mechanisms for failed installations
+
+#### User Experience Improvements
+- Streamlined installation process with fewer steps
+- Added progress indicators for long-running operations
+- Improved visual feedback with color-coded status messages
+- Enhanced menu navigation with keyboard shortcuts
+- Added support for resuming interrupted installations
+
+## Key Feature Updates
+
+### DeepSpeed Integration
+
+The ML Stack now includes full integration with DeepSpeed, Microsoft's deep learning optimization library, with specific optimizations for AMD GPUs:
+
+- **ROCm Compatibility**: Fully compatible with AMD's ROCm platform
+- **ZeRO Optimization**: Efficient memory usage for training large models
+- **Mixed Precision Training**: Support for FP16 and BF16 training
+- **Gradient Checkpointing**: Reduced memory footprint during training
+- **Pipeline Parallelism**: Efficient multi-GPU training
+- **Verification Tools**: Comprehensive testing of DeepSpeed functionality
+
+### Flash Attention Improvements
+
+Flash Attention has been enhanced with several optimizations:
+
+- **Triton Optimizations**: Improved performance through Triton compiler integration
+- **CK Optimizations**: Collective Knowledge framework optimizations for AMD GPUs
+- **Memory Efficiency**: Reduced memory usage during attention computation
+- **Performance Benchmarks**: Comprehensive benchmarks for different model sizes
+- **ROCm Compatibility**: Full compatibility with AMD's ROCm platform
+
+### UI Changes
+
+The ML Stack has migrated from a Textual-based UI to a Curses-based UI for improved performance and reliability:
+
+- **Responsive Interface**: Faster response to user input
+- **Real-time Feedback**: Live updates during installation and verification
+- **Reduced Resource Usage**: Lower memory and CPU footprint
+- **Improved Stability**: Better handling of long-running operations
+- **Enhanced Visuals**: Color-coded status indicators and progress bars
+
+### UV Package Management
+
+All Python package management has been migrated to UV for improved speed and reliability:
+
+- **Faster Installation**: Significantly faster package installation
+- **Improved Dependency Resolution**: Better handling of complex dependency trees
+- **Reduced Conflicts**: Fewer package conflicts during installation
+- **Consistent Environments**: More reliable environment creation
+- **Modern Tooling**: Integration with the latest Python packaging standards
+
+### Repair Script Capabilities
+
+The ML Stack now includes comprehensive repair capabilities:
+
+- **Automatic Issue Detection**: Identifies common installation problems
+- **Environment Fixes**: Corrects environment variable issues
+- **Dependency Resolution**: Resolves missing or conflicting dependencies
+- **Component Reinstallation**: Selectively reinstalls problematic components
+- **Verification**: Confirms that repairs were successful
 
 ## Acknowledgements
 

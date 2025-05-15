@@ -1,109 +1,99 @@
 
-*$py.class
-*.a
-*.app
-*.arrow
-# Benchmark results
-benchmark_results/
-*.bin
-build/
-# Build artifacts
-.coverage
-*.csv
-data/
-# Data files
-develop-eggs/
-dist/
-*.dll
-downloads/
-.DS_Store
-*.dylib
-*.egg
-*.egg-info/
-.eggs/
-eggs/
-ENV/
-.env
-env/
-env.bak/
-.env.development.local
-# Environment files
-.env.local
-.env.production.local
-.env.test.local
-!example.env
-# Except example environment file
-excluded/
-*.exe
-*.feather
-*.h5
-*.hdf5
-htmlcov/
-.idea/
-# IDE files
-.installed.cfg
-.ipynb_checkpoints
-*.json
-*.jsonl
-# Jupyter Notebook
-*.lib
-lib/
-lib64/
-*.log
-# Logs
-logs/
-MANIFEST
-*.mlmodel
-# Model files
-models/
-*.npy
-*.npz
-*.o
-*.obj
-*.onnx
-# ONNX Runtime build
-onnxruntime_build/
-*.out
-*.parquet
-parts/
-*.pb
-*.pickle
-*.pkl
-*.pt
-*.pth
-*.pyc
-__pycache__
+# Python bytecode
 __pycache__/
 *.py[cod]
-*.pyd
-*.pyo
-.pytest_cache/
-# Python
+*$py.class
 .Python
-.rocm-smi/
-# ROCm specific
-sdist/
+
+# C extensions and compiled files
 *.so
-*.swo
-*.swp
-*.temp
-# Temporary files
-# Test results
-test_results/
-*.tflite
-Thumbs.db
-*.tmp
-.tox/
-*.tsv
-var/
-.venv
-venv/
-venv.bak/
-# Virtual Environments
-# vLLM build
-vllm_build/
-.vscode/
+*.dll
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.exe
+*.out
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+develop-eggs/
+eggs/
+parts/
+sdist/
 wheels/
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env
+.venv
+.env.*
+!example.env
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Data files (but not example data)
+data/
+datasets/
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.arrow
+*.pickle
+*.pkl
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.bin
+
+# Model files (but not model definitions)
+models/
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.mlmodel
+*.pb
+
+# Build directories
+onnxruntime_build/
+vllm_build/
+.rocm-smi/
+
+# Benchmark and test results
+benchmark_results/
+test_results/
 
 # Large media files
 *.mp4
@@ -112,8 +102,23 @@ wheels/
 *.mkv
 *.webm
 
+# Wandb
+wandb/
+
 # Manim environment
 manim_env/
 
-# Wandb
-wandb/
+# Specific JSON files to ignore (but not all JSON files)
+# Add specific patterns for JSON files that should be ignored
+# For example: config.local.json
+
+# Explicitly track these directories even if they match ignore patterns
+!assets/
+!docs/
+!scripts/
+!core/
+!extensions/
+!benchmarks/
+!tutorials/
+!troubleshooting/
+!reference/

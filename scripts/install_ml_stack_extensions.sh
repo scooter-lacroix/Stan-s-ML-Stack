@@ -29,7 +29,7 @@
 set -e  # Exit on error
 
 # Create log directory
-LOG_DIR="$HOME/Desktop/ml_stack_extensions/logs"
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
 mkdir -p $LOG_DIR
 
 # Log file
@@ -48,15 +48,6 @@ command_exists() {
 # Function to check if a process is running
 is_process_running() {
     pgrep -f "$1" > /dev/null
-}
-
-# Fix ninja-build detection
-fix_ninja_detection() {
-    if command -v ninja &>/dev/null && ! command -v ninja-build &>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating symlink for ninja-build..."
-        sudo ln -sf $(which ninja) /usr/bin/ninja-build
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build symlink created."
-    fi
 }
 
 # Start installation
@@ -101,7 +92,7 @@ mkdir -p $INSTALL_DIR
 # Function to install a component
 install_component() {
     component=$1
-    script_path="$HOME/Desktop/ml_stack_extensions/install_${component}.sh"
+    script_path="$HOME/Prod/Stan-s-ML-Stack/scripts/install_${component}.sh"
 
     if [ -f "$script_path" ]; then
         log "Installing $component..."
@@ -128,16 +119,15 @@ echo "3. vLLM - High-throughput inference engine"
 echo "4. ROCm SMI - Monitoring and profiling"
 echo "5. PyTorch Profiler - Performance analysis"
 echo "6. WandB - Experiment tracking"
-echo "7. All components"
-echo -n "Enter numbers separated by spaces (e.g., 1 3 5): "
-read input_line
-# Convert input to array
-selections=($(echo $input_line | tr -d "'\"" | tr ',' ' '))
+echo "7. Flash Attention CK - Optimized attention for AMD GPUs"
+echo "8. All components"
+echo "Enter numbers separated by spaces (e.g., '1 3 5'): "
+read -a selections
 
 # Process selections
-if [[ " ${selections[@]} " =~ " 7 " ]]; then
+if [[ " ${selections[@]} " =~ " 8 " ]]; then
     # Install all components
-    COMPONENTS=("triton" "bitsandbytes" "vllm" "rocm_smi" "pytorch_profiler" "wandb")
+    COMPONENTS=("triton" "bitsandbytes" "vllm" "rocm_smi" "pytorch_profiler" "wandb" "flash_attention_ck")
 else
     COMPONENTS=()
     for selection in "${selections[@]}"; do
@@ -148,6 +138,7 @@ else
             4) COMPONENTS+=("rocm_smi") ;;
             5) COMPONENTS+=("pytorch_profiler") ;;
             6) COMPONENTS+=("wandb") ;;
+            7) COMPONENTS+=("flash_attention_ck") ;;
             *) log "Invalid selection: $selection" ;;
         esac
     done
@@ -161,13 +152,28 @@ done
 log "=== ML Stack Extensions Installation Complete ==="
 log "Installation Directory: $INSTALL_DIR"
 log "Log File: $LOG_FILE"
-log "Documentation: $HOME/Desktop/ml_stack_extensions/docs/"
+log "Documentation: $HOME/Prod/Stan-s-ML-Stack/docs/extensions/"
 
 # Final message
 echo "============================================================"
 echo "ML Stack Extensions Installation Complete!"
-echo "Documentation is available in $HOME/Desktop/ml_stack_extensions/docs/"
+echo "Documentation is available in $HOME/Prod/Stan-s-ML-Stack/docs/extensions/"
 echo "Installation logs are available in $LOG_FILE"
 echo "============================================================"
 
-
+# Fix ninja-build detection
+fix_ninja_detection() {
+    if command -v ninja &>/dev/null && ! command -v ninja-build &>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating symlink for ninja-build..."
+        sudo ln -sf $(which ninja) /usr/bin/ninja-build
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build symlink created."
+        return 0
+    elif command -v ninja-build &>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build already available."
+        return 0
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing ninja-build..."
+        sudo apt-get update && sudo apt-get install -y ninja-build
+        return $?
+    fi
+}

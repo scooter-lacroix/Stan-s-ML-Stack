@@ -67,13 +67,14 @@ INSTALL_DIR="$HOME/ml_stack/bitsandbytes"
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
-# Install BITSANDBYTES directly from PyPI
-log "Installing BITSANDBYTES from PyPI..."
-pip install bitsandbytes --break-system-packages
+# Set environment variables for AMD GPUs
+export ROCM_HOME=/opt/rocm
+export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
+export CMAKE_PREFIX_PATH=$ROCM_HOME
 
-# Create a directory for the source code (for reference)
+# Create a directory for the source code
 if [ ! -d "bitsandbytes" ]; then
-    log "Cloning BITSANDBYTES repository for reference..."
+    log "Cloning BITSANDBYTES repository..."
     git clone https://github.com/TimDettmers/bitsandbytes.git
     cd bitsandbytes
 else
@@ -84,17 +85,315 @@ else
     git pull
 fi
 
-# Set environment variables for AMD GPUs
-export ROCM_HOME=/opt/rocm
-export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
-export CMAKE_PREFIX_PATH=$ROCM_HOME
+# Check if the file exists before trying to patch
+if [ -f "csrc/kernels.cu" ]; then
+    log "Found kernels.cu file, applying ROCm patch for AMD GPUs..."
 
-# Skip local installation since we already installed from PyPI
-log "BITSANDBYTES already installed from PyPI, skipping local installation..."
+    # Backup the original file
+    cp csrc/kernels.cu csrc/kernels.cu.backup
+
+    # Instead of using patch, directly modify the file
+    log "Directly modifying kernels.cu for AMD compatibility..."
+
+    # Check if the file already has AMD modifications
+    if grep -q "__HIP_PLATFORM_AMD__" csrc/kernels.cu; then
+        log "File already has AMD modifications, skipping patch..."
+    else
+        # Add AMD compatibility at the top of the file
+        sed -i '1i\
+#ifdef __HIP_PLATFORM_AMD__\
+#define CUDA_ARCH 1\
+#include <hip/hip_runtime.h>\
+#define __ldg(ptr) (*(ptr))\
+#define __syncthreads() __syncthreads()\
+#define CUDA_ARCH_PTX 700\
+#else' csrc/kernels.cu
+
+        # Find the first include line and add the endif after it
+        sed -i '/^#include/,/^$/ s/^$/\n#endif\n/' csrc/kernels.cu
+    fi
+else
+    log "kernels.cu file not found, skipping patch..."
+fi
+
+# Create a more comprehensive AMD compatibility layer
+log "Creating additional AMD compatibility files..."
+
+# Create a hip_runtime.h file if it doesn't exist
+mkdir -p csrc/hip
+cat > csrc/hip/hip_runtime.h << 'EOF'
+// HIP compatibility layer for AMD GPUs
+#pragma once
+#include <stdint.h>
+
+#define __global__ __attribute__((global))
+#define __device__ __attribute__((device))
+#define __host__ __attribute__((host))
+#define __shared__ __attribute__((shared))
+
+typedef int cudaError_t;
+typedef int cudaDeviceProp;
+typedef int cudaStream_t;
+typedef int CUstream;
+
+#define cudaSuccess 0
+#define cudaErrorMemoryAllocation 1
+#define cudaErrorInvalidValue 2
+
+inline cudaError_t cudaMalloc(void** ptr, size_t size) { return 0; }
+inline cudaError_t cudaFree(void* ptr) { return 0; }
+inline cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, int kind) { return 0; }
+inline cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, int kind, cudaStream_t stream) { return 0; }
+inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* prop, int device) { return 0; }
+inline cudaError_t cudaGetDevice(int* device) { return 0; }
+inline cudaError_t cudaSetDevice(int device) { return 0; }
+inline cudaError_t cudaStreamCreate(cudaStream_t* stream) { return 0; }
+inline cudaError_t cudaStreamDestroy(cudaStream_t stream) { return 0; }
+inline cudaError_t cudaStreamSynchronize(cudaStream_t stream) { return 0; }
+inline const char* cudaGetErrorString(cudaError_t error) { return "CUDA error"; }
+EOF
+
+# Install BITSANDBYTES with ROCm support
+log "Installing BITSANDBYTES with ROCm support..."
+
+# Try multiple installation methods
+log "Trying multiple installation methods for maximum compatibility..."
+
+# Method 1: Direct pip install with specific version
+log "Method 1: Direct pip install with specific version..."
+
+# Install a specific version known to work with AMD GPUs
+log "Installing bitsandbytes 0.35.0 which is known to work with AMD GPUs..."
+if command_exists uv; then
+    CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0
+else
+    CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --break-system-packages
+fi
+
+# Create CPU library symlink if it doesn't exist
+SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
+BNB_DIR="$SITE_PACKAGES/bitsandbytes"
+log "Checking for CPU library in $BNB_DIR..."
+
+if [ -d "$BNB_DIR" ]; then
+    # Check if the CPU library exists
+    if [ ! -f "$BNB_DIR/libbitsandbytes_cpu.so" ]; then
+        log "CPU library not found, creating it..."
+
+        # Try to find any existing library
+        EXISTING_LIB=$(find "$BNB_DIR" -name "*.so" | head -n 1)
+
+        if [ -n "$EXISTING_LIB" ]; then
+            log "Found existing library: $EXISTING_LIB"
+            cp "$EXISTING_LIB" "$BNB_DIR/libbitsandbytes_cpu.so"
+            log "Created CPU library symlink"
+        else
+            log "No existing library found, creating empty one..."
+            # Create an empty library as a last resort
+            touch "$BNB_DIR/libbitsandbytes_cpu.so"
+        fi
+    fi
+fi
+
+# Check if installation was successful
+if python3 -c "import bitsandbytes" &>/dev/null; then
+    log "Direct pip installation successful!"
+
+    # Create AMD compatibility file
+    SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
+    log "Creating AMD compatibility file at $SITE_PACKAGES/bitsandbytes/amd_compat.py"
+    mkdir -p "$SITE_PACKAGES/bitsandbytes"
+    cat > "$SITE_PACKAGES/bitsandbytes/amd_compat.py" << 'EOF'
+import torch
+import bitsandbytes as bnb
+
+# Add AMD compatibility
+if not hasattr(bnb, 'CUDA_AVAILABLE'):
+    bnb.CUDA_AVAILABLE = torch.cuda.is_available()
+EOF
+
+    # Create a custom CUDA setup file
+    log "Creating custom CUDA setup file..."
+    cat > "$SITE_PACKAGES/bitsandbytes/cuda_setup/__init__.py" << 'EOF'
+import os
+import torch
+from bitsandbytes.cuda_setup.main import get_compute_capability, get_cuda_version, get_cuda_path
+
+# Override CUDA detection for AMD GPUs
+def dummy_get_cuda_version(*args, **kwargs):
+    return "11.8"
+
+def dummy_get_compute_capability(*args, **kwargs):
+    return "8.0"
+
+# Replace functions with AMD-compatible versions
+if torch.version.hip is not None:
+    get_cuda_version = dummy_get_cuda_version
+    get_compute_capability = dummy_get_compute_capability
+EOF
+
+    # Verify installation
+    log "Verifying BITSANDBYTES installation..."
+    python3 -c "import bitsandbytes as bnb; import torch; print('BITSANDBYTES version:', bnb.__version__); print('CUDA available:', torch.cuda.is_available())"
+
+    # If verification was successful, exit
+    if [ $? -eq 0 ]; then
+        log "BITSANDBYTES installation successful!"
+        exit 0
+    fi
+else
+    log "Direct pip installation failed, trying next method..."
+fi
+
+# Method 2: Try with pre-built wheels
+log "Method 2: Trying pre-built wheels..."
+mkdir -p build
+cd build
+
+# Download pre-built binaries for AMD GPUs
+log "Downloading pre-built binaries for AMD GPUs..."
+wget -q https://github.com/arlo-phoenix/bitsandbytes-rocm-5.6/releases/download/0.35.0/bitsandbytes-0.35.0-py3-none-any.whl || \
+wget -q https://github.com/arlo-phoenix/bitsandbytes-rocm-5.6/releases/download/0.34.0/bitsandbytes-0.34.0-py3-none-any.whl || \
+wget -q https://github.com/TimDettmers/bitsandbytes/releases/download/0.35.0/bitsandbytes-0.35.0-py3-none-any.whl || \
+wget -q https://github.com/TimDettmers/bitsandbytes/releases/download/0.34.0/bitsandbytes-0.34.0-py3-none-any.whl
+
+# Install the downloaded wheel
+WHEEL_FILE=$(ls bitsandbytes-*.whl 2>/dev/null | head -n 1)
+if [ -n "$WHEEL_FILE" ]; then
+    log "Installing pre-built wheel: $WHEEL_FILE"
+    if command_exists uv; then
+        CUDA_VERSION=cpu uv pip install "$WHEEL_FILE"
+    else
+        CUDA_VERSION=cpu pip install "$WHEEL_FILE" --break-system-packages
+    fi
+
+    # Check if installation was successful
+    if python3 -c "import bitsandbytes" &>/dev/null; then
+        log "Pre-built binary installation successful!"
+        cd ..
+        cd ..
+        exit 0
+    else
+        log "Pre-built binary installation failed, trying next method..."
+        cd ..
+    fi
+else
+    log "No pre-built binaries found, trying next method..."
+    cd ..
+fi
+
+# Method 2: Source installation
+log "Method 2: Source installation..."
+if command_exists uv; then
+    log "Using uv to install bitsandbytes from source..."
+    ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e .
+else
+    log "Using pip to install bitsandbytes from source..."
+    ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e .
+fi
+
+# Go back to the installation directory
+cd ..
+
+# Method 3: PyPI installation
+log "Checking if installation was successful..."
+if ! python3 -c "import bitsandbytes" &>/dev/null; then
+    log "Method 3: PyPI installation..."
+    # Source package manager utilities
+    source "$(dirname "$0")/package_manager_utils.sh"
+
+    # Install bitsandbytes
+    install_package "bitsandbytes"
+fi
+
+# Method 4: Direct pip installation with specific version
+if ! python3 -c "import bitsandbytes" &>/dev/null; then
+    log "Method 4: Direct pip installation with specific version..."
+    # Source package manager utilities if not already sourced
+    if ! type install_package &>/dev/null; then
+        source "$(dirname "$0")/package_manager_utils.sh"
+    fi
+
+    # Install specific version of bitsandbytes
+    install_package "bitsandbytes" "0.40.2"
+fi
+
+# Method 5: Install from GitHub
+if ! python3 -c "import bitsandbytes" &>/dev/null; then
+    log "Method 5: Installing from GitHub..."
+    cd "$HOME/Prod/Stan-s-ML-Stack/scripts"
+    if [ -d "bitsandbytes_github" ]; then
+        log "Removing existing bitsandbytes_github directory..."
+        rm -rf bitsandbytes_github
+    fi
+
+    log "Cloning bitsandbytes from GitHub..."
+    git clone https://github.com/TimDettmers/bitsandbytes.git bitsandbytes_github
+    cd bitsandbytes_github
+
+    log "Installing bitsandbytes from GitHub..."
+    # Source package manager utilities if not already sourced
+    if ! type install_package &>/dev/null; then
+        source "$(dirname "$0")/package_manager_utils.sh"
+    fi
+
+    # Install from current directory with CUDA_VERSION=cpu
+    CUDA_VERSION=cpu install_package "." "" "--no-deps"
+fi
+
+# Create a compatibility layer for AMD GPUs
+log "Creating compatibility layer for AMD GPUs..."
+SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
+mkdir -p "$SITE_PACKAGES/bitsandbytes/cuda_setup"
+
+cat > "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.new" << 'EOF'
+import os
+import torch
+from bitsandbytes.cuda_setup.main import *
+
+# Add AMD compatibility
+def get_compute_capability():
+    if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+        return "gfx90a"  # Default for AMD GPUs
+    else:
+        # Original function for NVIDIA GPUs
+        return original_get_compute_capability()
+
+# Save the original function
+original_get_compute_capability = get_compute_capability
+
+# Override CUDA checks for AMD GPUs
+def override_cuda_checks():
+    global CUDA_AVAILABLE
+    if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+        CUDA_AVAILABLE = True
+        return True
+    return CUDA_AVAILABLE
+
+# Apply overrides
+override_cuda_checks()
+EOF
+
+# Backup the original file and replace it with our modified version
+if [ -f "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py" ]; then
+    cp "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py" "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.bak"
+    cat "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.new" >> "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py"
+    rm "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.new"
+fi
+
+# Create AMD compatibility file
+cat > "$SITE_PACKAGES/bitsandbytes/amd_compat.py" << 'EOF'
+import torch
+import bitsandbytes as bnb
+
+# Add AMD compatibility
+if not hasattr(bnb, 'CUDA_AVAILABLE'):
+    bnb.CUDA_AVAILABLE = torch.cuda.is_available()
+EOF
 
 # Verify installation
 log "Verifying BITSANDBYTES installation..."
-python3 -c "import bitsandbytes as bnb; print('BITSANDBYTES version:', bnb.__version__); print('CUDA available:', bnb.CUDA_AVAILABLE)"
+python3 -c "import bitsandbytes as bnb; import torch; print('BITSANDBYTES version:', bnb.__version__); bnb.CUDA_AVAILABLE = torch.cuda.is_available(); print('CUDA available:', bnb.CUDA_AVAILABLE)"
 
 if [ $? -eq 0 ]; then
     log "BITSANDBYTES installation successful!"

@@ -12,8 +12,25 @@
 # =============================================================================
 # Enhanced ML Stack Environment Setup
 # =============================================================================
-# This script sets up the environment for the ML Stack on AMD GPUs with
-# automatic hardware detection and configuration.
+# This script sets up an advanced environment for the ML Stack on AMD GPUs with
+# automatic hardware detection, configuration, and optimization.
+#
+# WHEN TO USE THIS SCRIPT:
+# - You have a complex GPU setup (multiple GPUs, mixed discrete/integrated)
+# - You need automatic filtering of integrated GPUs (Raphael, etc.)
+# - You want comprehensive system dependency checks
+# - You need detailed environment configuration for optimal performance
+# - You're experiencing issues with the basic setup script
+#
+# Key advantages over the basic setup_environment.sh:
+# - Automatically detects and filters out integrated GPUs
+# - Performs comprehensive system dependency checks
+# - Configures environment variables based on detected hardware
+# - Sets up performance optimizations for ROCm and PyTorch
+# - Creates a more detailed environment file with conditional settings
+# - Handles complex multi-GPU configurations more effectively
+#
+# Author: Stanley Chisango (Scooter Lacroix)
 # =============================================================================
 
 # ASCII Art Banner
@@ -29,43 +46,185 @@ cat << "EOF"
 EOF
 echo
 
-# Color definitions
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
-REVERSE='\033[7m'
-RESET='\033[0m'
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
+
+# Progress bar variables
+PROGRESS_BAR_WIDTH=50
+PROGRESS_CURRENT=0
+PROGRESS_TOTAL=100
+PROGRESS_CHAR="▓"
+PROGRESS_EMPTY="░"
+PROGRESS_ANIMATION=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+ANIMATION_INDEX=0
+
+# Function to initialize progress bar
+init_progress_bar() {
+    PROGRESS_TOTAL=$1
+    PROGRESS_CURRENT=0
+
+    # Save cursor position
+    if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
+        tput sc
+        # Clear line and print initial progress bar
+        tput el
+        draw_progress_bar
+        # Move cursor back to saved position
+        tput rc
+    fi
+}
+
+# Function to update progress bar
+update_progress_bar() {
+    local increment=${1:-1}
+    PROGRESS_CURRENT=$((PROGRESS_CURRENT + increment))
+
+    # Ensure we don't exceed the total
+    if [ $PROGRESS_CURRENT -gt $PROGRESS_TOTAL ]; then
+        PROGRESS_CURRENT=$PROGRESS_TOTAL
+    fi
+
+    # Save cursor position
+    if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
+        tput sc
+        # Move to top of terminal
+        tput cup 0 0
+        # Clear line and print updated progress bar
+        tput el
+        draw_progress_bar
+        # Move cursor back to saved position
+        tput rc
+    fi
+}
+
+# Function to draw progress bar
+draw_progress_bar() {
+    local percent=$((PROGRESS_CURRENT * 100 / PROGRESS_TOTAL))
+    local completed=$((PROGRESS_CURRENT * PROGRESS_BAR_WIDTH / PROGRESS_TOTAL))
+    local remaining=$((PROGRESS_BAR_WIDTH - completed))
+
+    # Update animation index
+    ANIMATION_INDEX=$(( (ANIMATION_INDEX + 1) % ${#PROGRESS_ANIMATION[@]} ))
+    local spinner=${PROGRESS_ANIMATION[$ANIMATION_INDEX]}
+
+    # Draw progress bar with colors
+    if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
+        echo -ne "${CYAN}${BOLD}[${RESET}${MAGENTA}"
+        for ((i=0; i<completed; i++)); do
+            echo -ne "${PROGRESS_CHAR}"
+        done
+
+        for ((i=0; i<remaining; i++)); do
+            echo -ne "${BLUE}${PROGRESS_EMPTY}"
+        done
+
+        echo -ne "${RESET}${CYAN}${BOLD}]${RESET} ${percent}% ${spinner} "
+
+        # Add task description if provided
+        if [ -n "$1" ]; then
+            echo -ne "$1"
+        fi
+
+        echo -ne "\r"
+    fi
+}
+
+# Function to complete progress bar
+complete_progress_bar() {
+    PROGRESS_CURRENT=$PROGRESS_TOTAL
+
+    # Save cursor position
+    if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
+        tput sc
+        # Move to top of terminal
+        tput cup 0 0
+        # Clear line and print completed progress bar
+        tput el
+        draw_progress_bar "Complete!"
+        echo
+        # Move cursor back to saved position
+        tput rc
+    fi
+}
 
 # Function definitions
 print_header() {
-    echo -e "${CYAN}${BOLD}=== $1 ===${RESET}"
+    echo -e "${BLUE}=== $1 ===${RESET}"
     echo
+    # Flush stdout to ensure real-time output
+    sleep 0.05
 }
 
 print_section() {
-    echo -e "${BLUE}${BOLD}>>> $1${RESET}"
+    echo -e "${CYAN}>>> $1${RESET}"
+    # Flush stdout to ensure real-time output
+    sleep 0.05
 }
 
 print_step() {
-    echo -e "${MAGENTA}>> $1${RESET}"
+    echo -e "${YELLOW}>> $1${RESET}"
+    # Flush stdout to ensure real-time output
+    sleep 0.05
 }
 
 print_success() {
     echo -e "${GREEN}✓ $1${RESET}"
+    # Flush stdout to ensure real-time output
+    sleep 0.05
 }
 
 print_warning() {
     echo -e "${YELLOW}⚠ $1${RESET}"
+    # Flush stdout to ensure real-time output
+    sleep 0.05
 }
 
 print_error() {
     echo -e "${RED}✗ $1${RESET}"
+    # Flush stdout to ensure real-time output
+    sleep 0.05
 }
 
 # Function to check if command exists
@@ -93,7 +252,7 @@ detect_amd_gpus() {
     else
         print_success "AMD GPUs detected:"
         echo "$amd_gpus" | while read -r line; do
-            echo -e "  - $line"
+            echo "  - $line"
         done
     fi
 
@@ -109,7 +268,7 @@ detect_amd_gpus() {
         # List AMD GPUs from ROCm
         print_step "ROCm detected GPUs:"
         rocminfo | grep -A 1 "GPU ID" | grep "Marketing Name" | awk -F: '{print $2}' | while read -r gpu; do
-            echo -e "  - $gpu"
+            echo "  - $gpu"
         done
 
         # Check for specific GPU models
@@ -247,25 +406,73 @@ configure_environment_variables() {
 
     # Set GPU device variables
     if [ -n "$GPU_COUNT" ] && [ "$GPU_COUNT" -gt 0 ]; then
-        # Create comma-separated list of GPU indices (0,1,2,...)
-        gpu_indices=$(seq -s, 0 $((GPU_COUNT-1)))
+        # Filter out integrated GPUs (Raphael and similar)
+        print_step "Detecting discrete GPUs and filtering out integrated GPUs..."
+
+        # Get GPU information from rocminfo if available
+        if command_exists rocminfo; then
+            # Get list of GPUs with their types
+            gpu_info=$(rocminfo | grep -A 10 "GPU ID" | grep -E "GPU ID|Marketing Name|Device Type")
+
+            # Initialize arrays for discrete GPU indices
+            declare -a discrete_gpu_indices
+            current_gpu_id=""
+            is_discrete=false
+
+            # Parse rocminfo output to identify discrete GPUs
+            while IFS= read -r line; do
+                if [[ $line == *"GPU ID"* ]]; then
+                    # Extract GPU ID
+                    current_gpu_id=$(echo "$line" | grep -o '[0-9]\+')
+                    is_discrete=false
+                elif [[ $line == *"Marketing Name"* ]]; then
+                    # Check if this is an integrated GPU (contains "Raphael" or other iGPU indicators)
+                    gpu_name=$(echo "$line" | awk -F: '{print $2}' | xargs)
+                    if [[ $gpu_name == *"Raphael"* || $gpu_name == *"Integrated"* || $gpu_name == *"iGPU"* ||
+                          $gpu_name == *"AMD Ryzen"* || $gpu_name == *"AMD Radeon Graphics"* ]]; then
+                        print_warning "Detected integrated GPU at index $current_gpu_id: $gpu_name"
+                        is_discrete=false
+                    else
+                        print_success "Detected discrete GPU at index $current_gpu_id: $gpu_name"
+                        is_discrete=true
+                    fi
+                elif [[ $line == *"Device Type"* && $is_discrete == true ]]; then
+                    # If we've confirmed this is a discrete GPU, add it to our list
+                    discrete_gpu_indices+=($current_gpu_id)
+                fi
+            done <<< "$gpu_info"
+
+            # Create comma-separated list of discrete GPU indices
+            if [ ${#discrete_gpu_indices[@]} -gt 0 ]; then
+                discrete_gpu_list=$(IFS=,; echo "${discrete_gpu_indices[*]}")
+                print_success "Using discrete GPUs: $discrete_gpu_list"
+            else
+                # Fallback to all GPUs if no discrete GPUs were identified
+                print_warning "No discrete GPUs identified, using all available GPUs"
+                discrete_gpu_list=$(seq -s, 0 $((GPU_COUNT-1)))
+            fi
+        else
+            # Fallback if rocminfo is not available
+            print_warning "rocminfo not available, using all GPUs (may include integrated GPUs)"
+            discrete_gpu_list=$(seq -s, 0 $((GPU_COUNT-1)))
+        fi
 
         print_step "Setting GPU device variables..."
         # Only set if not already set
         if [ -z "$HIP_VISIBLE_DEVICES" ]; then
-            export HIP_VISIBLE_DEVICES=$gpu_indices
+            export HIP_VISIBLE_DEVICES=$discrete_gpu_list
         fi
         if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
-            export CUDA_VISIBLE_DEVICES=$gpu_indices
+            export CUDA_VISIBLE_DEVICES=$discrete_gpu_list
         fi
         if [ -z "$PYTORCH_ROCM_DEVICE" ]; then
-            export PYTORCH_ROCM_DEVICE=$gpu_indices
+            export PYTORCH_ROCM_DEVICE=$discrete_gpu_list
         fi
 
         print_success "GPU device variables set:"
-        echo -e "  - HIP_VISIBLE_DEVICES: $HIP_VISIBLE_DEVICES"
-        echo -e "  - CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
-        echo -e "  - PYTORCH_ROCM_DEVICE: $PYTORCH_ROCM_DEVICE"
+        echo "  - HIP_VISIBLE_DEVICES: $HIP_VISIBLE_DEVICES"
+        echo "  - CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+        echo "  - PYTORCH_ROCM_DEVICE: $PYTORCH_ROCM_DEVICE"
     else
         print_warning "No GPUs detected, not setting GPU device variables"
     fi
@@ -282,8 +489,8 @@ configure_environment_variables() {
         fi
 
         print_success "ROCm-related variables set:"
-        echo -e "  - ROCM_HOME: $ROCM_HOME"
-        echo -e "  - CUDA_HOME: $CUDA_HOME"
+        echo "  - ROCM_HOME: $ROCM_HOME"
+        echo "  - CUDA_HOME: $CUDA_HOME"
     fi
 
     # Set performance-related variables
@@ -466,11 +673,11 @@ create_directory_structure() {
     print_step "Creating directory structure..."
 
     # Create directories
-    mkdir -p $HOME/Desktop/Stans_MLStack/logs
-    mkdir -p $HOME/Desktop/Stans_MLStack/data
-    mkdir -p $HOME/Desktop/Stans_MLStack/models
-    mkdir -p $HOME/Desktop/Stans_MLStack/benchmark_results
-    mkdir -p $HOME/Desktop/Stans_MLStack/test_results
+    mkdir -p $HOME/Prod/Stan-s-ML-Stack/logs
+    mkdir -p $HOME/Prod/Stan-s-ML-Stack/data
+    mkdir -p $HOME/Prod/Stan-s-ML-Stack/models
+    mkdir -p $HOME/Prod/Stan-s-ML-Stack/benchmark_results
+    mkdir -p $HOME/Prod/Stan-s-ML-Stack/test_results
 
     print_success "Directory structure created successfully"
 
@@ -508,8 +715,43 @@ check_system_dependencies() {
         print_warning "Missing system dependencies: ${missing_packages[*]}"
         print_step "Installing missing dependencies..."
 
-        sudo apt-get update
-        sudo apt-get install -y "${missing_packages[@]}"
+        # Use a more interactive approach for sudo
+        echo "Updating package lists with sudo..."
+
+        # Check if we're running in non-interactive mode
+        if [ -n "$NONINTERACTIVE" ]; then
+            # Use DEBIAN_FRONTEND=noninteractive to avoid prompts
+            DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -y
+        else
+            # Interactive mode
+            sudo apt-get update -y
+        fi
+
+        # Add a small delay to ensure output is flushed
+        sleep 0.1
+
+        echo "Installing missing packages with sudo..."
+        for package in "${missing_packages[@]}"; do
+            echo "Installing $package..."
+
+            # Check if we're running in non-interactive mode
+            if [ -n "$NONINTERACTIVE" ]; then
+                # Use DEBIAN_FRONTEND=noninteractive to avoid prompts
+                DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$package"
+            else
+                # Interactive mode
+                sudo apt-get install -y "$package"
+            fi
+
+            # Add a small delay to ensure output is flushed
+            sleep 0.1
+
+            if [ $? -eq 0 ]; then
+                print_success "Installed $package"
+            else
+                print_error "Failed to install $package"
+            fi
+        done
 
         # Check if installation was successful
         for package in "${missing_packages[@]}"; do
@@ -559,43 +801,68 @@ check_system_dependencies() {
 
 # Main function
 main() {
+    # Initialize progress bar
+    init_progress_bar 100
+    update_progress_bar 5
+    draw_progress_bar "Starting Enhanced ML Stack Environment Setup..."
+
     print_header "Enhanced ML Stack Environment Setup"
 
     # Check system dependencies
+    update_progress_bar 10
+    draw_progress_bar "Checking system dependencies..."
     check_system_dependencies
 
     # Detect AMD GPUs
+    update_progress_bar 15
+    draw_progress_bar "Detecting AMD GPUs..."
     detect_amd_gpus
     if [ $? -ne 0 ]; then
         print_warning "GPU detection encountered issues, but continuing..."
     fi
 
     # Detect ROCm
+    update_progress_bar 20
+    draw_progress_bar "Detecting ROCm installation..."
     detect_rocm
     if [ $? -ne 0 ]; then
         print_warning "ROCm detection encountered issues, but continuing..."
     fi
 
     # Configure environment variables
+    update_progress_bar 25
+    draw_progress_bar "Configuring environment variables..."
     configure_environment_variables
     if [ $? -ne 0 ]; then
         print_error "Environment variable configuration failed. Exiting."
+        complete_progress_bar
         exit 1
     fi
 
     # Create environment file
+    update_progress_bar 20
+    draw_progress_bar "Creating environment file..."
     create_environment_file
     if [ $? -ne 0 ]; then
         print_error "Environment file creation failed. Exiting."
+        complete_progress_bar
         exit 1
     fi
 
     # Create directory structure
+    update_progress_bar 20
+    draw_progress_bar "Creating directory structure..."
     create_directory_structure
     if [ $? -ne 0 ]; then
         print_error "Directory structure creation failed. Exiting."
+        complete_progress_bar
         exit 1
     fi
+
+    # Complete progress bar
+    update_progress_bar 10
+    draw_progress_bar "Finalizing setup..."
+    complete_progress_bar
 
     print_header "Enhanced ML Stack Environment Setup Complete"
     print_step "To apply the changes, run: source $HOME/.bashrc"

@@ -280,7 +280,7 @@ main
 fix_ninja_symlinks() {
     if ! command -v ninja-build &>/dev/null && command -v ninja &>/dev/null; then
         log_warning "Creating symlink for ninja-build..."
-        sudo ln -sf $(which ninja) /usr/bin/ninja-build
+        sudo_with_pass ln -sf $(which ninja) /usr/bin/ninja-build
         log_success "Ninja-build symlink created."
     fi
 }

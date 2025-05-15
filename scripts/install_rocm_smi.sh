@@ -5,7 +5,7 @@
 # GitHub: https://github.com/scooter-lacroix
 # X: https://x.com/scooter_lacroix
 # Patreon: https://patreon.com/ScooterLacroix
-# 
+#
 # If this code saved you time, consider buying me a coffee! ☕
 # "Code is like humor. When you have to explain it, it's bad!" - Cory House
 #
@@ -72,7 +72,13 @@ log "Installing ROCm SMI Python wrapper..."
 if [ -d "python_smi_tools" ]; then
     cd python_smi_tools
     if [ -f "setup.py" ]; then
-        pip install -e . --break-system-packages
+        if command_exists uv; then
+            log "Using uv to install ROCm SMI Python wrapper..."
+            uv pip install -e .
+        else
+            log "Using pip to install ROCm SMI Python wrapper..."
+            pip install -e . --break-system-packages
+        fi
     else
         log "No setup.py found in python_smi_tools. Creating a simple wrapper instead."
         mkdir -p $INSTALL_DIR/python_wrapper
@@ -206,7 +212,13 @@ EOF
 
         # Install the wrapper
         cd $INSTALL_DIR/python_wrapper
-        pip install -e . --break-system-packages
+        if command_exists uv; then
+            log "Using uv to install ROCm SMI Python wrapper..."
+            uv pip install -e .
+        else
+            log "Using pip to install ROCm SMI Python wrapper..."
+            pip install -e . --break-system-packages
+        fi
     fi
 else
     log "python_smi_tools directory not found. Creating a simple wrapper instead."
@@ -341,7 +353,13 @@ EOF
 
     # Install the wrapper
     cd $INSTALL_DIR/python_wrapper
-    pip install -e . --break-system-packages
+    if command_exists uv; then
+        log "Using uv to install ROCm SMI Python wrapper..."
+        uv pip install -e .
+    else
+        log "Using pip to install ROCm SMI Python wrapper..."
+        pip install -e . --break-system-packages
+    fi
 fi
 
 # Verify installation

@@ -55,11 +55,29 @@ cd $INSTALL_DIR
 
 # Install WandB
 log "Installing WandB..."
-pip install wandb --break-system-packages
+if command_exists uv; then
+    log "Using uv to install wandb..."
+    uv pip install wandb
+else
+    log "Using pip to install wandb..."
+    pip install wandb --break-system-packages
+fi
 
 # Verify installation
 log "Verifying WandB installation..."
 python3 -c "import wandb; print('WandB version:', wandb.__version__)"
+
+# If verification failed, try installing with pip directly
+if [ $? -ne 0 ]; then
+    log "First installation attempt failed, trying alternative method..."
+    pip install --upgrade pip
+    pip install --upgrade setuptools wheel
+    pip install wandb --no-cache-dir
+
+    # Verify again
+    log "Verifying WandB installation (second attempt)..."
+    python3 -c "import wandb; print('WandB version:', wandb.__version__)"
+fi
 
 if [ $? -eq 0 ]; then
     log "WandB installation successful!"
@@ -82,10 +100,10 @@ import argparse
 def test_wandb_logging():
     """Test basic WandB logging."""
     print("=== Testing WandB Logging ===")
-    
+
     # Initialize WandB
     run = wandb.init(project="ml_stack_test", name="test_run", mode="offline")
-    
+
     # Log some metrics
     for i in range(10):
         wandb.log({
@@ -93,32 +111,32 @@ def test_wandb_logging():
             "accuracy": i * 0.1,
             "step": i
         })
-    
+
     # Log a table
     data = [[i, i**2, i**3] for i in range(10)]
     table = wandb.Table(data=data, columns=["x", "x^2", "x^3"])
     wandb.log({"table": table})
-    
+
     # Log a plot
     x = np.linspace(0, 10, 100)
     y = np.sin(x)
     data = [[x[i], y[i]] for i in range(len(x))]
     table = wandb.Table(data=data, columns=["x", "sin(x)"])
     wandb.log({"plot": wandb.plot.line(table, "x", "sin(x)", title="Sin Wave")})
-    
+
     # Finish the run
     run.finish()
-    
+
     print("WandB logging test completed successfully!")
     return True
 
 def test_wandb_model_tracking():
     """Test WandB model tracking."""
     print("\n=== Testing WandB Model Tracking ===")
-    
+
     # Initialize WandB
     run = wandb.init(project="ml_stack_test", name="model_tracking", mode="offline")
-    
+
     # Create a simple model
     class SimpleModel(nn.Module):
         def __init__(self):
@@ -126,45 +144,45 @@ def test_wandb_model_tracking():
             self.fc1 = nn.Linear(10, 5)
             self.relu = nn.ReLU()
             self.fc2 = nn.Linear(5, 1)
-            
+
         def forward(self, x):
             x = self.fc1(x)
             x = self.relu(x)
             x = self.fc2(x)
             return x
-    
+
     model = SimpleModel()
-    
+
     # Watch the model
     wandb.watch(model, log="all")
-    
+
     # Create some data
     x = torch.randn(100, 10)
     y = torch.randn(100, 1)
-    
+
     # Train the model
     optimizer = optim.SGD(model.parameters(), lr=0.01)
     criterion = nn.MSELoss()
-    
+
     for epoch in range(10):
         optimizer.zero_grad()
         output = model(x)
         loss = criterion(output, y)
         loss.backward()
         optimizer.step()
-        
+
         wandb.log({
             "epoch": epoch,
             "loss": loss.item()
         })
-    
+
     # Save the model
     torch.save(model.state_dict(), "simple_model.pt")
     wandb.save("simple_model.pt")
-    
+
     # Finish the run
     run.finish()
-    
+
     print("WandB model tracking test completed successfully!")
     return True
 
@@ -174,16 +192,16 @@ def main():
     parser.add_argument("--test-logging", action="store_true", help="Run logging test")
     parser.add_argument("--test-model", action="store_true", help="Run model tracking test")
     parser.add_argument("--all", action="store_true", help="Run all tests")
-    
+
     args = parser.parse_args()
-    
+
     # If no specific test is selected, run all tests
     if not (args.test_logging or args.test_model) or args.all:
         args.test_logging = args.test_model = True
-    
+
     # Run tests
     results = []
-    
+
     if args.test_logging:
         try:
             result = test_wandb_logging()
@@ -191,7 +209,7 @@ def main():
         except Exception as e:
             print(f"Error in logging test: {e}")
             results.append(("Logging Test", False))
-    
+
     if args.test_model:
         try:
             result = test_wandb_model_tracking()
@@ -199,7 +217,7 @@ def main():
         except Exception as e:
             print(f"Error in model tracking test: {e}")
             results.append(("Model Tracking Test", False))
-    
+
     # Print summary
     print("\n=== Test Summary ===")
     all_passed = True
@@ -207,7 +225,7 @@ def main():
         status = "PASSED" if result else "FAILED"
         print(f"{name}: {status}")
         all_passed = all_passed and result
-    
+
     if all_passed:
         print("\nAll tests passed successfully!")
     else:
@@ -281,7 +299,7 @@ class SimpleModel(nn.Module):
         self.fc1 = nn.Linear(10, 5)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(5, 1)
-        
+
     def forward(self, x):
         x = self.fc1(x)
         x = self.relu(x)
@@ -303,7 +321,7 @@ for epoch in range(10):
     loss = criterion(output, y)
     loss.backward()
     optimizer.step()
-    
+
     wandb.log({
         "epoch": epoch,
         "loss": loss.item()

@@ -5,23 +5,37 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: bartholemewii/stans-ml-stack:latest
+    image: stans-ml-stack:0.1.2
     container_name: stans-ml-stack
     volumes:
       - ./data:/workspace/Stans_MLStack/data
       - ./models:/workspace/Stans_MLStack/models
       - ./logs:/workspace/Stans_MLStack/logs
+      - ./notebooks:/workspace/Stans_MLStack/notebooks
+    ports:
+      - "8888:8888"  # Jupyter
+      - "6006:6006"  # TensorBoard
+      - "8080:8080"  # Other services
     environment:
       - HIP_VISIBLE_DEVICES=0,1
       - CUDA_VISIBLE_DEVICES=0,1
       - PYTORCH_ROCM_DEVICE=0,1
       - HSA_OVERRIDE_GFX_VERSION=11.0.0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: amd
-              capabilities: [gpu]
+      - HSA_ENABLE_SDMA=0
+      - GPU_MAX_HEAP_SIZE=100
+      - GPU_MAX_ALLOC_PERCENT=100
+      - HSA_TOOLS_LIB=1
+      - AMD_LOG_LEVEL=0
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
     command: /bin/bash
     stdin_open: true
     tty: true

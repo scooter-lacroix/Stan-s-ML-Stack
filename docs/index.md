@@ -1,7 +1,7 @@
-# Stan's ML Stack
+# Stan's ML Stack Documentation
 
 <p align="center">
-  <img src="images/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
+  <img src="../assets/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
 </p>
 
 ## Overview
@@ -19,6 +19,51 @@ This stack is designed to work with AMD's ROCm platform, providing CUDA compatib
 - **LLM Tools**: Support for training and deploying large language models
 - **Automatic Hardware Detection**: Scripts automatically detect and configure for your hardware
 - **Comprehensive Documentation**: Detailed guides and troubleshooting information
+- **DeepSpeed Integration**: Optimized training for large models with AMD GPU support
+- **Flash Attention**: High-performance attention mechanisms with Triton and CK optimizations
+- **UV Package Management**: Modern, fast Python package management for all dependencies
+- **Repair Capabilities**: Automated detection and fixing of common installation issues
+
+## Documentation Structure
+
+This documentation is organized into the following sections:
+
+### Core Components
+- [ROCm Installation](core/rocm_installation_guide.md)
+- [PyTorch with ROCm](core/pytorch_rocm_guide.md)
+- [ONNX Runtime](core/onnx_runtime_guide.md)
+- [MIGraphX](core/migraphx_guide.md)
+- [MPI Installation](core/mpi_installation_guide.md)
+
+### Extensions
+- [DeepSpeed](extensions/deepspeed_guide.md)
+- [Flash Attention CK](extensions/flash_attention_ck_guide.md)
+- [AITER](extensions/aiter_guide.md)
+- [Triton](extensions/triton_guide.md)
+- [vLLM](extensions/vllm_guide.md)
+- [BitsAndBytes](extensions/bitsandbytes_guide.md)
+- [Weights & Biases](extensions/wandb_guide.md)
+
+### Tutorials
+- [Training a Model with PyTorch and ROCm](tutorials/pytorch_rocm_training.md)
+- [Optimizing Inference with ONNX Runtime](tutorials/onnx_runtime_inference.md)
+- [Distributed Training with DeepSpeed](tutorials/deepspeed_distributed_training.md)
+- [Using Flash Attention for Transformer Models](tutorials/flash_attention_transformers.md)
+- [Quantization with BitsAndBytes](tutorials/quantization_bitsandbytes.md)
+
+### Benchmarks
+- [PyTorch Performance](benchmarks/pytorch_performance.md)
+- [ONNX Runtime Performance](benchmarks/onnx_runtime_performance.md)
+- [Flash Attention Performance](benchmarks/flash_attention_performance.md)
+- [DeepSpeed Performance](benchmarks/deepspeed_performance.md)
+- [AITER Performance](benchmarks/aiter_performance.md)
+
+### Troubleshooting
+- [Common Issues](troubleshooting/common_issues.md)
+- [ROCm Troubleshooting](troubleshooting/rocm_troubleshooting.md)
+- [PyTorch Troubleshooting](troubleshooting/pytorch_troubleshooting.md)
+- [ONNX Runtime Troubleshooting](troubleshooting/onnx_runtime_troubleshooting.md)
+- [DeepSpeed Troubleshooting](troubleshooting/deepspeed_troubleshooting.md)
 
 ## Hardware Requirements
 
@@ -54,10 +99,10 @@ The ML Stack consists of the following core components:
 | Component | Description | Version |
 |-----------|-------------|---------|
 | **ROCm** | AMD's open software platform for GPU computing | 6.4.43482 |
-| **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.2.4 |
-| **ONNX Runtime** | Cross-platform inference accelerator | 1.22.0 |
+| **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.4.43482 |
+| **ONNX Runtime** | Cross-platform inference accelerator | 1.16.0 |
 | **MIGraphX** | AMD's graph optimization library | 2.12.0 |
-| **Flash Attention** | Efficient attention computation | 2.5.6 |
+| **Flash Attention CK** | Efficient attention computation with Composable Kernel | 2.3.0 |
 | **RCCL** | ROCm Collective Communication Library | Latest |
 | **MPI** | Message Passing Interface for distributed computing | Open MPI 5.0.7 |
 | **Megatron-LM** | Framework for training large language models | Latest |
@@ -66,6 +111,8 @@ The ML Stack consists of the following core components:
 
 | Component | Description | Version |
 |-----------|-------------|---------|
+| **DeepSpeed** | Deep learning optimization library | 0.12.0 |
+| **AITER** | AMD Inference and Training Engine for ROCm | 1.2.0 |
 | **Triton** | Compiler for parallel programming | 3.2.0 |
 | **BITSANDBYTES** | Efficient quantization for deep learning models | 0.45.5 |
 | **vLLM** | High-throughput inference engine for LLMs | 0.8.5 |
@@ -78,7 +125,7 @@ The ML Stack provides several installation options to suit your needs.
 
 ### Automatic Installation (Recommended)
 
-The easiest way to install the ML Stack is to use the automatic installation script:
+The easiest way to install the ML Stack is to use the automatic installation script with the curses-based UI:
 
 ```bash
 # Clone the repository
@@ -86,7 +133,7 @@ git clone https://github.com/scooter-lacroix/Stans_MLStack.git
 cd Stans_MLStack
 
 # Run the installation script
-./scripts/install_ml_stack_ui.py
+./scripts/install_ml_stack_curses.py
 ```
 
 This script will:
@@ -95,6 +142,8 @@ This script will:
 3. Set up the environment
 4. Install all selected components
 5. Verify the installation
+
+The curses-based UI provides a responsive, interactive experience with real-time feedback during the installation process.
 
 ### Manual Installation
 
@@ -173,20 +222,20 @@ For a containerized installation, you have several options:
 
 ```bash
 # Pull the Docker image
-docker pull bartholemewii/stans-ml-stack:latest
+docker pull stans-ml-stack:0.1.2
 
 # Run the container
-docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it bartholemewii/stans-ml-stack:latest
+docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack:0.1.2
 ```
 
 #### Option 2: Build from Dockerfile
 
 ```bash
 # Build the Docker image
-docker build -t stans-ml-stack .
+docker build -t stans-ml-stack:0.1.2 .
 
 # Run the container
-docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack
+docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack:0.1.2
 ```
 
 #### Option 3: Use Docker Compose
@@ -202,7 +251,7 @@ docker-compose exec ml-stack bash
 docker-compose down
 ```
 
-The Docker container includes all the necessary components of Stan's ML Stack, pre-configured and ready to use with AMD GPUs.
+The Docker container includes all the necessary components of Stan's ML Stack v0.1.2, pre-configured and ready to use with AMD GPUs. The container exposes ports for Jupyter (8888), TensorBoard (6006), and other services (8080).
 
 ## Environment Setup
 
@@ -245,14 +294,20 @@ export HSA_ENABLE_SDMA=0
 export GPU_MAX_HEAP_SIZE=100
 export GPU_MAX_ALLOC_PERCENT=100
 export HSA_TOOLS_LIB=1
+export AMD_LOG_LEVEL=0
 
 # CUDA Compatibility
 export ROCM_HOME=$ROCM_PATH
 export CUDA_HOME=$ROCM_PATH
 
+# ML Stack Path
+export ML_STACK_PATH=/path/to/Stans_MLStack
+
 # ONNX Runtime
-export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
+export PYTHONPATH=$ML_STACK_PATH/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
 ```
+
+Replace `/path/to/Stans_MLStack` with the actual path to your ML Stack installation.
 
 ### Persistent Environment Setup
 
@@ -470,15 +525,17 @@ The custom verification script is designed to detect components installed in non
 
 Core Components:
 ✓ ROCm: Successfully installed (version 6.4.43482)
-✓ PyTorch: Successfully installed (version 2.6.0+rocm6.2.4)
-✓ ONNX Runtime: Successfully installed (version 1.22.0)
+✓ PyTorch: Successfully installed (version 2.6.0+rocm6.4.43482)
+✓ ONNX Runtime: Successfully installed (version 1.16.0)
 ✓ MIGraphX: Successfully installed (version 2.12.0)
-✓ Flash Attention: Successfully installed (version 2.5.6)
+✓ Flash Attention CK: Successfully installed (version 2.3.0)
 ✓ RCCL: Successfully installed
 ✓ MPI: Successfully installed (version Open MPI 5.0.7)
 ✓ Megatron-LM: Successfully installed
 
 Extension Components:
+✓ DeepSpeed: Successfully installed (version 0.12.0)
+✓ AITER: Successfully installed (version 1.2.0)
 ✓ Triton: Successfully installed (version 3.2.0)
 ✓ BITSANDBYTES: Successfully installed (version 0.45.5)
 ✓ vLLM: Successfully installed (version 0.8.5)
@@ -526,19 +583,35 @@ Contributions to Stan's ML Stack are welcome! Please follow these steps:
 
 Stan's ML Stack is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
+## Version Information
+
+This documentation is for Stan's ML Stack v0.1.2 (Nirvana), released on May 15, 2025.
+
+- ROCm: 6.4.43482
+- PyTorch: 2.6.0+rocm6.4.43482
+- ONNX Runtime: 1.16.0
+- DeepSpeed: 0.12.0
+- Flash Attention CK: 2.3.0
+- AITER: 1.2.0
+
 ## Acknowledgements
 
 - AMD for ROCm and GPU support
 - PyTorch team for their deep learning framework
 - ONNX Runtime team for their inference engine
+- DeepSpeed team for their optimization library
+- Flash Attention team for their efficient attention algorithm
 - All other open-source projects included in this stack
 
-## Contact
+## Author
 
-- Author: Stanley Chisango (Scooter Lacroix)
+**Stanley Chisango (Scooter Lacroix)**
+
 - Email: scooterlacroix@gmail.com
-- GitHub: https://github.com/scooter-lacroix
-- X: https://x.com/scooter_lacroix
-- Patreon: https://patreon.com/ScooterLacroix
+- GitHub: [scooter-lacroix](https://github.com/scooter-lacroix)
+- X: [@scooter_lacroix](https://x.com/scooter_lacroix)
+- Patreon: [ScooterLacroix](https://patreon.com/ScooterLacroix)
 
-If this code saved you time, consider supporting the project! ☕
+> If this code saved you time, consider buying me a coffee! ☕
+>
+> "Code is like humor. When you have to explain it, it's bad!" - Cory House

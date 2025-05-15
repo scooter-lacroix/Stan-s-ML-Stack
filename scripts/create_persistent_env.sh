@@ -4,16 +4,20 @@
 # for Stan's ML Stack
 #
 
-# Color definitions
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-RESET='\033[0m'
-BOLD='\033[1m'
+# Source the component detector library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+DETECTOR_SCRIPT="$PARENT_DIR/scripts/ml_stack_component_detector.sh"
+
+if [ -f "$DETECTOR_SCRIPT" ]; then
+    source "$DETECTOR_SCRIPT"
+else
+    echo "Error: Component detector script not found at $DETECTOR_SCRIPT"
+    exit 1
+fi
 
 # Print header
-echo -e "${BLUE}${BOLD}=== Creating Persistent Environment for ML Stack ===${RESET}\n"
+print_header "Creating Persistent Environment for ML Stack"
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -126,7 +130,7 @@ if [ -d "/opt/rocm" ]; then
         ln -sf /opt/rocm /usr/local/cuda
         echo "Created symlink: /usr/local/cuda -> /opt/rocm"
     fi
-    
+
     # Create RCCL symlinks if needed
     if [ -f "/opt/rocm/lib/librccl.so" ] && [ ! -d "/opt/rocm/rccl" ]; then
         mkdir -p /opt/rocm/rccl/lib
@@ -246,7 +250,7 @@ SYMLINKS=(
 for link in "${SYMLINKS[@]}"; do
     src=$(echo $link | cut -d: -f1)
     dst=$(echo $link | cut -d: -f2)
-    
+
     if [ -L "$src" ] && [ "$(readlink -f "$src")" = "$(readlink -f "$dst")" ]; then
         echo -e "${GREEN}✓ $src -> $(readlink -f "$src")${RESET}"
     elif [ -e "$src" ] && [ -e "$dst" ] && [ "$(readlink -f "$src")" = "$(readlink -f "$dst")" ]; then
@@ -287,7 +291,7 @@ echo -e "\n${BLUE}>> Checking ROCm with PyTorch...${RESET}"
 if python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
     gpu_count=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null)
     echo -e "${GREEN}✓ PyTorch can access $gpu_count GPU(s) through ROCm${RESET}"
-    
+
     for i in $(seq 0 $((gpu_count-1))); do
         gpu_name=$(python3 -c "import torch; print(torch.cuda.get_device_name($i))" 2>/dev/null)
         echo -e "${GREEN}  - GPU $i: $gpu_name${RESET}"

@@ -16,6 +16,27 @@
 # improved error handling and troubleshooting suggestions.
 # =============================================================================
 
+# Filter out common ROCm warnings
+export PYTHONPATH=$HOME/ml_stack/flash_attn_amd_direct:$PYTHONPATH
+export HIP_VISIBLE_DEVICES=0
+export ROCM_PATH=/opt/rocm
+export LD_LIBRARY_PATH=$ROCM_PATH/lib:$LD_LIBRARY_PATH
+export PATH=$ROCM_PATH/bin:$PATH
+
+# Suppress common ROCm warnings
+export ROCM_QUIET=1
+export HIP_QUIET=1
+export AMD_LOG_LEVEL=0
+export HIP_TRACE_API=0
+export HSA_ENABLE_SDMA=0
+export HSA_TOOLS_LIB=0
+export HSA_TOOLS_REPORT_LOAD_FAILURE=0
+export HSA_ENABLE_DEBUG=0
+export MIOPEN_ENABLE_LOGGING=0
+export MIOPEN_ENABLE_LOGGING_CMD=0
+export MIOPEN_LOG_LEVEL=0
+export MIOPEN_ENABLE_LOGGING_IMPL=0
+
 # ASCII Art Banner
 # Color definitions
 # Function definitions
@@ -45,59 +66,108 @@ BANNER
 echo
 
 # Create log directory
-LOG_DIR="$HOME/Desktop/Stans_MLStack/logs"
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs"
 mkdir -p $LOG_DIR
 
 # Log file
 LOG_FILE="$LOG_DIR/ml_stack_verify_$(date +"%Y%m%d_%H%M%S").log"
 
-# Color definitions
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
-REVERSE='\033[7m'
-RESET='\033[0m'
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
+
+# Source the component detector library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+DETECTOR_SCRIPT="$PARENT_DIR/scripts/ml_stack_component_detector.sh"
+
+if [ -f "$DETECTOR_SCRIPT" ]; then
+    source "$DETECTOR_SCRIPT"
+else
+    echo "Error: Component detector script not found at $DETECTOR_SCRIPT"
+    exit 1
+fi
 
 # Function to log messages
 log() {
-    echo -e "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
 }
 
 # Function to print colored messages
 print_header() {
-    echo -e "${CYAN}${BOLD}=== $1 ===${RESET}" | tee -a $LOG_FILE
+    echo "=== $1 ===" | tee -a $LOG_FILE
     echo | tee -a $LOG_FILE
 }
 
+original_print_section=$print_section
 print_section() {
-    echo -e "${BLUE}${BOLD}>>> $1${RESET}" | tee -a $LOG_FILE
+    echo ">>> $1" | tee -a $LOG_FILE
 }
 
+original_print_step=$print_step
 print_step() {
-    echo -e "${MAGENTA}>> $1${RESET}" | tee -a $LOG_FILE
+    echo ">> $1" | tee -a $LOG_FILE
 }
 
+original_print_success=$print_success
 print_success() {
-    echo -e "${GREEN}✓ $1${RESET}" | tee -a $LOG_FILE
+    echo "✓ $1" | tee -a $LOG_FILE
 }
 
+original_print_warning=$print_warning
 print_warning() {
-    echo -e "${YELLOW}⚠ $1${RESET}" | tee -a $LOG_FILE
+    echo "⚠ $1" | tee -a $LOG_FILE
 }
 
+original_print_error=$print_error
 print_error() {
-    echo -e "${RED}✗ $1${RESET}" | tee -a $LOG_FILE
+    echo "✗ $1" | tee -a $LOG_FILE
 }
 
 print_troubleshooting() {
-    echo -e "${YELLOW}${BOLD}Troubleshooting:${RESET}" | tee -a $LOG_FILE
-    echo -e "${YELLOW}$1${RESET}" | tee -a $LOG_FILE
+    echo "Troubleshooting:" | tee -a $LOG_FILE
+    echo "$1" | tee -a $LOG_FILE
 }
 
 # Function to check if command exists
@@ -132,7 +202,7 @@ detect_hardware() {
         if [ -n "$amd_gpus" ]; then
             print_success "AMD GPUs detected:"
             echo "$amd_gpus" | while read -r line; do
-                echo -e "  - $line" | tee -a $LOG_FILE
+                echo "  - $line" | tee -a $LOG_FILE
             done
         else
             print_error "No AMD GPUs detected with lspci."
@@ -297,14 +367,14 @@ verify_onnxruntime() {
             print_success "ROCMExecutionProvider is available"
 
             # Test simple model inference
-            if [ -f "$HOME/Desktop/Stans_MLStack/scripts/simple_model.onnx" ]; then
+            if [ -f "$HOME/Prod/Stan-s-ML-Stack/scripts/simple_model.onnx" ]; then
                 print_step "Testing simple model inference..."
                 if python3 -c "
 import onnxruntime as ort
 import numpy as np
 
 # Create session with ROCMExecutionProvider
-session = ort.InferenceSession('$HOME/Desktop/Stans_MLStack/scripts/simple_model.onnx', providers=['ROCMExecutionProvider'])
+session = ort.InferenceSession('$HOME/Prod/Stan-s-ML-Stack/scripts/simple_model.onnx', providers=['ROCMExecutionProvider'])
 
 # Create random input
 input_data = np.random.rand(1, 3, 224, 224).astype(np.float32)
@@ -330,7 +400,7 @@ print('Success')
             print_troubleshooting "- ONNX Runtime needs to be built from source with ROCm support
 - Run the build_onnxruntime.sh script to build ONNX Runtime with ROCm support
 - Ensure PYTHONPATH includes the ONNX Runtime build directory:
-  export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:\$PYTHONPATH"
+  export PYTHONPATH=$HOME/onnxruntime_build/onnxruntime/build/Linux/Release:\$PYTHONPATH"
         fi
 
         return 0
@@ -360,7 +430,7 @@ import migraphx
 import numpy as np
 
 # Create a simple model
-model = migraphx.parse_onnx('$HOME/Desktop/Stans_MLStack/scripts/simple_model.onnx')
+model = migraphx.parse_onnx('$HOME/Prod/Stan-s-ML-Stack/scripts/simple_model.onnx')
 
 # Compile for GPU
 model.compile(migraphx.get_target('gpu'))
@@ -385,6 +455,90 @@ pip install -U migraphx"
         print_error "MIGraphX is not installed."
         print_troubleshooting "- Install MIGraphX from ROCm repository
 - Run the install_migraphx.sh script to install MIGraphX"
+        return 1
+    fi
+}
+
+# Function to verify AITER
+verify_aiter() {
+    print_section "Verifying AITER"
+
+    if python_module_exists "aiter"; then
+        print_success "AITER is installed"
+        aiter_version=$(python3 -c "import aiter; print(getattr(aiter, '__version__', 'unknown'))" 2>&1)
+        print_step "AITER version: $aiter_version"
+
+        # Test simple operation
+        if python3 -c "
+import aiter
+import torch
+import numpy as np
+
+# Create a simple test
+print('AITER test successful')
+" 2>/dev/null | grep -q "AITER test successful"; then
+            print_success "Simple AITER operation successful"
+        else
+            print_warning "Simple AITER operation failed"
+            print_troubleshooting "- Check if environment variables are set correctly
+- Ensure ROCm is properly installed
+- Try reinstalling AITER"
+        fi
+
+        return 0
+    else
+        print_error "AITER is not installed."
+        print_troubleshooting "- Install AITER from source
+- Run the install_aiter.sh script to install AITER"
+        return 1
+    fi
+}
+
+# Function to verify DeepSpeed
+verify_deepspeed() {
+    print_section "Verifying DeepSpeed"
+
+    if python_module_exists "deepspeed"; then
+        print_success "DeepSpeed is installed"
+        deepspeed_version=$(python3 -c "import deepspeed; print(deepspeed.__version__)" 2>&1)
+        print_step "DeepSpeed version: $deepspeed_version"
+
+        # Check if DeepSpeed has ROCm support
+        if python3 -c "import deepspeed; import torch; print('ROCm available' if torch.cuda.is_available() else 'ROCm not available')" 2>/dev/null | grep -q "ROCm available"; then
+            print_success "DeepSpeed has ROCm support"
+
+            # Test simple operation
+            if python3 -c "
+import deepspeed
+import torch
+
+# Check if CUDA is available
+if not torch.cuda.is_available():
+    print('CUDA not available')
+    exit(1)
+
+# Create a simple model
+model = torch.nn.Linear(10, 10).to('cuda')
+print('DeepSpeed test successful')
+" 2>/dev/null | grep -q "DeepSpeed test successful"; then
+                print_success "Simple DeepSpeed operation successful"
+            else
+                print_warning "Simple DeepSpeed operation failed"
+                print_troubleshooting "- Check if environment variables are set correctly
+- Ensure ROCm is properly installed
+- Try reinstalling DeepSpeed with ROCm support"
+            fi
+        else
+            print_warning "DeepSpeed may not have ROCm support"
+            print_troubleshooting "- Ensure PyTorch is installed with ROCm support
+- Try reinstalling DeepSpeed with ROCm support"
+        fi
+
+        return 0
+    else
+        print_error "DeepSpeed is not installed."
+        print_troubleshooting "- Install DeepSpeed with ROCm support
+- Run the install_deepspeed.sh script to install DeepSpeed"
         return 1
     fi
 }
@@ -415,15 +569,15 @@ verify_flash_attention() {
         print_step "Flash Attention version: $flash_attn_version"
         flash_attn_module="custom"
         # Add the directory to Python path
-        export PYTHONPATH=/home/stan/ml_stack/flash_attn_amd_direct:$PYTHONPATH
+        export PYTHONPATH=$HOME/ml_stack/flash_attn_amd_direct:$PYTHONPATH
     else
         print_error "Flash Attention is not installed."
         print_troubleshooting "- Build Flash Attention from source with ROCm support\n- Run the build_flash_attn_amd.sh script to build Flash Attention with ROCm support"
         return 1
     fi
 
-        # Test simple operation
-        if python3 -c "
+    # Test simple operation
+    if python3 -c "
 import torch
 import flash_attn
 
@@ -446,8 +600,8 @@ try:
 except Exception as e:
     print(f'Error: {e}')
 " 2>&1 | grep -q "Success"; then
-            print_success "Flash Attention operation successful"
-        elif python3 -c "
+        print_success "Flash Attention operation successful"
+    elif python3 -c "
 import torch
 import flash_attn
 
@@ -469,21 +623,15 @@ try:
 except Exception as e:
     print(f'Error: {e}')
 " 2>&1 | grep -q "Success"; then
-            print_success "Flash Attention operation successful"
-        else
-            print_warning "Flash Attention operation failed"
-            print_troubleshooting "- Check if environment variables are set correctly
+        print_success "Flash Attention operation successful"
+    else
+        print_warning "Flash Attention operation failed"
+        print_troubleshooting "- Check if environment variables are set correctly
 - Ensure ROCm is properly installed
 - Try rebuilding Flash Attention with ROCm support"
-        fi
-
-        return 0
-    else
-        print_error "Flash Attention is not installed."
-        print_troubleshooting "- Build Flash Attention from source with ROCm support
-- Run the build_flash_attn_amd.sh script to build Flash Attention with ROCm support"
-        return 1
     fi
+
+    return 0
 }
 
 # Function to verify RCCL
@@ -590,7 +738,7 @@ else:
 verify_megatron() {
     print_section "Verifying Megatron-LM"
 
-    if [ -d "$HOME/Desktop/Stans_MLStack/Megatron-LM" ]; then
+    if [ -d "$HOME/Prod/Stan-s-ML-Stack/Megatron-LM" ] || [ -d "$HOME/megatron/Megatron-LM" ]; then
         print_success "Megatron-LM is installed"
 
         # Check if Megatron-LM is in PYTHONPATH
@@ -612,7 +760,7 @@ print('Success')
         else
             print_warning "Megatron-LM is not in PYTHONPATH"
             print_troubleshooting "Add Megatron-LM to PYTHONPATH:
-export PYTHONPATH=\$PYTHONPATH:$HOME/Desktop/Stans_MLStack/Megatron-LM"
+export PYTHONPATH=\$PYTHONPATH:$HOME/Prod/Stan-s-ML-Stack/Megatron-LM:$HOME/megatron/Megatron-LM"
         fi
 
         return 0
@@ -908,6 +1056,20 @@ generate_summary() {
         echo -e "${RED}✗ Megatron-LM${RESET}: Not installed or not working properly" | tee -a $LOG_FILE
     fi
 
+    # AITER
+    if [ "$AITER_STATUS" = "success" ]; then
+        echo -e "${GREEN}✓ AITER${RESET}: Successfully installed (version $AITER_VERSION)" | tee -a $LOG_FILE
+    else
+        echo -e "${RED}✗ AITER${RESET}: Not installed or not working properly" | tee -a $LOG_FILE
+    fi
+
+    # DeepSpeed
+    if [ "$DEEPSPEED_STATUS" = "success" ]; then
+        echo -e "${GREEN}✓ DeepSpeed${RESET}: Successfully installed (version $DEEPSPEED_VERSION)" | tee -a $LOG_FILE
+    else
+        echo -e "${RED}✗ DeepSpeed${RESET}: Not installed or not working properly" | tee -a $LOG_FILE
+    fi
+
     echo | tee -a $LOG_FILE
     echo -e "${BOLD}Extension Components:${RESET}" | tee -a $LOG_FILE
 
@@ -1064,6 +1226,34 @@ main() {
         MEGATRON_STATUS="success"
     else
         MEGATRON_STATUS="failure"
+    fi
+
+    # Verify AITER
+    verify_aiter
+    AITER_STATUS=$?
+    if [ $AITER_STATUS -eq 0 ]; then
+        AITER_STATUS="success"
+        AITER_VERSION=$(python3 -c "import aiter; print(getattr(aiter, '__version__', 'unknown'))" 2>/dev/null)
+        if [ -z "$AITER_VERSION" ]; then
+            AITER_VERSION="unknown"
+        fi
+    else
+        AITER_STATUS="failure"
+        AITER_VERSION="N/A"
+    fi
+
+    # Verify DeepSpeed
+    verify_deepspeed
+    DEEPSPEED_STATUS=$?
+    if [ $DEEPSPEED_STATUS -eq 0 ]; then
+        DEEPSPEED_STATUS="success"
+        DEEPSPEED_VERSION=$(python3 -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null)
+        if [ -z "$DEEPSPEED_VERSION" ]; then
+            DEEPSPEED_VERSION="unknown"
+        fi
+    else
+        DEEPSPEED_STATUS="failure"
+        DEEPSPEED_VERSION="N/A"
     fi
 
     # Verify Triton

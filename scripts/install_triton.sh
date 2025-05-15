@@ -5,7 +5,7 @@
 # GitHub: https://github.com/scooter-lacroix
 # X: https://x.com/scooter_lacroix
 # Patreon: https://patreon.com/ScooterLacroix
-# 
+#
 # If this code saved you time, consider buying me a coffee! ☕
 # "Code is like humor. When you have to explain it, it's bad!" - Cory House
 #
@@ -23,7 +23,7 @@
 set -e  # Exit on error
 
 # Create log directory
-LOG_DIR="$HOME/Desktop/ml_stack_extensions/logs"
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
 mkdir -p $LOG_DIR
 
 # Log file
@@ -68,28 +68,71 @@ INSTALL_DIR="$HOME/ml_stack/triton"
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
-# Clone Triton repository
-if [ ! -d "triton" ]; then
-    log "Cloning Triton repository..."
-    git clone https://github.com/openai/triton.git
-    cd triton
-else
-    log "Triton repository already exists, updating..."
-    cd triton
-    git pull
-fi
-
-# Check out a stable version
-git checkout tags/v2.2.0 -b v2.2.0-stable
-
 # Install Python dependencies
 log "Installing Python dependencies..."
-pip install --upgrade cmake ninja pytest packaging wheel --break-system-packages
+if command_exists uv; then
+    log "Using uv to install dependencies..."
+    uv pip install --upgrade cmake ninja pytest packaging wheel
+else
+    log "Using pip to install dependencies..."
+    pip install --upgrade cmake ninja pytest packaging wheel
+fi
 
-# Build and install Triton
-log "Building and installing Triton..."
-cd python
-pip install -e . --break-system-packages
+# Install Triton directly from PyPI first (simpler approach)
+log "Installing Triton from PyPI..."
+if command_exists uv; then
+    uv pip install triton
+else
+    pip install triton
+fi
+
+# Check if the PyPI installation worked
+if python3 -c "import triton; print('Triton version:', triton.__version__)" &>/dev/null; then
+    log "Triton installed successfully from PyPI!"
+else
+    log "PyPI installation failed, trying from source..."
+
+    # Clone Triton repository
+    if [ ! -d "triton" ]; then
+        log "Cloning Triton repository..."
+        git clone https://github.com/openai/triton.git --recursive
+        cd triton
+    else
+        log "Triton repository already exists, updating..."
+        cd triton
+        git fetch --all
+        git reset --hard origin/main
+        git submodule update --init --recursive
+    fi
+
+    # Try different versions if needed
+    for version in "main" "master" "dev" "rocm-5.6"; do
+        log "Trying branch/tag: $version"
+        git checkout $version || continue
+
+        # Apply ROCm patch if needed
+        log "Applying ROCm compatibility patches..."
+        sed -i 's/cuda/hip/g' python/triton/backends/hip.py || true
+
+        # Build and install Triton
+        log "Building and installing Triton from source..."
+        cd python
+        if command_exists uv; then
+            TRITON_BUILD_WITH_ROCM=1 uv pip install -e .
+        else
+            TRITON_BUILD_WITH_ROCM=1 pip install -e .
+        fi
+
+        # Check if installation worked
+        if python3 -c "import triton; print('Triton version:', triton.__version__)" &>/dev/null; then
+            log "Triton installed successfully from source!"
+            break
+        else
+            log "Installation of branch $version failed, trying next version..."
+            cd ..
+        fi
+    done
+fi
 
 # Verify installation
 log "Verifying Triton installation..."
@@ -138,24 +181,24 @@ def add_vectors(x, y):
     # Check input dimensions
     assert x.shape == y.shape, "Input shapes must match"
     assert x.is_cuda and y.is_cuda, "Inputs must be on GPU"
-    
+
     # Output tensor
     output = torch.empty_like(x)
-    
+
     # Get tensor dimensions
     n_elements = output.numel()
-    
+
     # Define block size
     BLOCK_SIZE = 1024
-    
+
     # Calculate grid dimensions
     grid = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
-    
+
     # Launch kernel
     add_kernel[grid, BLOCK_SIZE](
         x, y, output, n_elements, BLOCK_SIZE
     )
-    
+
     return output
 
 # Test the kernel
@@ -163,25 +206,25 @@ def test_add_vectors():
     # Create input tensors on GPU
     x = torch.rand(1024, 1024, device='cuda')
     y = torch.rand(1024, 1024, device='cuda')
-    
+
     # Compute with Triton
     output_triton = add_vectors(x, y)
-    
+
     # Compute with PyTorch
     output_torch = x + y
-    
+
     # Check results
     assert torch.allclose(output_triton, output_torch, rtol=1e-3, atol=1e-3)
     print("Test passed!")
-    
+
     # Benchmark
     import time
-    
+
     # Warm up
     for _ in range(10):
         _ = add_vectors(x, y)
     torch.cuda.synchronize()
-    
+
     # Benchmark Triton
     n_runs = 100
     start_time = time.time()
@@ -189,14 +232,14 @@ def test_add_vectors():
         _ = add_vectors(x, y)
     torch.cuda.synchronize()
     triton_time = (time.time() - start_time) / n_runs
-    
+
     # Benchmark PyTorch
     start_time = time.time()
     for _ in range(n_runs):
         _ = x + y
     torch.cuda.synchronize()
     torch_time = (time.time() - start_time) / n_runs
-    
+
     print(f"Triton time: {triton_time*1000:.3f} ms")
     print(f"PyTorch time: {torch_time*1000:.3f} ms")
     print(f"Speedup: {torch_time/triton_time:.2f}x")
@@ -211,4 +254,4 @@ log "You can run it with: python3 $TEST_SCRIPT"
 log "=== Triton Installation Complete ==="
 log "Installation Directory: $INSTALL_DIR"
 log "Log File: $LOG_FILE"
-log "Documentation: $HOME/Desktop/ml_stack_extensions/docs/triton_guide.md"
+log "Documentation: $HOME/Prod/Stan-s-ML-Stack/docs/extensions/triton_guide.md"
