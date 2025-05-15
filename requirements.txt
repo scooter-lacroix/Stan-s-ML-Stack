@@ -1,0 +1,7 @@
+numpy>=1.24.0
+torch>=2.6.0
+onnxruntime>=1.16.0
+psutil>=5.9.0
+tqdm>=4.66.0
+requests>=2.31.0
+pyyaml>=6.0.0
