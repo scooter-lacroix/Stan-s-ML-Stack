@@ -1,0 +1,104 @@
+name: Manual Docker Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., 0.1.4-secure)'
+        required: true
+        default: '0.1.4-secure'
+      update_latest:
+        description: 'Update latest tag?'
+        required: true
+        default: 'true'
+        type: boolean
+      custom_tag:
+        description: 'Additional custom tag (optional)'
+        required: false
+      run_security_scan:
+        description: 'Run security scan?'
+        required: true
+        default: 'true'
+        type: boolean
+
+jobs:
+  build-docker-image:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
+      - name: Prepare tags
+        id: prep
+        run: |
+          TAGS="bartholemewii/stans-ml-stack:${{ github.event.inputs.version }}"
+          
+          if [[ "${{ github.event.inputs.update_latest }}" == "true" ]]; then
+            TAGS="$TAGS,bartholemewii/stans-ml-stack:latest,bartholemewii/stans-ml-stack:rocm-latest"
+          fi
+          
+          if [[ -n "${{ github.event.inputs.custom_tag }}" ]]; then
+            TAGS="$TAGS,bartholemewii/stans-ml-stack:${{ github.event.inputs.custom_tag }}"
+          fi
+          
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.lightweight
+          push: true
+          tags: ${{ steps.prep.outputs.tags }}
+          cache-from: type=registry,ref=bartholemewii/stans-ml-stack:latest
+          
+      - name: Run Docker Scout
+        if: ${{ github.event.inputs.run_security_scan == 'true' }}
+        run: |
+          # Install Docker Scout if not available
+          if ! command -v docker-scout &> /dev/null; then
+            echo "Installing Docker Scout..."
+            curl -sSfL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh -s --
+          fi
+          
+          # Analyze the image for vulnerabilities
+          docker scout cves bartholemewii/stans-ml-stack:${{ github.event.inputs.version }} --format sarif > security-report.sarif
+          docker scout cves bartholemewii/stans-ml-stack:${{ github.event.inputs.version }} --format markdown > security-report.md
+          
+      - name: Upload security reports
+        if: ${{ github.event.inputs.run_security_scan == 'true' }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports-${{ github.event.inputs.version }}
+          path: |
+            security-report.sarif
+            security-report.md
+            
+      - name: Summary
+        run: |
+          echo "# Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Updated latest tag: ${{ github.event.inputs.update_latest }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ -n "${{ github.event.inputs.custom_tag }}" ]]; then
+            echo "- Custom tag: ${{ github.event.inputs.custom_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "- Security scan: ${{ github.event.inputs.run_security_scan }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Docker image pushed successfully to:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.prep.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

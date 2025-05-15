@@ -1,0 +1,141 @@
+name: Create GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.1.4)'
+        required: true
+      prerelease:
+        description: 'Is this a pre-release?'
+        required: true
+        default: 'true'
+        type: boolean
+      release_notes:
+        description: 'Release notes (markdown format)'
+        required: true
+      build_docker:
+        description: 'Build and push Docker image?'
+        required: true
+        default: 'true'
+        type: boolean
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Update version in files
+        run: |
+          # Update version in Dockerfile.lightweight
+          sed -i "s/LABEL version=\".*\"/LABEL version=\"${{ github.event.inputs.version }}\"/" Dockerfile.lightweight
+          
+          # Update version in build scripts
+          sed -i "s/VERSION=\".*\"/VERSION=\"${{ github.event.inputs.version }}\"/" build_and_push_docker.sh
+          sed -i "s/VERSION=\".*\"/VERSION=\"${{ github.event.inputs.version }}\"/" push_to_dockerhub.sh
+          sed -i "s/VERSION=\".*\"/VERSION=\"${{ github.event.inputs.version }}\"/" verify_docker_image.sh
+          
+      - name: Commit version changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add Dockerfile.lightweight build_and_push_docker.sh push_to_dockerhub.sh verify_docker_image.sh
+          git commit -m "Bump version to ${{ github.event.inputs.version }}"
+          git tag -a "v${{ github.event.inputs.version }}" -m "Version ${{ github.event.inputs.version }}"
+          
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+          tags: true
+          
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          release_name: Release v${{ github.event.inputs.version }}
+          body: ${{ github.event.inputs.release_notes }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}
+          
+  build-docker:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: create-release
+    if: ${{ github.event.inputs.build_docker == 'true' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: v${{ github.event.inputs.version }}
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
+      - name: Prepare tags
+        id: prep
+        run: |
+          TAGS="bartholemewii/stans-ml-stack:${{ github.event.inputs.version }}"
+          
+          # If not a pre-release, update the latest tags
+          if [[ "${{ github.event.inputs.prerelease }}" == "false" ]]; then
+            TAGS="$TAGS,bartholemewii/stans-ml-stack:latest,bartholemewii/stans-ml-stack:rocm-latest"
+          fi
+          
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.lightweight
+          push: true
+          tags: ${{ steps.prep.outputs.tags }}
+          cache-from: type=registry,ref=bartholemewii/stans-ml-stack:latest
+          
+      - name: Run Docker Scout
+        run: |
+          # Install Docker Scout if not available
+          if ! command -v docker-scout &> /dev/null; then
+            echo "Installing Docker Scout..."
+            curl -sSfL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh -s --
+          fi
+          
+          # Analyze the image for vulnerabilities
+          docker scout cves bartholemewii/stans-ml-stack:${{ github.event.inputs.version }} --format sarif > security-report.sarif
+          docker scout cves bartholemewii/stans-ml-stack:${{ github.event.inputs.version }} --format markdown > security-report.md
+          
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports-${{ github.event.inputs.version }}
+          path: |
+            security-report.sarif
+            security-report.md
+            
+      - name: Summary
+        run: |
+          echo "# Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Version: ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pre-release: ${{ github.event.inputs.prerelease }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Docker image pushed successfully to:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.prep.outputs.tags }}" | tr ',' '\n' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
