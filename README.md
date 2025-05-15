@@ -83,9 +83,29 @@ The ML Stack consists of the following core components:
 
 The ML Stack provides several installation options to suit your needs.
 
-### Automatic Installation (Recommended)
+### PyPI Installation (Easiest)
 
-The easiest way to install the ML Stack is to use the automatic installation script with the curses-based UI:
+The simplest way to install Stan's ML Stack is via pip:
+
+```bash
+# Install using pip
+pip install stans-ml-stack
+
+# Or with UV (recommended)
+uv pip install stans-ml-stack
+
+# Run the installer
+ml-stack-install
+```
+
+This will install the ML Stack package and provide command-line tools:
+- `ml-stack-install`: Launch the installation UI
+- `ml-stack-verify`: Verify your installation
+- `ml-stack-repair`: Repair a broken installation
+
+### Automatic Installation from Source
+
+Another way to install the ML Stack is to use the automatic installation script with the curses-based UI:
 
 ```bash
 # Clone the repository
