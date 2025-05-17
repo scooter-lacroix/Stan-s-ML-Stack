@@ -11,7 +11,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 # Read version from VERSION file
-version = "0.1.2"  # Default version
+version = "0.1.3"  # Default version
 version_file = os.path.join(os.path.dirname(__file__), "VERSION")
 if os.path.exists(version_file):
     with open(version_file, "r", encoding="utf-8") as f:
