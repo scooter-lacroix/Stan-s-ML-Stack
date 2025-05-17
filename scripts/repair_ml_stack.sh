@@ -526,23 +526,23 @@ fix_pytorch_installation() {
         if [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
             # For ROCm 6.4+, use nightly builds
             print_step "Using PyTorch nightly build for ROCm 6.4..."
-            python3 -m uv pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
+            uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
         elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 3 ]; then
             # For ROCm 6.3, use stable builds
             print_step "Using PyTorch stable build for ROCm 6.3..."
-            python3 -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+            uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
         elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 0 ]; then
             # For ROCm 6.0-6.2, use stable builds for 6.2
             print_step "Using PyTorch stable build for ROCm 6.2..."
-            python3 -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
+            uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
         elif [ "$rocm_major_version" -eq 5 ]; then
             # For ROCm 5.x, use stable builds for 5.7
             print_step "Using PyTorch stable build for ROCm 5.7..."
-            python3 -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.7
+            uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.7
         else
             # Fallback to the latest stable ROCm version
             print_step "Using PyTorch stable build for ROCm 6.3 (fallback)..."
-            python3 -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+            uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
         fi
     fi
 
@@ -891,7 +891,7 @@ fix_migraphx_python_installation() {
     if [ -n "$VIRTUAL_ENV" ]; then
         uv pip install migraphx
     else
-        python3 -m uv pip install migraphx
+        uv_pip_install migraphx
     fi
 
     # Verify installation
@@ -967,7 +967,7 @@ fix_deepspeed_installation() {
         if [ -n "$VIRTUAL_ENV" ]; then
             uv pip install deepspeed
         else
-            python3 -m uv pip install deepspeed
+            uv_pip_install deepspeed
         fi
 
         # Verify installation

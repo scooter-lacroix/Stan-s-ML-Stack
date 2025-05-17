@@ -20,8 +20,46 @@
 export PYTHONPATH=$HOME/ml_stack/flash_attn_amd_direct:$PYTHONPATH
 export HIP_VISIBLE_DEVICES=0
 export ROCM_PATH=/opt/rocm
-export LD_LIBRARY_PATH=$ROCM_PATH/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib:$LD_LIBRARY_PATH
 export PATH=$ROCM_PATH/bin:$PATH
+
+# Ensure libnuma is properly loaded
+if ! ldconfig -p | grep -q "libnuma.so.1"; then
+    echo "Warning: libnuma.so.1 not found in ldconfig cache, attempting to fix..."
+
+    # Check if libnuma-dev is installed
+    if ! dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q "install ok installed"; then
+        echo "Installing libnuma-dev package..."
+        sudo apt-get install -y libnuma-dev
+    fi
+
+    # Update the ldconfig cache
+    sudo ldconfig
+
+    # Check again
+    if ldconfig -p | grep -q "libnuma.so.1"; then
+        echo "libnuma.so.1 is now available after fixes"
+    else
+        echo "Warning: libnuma.so.1 still not found after fixes, some components may not work properly"
+
+        # Check if the file exists directly
+        if [ -f "/usr/lib/x86_64-linux-gnu/libnuma.so.1" ]; then
+            echo "Found libnuma.so.1 at /usr/lib/x86_64-linux-gnu/libnuma.so.1"
+            # Add the directory to LD_LIBRARY_PATH
+            export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+            # Update ldconfig cache again
+            sudo ldconfig
+        fi
+    fi
+fi
+
+# Test loading libnuma.so.1 with Python
+python3 -c 'from ctypes import CDLL; CDLL("libnuma.so.1")' 2>/dev/null
+if [ $? -eq 0 ]; then
+    echo "Successfully loaded libnuma.so.1 with Python"
+else
+    echo "Warning: Could not load libnuma.so.1 with Python, some components may not work properly"
+fi
 
 # Suppress common ROCm warnings
 export ROCM_QUIET=1
@@ -194,50 +232,155 @@ detect_hardware() {
     mem_info=$(free -h | grep "Mem:" | awk '{print $2}')
     print_step "Memory: $mem_info"
 
-    # GPU detection
-    if command_exists lspci; then
-        print_step "Detecting GPUs using lspci..."
-        amd_gpus=$(lspci | grep -i 'amd\|radeon\|advanced micro devices' | grep -i 'vga\|3d\|display')
+    # First check if libnuma.so.1 is available, as it's required by rocminfo
+    if ! ldconfig -p | grep -q "libnuma.so.1"; then
+        print_warning "libnuma.so.1 not found in ldconfig cache, which may affect GPU detection"
+        print_step "Attempting to fix libnuma library issues..."
 
-        if [ -n "$amd_gpus" ]; then
-            print_success "AMD GPUs detected:"
-            echo "$amd_gpus" | while read -r line; do
-                echo "  - $line" | tee -a $LOG_FILE
-            done
-        else
-            print_error "No AMD GPUs detected with lspci."
-            print_troubleshooting "- Ensure AMD GPU is properly installed and connected
-- Check if AMD GPU is recognized by the system
-- Run 'sudo update-pciids' to update PCI IDs database
-- Check BIOS settings to ensure GPU is enabled"
+        # Try to install libnuma-dev if not already installed
+        if ! dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q "install ok installed"; then
+            print_step "Installing libnuma-dev package..."
+            sudo apt-get install -y libnuma-dev
         fi
-    else
-        print_warning "lspci command not found. Installing pciutils..."
-        sudo apt-get update && sudo apt-get install -y pciutils
-        detect_hardware
-        return
-    fi
 
-    # ROCm detection
-    if command_exists rocminfo; then
-        print_step "ROCm Path: $(which rocminfo)"
-        print_step "Python Version: $(python3 --version)"
+        # Update the ldconfig cache
+        sudo ldconfig
 
-        # Get ROCm version
-        rocm_version=$(rocminfo | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
-        if [ -n "$rocm_version" ]; then
-            print_step "ROCm Version: $rocm_version"
+        # Check again
+        if ldconfig -p | grep -q "libnuma.so.1"; then
+            print_success "libnuma.so.1 is now available after fixes"
         else
-            # Try alternative method to get ROCm version
-            rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
-            if [ -n "$rocm_version" ]; then
-                print_step "ROCm Version: $rocm_version (detected from path)"
-            else
-                print_warning "Could not determine ROCm version."
+            print_warning "libnuma.so.1 still not found after fixes, GPU detection may be limited"
+
+            # Check if the file exists directly
+            if [ -f "/usr/lib/x86_64-linux-gnu/libnuma.so.1" ]; then
+                print_step "Found libnuma.so.1 at /usr/lib/x86_64-linux-gnu/libnuma.so.1"
+                # Add the directory to LD_LIBRARY_PATH
+                export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+                # Update ldconfig cache again
+                sudo ldconfig
             fi
         fi
     else
-        print_error "ROCm is not installed or not in PATH."
+        print_success "libnuma.so.1 is available in the system"
+    fi
+
+    # GPU detection using multiple methods
+    print_step "Detecting GPUs using multiple methods..."
+
+    # Method 1: Try rocminfo first
+    if command_exists rocminfo; then
+        print_step "Detecting GPUs using rocminfo..."
+
+        # Try to run rocminfo with error handling
+        rocminfo_output=$(rocminfo 2>&1)
+
+        # Check if rocminfo ran successfully
+        if echo "$rocminfo_output" | grep -q "GPU ID"; then
+            print_success "rocminfo executed successfully"
+
+            # Extract GPU information
+            gpu_info=$(echo "$rocminfo_output" | grep -A 10 "GPU ID" | grep -E "GPU ID|Marketing Name|Device Type")
+
+            # Display GPU information
+            print_step "GPUs detected with rocminfo:"
+            echo "$gpu_info" | grep "Marketing Name" | awk -F: '{print $2}' | while read -r line; do
+                echo "  - $line" | tee -a $LOG_FILE
+            done
+
+            # Get ROCm version
+            rocm_version=$(echo "$rocminfo_output" | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
+            if [ -n "$rocm_version" ]; then
+                print_step "ROCm Version: $rocm_version"
+            else
+                # Try alternative method to get ROCm version
+                rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+                if [ -n "$rocm_version" ]; then
+                    print_step "ROCm Version: $rocm_version (detected from path)"
+                else
+                    print_warning "Could not determine ROCm version."
+                fi
+            fi
+        else
+            # rocminfo failed, check for specific error messages
+            if echo "$rocminfo_output" | grep -q "dlopen"; then
+                print_error "rocminfo failed to load required libraries. Error: $(echo "$rocminfo_output" | grep "dlopen" | head -1)"
+                print_step "Attempting alternative GPU detection methods..."
+            else
+                print_error "rocminfo failed with error: $(echo "$rocminfo_output" | head -3)"
+                print_step "Falling back to alternative GPU detection methods..."
+            fi
+
+            # Fall back to lspci
+            use_lspci=true
+        fi
+    else
+        print_warning "rocminfo not available, falling back to lspci"
+        use_lspci=true
+    fi
+
+    # Method 2: Use lspci if rocminfo failed or is not available
+    if [ "$use_lspci" = true ] || [ ! command_exists rocminfo ]; then
+        if command_exists lspci; then
+            print_step "Detecting GPUs using lspci..."
+            amd_gpus=$(lspci | grep -i 'amd\|radeon\|advanced micro devices' | grep -i 'vga\|3d\|display')
+
+            if [ -n "$amd_gpus" ]; then
+                print_success "AMD GPUs detected with lspci:"
+                echo "$amd_gpus" | while read -r line; do
+                    echo "  - $line" | tee -a $LOG_FILE
+                done
+            else
+                print_warning "No AMD GPUs detected with lspci."
+                print_step "Trying other detection methods..."
+
+                # Method 3: Check render nodes
+                print_step "Checking render nodes..."
+                render_nodes=$(ls -la /dev/dri/render* 2>/dev/null)
+                if [ -n "$render_nodes" ]; then
+                    print_success "Render nodes found:"
+                    echo "$render_nodes" | while read -r line; do
+                        echo "  - $line" | tee -a $LOG_FILE
+                    done
+                else
+                    print_warning "No render nodes found."
+
+                    # Method 4: Try PyTorch
+                    if python_module_exists "torch"; then
+                        print_step "Checking if PyTorch can detect GPUs..."
+                        if python3 -c "import torch; print('CUDA available' if torch.cuda.is_available() else 'CUDA not available')" 2>/dev/null | grep -q "CUDA available"; then
+                            gpu_count=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null)
+                            if [ -n "$gpu_count" ] && [ "$gpu_count" -gt 0 ]; then
+                                print_success "Detected $gpu_count GPU(s) using PyTorch"
+                                for i in $(seq 0 $((gpu_count-1))); do
+                                    gpu_name=$(python3 -c "import torch; print(torch.cuda.get_device_name($i))" 2>/dev/null)
+                                    print_step "GPU $i: $gpu_name"
+                                done
+                            else
+                                print_warning "No GPUs detected using PyTorch"
+                            fi
+                        else
+                            print_warning "PyTorch couldn't detect GPUs"
+                        fi
+                    else
+                        print_warning "PyTorch is not installed, cannot use it for GPU detection"
+                    fi
+                fi
+            fi
+        else
+            print_warning "lspci command not found. Installing pciutils..."
+            sudo apt-get update && sudo apt-get install -y pciutils
+            detect_hardware
+            return
+        fi
+    fi
+
+    # ROCm path detection
+    if command_exists rocminfo; then
+        print_step "ROCm Path: $(which rocminfo)"
+        print_step "Python Version: $(python3 --version)"
+    else
+        print_warning "ROCm is not installed or not in PATH."
         print_troubleshooting "- Install ROCm from https://rocm.docs.amd.com/en/latest/deploy/linux/index.html
 - Ensure ROCm is in your PATH
 - Check if user has proper permissions (should be in video and render groups)

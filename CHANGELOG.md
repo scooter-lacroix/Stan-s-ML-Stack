@@ -42,6 +42,20 @@ All notable changes to Stan's ML Stack will be documented in this file.
 - Improved handling of long-running operations
 - Fixed UI refresh issues
 - Resolved input responsiveness problems
+- Fixed "Expected integer value from monitor" errors in ROCm-smi
+- Added proper GPU detection for AMD RDNA3 architecture
+- Fixed MIGraphX Python wrapper installation for ROCm 6.4.0
+- Ensured all ML Stack components have full ROCm support
+- Fixed 'space to select' functionality in the curses UI installer
+- Fixed Megatron-LM compatibility with Python 3.12.3 and ROCm 6.4.0
+- Added patches for importlib.metadata compatibility in Python 3.12
+- Implemented graceful handling of "Tool lib '1' failed to load" warning in ROCm
+- Fixed UI hanging issues in the curses interface after component installation
+- Resolved false "Failed to install libnuma-dev" errors during verification
+- Fixed incorrect GPU detection when libnuma shared object fails to load
+- Added comprehensive Python version detection and compatibility patches
+- Improved installation script robustness with better error handling
+- Enhanced verification process with detailed testing and diagnostics
 
 ## [0.1.1] - 2024-03-15
 
@@ -61,5 +75,5 @@ All notable changes to Stan's ML Stack will be documented in this file.
 - **UI Refresh Flickering**: Occasionally, the UI may flicker during refresh operations. Workaround: Press 'q' to exit the current screen and return to the main menu, then navigate back.
 - **Input Responsiveness**: In some cases, multiple key presses may be needed for navigation. Workaround: Press keys deliberately with a slight pause between presses.
 - **Progress Indicators**: Progress indicators sometimes show values over 100% when operations complete. This is a display issue only and doesn't affect functionality.
-- **False Negative Failures**: Some verification steps may report failures even when components are working correctly. Workaround: Run the custom verification script for a more thorough check.
 - **Ctrl+C Handling**: Using Ctrl+C to terminate operations may leave the terminal in an inconsistent state. Workaround: Press 'b' to return to the previous screen or 'q' to quit cleanly.
+- **ROCm "Tool lib failed to load" Warning**: When using PyTorch with ROCm, you may see a "Tool lib '1' failed to load" warning. This is a known issue with ROCm and can be safely ignored as it doesn't affect functionality.
