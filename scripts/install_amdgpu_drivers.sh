@@ -120,7 +120,7 @@ install_amdgpu_drivers() {
     
     # Install the package
     print_step "Installing amdgpu-install package..."
-    sudo apt install -y ./amdgpu-install_6.4.60400-1_all.deb
+    sudo_with_pass apt install -y ./amdgpu-install_6.4.60400-1_all.deb
     
     if [ $? -ne 0 ]; then
         print_error "Failed to install amdgpu-install package"
@@ -131,7 +131,7 @@ install_amdgpu_drivers() {
     
     # Update package lists
     print_step "Updating package lists..."
-    sudo apt update
+    sudo_with_pass apt update
     
     if [ $? -ne 0 ]; then
         print_warning "Failed to update package lists, continuing anyway"
@@ -141,7 +141,7 @@ install_amdgpu_drivers() {
     
     # Install Linux headers
     print_step "Installing Linux headers..."
-    sudo apt install -y "linux-headers-$(uname -r)" "linux-modules-extra-$(uname -r)"
+    sudo_with_pass apt install -y "linux-headers-$(uname -r)" "linux-modules-extra-$(uname -r)"
     
     if [ $? -ne 0 ]; then
         print_warning "Failed to install Linux headers, continuing anyway"
@@ -151,7 +151,7 @@ install_amdgpu_drivers() {
     
     # Install AMDGPU DKMS
     print_step "Installing AMDGPU DKMS..."
-    sudo apt install -y amdgpu-dkms
+    sudo_with_pass apt install -y amdgpu-dkms
     
     if [ $? -ne 0 ]; then
         print_error "Failed to install AMDGPU DKMS"

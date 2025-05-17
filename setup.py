@@ -54,8 +54,8 @@ setup(
     entry_points={
         "console_scripts": [
             "ml-stack-install=scripts.install_ml_stack_curses:main",
-            "ml-stack-verify=scripts.enhanced_verify_installation:main",
-            "ml-stack-repair=scripts.repair_ml_stack:main",
+            "ml-stack-verify=scripts.enhanced_verify_installation_wrapper:main",
+            "ml-stack-repair=scripts.repair_ml_stack_wrapper:main",
         ],
     },
     include_package_data=True,

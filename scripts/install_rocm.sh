@@ -127,7 +127,7 @@ install_rocm() {
     
     # Install the package
     print_step "Installing amdgpu-install package..."
-    sudo_with_pass apt install -y ./amdgpu-install_6.4.60400-1_all.deb
+    sudo apt install -y ./amdgpu-install_6.4.60400-1_all.deb
     
     if [ $? -ne 0 ]; then
         print_error "Failed to install amdgpu-install package"
@@ -138,7 +138,7 @@ install_rocm() {
     
     # Update package lists
     print_step "Updating package lists..."
-    sudo_with_pass apt update
+    sudo apt update
     
     if [ $? -ne 0 ]; then
         print_warning "Failed to update package lists, continuing anyway"
@@ -148,7 +148,7 @@ install_rocm() {
     
     # Install prerequisites
     print_step "Installing prerequisites..."
-    sudo_with_pass apt install -y python3-setuptools python3-wheel
+    sudo apt install -y python3-setuptools python3-wheel
     
     if [ $? -ne 0 ]; then
         print_warning "Failed to install some prerequisites, continuing anyway"
@@ -158,7 +158,7 @@ install_rocm() {
     
     # Add user to render and video groups
     print_step "Adding user to render and video groups..."
-    sudo_with_pass usermod -a -G render,video $LOGNAME
+    sudo usermod -a -G render,video $LOGNAME
     
     if [ $? -ne 0 ]; then
         print_warning "Failed to add user to groups, continuing anyway"
@@ -168,7 +168,7 @@ install_rocm() {
     
     # Install ROCm
     print_step "Installing ROCm..."
-    sudo_with_pass apt install -y rocm
+    sudo apt install -y rocm
     
     if [ $? -ne 0 ]; then
         print_error "Failed to install ROCm"

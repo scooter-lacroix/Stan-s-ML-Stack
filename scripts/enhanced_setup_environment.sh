@@ -409,52 +409,147 @@ configure_environment_variables() {
         # Filter out integrated GPUs (Raphael and similar)
         print_step "Detecting discrete GPUs and filtering out integrated GPUs..."
 
+        # First check if libnuma.so.1 is available, as it's required by rocminfo
+        if ! ldconfig -p | grep -q "libnuma.so.1"; then
+            print_warning "libnuma.so.1 not found in ldconfig cache, which may affect GPU detection"
+            print_step "Attempting to fix libnuma library issues..."
+
+            # Try to install libnuma-dev if not already installed
+            if ! dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q "install ok installed"; then
+                print_step "Installing libnuma-dev package..."
+                sudo apt-get install -y libnuma-dev
+            fi
+
+            # Update the ldconfig cache
+            sudo ldconfig
+
+            # Check again
+            if ldconfig -p | grep -q "libnuma.so.1"; then
+                print_success "libnuma.so.1 is now available after fixes"
+            else
+                print_warning "libnuma.so.1 still not found after fixes, GPU detection may be limited"
+            fi
+        else
+            print_success "libnuma.so.1 is available in the system"
+        fi
+
         # Get GPU information from rocminfo if available
         if command_exists rocminfo; then
-            # Get list of GPUs with their types
-            gpu_info=$(rocminfo | grep -A 10 "GPU ID" | grep -E "GPU ID|Marketing Name|Device Type")
+            # Try to run rocminfo with error handling
+            print_step "Running rocminfo to detect GPUs..."
+            rocminfo_output=$(rocminfo 2>&1)
 
-            # Initialize arrays for discrete GPU indices
-            declare -a discrete_gpu_indices
-            current_gpu_id=""
-            is_discrete=false
+            # Check if rocminfo ran successfully
+            if echo "$rocminfo_output" | grep -q "GPU ID"; then
+                print_success "rocminfo executed successfully"
 
-            # Parse rocminfo output to identify discrete GPUs
-            while IFS= read -r line; do
-                if [[ $line == *"GPU ID"* ]]; then
-                    # Extract GPU ID
-                    current_gpu_id=$(echo "$line" | grep -o '[0-9]\+')
-                    is_discrete=false
-                elif [[ $line == *"Marketing Name"* ]]; then
-                    # Check if this is an integrated GPU (contains "Raphael" or other iGPU indicators)
-                    gpu_name=$(echo "$line" | awk -F: '{print $2}' | xargs)
-                    if [[ $gpu_name == *"Raphael"* || $gpu_name == *"Integrated"* || $gpu_name == *"iGPU"* ||
-                          $gpu_name == *"AMD Ryzen"* || $gpu_name == *"AMD Radeon Graphics"* ]]; then
-                        print_warning "Detected integrated GPU at index $current_gpu_id: $gpu_name"
+                # Get list of GPUs with their types
+                gpu_info=$(echo "$rocminfo_output" | grep -A 10 "GPU ID" | grep -E "GPU ID|Marketing Name|Device Type")
+
+                # Initialize arrays for discrete GPU indices
+                declare -a discrete_gpu_indices
+                current_gpu_id=""
+                is_discrete=false
+
+                # Parse rocminfo output to identify discrete GPUs
+                while IFS= read -r line; do
+                    if [[ $line == *"GPU ID"* ]]; then
+                        # Extract GPU ID
+                        current_gpu_id=$(echo "$line" | grep -o '[0-9]\+')
                         is_discrete=false
-                    else
-                        print_success "Detected discrete GPU at index $current_gpu_id: $gpu_name"
-                        is_discrete=true
+                    elif [[ $line == *"Marketing Name"* ]]; then
+                        # Check if this is an integrated GPU (contains "Raphael" or other iGPU indicators)
+                        gpu_name=$(echo "$line" | awk -F: '{print $2}' | xargs)
+                        if [[ $gpu_name == *"Raphael"* || $gpu_name == *"Integrated"* || $gpu_name == *"iGPU"* ||
+                              $gpu_name == *"AMD Ryzen"* || $gpu_name == *"AMD Radeon Graphics"* ]]; then
+                            print_warning "Detected integrated GPU at index $current_gpu_id: $gpu_name"
+                            is_discrete=false
+                        else
+                            print_success "Detected discrete GPU at index $current_gpu_id: $gpu_name"
+                            is_discrete=true
+                        fi
+                    elif [[ $line == *"Device Type"* && $is_discrete == true ]]; then
+                        # If we've confirmed this is a discrete GPU, add it to our list
+                        discrete_gpu_indices+=($current_gpu_id)
                     fi
-                elif [[ $line == *"Device Type"* && $is_discrete == true ]]; then
-                    # If we've confirmed this is a discrete GPU, add it to our list
-                    discrete_gpu_indices+=($current_gpu_id)
-                fi
-            done <<< "$gpu_info"
+                done <<< "$gpu_info"
 
-            # Create comma-separated list of discrete GPU indices
-            if [ ${#discrete_gpu_indices[@]} -gt 0 ]; then
-                discrete_gpu_list=$(IFS=,; echo "${discrete_gpu_indices[*]}")
-                print_success "Using discrete GPUs: $discrete_gpu_list"
+                # Create comma-separated list of discrete GPU indices
+                if [ ${#discrete_gpu_indices[@]} -gt 0 ]; then
+                    discrete_gpu_list=$(IFS=,; echo "${discrete_gpu_indices[*]}")
+                    print_success "Using discrete GPUs: $discrete_gpu_list"
+                else
+                    # Fallback to all GPUs if no discrete GPUs were identified
+                    print_warning "No discrete GPUs identified, using all available GPUs"
+                    discrete_gpu_list=$(seq -s, 0 $((GPU_COUNT-1)))
+                fi
             else
-                # Fallback to all GPUs if no discrete GPUs were identified
-                print_warning "No discrete GPUs identified, using all available GPUs"
-                discrete_gpu_list=$(seq -s, 0 $((GPU_COUNT-1)))
+                # rocminfo failed, check for specific error messages
+                if echo "$rocminfo_output" | grep -q "dlopen"; then
+                    print_error "rocminfo failed to load required libraries. Error: $(echo "$rocminfo_output" | grep "dlopen" | head -1)"
+                    print_step "Attempting alternative GPU detection methods..."
+                else
+                    print_error "rocminfo failed with error: $(echo "$rocminfo_output" | head -3)"
+                    print_step "Falling back to alternative GPU detection methods..."
+                fi
+
+                # Try alternative methods for GPU detection
+                # Method 1: Try lspci
+                print_step "Detecting GPUs using lspci..."
+                lspci_output=$(lspci | grep -i 'amd\|radeon\|advanced micro devices' | grep -i 'vga\|3d\|display')
+                if [ -n "$lspci_output" ]; then
+                    gpu_count=$(echo "$lspci_output" | wc -l)
+                    print_success "Detected $gpu_count AMD GPU(s) using lspci"
+                    discrete_gpu_list=$(seq -s, 0 $((gpu_count-1)))
+                else
+                    # Method 2: Check render nodes
+                    print_step "Checking render nodes..."
+                    render_count=$(ls -la /dev/dri/render* 2>/dev/null | wc -l)
+                    if [ "$render_count" -gt 0 ]; then
+                        print_success "Detected $render_count render node(s)"
+                        discrete_gpu_list=$(seq -s, 0 $((render_count-1)))
+                    else
+                        # Method 3: Try PyTorch
+                        print_step "Checking if PyTorch can detect GPUs..."
+                        if python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
+                            gpu_count=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null)
+                            if [ -n "$gpu_count" ] && [ "$gpu_count" -gt 0 ]; then
+                                print_success "Detected $gpu_count GPU(s) using PyTorch"
+                                discrete_gpu_list=$(seq -s, 0 $((gpu_count-1)))
+                            else
+                                print_warning "No GPUs detected using PyTorch"
+                                discrete_gpu_list="0"  # Default to a single GPU
+                            fi
+                        else
+                            print_warning "PyTorch couldn't detect GPUs or is not installed"
+                            discrete_gpu_list="0"  # Default to a single GPU
+                        fi
+                    fi
+                fi
             fi
         else
             # Fallback if rocminfo is not available
-            print_warning "rocminfo not available, using all GPUs (may include integrated GPUs)"
-            discrete_gpu_list=$(seq -s, 0 $((GPU_COUNT-1)))
+            print_warning "rocminfo not available, trying alternative GPU detection methods"
+
+            # Try lspci
+            print_step "Detecting GPUs using lspci..."
+            lspci_output=$(lspci | grep -i 'amd\|radeon\|advanced micro devices' | grep -i 'vga\|3d\|display')
+            if [ -n "$lspci_output" ]; then
+                gpu_count=$(echo "$lspci_output" | wc -l)
+                print_success "Detected $gpu_count AMD GPU(s) using lspci"
+                discrete_gpu_list=$(seq -s, 0 $((gpu_count-1)))
+            else
+                # Check render nodes
+                print_step "Checking render nodes..."
+                render_count=$(ls -la /dev/dri/render* 2>/dev/null | wc -l)
+                if [ "$render_count" -gt 0 ]; then
+                    print_success "Detected $render_count render node(s)"
+                    discrete_gpu_list=$(seq -s, 0 $((render_count-1)))
+                else
+                    print_warning "Could not detect GPUs reliably, defaulting to GPU 0"
+                    discrete_gpu_list="0"  # Default to a single GPU
+                fi
+            fi
         fi
 
         print_step "Setting GPU device variables..."
@@ -703,9 +798,10 @@ check_system_dependencies() {
 
     missing_packages=()
 
-    # Check each package
+    # Check each package with more robust detection
     for package in "${required_packages[@]}"; do
-        if ! dpkg -l | grep -q "ii  $package "; then
+        # Use dpkg-query for more reliable detection
+        if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
             missing_packages+=("$package")
         fi
     done
@@ -734,28 +830,74 @@ check_system_dependencies() {
         for package in "${missing_packages[@]}"; do
             echo "Installing $package..."
 
-            # Check if we're running in non-interactive mode
-            if [ -n "$NONINTERACTIVE" ]; then
-                # Use DEBIAN_FRONTEND=noninteractive to avoid prompts
-                DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$package"
+            # Special handling for libnuma-dev to ensure it's properly installed
+            if [ "$package" = "libnuma-dev" ]; then
+                print_step "Installing libnuma-dev with special handling..."
+
+                # Check if libnuma-dev is already installed despite detection failure
+                if ldconfig -p | grep -q "libnuma.so"; then
+                    print_success "libnuma shared library is already available in the system"
+                else
+                    # Try to install with apt-get
+                    if [ -n "$NONINTERACTIVE" ]; then
+                        DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y libnuma-dev
+                    else
+                        sudo apt-get install -y libnuma-dev
+                    fi
+
+                    # Verify installation with multiple methods
+                    if dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q "install ok installed"; then
+                        print_success "libnuma-dev package is installed according to dpkg"
+                    else
+                        print_warning "libnuma-dev package installation status is uncertain"
+                    fi
+
+                    # Check if the shared library is available
+                    if ldconfig -p | grep -q "libnuma.so"; then
+                        print_success "libnuma shared library is available in the system"
+                    else
+                        print_warning "libnuma shared library not found in ldconfig cache"
+                        # Update the ldconfig cache
+                        sudo ldconfig
+                        if ldconfig -p | grep -q "libnuma.so"; then
+                            print_success "libnuma shared library is now available after ldconfig update"
+                        else
+                            print_error "libnuma shared library still not found after ldconfig update"
+                        fi
+                    fi
+
+                    # Try to directly access the library with a simple test
+                    if python3 -c 'from ctypes import CDLL; CDLL("libnuma.so.1")' 2>/dev/null; then
+                        print_success "Successfully loaded libnuma.so.1 with Python ctypes"
+                    else
+                        print_warning "Could not load libnuma.so.1 with Python ctypes"
+                    fi
+                fi
             else
-                # Interactive mode
-                sudo apt-get install -y "$package"
+                # Regular package installation
+                if [ -n "$NONINTERACTIVE" ]; then
+                    # Use DEBIAN_FRONTEND=noninteractive to avoid prompts
+                    DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$package"
+                else
+                    # Interactive mode
+                    sudo apt-get install -y "$package"
+                fi
             fi
 
             # Add a small delay to ensure output is flushed
             sleep 0.1
 
-            if [ $? -eq 0 ]; then
+            # Verify installation with dpkg-query instead of dpkg -l
+            if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
                 print_success "Installed $package"
             else
                 print_error "Failed to install $package"
             fi
         done
 
-        # Check if installation was successful
+        # Check if installation was successful with more robust detection
         for package in "${missing_packages[@]}"; do
-            if dpkg -l | grep -q "ii  $package "; then
+            if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
                 print_success "Installed $package"
             else
                 print_error "Failed to install $package"
