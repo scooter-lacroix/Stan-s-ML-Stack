@@ -2,6 +2,24 @@
 
 All notable changes to Stan's ML Stack will be documented in this file.
 
+## [0.1.3] - 2024-06-15 (Nirvana)
+
+### Added
+- Enhanced Python 3.12.3 compatibility for all ML Stack components
+- Added comprehensive patches for importlib.metadata compatibility in Python 3.12
+- Added graceful handling of "Tool lib failed to load" warning in ROCm
+- Added detailed GPU detection for AMD RDNA3 architecture (RX 7900 XTX and RX 7800 XT)
+- Added improved verification process with detailed testing and diagnostics
+- Added comprehensive error handling and recovery mechanisms
+
+### Fixed
+- Fixed Megatron-LM compatibility with Python 3.12.3 and ROCm 6.4.0
+- Fixed UI hanging issues in the curses interface after component installation
+- Resolved false "Failed to install libnuma-dev" errors during verification
+- Fixed incorrect GPU detection when libnuma shared object fails to load
+- Fixed UI refresh issues and input responsiveness problems
+- Improved handling of long-running operations
+
 ## [0.1.2] - 2024-06-01 (Nirvana)
 
 ### Added
