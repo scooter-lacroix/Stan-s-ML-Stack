@@ -124,15 +124,34 @@ def should_use_ck(head_dim: int, seq_len_q: int, seq_len_k: int) -> bool:
     Returns:
         True if CK backend should be used, False otherwise
     """
+    # RDNA3 Note: The current dispatch logic is based on tensor dimensions (head_dim, seq_len)
+    # and backend availability (HAS_CK). It does not explicitly consider the specific AMD GPU
+    # architecture (e.g., RDNA2 vs. RDNA3/gfx11xx).
+    # Future performance tuning could involve detecting the GPU architecture.
+    # For instance, the relative performance of the Composable Kernel (CK) C++ extension
+    # versus the Triton backend might differ on RDNA3 compared to older architectures
+    # due to changes in instruction sets, cache hierarchy, or other hardware features.
+    # An architecture-aware dispatch could potentially select a more optimal backend
+    # for RDNA3 GPUs under certain conditions. For now, this is a general heuristic.
+
     # Use CK for small head dimensions
     if head_dim <= CK_MAX_HEAD_DIM:
-        return True
+        return True # CK is often efficient for smaller head dimensions.
 
-    # Use Triton for large sequence lengths
+    # Use Triton for large sequence lengths (currently this path leads to CK if not CK_MAX_HEAD_DIM)
+    # This condition seems to be incorrectly leading to 'return False' which would imply *not* using CK,
+    # but the final fallback is 'return HAS_CK'.
+    # Assuming the intent is that Triton might be better for very large sequences if it were an option here.
     if seq_len_q > TRITON_MAX_SEQ_LEN or seq_len_k > TRITON_MAX_SEQ_LEN:
-        return False
+        # If Triton were the alternative, this might be 'return False' (i.e., don't use CK, use Triton).
+        # However, since Triton isn't fully integrated as a selectable backend in this function's logic
+        # beyond the HAS_TRITON global flag (which isn't used here for selection),
+        # this condition might not have the intended effect if HAS_CK is true.
+        # For now, if sequence length is very large, and CK is not preferred by head_dim,
+        # it will fall through to the HAS_CK default.
+        pass # Placeholder for potential future Triton-specific logic for very large sequences.
 
-    # Default to CK if available
+    # Default to CK if available and not ruled out by other conditions.
     return HAS_CK
 
 

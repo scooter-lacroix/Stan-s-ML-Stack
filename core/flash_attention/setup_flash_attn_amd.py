@@ -59,6 +59,14 @@ def build_cpp_extension():
     rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
     cmake_cmd.append(f"-DROCM_PATH={rocm_path}")
 
+    # Pass AMDGPU_TARGETS from environment variable to CMake
+    amdgpu_targets_env = os.environ.get("AMDGPU_TARGETS")
+    if amdgpu_targets_env:
+        print(f"Passing AMDGPU_TARGETS from environment to CMake: {amdgpu_targets_env}")
+        cmake_cmd.append(f"-DAMDGPU_TARGETS_CMAKE={amdgpu_targets_env}")
+    else:
+        print("AMDGPU_TARGETS environment variable not set. CMake will use its default.")
+
     # Run CMake
     print(f"Running: {' '.join(cmake_cmd)}")
     subprocess.run(cmake_cmd, check=True)

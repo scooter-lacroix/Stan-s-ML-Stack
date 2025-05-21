@@ -62,6 +62,17 @@ if(USE_HIP)
 
     # Remove invalid flags that cause warnings
     string(REPLACE "-Wno-duplicate-decl-specifier" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+
+    # AMD GPU Target Architectures
+    option(AMDGPU_TARGETS_CMAKE "gfx90a,gfx940,gfx941,gfx942,gfx1030,gfx1100,gfx1101,gfx1102" "Comma-separated list of AMD GPU architectures to build for (e.g., gfx90a,gfx1100)")
+
+    if(AMDGPU_TARGETS_CMAKE)
+        message(STATUS "Explicitly targeting AMD GPU Architectures for Composable Kernel C++ extension: ${AMDGPU_TARGETS_CMAKE}")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --offload-arch=${AMDGPU_TARGETS_CMAKE}")
+    else()
+        message(STATUS "AMDGPU_TARGETS_CMAKE not set. Relying on hipcc default target architectures for Composable Kernel C++ extension.")
+    endif()
+    message(STATUS "Final CMAKE_CXX_FLAGS for HIP (Composable Kernel C++ extension): ${CMAKE_CXX_FLAGS}")
 endif()
 
 # Add source files

@@ -15,6 +15,7 @@ import select
 import re
 import signal
 import tempfile
+import textwrap # Added for log wrapping
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -740,118 +741,148 @@ def install_component(component: Dict[str, Any], stdscr, log_win) -> bool:
 
     # Update component status
     component["status"] = "installing"
-    log_win.addstr(f"Installing {name}...\n", curses.color_pair(COLOR_INFO))
+    component["status"] = "installing"
 
-    # Add a progress bar
-    progress_width = 50
-    progress_y, _ = log_win.getyx()
-    log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-    log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-    log_win.addstr("] 0%\n", curses.color_pair(COLOR_INFO))
-    log_win.refresh()
+    # --- Define screen layout ---
+    screen_height, screen_width = stdscr.getmaxyx()
+    left_pane_width = screen_width // 2
+    right_pane_width = screen_width - left_pane_width
 
-    # Special handling for Flash Attention
+    # Create left pane (standard window)
+    left_pane = curses.newwin(screen_height - 7, left_pane_width, 6, 0) # Adjusted y for header
+    left_pane.border()
+    left_pane.addstr(1, 2, f"Installing: {name}", curses.color_pair(COLOR_TITLE))
+
+    # Create right pane (pad for scrolling logs)
+    # Pad height is larger to allow scrolling
+    log_pad_height = screen_height * 3 # Allow ample space for scrolling
+    log_pad = curses.newpad(log_pad_height, right_pane_width - 2) # -2 for border
+    log_pad_top_line = 0 # Tracks the top visible line of the pad
+    log_pad_current_y = 0 # Current line to write to in the pad
+
+    # Initial refresh of panes
+    left_pane.refresh()
+    # Refresh arguments for pad: pminrow, pmincol, sminrow, smincol, smaxrow, smaxcol
+    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+
+
+    # --- Progress bar in left pane ---
+    progress_width = left_pane_width - 6 # Adjusted for left pane
+    progress_bar_y = 3 # Relative to left_pane
+    left_pane.addstr(progress_bar_y, 2, "Progress: [", curses.color_pair(COLOR_INFO))
+    left_pane.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+    left_pane.addstr(f"] 0%", curses.color_pair(COLOR_INFO))
+    left_pane.refresh()
+
+    # Helper function for adding wrapped text to the log pad
+    def add_wrapped_str_to_pad(pad, current_y_ref, text, pad_width_actual):
+        # current_y_ref is a list [y] to modify y by reference
+        new_y = current_y_ref[0]
+        for line_part in textwrap.wrap(text, width=pad_width_actual):
+            if new_y < log_pad_height: # Check bounds
+                pad.addstr(new_y, 0, line_part) # x is 0 relative to pad
+                new_y += 1
+            else: # Pad is full, indicate truncation or stop
+                pad.addstr(new_y -1, 0, "... (log truncated) ...")
+                break
+        current_y_ref[0] = new_y
+        # Auto-scroll if new content is added
+        if new_y >= log_pad_top_line + (screen_height - 8): # screen_height - 8 is approx visible pad height
+            nonlocal log_pad_top_line # Ensure we modify the outer scope variable
+            log_pad_top_line = max(0, new_y - (screen_height - 8))
+
+
+    # --- Initial status message in left_pane ---
+    status_message_y = progress_bar_y + 2
+    left_pane.addstr(status_message_y, 2, f"Starting {name}...", curses.color_pair(COLOR_INFO))
+    left_pane.refresh()
+    # --- End of initial left_pane setup ---
+
+    # Special handling for Flash Attention (Output to right_pane/log_pad)
     if name == "Flash Attention":
         # Make sure libnuma-dev is installed with comprehensive checks
-        log_win.addstr("Checking for libnuma-dev dependency...\n", curses.color_pair(COLOR_INFO))
-        log_win.refresh()
+        # log_win.addstr("Checking for libnuma-dev dependency...\n", curses.color_pair(COLOR_INFO))
+        # log_win.refresh()
+        _log_pad_current_y_list = [log_pad_current_y]
+        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Checking for libnuma-dev dependency...", right_pane_width - 4)
+        log_pad_current_y = _log_pad_current_y_list[0]
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+
 
         # First check if the shared library is already available
         lib_check_cmd = "ldconfig -p | grep -q 'libnuma.so'"
         lib_check_return_code, _, _ = run_command(lib_check_cmd, timeout=5)
 
+        _log_pad_current_y_list = [log_pad_current_y]
         if lib_check_return_code == 0:
-            log_win.addstr("libnuma shared library is already available in the system\n", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "libnuma shared library is already available in the system", right_pane_width - 4)
         else:
             # Check if the package is installed according to dpkg
             verify_cmd = "dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q 'install ok installed'"
             verify_return_code, _, _ = run_command(verify_cmd, timeout=5)
 
             if verify_return_code != 0:
-                log_win.addstr("libnuma-dev is not installed. Installing it first...\n", curses.color_pair(COLOR_WARNING))
-                log_win.refresh()
-
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "libnuma-dev is not installed. Installing it first...", right_pane_width - 4)
                 # Try to install the package
                 install_cmd = "sudo apt-get install -y libnuma-dev"
                 install_return_code, _, install_stderr = run_command(install_cmd, timeout=60)
 
                 if install_return_code != 0:
                     log_message(f"Failed to install libnuma-dev: {install_stderr}", "ERROR")
-                    log_win.addstr(f"ERROR: Failed to install libnuma-dev: {install_stderr}\n", curses.color_pair(COLOR_ERROR))
-                    log_win.refresh()
-
-                    # Even if apt-get reports failure, check if the library is actually available
-                    # as sometimes the package might be installed but apt reports an error
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"ERROR: Failed to install libnuma-dev: {install_stderr}", right_pane_width - 4)
                     lib_check_cmd = "ldconfig -p | grep -q 'libnuma.so'"
                     lib_check_return_code, _, _ = run_command(lib_check_cmd, timeout=5)
-
                     if lib_check_return_code == 0:
-                        log_win.addstr("Despite installation error, libnuma shared library is available\n", curses.color_pair(COLOR_SUCCESS))
-                        log_win.refresh()
+                        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Despite installation error, libnuma shared library is available", right_pane_width - 4)
                     else:
-                        # Try to update ldconfig cache
-                        log_win.addstr("Updating ldconfig cache...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
+                        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Updating ldconfig cache...", right_pane_width - 4)
                         run_command("sudo ldconfig", timeout=10)
-
-                        # Check again after ldconfig update
                         lib_check_cmd = "ldconfig -p | grep -q 'libnuma.so'"
                         lib_check_return_code, _, _ = run_command(lib_check_cmd, timeout=5)
-
                         if lib_check_return_code == 0:
-                            log_win.addstr("libnuma shared library is now available after ldconfig update\n", curses.color_pair(COLOR_SUCCESS))
-                            log_win.refresh()
+                            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "libnuma shared library is now available after ldconfig update", right_pane_width - 4)
                         else:
-                            # Try one more approach - check if the file exists directly
                             file_check_cmd = "ls -la /usr/lib/x86_64-linux-gnu/libnuma.so* 2>/dev/null"
                             file_check_return_code, file_check_stdout, _ = run_command(file_check_cmd, timeout=5)
-
                             if file_check_return_code == 0 and file_check_stdout.strip():
-                                log_win.addstr(f"Found libnuma library files: {file_check_stdout.strip()}\n", curses.color_pair(COLOR_SUCCESS))
-                                log_win.refresh()
-
-                                # Try to create symlinks if needed
+                                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"Found libnuma library files: {file_check_stdout.strip()}", right_pane_width - 4)
                                 if "libnuma.so.1" not in file_check_stdout:
-                                    log_win.addstr("Creating symlink for libnuma.so.1...\n", curses.color_pair(COLOR_INFO))
+                                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Creating symlink for libnuma.so.1...", right_pane_width - 4)
                                     run_command("sudo ln -sf /usr/lib/x86_64-linux-gnu/libnuma.so.* /usr/lib/x86_64-linux-gnu/libnuma.so.1", timeout=5)
                                     run_command("sudo ldconfig", timeout=5)
-                                    log_win.refresh()
                             else:
                                 component["status"] = "failed"
-                                log_win.addstr("Could not find libnuma library files. Installation failed.\n", curses.color_pair(COLOR_ERROR))
-                                log_win.refresh()
+                                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Could not find libnuma library files. Installation failed.", right_pane_width - 4)
+                                log_pad_current_y = _log_pad_current_y_list[0]
+                                log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
                                 return False
                 else:
-                    log_win.addstr("Successfully installed libnuma-dev\n", curses.color_pair(COLOR_SUCCESS))
-                    log_win.refresh()
-
-                    # Update ldconfig cache after successful installation
-                    log_win.addstr("Updating ldconfig cache...\n", curses.color_pair(COLOR_INFO))
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Successfully installed libnuma-dev", right_pane_width - 4)
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Updating ldconfig cache...", right_pane_width - 4)
                     run_command("sudo ldconfig", timeout=10)
-                    log_win.refresh()
             else:
-                log_win.addstr("libnuma-dev is already installed according to dpkg\n", curses.color_pair(COLOR_SUCCESS))
-                log_win.refresh()
-
-                # Update ldconfig cache to ensure the library is available
-                log_win.addstr("Updating ldconfig cache...\n", curses.color_pair(COLOR_INFO))
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "libnuma-dev is already installed according to dpkg", right_pane_width - 4)
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Updating ldconfig cache...", right_pane_width - 4)
                 run_command("sudo ldconfig", timeout=10)
-                log_win.refresh()
+        log_pad_current_y = _log_pad_current_y_list[0]
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
         # Final verification - try to load the library with Python
-        log_win.addstr("Testing libnuma.so.1 loading with Python...\n", curses.color_pair(COLOR_INFO))
-        log_win.refresh()
+        _log_pad_current_y_list = [log_pad_current_y]
+        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Testing libnuma.so.1 loading with Python...", right_pane_width - 4)
+        log_pad_current_y = _log_pad_current_y_list[0]
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
         test_cmd = "python3 -c 'from ctypes import CDLL; CDLL(\"libnuma.so.1\")' 2>/dev/null"
         test_return_code, _, test_stderr = run_command(test_cmd, timeout=5)
 
+        _log_pad_current_y_list = [log_pad_current_y]
         if test_return_code == 0:
-            log_win.addstr("Successfully loaded libnuma.so.1 with Python\n", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Successfully loaded libnuma.so.1 with Python", right_pane_width - 4)
         else:
-            log_win.addstr(f"Warning: Could not load libnuma.so.1 with Python, but continuing anyway\n", curses.color_pair(COLOR_WARNING))
-            log_win.refresh()
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"Warning: Could not load libnuma.so.1 with Python, but continuing anyway", right_pane_width - 4)
+        log_pad_current_y = _log_pad_current_y_list[0]
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
     # Create a modified script that provides progress updates
     temp_script_path = os.path.join(SCRIPTS_DIR, f"temp_{script}")
@@ -1175,39 +1206,43 @@ exit $exit_code
 
     # Set up non-blocking read
 
-    # Clear the log window to ensure a clean display
-    log_win.clear()
-    log_win.refresh()
+    # Clear the right pane (log_pad) to ensure a clean display
+    log_pad.clear() # Clear the pad content
+    log_pad_current_y = 0 # Reset current y position for the pad
+    log_pad_top_line = 0 # Reset scroll position
+    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
-    # Read output in real-time and update the log window
+
+    # Read output in real-time and update the log window (log_pad)
     output_lines = []
     password_mode = False
     progress_chars = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']
     progress_position = 0
-    progress_width = 50
-    progress_y = 5  # Line where progress bar was drawn
+    # progress_width already defined for left_pane
+    # progress_y already defined for left_pane (as progress_bar_y)
 
-    # Variables for installation phases
+    # Variables for installation phases (status displayed in left_pane)
     current_phase = "installation"  # Current phase: installation, validation, testing
     validation_phase_started = False
-    validation_progress_y = 0
+    # validation_progress_y = 0 # Will be relative to left_pane
     validation_start_time = 0
-    validation_estimated_duration = 60
+    # validation_estimated_duration = 60 # Now from component_params
     testing_phase_started = False
-    testing_progress_y = 0
+    # testing_progress_y = 0 # Will be relative to left_pane
     testing_start_time = 0
-    testing_estimated_duration = 30
+    # testing_estimated_duration = 30 # Now from component_params
 
-    # Progress bar state tracking
+    # Progress bar state tracking (for left_pane)
     last_progress_percent = 0
     last_validation_progress = 0
     last_testing_progress = 0
 
-    # Draw initial progress bar label
-    log_win.addstr(progress_y, 0, "Progress: [", curses.color_pair(COLOR_INFO))
+    # Initial progress bar label already drawn in left_pane
 
     # Store the start time for progress calculation
     start_time = time.time()
+    # estimated_duration, validation_estimated_duration, testing_estimated_duration
+    # are now retrieved from component_params
     estimated_duration = component_params["estimated_duration"]  # Use component-specific duration
     validation_estimated_duration = component_params["validation_duration"]
     testing_estimated_duration = component_params["testing_duration"]
@@ -1245,23 +1280,20 @@ exit $exit_code
                     # Strip ANSI escape codes for display
                     clean_line = strip_ansi_codes(line)
                     output_lines.append(clean_line)
-                    log_message(f"[{name}] {clean_line.strip()}")
-                    log_win.addstr(clean_line)
-                    needs_refresh = True
+                    log_message(f"[{name}] {clean_line.strip()}") # Keep global logging
 
-                    # Get current cursor position
-                    y, _ = log_win.getyx()
+                    # Add to log_pad (right pane)
+                    _log_pad_current_y_list = [log_pad_current_y] # Use a list to pass by reference
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, clean_line.strip(), right_pane_width - 4) # -4 for pad border and spacing
+                    log_pad_current_y = _log_pad_current_y_list[0]
+                    needs_refresh = True # For the log_pad
 
-                    # Always scroll to ensure we see the latest output
-                    max_y, _ = log_win.getmaxyx()
-                    if y >= max_y - 10:  # Increased scroll threshold for better visibility
-                        log_win.scroll(1)
-
-                    # Force refresh after each line to ensure real-time updates
-                    log_win.refresh()
+                    # Force refresh of log_pad after each line
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
                     # Check if this is a password prompt - be more aggressive in detection
-                    if ("password" in line.lower() or "sudo" in line.lower() or "[sudo]" in line.lower() or "authentication" in line.lower()) and not password_mode:
+                    # Ensure line is not None and is a string before calling lower()
+                    if line and ("password" in line.lower() or "sudo" in line.lower() or "[sudo]" in line.lower() or "authentication" in line.lower()) and not password_mode:
                         password_mode = True
                         break  # Break to handle password prompt immediately
             except IOError:
@@ -1271,149 +1303,105 @@ exit $exit_code
         # Update progress bar (do this regardless of new output)
         elapsed_time = time.time() - start_time
         progress_percent = min(1.0, elapsed_time / estimated_duration)
-        filled_width = int(progress_width * progress_percent)
+        filled_width = int(progress_width * progress_percent) # progress_width is for left_pane
 
-        # Track current phase and update progress bars
+        # Track current phase and update progress bars in left_pane
         try:
-            # Save cursor position
-            current_y, current_x = log_win.getyx()
-
             # Check if we've reached 100% or if we should force validation phase
             if (progress_percent >= 0.99 or force_validation) and not validation_phase_started:
-                # Log the transition to validation phase
-                if force_validation:
-                    log_message(f"Forcing validation phase for component: {name}", "INFO")
-                else:
-                    log_message(f"Transitioning to validation phase for component: {name} at progress {int(progress_percent * 100)}%", "INFO")
+                if force_validation: log_message(f"Forcing validation phase for component: {name}", "INFO")
+                else: log_message(f"Transitioning to validation phase for component: {name} at progress {int(progress_percent * 100)}%", "INFO")
 
-                # Mark that we've started the validation phase
                 validation_phase_started = True
                 current_phase = "validation"
+                left_pane.move(progress_bar_y, 2 + len("Progress: [")) # Move to after "Progress: ["
+                left_pane.clrtoeol()
+                left_pane.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
+                left_pane.addstr(f"] ✓ 100%", curses.color_pair(COLOR_SUCCESS))
 
-                # Clear the entire progress bar line to prevent overlapping
-                log_win.move(progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw a completed progress bar
-                log_win.move(progress_y, 0)
-                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-
-                # Add a message about post-installation validation with clear separation
-                log_win.addstr("\n\n", curses.color_pair(COLOR_INFO))
-                log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                log_win.addstr(f"Running post-installation validation for {name}...\n", curses.color_pair(COLOR_INFO))
-                log_win.addstr("=" * 70 + "\n\n", curses.color_pair(COLOR_TITLE))
-
-                # Create a new progress bar for validation phase
-                validation_progress_y = log_win.getyx()[0]
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"0%", curses.color_pair(COLOR_SUCCESS))
-
-                # Force refresh to show the validation message immediately
-                log_win.refresh()
-
-                # Reset timer for validation phase - use component-specific duration
+                left_pane.addstr(status_message_y, 2, f"Validating {name}...".ljust(left_pane_width - 4), curses.color_pair(COLOR_INFO))
+                # Create a new progress bar for validation phase in left_pane
+                validation_progress_bar_y = status_message_y + 2
+                left_pane.addstr(validation_progress_bar_y, 2, "Validation: [", curses.color_pair(COLOR_INFO))
+                left_pane.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                left_pane.addstr(f"] 0%", curses.color_pair(COLOR_SUCCESS))
+                left_pane.refresh()
                 validation_start_time = time.time()
 
-                # For problematic components, check if we need to force completion
                 if name in ["ML Stack Core", "MIGraphX Python Wrapper"]:
                     log_message(f"Using special handling for component: {name} in validation phase", "INFO")
-                    # Add additional logging for debugging
-                    log_win.addstr(f"\nNote: Using special handling for {name}...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
+                    _log_pad_current_y_list = [log_pad_current_y]
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"Note: Using special handling for {name}...", right_pane_width - 4)
+                    log_pad_current_y = _log_pad_current_y_list[0]
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
-            # Update the appropriate progress bar based on current phase
+
             if validation_phase_started:
-                # Update validation progress bar
                 validation_elapsed_time = time.time() - validation_start_time
                 validation_progress = min(1.0, validation_elapsed_time / validation_estimated_duration)
                 validation_filled_width = int(progress_width * validation_progress)
-
-                # Clear the validation progress bar line to prevent overlapping
-                log_win.move(validation_progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw the validation progress bar
-                log_win.move(validation_progress_y, 0)
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * validation_filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
+                left_pane.move(validation_progress_bar_y, 2 + len("Validation: ["))
+                left_pane.clrtoeol()
+                left_pane.addstr("█" * validation_filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
                 if validation_filled_width < progress_width:
-                    log_win.addstr(" " * (progress_width - validation_filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                    left_pane.addstr(" " * (progress_width - validation_filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                left_pane.addstr(f"] {progress_chars[progress_position]} {int(validation_progress * 100)}%", curses.color_pair(COLOR_SUCCESS))
 
-                # Add a spinner at the end of validation bar
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"{progress_chars[progress_position]} {int(validation_progress * 100)}%",
-                              curses.color_pair(COLOR_SUCCESS))
-
-                # Check if validation is complete (100%)
                 if validation_progress >= 0.99 and current_phase == "validation":
-                    # Mark that we've started the testing phase
                     current_phase = "testing"
+                    left_pane.move(validation_progress_bar_y, 2 + len("Validation: ["))
+                    left_pane.clrtoeol()
+                    left_pane.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
+                    left_pane.addstr(f"] ✓ 100%", curses.color_pair(COLOR_SUCCESS))
+                    left_pane.addstr(status_message_y, 2, f"Testing {name}...".ljust(left_pane_width-4), curses.color_pair(COLOR_INFO))
+                    # Potentially add a testing progress bar here if needed
+                    left_pane.refresh()
 
-                    # Complete the validation progress bar
-                    log_win.move(validation_progress_y, 0)
-                    log_win.clrtoeol()
-                    log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                    log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                    log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-
-                    # Add a message about testing phase
-                    log_win.addstr("\n\n", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                    log_win.addstr("Running final tests...\n", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                    log_win.refresh()
-            else:
-                # Clear the progress bar line to prevent overlapping
-                log_win.move(progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw the installation progress bar
-                log_win.move(progress_y, 0)
-                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
+            else: # Installation phase progress
+                left_pane.move(progress_bar_y, 2 + len("Progress: ["))
+                left_pane.clrtoeol()
+                left_pane.addstr("█" * filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
                 if filled_width < progress_width:
-                    log_win.addstr(" " * (progress_width - filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                    left_pane.addstr(" " * (progress_width - filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                left_pane.addstr(f"] {progress_chars[progress_position]} {int(progress_percent * 100)}%", curses.color_pair(COLOR_SUCCESS))
 
-                # Add a spinner at the end
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"{progress_chars[progress_position]} {int(progress_percent * 100)}%",
-                              curses.color_pair(COLOR_SUCCESS))
-
-            # Update spinner position
             progress_position = (progress_position + 1) % len(progress_chars)
+            left_pane.refresh() # Refresh left_pane for progress updates
 
-            # Restore cursor position
-            log_win.move(current_y, current_x)
+            if needs_refresh: # This flag is for log_pad
+                 log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+                 last_refresh_time = current_time # Update last_refresh_time for log_pad
+                 needs_refresh = False
 
-            # Force refresh more frequently to ensure smooth updates
-            if current_time - last_refresh_time >= refresh_interval:
-                log_win.refresh()
-                last_refresh_time = current_time
-                needs_refresh = False
-            elif needs_refresh:
-                log_win.refresh()
-                last_refresh_time = current_time
-                needs_refresh = False
         except Exception as e:
-            # Log the error instead of silently ignoring it
-            log_message(f"Error updating progress bar: {str(e)}", "WARNING")
-            pass
+            log_message(f"Error updating progress bar in left_pane: {str(e)}", "WARNING")
+
 
         # Check if this is a password prompt - be more aggressive in detection
         if password_mode:
 
-                    # Clear and redraw the password window with the same style as before
-                    password_win.clear()
+                    # Clear and redraw the password window (on stdscr, to overlay)
+                    # Save current stdscr content if possible, or just redraw stdscr after
+                    # For simplicity, password_win is drawn directly on stdscr
+                    # It should be managed to be on top.
+
+                    # stdscr.clear() # This would clear everything, not ideal.
+                    # draw_header(stdscr, f"Installing {name}") # Redraw header if cleared
+                    # left_pane.refresh()
+                    # log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+
+
+                    # Recreate password_win to ensure it's on top
+                    # (Dimensions might need adjustment if stdscr was cleared and redrawn)
+                    # Password window dimensions (recalculate if needed, or use stored)
+                    # height, width defined earlier for stdscr
+                    # password_win_height, password_win_width, password_win_y, password_win_x defined earlier
+
+                    # Create the window (on stdscr, so it's on top)
+                    password_win = curses.newwin(password_win_height, password_win_width, password_win_y, password_win_x)
                     password_win.box()
 
-                    # Add a colorful border highlight
+                    # Add a colorful border highlight (same as before)
                     password_win.attron(curses.color_pair(COLOR_BORDER))
                     # Only draw the border characters that are safe (not at the edges)
                     for i in range(1, password_win_width - 1):
@@ -1625,155 +1613,112 @@ exit $exit_code
                     # Wait a moment to show the confirmation
                     time.sleep(2)
 
-        # We've already updated the progress bar above, so we don't need to do it again here
-        # Just force a refresh periodically to ensure the UI stays responsive
-        if int(elapsed_time * 10) % 5 == 0:  # Update every 0.5 seconds
-            try:
-                log_win.refresh()
-            except Exception as e:
-                log_message(f"Error refreshing log window: {str(e)}", "WARNING")
-                pass
+                    # After password window, explicitly refresh the underlying panes
+                    left_pane.touchwin() # Mark as changed
+                    left_pane.refresh()
+                    log_pad.touchwin() # Mark as changed
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+                    # stdscr.noutrefresh() # Or refresh specific areas of stdscr if needed
+                    # curses.doupdate()
+
+
+        # We've already updated the progress bar in left_pane
+        # Refresh log_pad if new content was added (needs_refresh flag)
+        if needs_refresh: # This flag is for log_pad
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+            last_refresh_time = current_time # Update last_refresh_time for log_pad
+            needs_refresh = False
+        elif current_time - last_refresh_time >= refresh_interval : # Periodic refresh for spinner etc.
+            left_pane.refresh() # For spinner in progress bar
+            # log_pad doesn't need periodic refresh unless content changes
+            last_refresh_time = current_time
+
 
         # Check for keyboard input to allow cancellation
         try:
             key = stdscr.getch()
             if key == ord('q'):
                 process.terminate()
-                log_win.addstr("\nInstallation cancelled by user.\n", curses.color_pair(COLOR_WARNING))
-                log_win.refresh()
+                    _log_pad_current_y_list = [log_pad_current_y]
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "\nInstallation cancelled by user.\n", right_pane_width - 4)
+                    log_pad_current_y = _log_pad_current_y_list[0]
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
                 break
-        except:
+        except: # Catches error if getch is interrupted e.g. by resize
             pass
 
-    # Read any remaining output
-    while True:
-        try:
-            line = process.stdout.readline()
-            if not line:
-                break
-            # Strip ANSI escape codes for display
-            clean_line = strip_ansi_codes(line)
-            output_lines.append(clean_line)
-            log_message(f"[{name}] {clean_line.strip()}")
-            log_win.addstr(clean_line)
-
-            # Get current cursor position
-            y, _ = log_win.getyx()
-
-            # Always scroll to ensure we see the latest output
-            max_y, _ = log_win.getmaxyx()
-            if y >= max_y - 10:  # Increased scroll threshold for better visibility
-                log_win.scroll(1)
-
-            # Force refresh after each line to ensure real-time updates
-            log_win.refresh()
-        except:
-            break
-
-    # Show completion message and update progress to 100%
+    # Read any remaining output (to log_pad)
+    # This loop processes any output generated between the last read in the main loop and process termination.
     try:
-        # Clear the log window to ensure a clean display for completion
-        y, x = log_win.getyx()
-        log_win.addstr("\n\n")
+        remaining_output = process.stdout.read() # Read all remaining output
+        if remaining_output:
+            clean_remaining_output = strip_ansi_codes(remaining_output)
+            output_lines.extend(clean_remaining_output.splitlines()) # Add to output_lines as well
+            log_message(f"[{name}] Remaining output: {clean_remaining_output.strip()}") # Log the whole block
 
-        # If validation phase was started, ensure it's shown as complete
-        if validation_phase_started:
-            # Clear any existing progress bars to prevent overlapping
-            if validation_progress_y > 0:
-                log_win.move(validation_progress_y, 0)
-                log_win.clrtoeol()
+            _log_pad_current_y_list = [log_pad_current_y]
+            # Iterate over lines for proper wrapping in the pad
+            for remaining_line in clean_remaining_output.splitlines():
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, remaining_line.strip(), right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+    except Exception as e: # Catch any IO errors or other issues
+        log_message(f"Error reading remaining output for {name}: {str(e)}", "WARNING")
 
-                # Draw a completed validation progress bar
-                log_win.move(validation_progress_y, 0)
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-                log_win.refresh()
-        else:
-            # If validation phase wasn't started (rare case), ensure main progress bar is complete
-            log_win.move(progress_y, 0)
-            log_win.clrtoeol()
 
-            # Draw a completed progress bar
-            log_win.move(progress_y, 0)
-            log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-            log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-            log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-            log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
+    # Show completion message (in left_pane) and update progress to 100%
+    try:
+        left_pane.addstr(status_message_y + 4, 2, "INSTALLATION COMPLETED".center(left_pane_width - 4), curses.color_pair(COLOR_SUCCESS) | curses.A_BOLD)
+        if validation_phase_started: # Ensure validation bar is 100%
+            left_pane.move(validation_progress_bar_y, 2 + len("Validation: ["))
+            left_pane.clrtoeol()
+            left_pane.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
+            left_pane.addstr(f"] ✓ 100%", curses.color_pair(COLOR_SUCCESS))
+        else: # Ensure main progress bar is 100%
+            left_pane.move(progress_bar_y, 2 + len("Progress: ["))
+            left_pane.clrtoeol()
+            left_pane.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
+            left_pane.addstr(f"] ✓ 100%", curses.color_pair(COLOR_SUCCESS))
+        left_pane.refresh()
 
-        # Add a clear completion message with visual separation
-        log_win.addstr("\n\n")
-        log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-        log_win.addstr(f"INSTALLATION COMPLETED: {name}\n", curses.color_pair(COLOR_SUCCESS) | curses.A_BOLD)
-        log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-        log_win.refresh()
+        _log_pad_current_y_list = [log_pad_current_y]
+        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nINSTALLATION COMPLETED: {name}\n", right_pane_width - 4)
+        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Press any key to return...", right_pane_width - 4)
+        log_pad_current_y = _log_pad_current_y_list[0]
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
-        # Read any remaining output from the process
-        try:
-            # Set a timeout for reading remaining output
-            remaining_output_timeout = time.time() + 3  # 3 second timeout
-
-            while process.poll() is None and time.time() < remaining_output_timeout:
-                r, _, _ = select.select([process.stdout], [], [], 0.1)
-                if process.stdout in r:
-                    line = process.stdout.readline()
-                    if line:
-                        # Strip ANSI escape codes for display
-                        clean_line = strip_ansi_codes(line)
-                        output_lines.append(clean_line)
-                        log_message(f"[{name}] {clean_line.strip()}")
-                        log_win.addstr(clean_line)
-                        log_win.refresh()
-        except Exception as e:
-            log_message(f"Error reading final output: {str(e)}", "WARNING")
-
-        # Add return instructions
-        log_win.addstr("\n\n")
-        log_win.addstr("Press any key to return to menu or wait for automatic return...\n", curses.color_pair(COLOR_INFO))
-        log_win.refresh()
-
-        # Create a visually appealing countdown for automatic return
-        log_win.addstr("\nReturning to menu in ", curses.color_pair(COLOR_INFO))
-
-        # Set a shorter timeout for better responsiveness
-        countdown_seconds = 5
-        for i in range(countdown_seconds, 0, -1):
-            # Clear previous number
-            log_win.addstr(f"{i+1} ", curses.color_pair(COLOR_INFO) | curses.A_BOLD)
-            log_win.addstr("\b\b  \b\b", curses.color_pair(COLOR_INFO))
-
-            # Write new number
-            log_win.addstr(f"{i}", curses.color_pair(COLOR_SUCCESS) | curses.A_BOLD)
-            log_win.refresh()
-
-            # Check for key press during countdown with short timeout
-            stdscr.timeout(1000)  # 1 second timeout
-            key = stdscr.getch()
-            if key != -1:  # If any key is pressed, break the countdown
-                break
-
-        # Reset timeout to match main loop for consistent behavior
-        stdscr.timeout(200)
+        stdscr.timeout(5000) # Wait 5s or key press
+        stdscr.getch()
+        stdscr.timeout(200) # Reset timeout
     except Exception as e:
-        # Log the error instead of silently ignoring it
         log_message(f"Error updating completion message: {str(e)}", "ERROR")
-        # Try a simpler completion message as fallback
-        try:
-            log_win.addstr("\n\nInstallation completed. Press any key to continue...\n", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
-            # Wait for a key press with a timeout
-            stdscr.timeout(5000)  # 5 second timeout
-            stdscr.getch()
-            stdscr.timeout(200)  # Reset timeout
-        except:
-            pass
+        # Fallback for completion message
+        _log_pad_current_y_list = [log_pad_current_y]
+        add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "\n\nInstallation completed. Press any key...", right_pane_width -4)
+        log_pad_current_y = _log_pad_current_y_list[0]
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+        stdscr.timeout(5000)
+        stdscr.getch()
+        stdscr.timeout(200)
+
 
     # Delete the password window
-    password_win.clear()
-    password_win.refresh()
-    del password_win
+    if 'password_win' in locals() and password_win is not None:
+        password_win.clear()
+        password_win.refresh()
+        del password_win
+
+    # Explicitly refresh the underlying panes after password window is gone
+    # to ensure the UI is restored correctly.
+    if 'password_win' in locals() and password_win is not None: # Ensure it was actually used
+        stdscr.touchwin() 
+        stdscr.refresh() 
+        
+        left_pane.touchwin()
+        left_pane.refresh()
+        log_pad.touchwin()
+        log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+
 
     # Wait for the process to complete with a timeout
     process.stdout.close()
@@ -1789,60 +1734,50 @@ exit $exit_code
         # If the process is still running after timeout, handle based on component type
         log_message(f"Process for {name} still running after completion UI shown", "WARNING")
 
-        # Add a message to the log window
-        log_win.addstr("\nFinalizing background processes...\n", curses.color_pair(COLOR_INFO))
-        log_win.refresh()
+            # Add a message to the log_pad
+            _log_pad_current_y_list = [log_pad_current_y]
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "\nFinalizing background processes...\n", right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
-        # For problematic components, use more aggressive termination
+
         if aggressive_termination:
             log_message(f"Using aggressive termination for component: {name}", "WARNING")
-            log_win.addstr(f"Using special termination for {name}...\n", curses.color_pair(COLOR_WARNING))
-            log_win.refresh()
-
-            # Kill the process directly for problematic components
+                _log_pad_current_y_list = [log_pad_current_y]
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"Using special termination for {name}...\n", right_pane_width - 4)
+                log_pad_current_y = _log_pad_current_y_list[0]
+                log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
             process.kill()
-
-            try:
-                return_code = process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                return_code = -9  # Assume it was killed
-
-            # Add success message to log window
-            log_win.addstr("Installation completed successfully.\n", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
+                try: return_code = process.wait(timeout=1)
+                except subprocess.TimeoutExpired: return_code = -9
+                _log_pad_current_y_list = [log_pad_current_y]
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Installation completed successfully.\n", right_pane_width - 4)
+                log_pad_current_y = _log_pad_current_y_list[0]
+                log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
         else:
-            # For normal components, try to terminate gracefully first
             try:
                 process.terminate()
-                # Give it a chance to terminate gracefully with a short timeout
                 return_code = process.wait(timeout=3)
                 log_message(f"Process for {name} terminated gracefully with return code {return_code}", "INFO")
-
-                # Add success message to log window
-                log_win.addstr("Background processes completed successfully.\n", curses.color_pair(COLOR_SUCCESS))
-                log_win.refresh()
+                    _log_pad_current_y_list = [log_pad_current_y]
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Background processes completed successfully.\n", right_pane_width - 4)
+                    log_pad_current_y = _log_pad_current_y_list[0]
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
             except subprocess.TimeoutExpired:
-                # If still running after graceful termination attempt, kill it
                 log_message(f"Process for {name} did not terminate gracefully, killing it", "WARNING")
-
-                # Add message to log window
-                log_win.addstr("Finalizing installation...\n", curses.color_pair(COLOR_INFO))
-                log_win.refresh()
-
-                # Kill the process directly - we've already shown the completion UI
+                    _log_pad_current_y_list = [log_pad_current_y]
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Finalizing installation...\n", right_pane_width - 4)
+                    log_pad_current_y = _log_pad_current_y_list[0]
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
                 process.kill()
+                    try: return_code = process.wait(timeout=2)
+                    except subprocess.TimeoutExpired: return_code = -9
+                    _log_pad_current_y_list = [log_pad_current_y]
+                    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, "Installation completed.\n", right_pane_width - 4)
+                    log_pad_current_y = _log_pad_current_y_list[0]
+                    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
 
-                try:
-                    return_code = process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    return_code = -9  # Assume it was killed
-
-                # Add message to log window
-                log_win.addstr("Installation completed.\n", curses.color_pair(COLOR_SUCCESS))
-                log_win.refresh()
-
-        # Set a special return code to indicate graceful termination
-        if return_code in [-15, 15, 143, -9, 9]:  # SIGTERM and SIGKILL related codes
+        if return_code in [-15, 15, 143, -9, 9]: # SIGTERM and SIGKILL
             log_message(f"Process was terminated after UI completion, treating as success", "INFO")
             return_code = 0  # Treat as success since UI phase was completed
 
@@ -1914,30 +1849,25 @@ exit $exit_code
             if validation_phase_started or force_validation:
                 log_message(f"Component {name} reached validation phase, treating as success despite exit code {return_code}", "WARNING")
                 component["status"] = "installed"
-                log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
-                log_win.addstr(f"(Note: Process exited with code {return_code} but installation was successful)\n", curses.color_pair(COLOR_INFO))
-                log_win.refresh()
-
-                # Wait a moment to ensure the message is seen
+                _log_pad_current_y_list = [log_pad_current_y]
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nSUCCESS: {name} installed successfully\n(Note: Process exited with code {return_code} but installation was successful)\n", right_pane_width - 4)
+                log_pad_current_y = _log_pad_current_y_list[0]
+                log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
                 time.sleep(1)
-
-                # Return to the components screen
                 return True
 
         # Check if any success indicators are present or if validation phase was started
         if any(indicator in output_text for indicator in success_indicators) or validation_phase_started:
             log_message(f"Script reported partial success despite exit code {return_code}. Treating as success.", "WARNING")
-            # Update component status
             component["status"] = "installed"
-            log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
+            _log_pad_current_y_list = [log_pad_current_y]
+            message = f"\nSUCCESS: {name} installed successfully\n"
             if return_code != 0:
-                log_win.addstr(f"(Note: Process exited with code {return_code} but installation was successful)\n", curses.color_pair(COLOR_INFO))
-            log_win.refresh()
-
-            # Wait a moment to ensure the message is seen
+                message += f"(Note: Process exited with code {return_code} but installation was successful)\n"
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, message, right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
             time.sleep(1)
-
-            # Return to the components screen
             return True
         else:
             # Check for specific error patterns
@@ -1968,20 +1898,17 @@ exit $exit_code
 
             log_message(f"Installation of {name} failed with exit code {return_code}", "ERROR")
             component["status"] = "failed"
-
-            # Show detailed error message
-            log_win.addstr(f"\nERROR: Installation of {name} failed\n", curses.color_pair(COLOR_ERROR))
-            if error_details:
-                log_win.addstr(f"Details: {error_details}\n", curses.color_pair(COLOR_ERROR))
-            else:
-                log_win.addstr(f"Exit code: {return_code}\n", curses.color_pair(COLOR_ERROR))
-            log_win.addstr("\nPress any key to return to component selection...\n", curses.color_pair(COLOR_INFO))
-            log_win.refresh()
-
-            # Wait for a key press with a timeout
-            stdscr.timeout(5000)  # 5 second timeout
+            _log_pad_current_y_list = [log_pad_current_y]
+            message = f"\nERROR: Installation of {name} failed\n"
+            if error_details: message += f"Details: {error_details}\n"
+            else: message += f"Exit code: {return_code}\n"
+            message += "\nPress any key to return to component selection...\n"
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, message, right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+            stdscr.timeout(5000)
             stdscr.getch()
-            stdscr.timeout(200)  # Reset timeout
+            stdscr.timeout(200)
 
             return False
     # Special handling for negative return codes (signals) - should be handled by the previous block
@@ -2026,42 +1953,33 @@ exit $exit_code
             if validation_phase_started or force_validation:
                 log_message(f"Component {name} reached validation phase, treating as success despite signal {-return_code}", "WARNING")
                 component["status"] = "installed"
-                log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
-                log_win.addstr(f"(Note: Process was terminated with signal {-return_code} but installation was successful)\n", curses.color_pair(COLOR_INFO))
-                log_win.refresh()
-
-                # Wait a moment to ensure the message is seen
+                _log_pad_current_y_list = [log_pad_current_y]
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nSUCCESS: {name} installed successfully\n(Note: Process was terminated with signal {-return_code} but installation was successful)\n", right_pane_width - 4)
+                log_pad_current_y = _log_pad_current_y_list[0]
+                log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
                 time.sleep(1)
-
-                # Return to the components screen
                 return True
 
         if any(indicator in output_text for indicator in success_indicators) or validation_phase_started:
             log_message(f"Script reported success but was terminated with signal {-return_code}. Treating as success.", "WARNING")
-            # Update component status
             component["status"] = "installed"
-            log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
-
-            # Wait a moment to ensure the message is seen
+            _log_pad_current_y_list = [log_pad_current_y]
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nSUCCESS: {name} installed successfully\n", right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
             time.sleep(1)
-
             return True
         else:
             log_message(f"Installation of {name} failed with exit code {return_code} (terminated by signal {-return_code})", "ERROR")
             component["status"] = "failed"
-
-            # Show error message with more context
-            log_win.addstr(f"\nERROR: Installation of {name} failed\n", curses.color_pair(COLOR_ERROR))
-            log_win.addstr("The process was terminated unexpectedly.\n", curses.color_pair(COLOR_WARNING))
-            log_win.addstr("This may be due to a background process being terminated.\n", curses.color_pair(COLOR_WARNING))
-            log_win.addstr("\nPress any key to return to component selection...\n", curses.color_pair(COLOR_INFO))
-            log_win.refresh()
-
-            # Wait for a key press with a timeout
-            stdscr.timeout(5000)  # 5 second timeout
+            _log_pad_current_y_list = [log_pad_current_y]
+            message = f"\nERROR: Installation of {name} failed\nThe process was terminated unexpectedly (signal {-return_code}).\nThis may be due to a background process being terminated.\n\nPress any key to return...\n"
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, message, right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+            stdscr.timeout(5000)
             stdscr.getch()
-            stdscr.timeout(200)  # Reset timeout
+            stdscr.timeout(200)
 
             return False
     elif return_code != 0:
@@ -2076,53 +1994,50 @@ exit $exit_code
             if validation_phase_started or force_validation or "100%" in output_text or "Completed" in output_text:
                 log_message(f"Component {name} likely succeeded despite exit code {return_code}", "WARNING")
                 component["status"] = "installed"
-                log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
-                log_win.addstr(f"(Note: Process exited with code {return_code} but installation was successful)\n", curses.color_pair(COLOR_INFO))
-                log_win.refresh()
-
-                # Wait a moment to ensure the message is seen
+                _log_pad_current_y_list = [log_pad_current_y]
+                add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nSUCCESS: {name} installed successfully\n(Note: Process exited with code {return_code} but installation was successful)\n", right_pane_width - 4)
+                log_pad_current_y = _log_pad_current_y_list[0]
+                log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
                 time.sleep(1)
-
-                # Return to the components screen
                 return True
 
         # Standard check for other components
         if validation_phase_started or "100%" in output_text or "Completed" in output_text:
             log_message(f"Process completed with non-zero exit code {return_code} but validation phase was started. Treating as success.", "WARNING")
             component["status"] = "installed"
-            log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
-            log_win.addstr(f"(Note: Process exited with code {return_code} but installation was successful)\n", curses.color_pair(COLOR_INFO))
-            log_win.refresh()
-
-            # Wait a moment to ensure the message is seen
+            _log_pad_current_y_list = [log_pad_current_y]
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nSUCCESS: {name} installed successfully\n(Note: Process exited with code {return_code} but installation was successful)\n", right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
             time.sleep(1)
-
             return True
         else:
             log_message(f"Installation of {name} failed with exit code {return_code}", "ERROR")
             component["status"] = "failed"
-
-            # Show error message with more context
-            log_win.addstr(f"\nERROR: Installation of {name} failed with exit code {return_code}\n", curses.color_pair(COLOR_ERROR))
-            log_win.addstr("Check the logs for more details.\n", curses.color_pair(COLOR_WARNING))
-            log_win.addstr("\nPress any key to return to component selection...\n", curses.color_pair(COLOR_INFO))
-            log_win.refresh()
-
-            # Wait for a key press with a timeout
-            stdscr.timeout(5000)  # 5 second timeout
+            _log_pad_current_y_list = [log_pad_current_y]
+            message = f"\nERROR: Installation of {name} failed with exit code {return_code}\nCheck the logs for more details.\n\nPress any key to return...\n"
+            add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, message, right_pane_width - 4)
+            log_pad_current_y = _log_pad_current_y_list[0]
+            log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
+            stdscr.timeout(5000)
             stdscr.getch()
-            stdscr.timeout(200)  # Reset timeout
+            stdscr.timeout(200)
 
             return False
 
-    # Update component status for successful installation
     component["status"] = "installed"
     log_message(f"Installation of {name} completed successfully", "SUCCESS")
-    log_win.addstr(f"\nSUCCESS: {name} installed successfully\n", curses.color_pair(COLOR_SUCCESS))
-    log_win.refresh()
-
-    # Wait a moment to ensure the message is seen
+    _log_pad_current_y_list = [log_pad_current_y]
+    add_wrapped_str_to_pad(log_pad, _log_pad_current_y_list, f"\nSUCCESS: {name} installed successfully\n", right_pane_width - 4)
+    log_pad_current_y = _log_pad_current_y_list[0]
+    log_pad.refresh(log_pad_top_line, 0, 6, left_pane_width + 1, screen_height - 2, screen_width - 2)
     time.sleep(1)
+
+    # Clean up panes
+    del left_pane
+    del log_pad
+    stdscr.clear() # Clear the main screen after component installation
+    stdscr.refresh() # Refresh to show the cleared screen before returning to menu
 
     return True
 

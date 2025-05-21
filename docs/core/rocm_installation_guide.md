@@ -90,10 +90,21 @@ export CUDA_VISIBLE_DEVICES=0,1  # For CUDA compatibility layer
 export PYTORCH_ROCM_DEVICE=0,1  # For PyTorch
 
 # Performance Settings
+# For RDNA3 GPUs (e.g., RX 7000 series), enabling SDMA (HSA_ENABLE_SDMA=1) 
+# might be beneficial for workloads with large data transfers, but testing is recommended.
+# For other architectures or different workloads, disabling it (0) might be preferable.
 export HSA_ENABLE_SDMA=0
 export GPU_MAX_HEAP_SIZE=100
 export GPU_MAX_ALLOC_PERCENT=100
 export HSA_TOOLS_LIB=1
+
+# Target Architectures for Compiled Components (Optional)
+# Some components, like FlashAttention's Composable Kernel extension, are compiled for specific AMD GPU
+# architectures. You can set AMDGPU_TARGETS to specify a comma-separated list.
+# Example for RDNA3 (Navi 31, Navi 32):
+# export AMDGPU_TARGETS="gfx1100,gfx1101,gfx1102"
+# If not set, build scripts for such components will typically use a default list of architectures.
+# export AMDGPU_TARGETS="gfx90a,gfx940,gfx941,gfx942,gfx1030,gfx1100,gfx1101,gfx1102" # A comprehensive example
 ```
 
 Apply the changes:

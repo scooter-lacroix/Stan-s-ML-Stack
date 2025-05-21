@@ -28,39 +28,57 @@ The AMD implementation provides these benefits while being compatible with AMD G
 
 ### Prerequisites
 
-- AMD GPU with ROCm support (RX 7000 series recommended)
-- ROCm 6.0 or higher
-- PyTorch 2.0 or higher with ROCm support
+- AMD GPU with ROCm support (e.g., RX 6000/7000 series or MI series Instinct accelerators). RDNA3 (RX 7000 series, gfx11xx) is supported.
+- ROCm 5.6 or higher (ROCm 6.0+ recommended for best performance and RDNA3 support).
+- PyTorch 2.0 or higher with ROCm support.
+- Required build tools: `git`, `cmake`, `python3-dev`, `build-essential`. These are typically installed by the main build script if missing.
 
 ### Installation Steps
 
-#### Option 1: Install from Source
+The recommended method for installing Flash Attention for AMD GPUs is to use the provided build script from the root of this repository. This script handles the compilation of both the Triton backend (if applicable) and the Composable Kernel (CK) C++ extension for FlashAttention.
 
 ```bash
-# Clone the repository
-git clone https://github.com/user/flash-attention-amd.git
-cd flash-attention-amd
+# Navigate to the root directory of the Stan-s-ML-Stack repository
+# cd /path/to/Stan-s-ML-Stack
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Install the package
-pip install -e .
-```
-
-#### Option 2: Use the Installation Script
-
-```bash
-# Navigate to the scripts directory
-cd /home/stan/Desktop/Stans_MLStack/scripts
+# (Optional but Recommended) Set target AMD GPU architectures
+# For RDNA3 (e.g., RX 7900 XTX, RX 7800 XT):
+# export AMDGPU_TARGETS="gfx1100,gfx1101,gfx1102"
+# For a broader set including RDNA2 and CDNA:
+# export AMDGPU_TARGETS="gfx90a,gfx940,gfx941,gfx942,gfx1030,gfx1100,gfx1101,gfx1102"
+# If not set, the build script uses a comprehensive default list.
 
 # Run the installation script
-./build_flash_attn_amd.sh
+./scripts/build_flash_attn_amd.sh
 ```
+
+This script performs the following key steps:
+1.  Checks for prerequisites like ROCm and PyTorch.
+2.  Installs necessary build dependencies.
+3.  Builds a compatible version of Triton, respecting the `AMDGPU_TARGETS` environment variable.
+4.  Builds and installs the FlashAttention core components from `core/flash_attention/`, including the Composable Kernel C++ extension. The CK extension build also respects the `AMDGPU_TARGETS` environment variable.
+5.  Verifies the installation with a test script.
+
+**Environment Variable: `AMDGPU_TARGETS`**
+
+The `AMDGPU_TARGETS` environment variable is crucial for building optimized versions of Triton and the FlashAttention CK C++ extension.
+- It should be a **comma-separated list** of AMD GPU architectures (e.g., `gfx1100,gfx1101`).
+- If this variable is not set, the build scripts for both Triton and the FlashAttention CK extension will use a pre-defined default list of common modern architectures, including RDNA3 targets.
+- Setting this variable allows you to tailor the build for specific GPUs, potentially reducing compilation time and binary size.
+
+**Advanced/Developer Installation (Manual):**
+
+While the build script is recommended, developers can manually build and install the FlashAttention core component:
+1.  Ensure Triton (if needed by your specific FlashAttention version or configuration) is installed and compatible.
+2.  Navigate to the `core/flash_attention/` directory.
+3.  Set the `AMDGPU_TARGETS` environment variable as described above.
+4.  Run `python setup_flash_attn_amd.py install` or `pip install .`.
+
+This method requires careful management of dependencies and build configurations.
 
 ### Verifying Installation
 
-To verify that Flash Attention is installed correctly:
+After running the build script or manual installation, you can verify that Flash Attention is installed correctly:
 
 ```python
 import torch
@@ -213,27 +231,22 @@ Flash Attention significantly reduces memory usage:
 
 ## Implementation Details
 
-### Pure PyTorch Implementation
+### Backends: Composable Kernel (CK) and Triton
 
-The AMD implementation uses a pure PyTorch approach rather than custom CUDA kernels, making it compatible with ROCm while still providing significant performance improvements.
+The FlashAttention for AMD implementation dynamically dispatches between different backends for optimal performance:
+1.  **Composable Kernel (CK) C++ Extension**: This is a highly optimized backend written in C++ using Composable Kernel. It's compiled using CMake and `hipcc` for specific AMD GPU architectures. The target architectures for this extension can be controlled via the `AMDGPU_TARGETS` environment variable during the build process (handled by `scripts/build_flash_attn_amd.sh` or manually when running `setup_flash_attn_amd.py`).
+2.  **Triton Backend**: Some operations might leverage Triton kernels, especially if specific optimizations for certain hardware or problem sizes are implemented in Triton. The Triton build is also architecture-aware via the `AMDGPU_TARGETS` variable.
+3.  **Pure PyTorch Fallback**: A pure PyTorch implementation serves as a fallback if the optimized backends are not available or fail for specific input shapes or conditions.
 
-Key implementation features:
+### Backend Selection Logic
 
-1. **Block-based computation**: Attention is computed in blocks to reduce memory bandwidth usage.
-2. **Fused operations**: Multiple operations are combined to reduce kernel launch overhead.
-3. **Memory-efficient algorithm**: The implementation avoids materializing the full attention matrix.
+The choice of backend (e.g., CK vs. PyTorch fallback) is determined at runtime, primarily based on input tensor dimensions (sequence length, head dimension) and availability of the compiled extensions. This logic resides in `core/flash_attention/flash_attention_amd.py` within the `should_use_ck` function and the main `FlashAttention` module's forward pass.
 
-### Differences from NVIDIA Implementation
-
-The AMD implementation differs from the original NVIDIA implementation in several ways:
-
-1. **No custom CUDA kernels**: The implementation uses PyTorch operations instead of custom CUDA kernels.
-2. **Pure Python implementation**: The core algorithm is implemented in Python rather than C++/CUDA.
-3. **ROCm compatibility**: The implementation is designed to work with ROCm and AMD GPUs.
+The backend selection logic currently prioritizes the CK extension based on input tensor dimensions; future optimizations may incorporate GPU architecture (e.g., RDNA3 vs. older generations) for more fine-grained dispatch to ensure the best-performing kernel is used for a given GPU and workload.
 
 ### Numerical Precision
 
-The implementation maintains high numerical precision, with differences from standard attention typically on the order of 1e-6.
+The implementation aims for high numerical precision, with differences from standard attention typically being very small (e.g., on the order of 1e-6).
 
 ## Troubleshooting
 
@@ -275,7 +288,15 @@ export HIP_VISIBLE_DEVICES=0,1  # Use GPUs 0 and 1
 export CUDA_VISIBLE_DEVICES=0,1  # Use GPUs 0 and 1
 
 # Performance tuning
-export HSA_ENABLE_SDMA=0  # Disable SDMA for better performance in some workloads
+# For RDNA3 GPUs, HSA_ENABLE_SDMA=1 might be beneficial for large data transfers.
+# For other workloads or architectures, HSA_ENABLE_SDMA=0 (default) might be better.
+export HSA_ENABLE_SDMA=0
+
+# Target AMD GPU architectures for building FlashAttention's C++ extension and Triton.
+# This should be a comma-separated list.
+# Example for RDNA3 (RX 7900 XTX, RX 7800 XT):
+# export AMDGPU_TARGETS="gfx1100,gfx1101,gfx1102"
+# The build script uses a default list if this is not set.
 ```
 
 ### PyTorch Configuration

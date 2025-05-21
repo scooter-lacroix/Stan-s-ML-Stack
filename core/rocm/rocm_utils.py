@@ -118,7 +118,18 @@ def set_gpu_environment_variables():
         os.environ["PYTORCH_ROCM_DEVICE"] = os.environ.get("PYTORCH_ROCM_DEVICE", "0,1,2,3")
         
         # Set performance tuning variables
-        os.environ["HSA_ENABLE_SDMA"] = "0"  # Disable SDMA for better performance
+        # RDNA3 Note: HSA_ENABLE_SDMA: Disabling SDMA (0) can be beneficial for latency-sensitive workloads
+        # or when CPU-GPU synchronization is frequent. Enabling SDMA (1) might improve performance
+        # for workloads with large, sustained data transfers. RDNA3 architectures have enhanced SDMA engines,
+        # so testing both values for specific RDNA3 applications is recommended.
+        os.environ["HSA_ENABLE_SDMA"] = "0"  # Default to 0, common for some DL workloads.
+        
+        # RDNA3 Note: GPU_MAX_HEAP_SIZE, GPU_MAX_ALLOC_PERCENT, GPU_SINGLE_ALLOC_PERCENT:
+        # These settings control the GPU memory heap available to applications.
+        # Setting them to 100% is generally optimal for allowing frameworks like PyTorch
+        # to manage the full VRAM. While RDNA3 has larger VRAM capacities, these settings
+        # remain relevant for maximizing its utilization. Specific applications with unique memory
+        # access patterns on RDNA3 might warrant observation, but reducing these is typically not beneficial.
         os.environ["GPU_MAX_HEAP_SIZE"] = "100"  # Increase heap size (in %)
         os.environ["GPU_MAX_ALLOC_PERCENT"] = "100"  # Allow allocating 100% of available memory
         os.environ["GPU_SINGLE_ALLOC_PERCENT"] = "100"  # Allow single allocations up to 100%

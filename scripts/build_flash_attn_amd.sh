@@ -127,208 +127,138 @@ install_dependencies() {
     
     print_success "Dependencies installed successfully"
 }
-create_amd_implementation() {
-    print_section "Creating AMD implementation"
+
+build_triton() {
+    print_section "Building Triton"
     
-    # Create directory for AMD implementation
-    print_step "Creating directory for AMD implementation..."
-    mkdir -p $HOME/flash-attention-amd
-    git clone https://github.com/ROCm/triton.git
+    # Determine script directory to find relative paths
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+    REPO_ROOT="$( dirname "$SCRIPT_DIR" )" # Assuming scripts is one level down from repo root
+
+    TRITON_DIR="$HOME/triton_flash_attn_build" # Build triton in a dedicated directory
+    mkdir -p "$TRITON_DIR"
+    cd "$TRITON_DIR"
+
+    if [ -d "triton" ]; then
+        print_step "Triton directory already exists. Pulling latest changes."
+        cd triton
+        git pull
+        cd ..
+    else
+        print_step "Cloning Triton repository..."
+        git clone https://github.com/ROCm/triton.git
+    fi
+    
     cd triton/python
-    GPU_ARCHS=gfx"" python setup.py install
-    pip install matplotlib pandas
-    cd $HOME/flash-attention-amd
     
-    # Create Python implementation file
-    print_step "Creating Python implementation file..."
-    cat > flash_attention_amd.py << 'EOF'
-import torch
-import torch.nn.functional as F
+    # Set AMDGPU_TARGETS or use default
+    DEFAULT_AMDGPU_TARGETS="gfx90a,gfx940,gfx941,gfx942,gfx1030,gfx1100,gfx1101,gfx1102"
+    if [ -z "$AMDGPU_TARGETS" ]; then
+        print_warning "AMDGPU_TARGETS environment variable not set. Using default: $DEFAULT_AMDGPU_TARGETS"
+        export AMDGPU_TARGETS="$DEFAULT_AMDGPU_TARGETS"
+    else
+        print_step "Using AMDGPU_TARGETS from environment: $AMDGPU_TARGETS"
+    fi
 
-class FlashAttention(torch.nn.Module):
-    """
-    Flash Attention implementation for AMD GPUs using PyTorch operations.
-    This is a pure PyTorch implementation that works on AMD GPUs.
-    """
-    def __init__(self, dropout=0.0, causal=False):
-        super().__init__()
-        self.dropout = dropout
-        self.causal = causal
+    print_step "Installing Triton with GPU_ARCHS=$AMDGPU_TARGETS ..."
+    pip install matplotlib pandas # Dependencies for Triton build/tests
+    GPU_ARCHS="$AMDGPU_TARGETS" python setup.py install
     
-    def forward(self, q, k, v, mask=None):
-        """
-        q, k, v: (batch_size, seq_len, num_heads, head_dim)
-        mask: (batch_size, seq_len) or (batch_size, 1, seq_len, seq_len)
-        
-        Returns: (batch_size, seq_len, num_heads, head_dim)
-        """
-        # Reshape q, k, v for multi-head attention
-        batch_size, seq_len_q, num_heads, head_dim = q.shape
-        _, seq_len_k, _, _ = k.shape
-        
-        # Transpose to (batch_size, num_heads, seq_len, head_dim)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-        
-        # Compute scaled dot-product attention
-        # (batch_size, num_heads, seq_len_q, head_dim) @ (batch_size, num_heads, head_dim, seq_len_k)
-        # -> (batch_size, num_heads, seq_len_q, seq_len_k)
-        attn_weights = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
-        
-        # Apply causal mask if needed
-        if self.causal:
-            causal_mask = torch.triu(
-                torch.ones(seq_len_q, seq_len_k, device=q.device, dtype=torch.bool),
-                diagonal=1
-            )
-            attn_weights.masked_fill_(causal_mask, float('-inf'))
-        
-        # Apply attention mask if provided
-        if mask is not None:
-            # Expand mask to match attention weights shape
-            if mask.dim() == 2:
-                # (batch_size, seq_len) -> (batch_size, 1, 1, seq_len)
-                mask = mask.unsqueeze(1).unsqueeze(2)
-            elif mask.dim() == 3:
-                # (batch_size, seq_len_q, seq_len_k) -> (batch_size, 1, seq_len_q, seq_len_k)
-                mask = mask.unsqueeze(1)
-            
-            # Apply mask
-            attn_weights.masked_fill_(~mask, float('-inf'))
-        
-        # Apply softmax and dropout
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        if self.dropout > 0 and self.training:
-            attn_weights = F.dropout(attn_weights, p=self.dropout)
-        
-        # Compute attention output
-        # (batch_size, num_heads, seq_len_q, seq_len_k) @ (batch_size, num_heads, seq_len_k, head_dim)
-        # -> (batch_size, num_heads, seq_len_q, head_dim)
-        output = torch.matmul(attn_weights, v)
-        
-        # Transpose back to (batch_size, seq_len_q, num_heads, head_dim)
-        output = output.transpose(1, 2)
-        
-        return output
-
-def flash_attn_func(q, k, v, dropout_p=0.0, causal=False, return_attn_probs=False):
-    """
-    Functional interface for Flash Attention.
+    if [ $? -ne 0 ]; then
+        print_error "Triton build failed."
+        return 1
+    fi
     
-    Args:
-        q, k, v: (batch_size, seq_len, num_heads, head_dim)
-        dropout_p: dropout probability
-        causal: whether to apply causal masking
-        return_attn_probs: whether to return attention probabilities
-        
-    Returns:
-        output: (batch_size, seq_len, num_heads, head_dim)
-        attn_weights: (batch_size, num_heads, seq_len, seq_len) if return_attn_probs=True
-    """
-    flash_attn = FlashAttention(dropout=dropout_p, causal=causal)
-    output = flash_attn(q, k, v)
-    
-    if return_attn_probs:
-        # Compute attention weights for return
-        batch_size, seq_len_q, num_heads, head_dim = q.shape
-        _, seq_len_k, _, _ = k.shape
-        
-        # Transpose to (batch_size, num_heads, seq_len, head_dim)
-        q_t = q.transpose(1, 2)
-        k_t = k.transpose(1, 2)
-        
-        # Compute attention weights
-        attn_weights = torch.matmul(q_t, k_t.transpose(-2, -1)) / (head_dim ** 0.5)
-        
-        # Apply causal mask if needed
-        if causal:
-            causal_mask = torch.triu(
-                torch.ones(seq_len_q, seq_len_k, device=q.device, dtype=torch.bool),
-                diagonal=1
-            )
-            attn_weights.masked_fill_(causal_mask, float('-inf'))
-        
-        # Apply softmax
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        
-        return output, attn_weights
-    
-    return output
-
-# For compatibility with the original Flash Attention API
-class FlashAttentionInterface:
-    @staticmethod
-    def forward(ctx, q, k, v, dropout_p=0.0, causal=False):
-        output = flash_attn_func(q, k, v, dropout_p=dropout_p, causal=causal)
-        return output
-EOF
-    
-    # Create setup file
-    print_step "Creating setup file..."
-    cat > setup.py << 'EOF'
-from setuptools import setup, find_packages
-
-setup(
-    name="flash_attention_amd",
-    version="0.1.0",
-    packages=find_packages(),
-    py_modules=["flash_attention_amd"],
-    install_requires=[
-        "torch>=2.0.0",
-    ],
-    author="User",
-    author_email="user@example.com",
-    description="Flash Attention implementation for AMD GPUs",
-    keywords="flash attention, amd, gpu, pytorch",
-    python_requires=">=3.8",
-)
-EOF
-    
-    print_success "AMD implementation created successfully"
+    print_success "Triton built and installed successfully"
+    cd "$REPO_ROOT" # Return to repo root or original script dir
+    return 0
 }
 
 install_flash_attention() {
-    print_section "Installing Flash Attention"
+    print_section "Installing Core FlashAttention for AMD"
     
-    # Install the AMD implementation
-    print_step "Installing the AMD implementation..."
-    cd $HOME/flash-attention-amd
-    pip install -e .
+    # Determine script directory to find relative paths
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+    REPO_ROOT="$( dirname "$SCRIPT_DIR" )" 
+    CORE_FLASH_ATTENTION_DIR="$REPO_ROOT/core/flash_attention"
+
+    if [ ! -d "$CORE_FLASH_ATTENTION_DIR" ]; then
+        print_error "Core FlashAttention directory not found at $CORE_FLASH_ATTENTION_DIR"
+        return 1
+    fi
     
-    print_success "Flash Attention installed successfully"
+    print_step "Changing to $CORE_FLASH_ATTENTION_DIR and installing..."
+    cd "$CORE_FLASH_ATTENTION_DIR"
+    
+    # Use pip install . which should pick up setup_flash_attn_amd.py
+    # Ensure environment is clean or use --no-cache-dir if needed
+    pip install .
+    
+    if [ $? -ne 0 ]; then
+        print_error "Core FlashAttention installation failed."
+        cd "$REPO_ROOT" # Go back to repo root
+        return 1
+    fi
+    
+    print_success "Core FlashAttention installed successfully"
+    cd "$REPO_ROOT" # Go back to repo root
+    return 0
 }
 
 verify_installation() {
-    print_section "Verifying installation"
+    print_section "Verifying Core FlashAttention installation"
     
-    # Create test script
-    print_step "Creating test script..."
-    cat > $HOME/flash-attention-amd/test_flash_attention.py << 'EOF'
+    # Create a temporary directory for the test script
+    TEST_DIR="$HOME/tmp_flash_attn_test"
+    mkdir -p "$TEST_DIR"
+    
+    print_step "Creating test script in $TEST_DIR ..."
+    cat > "$TEST_DIR/test_core_flash_attention.py" << 'EOF'
 import torch
 import time
-from flash_attention_amd import flash_attn_func
+# Ensure this import path matches what core/flash_attention/setup_flash_attn_amd.py installs
+from flash_attention_amd import flash_attn_func 
 
 def test_flash_attention():
+    print("Starting Flash Attention (core version) test...")
     # Create dummy data
-    batch_size = 2
-    seq_len = 1024
-    num_heads = 8
-    head_dim = 64
+    batch_size = 1 # Reduced for quicker test
+    seq_len = 512  # Reduced for quicker test
+    num_heads = 4  # Reduced
+    head_dim = 32  # Reduced
 
-    q = torch.randn(batch_size, seq_len, num_heads, head_dim, device="cuda")
-    k = torch.randn(batch_size, seq_len, num_heads, head_dim, device="cuda")
-    v = torch.randn(batch_size, seq_len, num_heads, head_dim, device="cuda")
+    print(f"Test parameters: batch_size={batch_size}, seq_len={seq_len}, num_heads={num_heads}, head_dim={head_dim}")
+
+    if not torch.cuda.is_available():
+        print("CUDA (ROCm) device not available. Skipping test.")
+        exit(1) # Indicate failure if no GPU
+
+    print(f"Using device: {torch.cuda.get_device_name(0)}")
+
+    try:
+        q = torch.randn(batch_size, seq_len, num_heads, head_dim, device="cuda", dtype=torch.float16)
+        k = torch.randn(batch_size, seq_len, num_heads, head_dim, device="cuda", dtype=torch.float16)
+        v = torch.randn(batch_size, seq_len, num_heads, head_dim, device="cuda", dtype=torch.float16)
+        print("Input tensors created successfully on CUDA device.")
+    except Exception as e:
+        print(f"Error creating input tensors: {e}")
+        exit(1)
 
     # Run Flash Attention
-    start_time = time.time()
-    output = flash_attn_func(q, k, v, causal=True)
-    torch.cuda.synchronize()
-    end_time = time.time()
-
-    print(f"Output shape: {output.shape}")
-    print(f"Time taken: {(end_time - start_time) * 1000:.2f} ms")
-    print("Flash Attention test passed!")
+    try:
+        print("Running flash_attn_func...")
+        start_time = time.time()
+        output = flash_attn_func(q, k, v, causal=True)
+        torch.cuda.synchronize() # Ensure completion for timing
+        end_time = time.time()
+        print(f"flash_attn_func executed. Output shape: {output.shape}")
+        print(f"Time taken: {(end_time - start_time) * 1000:.2f} ms")
+        print("Flash Attention (core version) test executed successfully!")
+    except Exception as e:
+        print(f"Error during Flash Attention (core version) test: {e}")
+        import traceback
+        traceback.print_exc()
+        exit(1)
 
 if __name__ == "__main__":
     test_flash_attention()
@@ -336,14 +266,20 @@ EOF
     
     # Run test script
     print_step "Running test script..."
-    cd $HOME/flash-attention-amd
-    python test_flash_attention.py
+    cd "$TEST_DIR" # Change to test directory to run the script
+    python test_core_flash_attention.py
     
-    if [ $? -eq 0 ]; then
-        print_success "Flash Attention is working correctly"
+    local exit_code=$?
+    # Determine script directory to find relative paths
+    SCRIPT_DIR_CLEANUP="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+    REPO_ROOT_CLEANUP="$( dirname "$SCRIPT_DIR_CLEANUP" )" 
+    cd "$REPO_ROOT_CLEANUP" # Go back to repo root
+
+    if [ $exit_code -eq 0 ]; then
+        print_success "Core FlashAttention is working correctly"
         return 0
     else
-        print_error "Flash Attention test failed"
+        print_error "Core FlashAttention test failed"
         return 1
     fi
 }
@@ -351,14 +287,26 @@ EOF
 cleanup() {
     print_section "Cleaning up"
     
-    # Remove temporary files
-    print_step "Removing temporary files..."
-    rm -f $HOME/flash-attention-amd/test_flash_attention.py
+    TEST_DIR="$HOME/tmp_flash_attn_test"
+    TRITON_BUILD_DIR="$HOME/triton_flash_attn_build"
+
+    print_step "Removing temporary test directory: $TEST_DIR"
+    if [ -d "$TEST_DIR" ]; then
+        rm -rf "$TEST_DIR"
+    fi
+    
+    # Optionally, you might want to ask the user if they want to remove the Triton build directory
+    # For now, let's leave it, as it might be useful for debugging or subsequent builds.
+    # print_step "Removing Triton build directory: $TRITON_BUILD_DIR"
+    # if [ -d "$TRITON_BUILD_DIR" ]; then
+    #     rm -rf "$TRITON_BUILD_DIR"
+    # fi
     
     print_success "Cleanup completed successfully"
 }
+
 main() {
-    print_header "Flash Attention Build Script for AMD GPUs"
+    print_header "Flash Attention Build Script for AMD GPUs (Core Implementation)"
     
     # Start time
     start_time=$(date +%s)
@@ -370,24 +318,24 @@ main() {
         exit 1
     fi
     
-    # Install dependencies
+    # Install dependencies (general build tools, Python deps for setup)
     install_dependencies
     if [ $? -ne 0 ]; then
         print_error "Failed to install dependencies. Exiting."
         exit 1
     fi
-    
-    # Create AMD implementation
-    create_amd_implementation
+
+    # Build Triton (as it's a dependency for some FlashAttention backends)
+    build_triton
     if [ $? -ne 0 ]; then
-        print_error "Failed to create AMD implementation. Exiting."
+        print_error "Failed to build Triton. Exiting."
         exit 1
     fi
     
-    # Install Flash Attention
+    # Install Core FlashAttention
     install_flash_attention
     if [ $? -ne 0 ]; then
-        print_error "Failed to install Flash Attention. Exiting."
+        print_error "Failed to install Core FlashAttention. Exiting."
         exit 1
     fi
     
@@ -399,7 +347,7 @@ main() {
     fi
     
     # Cleanup
-    cleanup
+    cleanup # This now removes the test script's temporary directory
     
     # End time
     end_time=$(date +%s)
@@ -408,21 +356,19 @@ main() {
     minutes=$(( (duration % 3600) / 60 ))
     seconds=$((duration % 60))
     
-    print_header "Flash Attention Build Completed Successfully!"
+    print_header "Core FlashAttention Build Completed Successfully!"
     echo -e "${GREEN}Total build time: ${BOLD}${hours}h ${minutes}m ${seconds}s${RESET}"
     echo
-    echo -e "${CYAN}You can now use Flash Attention in your PyTorch code:${RESET}"
+    echo -e "${CYAN}You can now use the core Flash Attention in your PyTorch code:${RESET}"
     echo
     echo -e "${YELLOW}import torch${RESET}"
-    echo -e "${YELLOW}from flash_attention_amd import flash_attn_func${RESET}"
+    echo -e "${YELLOW}from flash_attention_amd import flash_attn_func # Or other specific imports as needed${RESET}"
     echo
-    echo -e "${YELLOW}# Create input tensors${RESET}"
-    echo -e "${YELLOW}q = torch.randn(batch_size, seq_len, num_heads, head_dim, device=\"cuda\")${RESET}"
-    echo -e "${YELLOW}k = torch.randn(batch_size, seq_len, num_heads, head_dim, device=\"cuda\")${RESET}"
-    echo -e "${YELLOW}v = torch.randn(batch_size, seq_len, num_heads, head_dim, device=\"cuda\")${RESET}"
-    echo
-    echo -e "${YELLOW}# Run Flash Attention${RESET}"
-    echo -e "${YELLOW}output = flash_attn_func(q, k, v, causal=True)${RESET}"
+    echo -e "${YELLOW}# Example usage (ensure tensors are on CUDA and float16/bfloat16 as appropriate):${RESET}"
+    echo -e "${YELLOW}# q = torch.randn(batch_size, seq_len, num_heads, head_dim, device=\"cuda\", dtype=torch.float16)${RESET}"
+    echo -e "${YELLOW}# k = torch.randn(batch_size, seq_len, num_heads, head_dim, device=\"cuda\", dtype=torch.float16)${RESET}"
+    echo -e "${YELLOW}# v = torch.randn(batch_size, seq_len, num_heads, head_dim, device=\"cuda\", dtype=torch.float16)${RESET}"
+    echo -e "${YELLOW}# output = flash_attn_func(q, k, v, causal=True)${RESET}"
     echo
     
     return 0

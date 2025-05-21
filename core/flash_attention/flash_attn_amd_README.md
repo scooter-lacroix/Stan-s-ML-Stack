@@ -18,22 +18,59 @@ Flash Attention is an efficient attention algorithm that reduces memory usage an
 
 ### Prerequisites
 
-- PyTorch with ROCm support
-- AMD GPU with ROCm support
+- **PyTorch with ROCm support**: Ensure you have a compatible PyTorch version installed for your ROCm environment.
+- **AMD GPU with ROCm support**: Supported AMD GPUs (e.g., RX 6000/7000 series, MI series).
+- **ROCm Version**: ROCm 5.6 or higher is recommended for best compatibility and RDNA3 support.
+- **Build Tools**: `git`, `cmake`, `python3-dev`, `build-essential`. The main build script will attempt to install these if necessary.
 
-### Installation Steps
+### Recommended Installation using Build Script
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/ROCm/triton.git
-   cd flash-attention-amd
-   ```
+The most straightforward way to build and install this FlashAttention implementation (including its Composable Kernel C++ extension and a compatible Triton version) is by using the main build script located in the `scripts` directory of the Stan-s-ML-Stack repository.
 
-2. Install the package:
-   ```bash
-   GPU_ARCHS=gfx=""(Your gpu specific architecture) python setup.py develop 
-pip install matplotlib pandas
-   ```
+1.  **Navigate to the Stan-s-ML-Stack Repository Root:**
+    ```bash
+    cd /path/to/Stan-s-ML-Stack
+    ```
+
+2.  **(Optional but Recommended) Set Target AMD GPU Architectures:**
+    The `AMDGPU_TARGETS` environment variable controls the compilation targets for both the FlashAttention C++ extension and Triton. Set this to a comma-separated list of architectures relevant to your GPU(s).
+    ```bash
+    # Example for RDNA3 GPUs (e.g., RX 7900 XTX, RX 7800 XT):
+    export AMDGPU_TARGETS="gfx1100,gfx1101,gfx1102"
+    
+    # Example for a mix of RDNA2 and RDNA3:
+    # export AMDGPU_TARGETS="gfx1030,gfx1100"
+    
+    # If not set, a default comprehensive list will be used by the build script, e.g.:
+    # export AMDGPU_TARGETS="gfx90a,gfx940,gfx941,gfx942,gfx1030,gfx1100,gfx1101,gfx1102"
+    ```
+
+3.  **Run the Build Script:**
+    ```bash
+    ./scripts/build_flash_attn_amd.sh
+    ```
+    This script will handle dependency checks, Triton compilation, and the FlashAttention C++ extension build and installation.
+
+### Manual Installation (Advanced / Developers)
+
+If you prefer to build this specific FlashAttention component manually (e.g., for development or integration into a different build system):
+
+1.  **Ensure Prerequisites are Met:** Including a compatible Triton if required by this version of FlashAttention.
+2.  **Navigate to this Directory:**
+    ```bash
+    cd /path/to/Stan-s-ML-Stack/core/flash_attention
+    ```
+3.  **Set Target Architectures:**
+    ```bash
+    export AMDGPU_TARGETS="gfx1100,gfx1101" # Or your desired list
+    ```
+4.  **Install the Package:**
+    ```bash
+    python setup_flash_attn_amd.py install
+    # Or for development:
+    # python setup_flash_attn_amd.py develop
+    ```
+    This will invoke the CMake build for the C++ extension, respecting `AMDGPU_TARGETS`.
 
 ## Usage
 
@@ -131,21 +168,12 @@ class FlashAttention(torch.nn.Module):
 
 ## Performance
 
-This implementation is optimized for AMD GPUs and provides good performance, although it may not be as fast as the original CUDA implementation on NVIDIA GPUs. Here are some benchmark results:
-
-| Sequence Length | Batch Size | Standard Attention (ms) | Flash Attention (ms) | Speedup |
-|-----------------|------------|-------------------------|----------------------|---------|
-| 128             | 16         | 0.42                    | 0.21                 | 2.0x    |
-| 256             | 16         | 1.23                    | 0.45                 | 2.7x    |
-| 512             | 16         | 4.56                    | 1.12                 | 4.1x    |
-| 1024            | 16         | 17.89                   | 3.45                 | 5.2x    |
-| 2048            | 16         | 71.23                   | 10.78                | 6.6x    |
-| 4096            | 16         | 285.67                  | 32.45                | 8.8x    |
+This implementation, leveraging Composable Kernel C++ extensions and potentially Triton, is optimized for AMD GPUs and provides significant performance improvements over standard PyTorch attention, especially for long sequences. Performance characteristics can vary based on the specific AMD GPU architecture (RDNA2, RDNA3, CDNA) and the workload. Refer to the detailed [Flash Attention for AMD GPUs Guide](../../docs/guides/flash_attention_amd_guide.md) for more comprehensive benchmark information.
 
 ## Limitations
 
-- This implementation is a pure PyTorch version and does not use CUDA kernels, so it may not be as fast as the original implementation on NVIDIA GPUs.
-- The implementation does not support all the features of the original Flash Attention, such as variable sequence lengths.
+- While highly optimized, performance relative to NVIDIA's cuDNN-accelerated FlashAttention can vary.
+- Ensure that the `AMDGPU_TARGETS` used during compilation match the GPU you are running on for optimal performance. If a pre-compiled package is used, check its supported architectures.
 
 
 ## Author

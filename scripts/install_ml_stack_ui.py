@@ -31,7 +31,7 @@ SUDO_PASSWORD = None
 
 try:
     from textual.app import App, ComposeResult
-    from textual.containers import Container, Horizontal, Vertical
+    from textual.containers import Container, Horizontal, Vertical, VerticalScroll
     from textual.widgets import Header, Footer, Static, Button, Label, ProgressBar, Log, Input
     from textual.screen import Screen
     from textual import events
@@ -1404,15 +1404,19 @@ class InstallationScreen(Screen):
         try:
             yield Header(show_clock=True)
 
-            with Container(id="installation-container"):
+            with VerticalScroll(id="installation-container-scroll"): # Changed to VerticalScroll
                 yield Static(BANNER, id="banner")
                 yield Static("Installing ML Stack Components", id="installation-title")
 
-                yield Static("Progress", id="progress-title")
-                yield ProgressBar(id="progress-bar", total=100)
+                # Section for Progress Bar
+                with Vertical(id="progress-section"):
+                    yield Static("Progress", id="progress-title")
+                    yield ProgressBar(id="progress-bar", total=100)
 
-                yield Static("Installation Log", id="log-title")
-                yield Log(id="installation-log", highlight=True)
+                # Section for Log
+                with Vertical(id="log-section"):
+                    yield Static("Installation Log", id="log-title")
+                    yield Log(id="installation-log", highlight=True) # CSS gives this height: 20
 
                 yield Button("Close", id="cancel-button")
 
@@ -1678,8 +1682,23 @@ class MLStackInstallerApp(App):
     }
 
     #installation-log {
-        height: 20;
+        height: 20; /* Fixed height, Log widget handles internal scrolling */
         width: 100%;
+    }
+
+    /* Ensure sections in InstallationScreen take appropriate space */
+    #progress-section {
+        height: auto; /* Adapts to content (title + progress bar) */
+        margin-bottom: 1; /* Add some space below progress section */
+    }
+
+    #log-section {
+        height: auto; /* Adapts to content (title + log widget). Log widget itself has fixed height. */
+         /* The Log widget's fixed height will dominate here if Vertical is not given more height */
+    }
+
+    #installation-container-scroll {
+        /* This will ensure the whole area scrolls if content exceeds screen height */
     }
     """
 
