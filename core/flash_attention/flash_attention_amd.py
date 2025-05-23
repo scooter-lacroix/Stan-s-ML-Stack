@@ -347,40 +347,73 @@ class FlashAttention(torch.nn.Module):
         Returns:
             Output tensor of shape (batch_size, seqlen_q, num_heads, head_dim)
         """
-        # Get tensor dimensions
-        head_dim = q.size(3)
-        seq_len_q = q.size(1)
-        seq_len_k = k.size(1)
+        # q, k, v are (B, Nq, H, D). Transpose to (B, H, Nq, D) for some internal processing.
+        q_reshaped = q.transpose(1, 2)
+        k_reshaped = k.transpose(1, 2)
+        v_reshaped = v.transpose(1, 2)
 
-        # Determine which backend to use
-        use_ck = should_use_ck(head_dim, seq_len_q, seq_len_k)
+        # Define self.scale based on self.softmax_scale or head_dim of original q
+        # q is (B, Nq, H, D), so q.size(3) is head_dim
+        self.scale = self.softmax_scale if self.softmax_scale is not None else 1.0 / math.sqrt(q.size(3))
 
-        # Dispatch to the appropriate backend
-        if use_ck and HAS_CK:
+        # Attempt to use Triton if available and conditions are suitable (no dropout, global window)
+        if HAS_TRITON and self.dropout_p == 0.0 and window_size[0] == -1 and window_size[1] == -1:
             try:
-                # Convert window_size to list for C++ interface
-                window_size_list = list(window_size)
-                return flash_attention_amd_cuda.forward(
-                    q, k, v,
-                    self.dropout_p if self.training else 0.0,
-                    self.softmax_scale,
-                    causal,
-                    window_size_list
+                # Triton's flash_attention op expects contiguous inputs of shape (B, H, Nq, D).
+                q_contiguous = q_reshaped.contiguous()
+                k_contiguous = k_reshaped.contiguous()
+                v_contiguous = v_reshaped.contiguous()
+
+                out_reshaped_triton = triton.ops.flash_attention.attn_forward(
+                    q_contiguous, 
+                    k_contiguous, 
+                    v_contiguous,
+                    bias=None,      # Assuming no bias is used in this FlashAttention variant
+                    causal=causal,  # Triton's op handles the causal flag
+                    sm_scale=self.scale
                 )
+                # Output from triton is (B, H, Nq, D). Transpose back to q's original shape (B, Nq, H, D).
+                out = out_reshaped_triton.transpose(1, 2)
+                return out
             except Exception as e:
-                warnings.warn(f"CK implementation failed with error: {e}. Falling back to PyTorch implementation.")
-                return flash_attn_func(
-                    q, k, v,
-                    dropout_p=self.dropout_p if self.training else 0.0,
-                    softmax_scale=self.softmax_scale,
-                    causal=causal,
-                    window_size=window_size,
-                )
-        else:
-            return flash_attn_func(
-                q, k, v,
-                dropout_p=self.dropout_p if self.training else 0.0,
-                softmax_scale=self.softmax_scale,
-                causal=causal,
-                window_size=window_size,
+                warnings.warn(f"Triton flash_attention execution failed: {e}. Falling back.", UserWarning)
+                pass # Fall through to other methods if Triton fails
+
+        # Fallback to C++ extension IF Triton was not available or failed AND specific conditions are met.
+        # (dropout_p == 0.0, NOT causal, and global window).
+        if not HAS_TRITON and HAS_CK and self.dropout_p == 0.0 and not causal and window_size[0] == -1 and window_size[1] == -1:
+            warnings.warn(
+                "Using C++ Flash Attention extension (flash_attention_amd_cuda), "
+                "which has a non-functional backward pass. Training will be incorrect or fail if this path is taken for training.",
+                UserWarning
             )
+            try:
+                # flash_attention_amd_cuda.forward expects q,k,v as (B, Nq, H, D)
+                window_size_list = list(window_size)
+                out_cpp = flash_attention_amd_cuda.forward( # Correct function name
+                    q, k, v, # Pass original q, k, v
+                    self.dropout_p, # This will be 0.0 due to the condition
+                    self.scale,
+                    causal,        # This will be False due to the condition
+                    window_size_list # This will be [-1,-1]
+                )
+                # Output from C++ extension is already (B, Nq, H, D)
+                return out_cpp
+            except Exception as e:
+                warnings.warn(f"C++ (CK) flash_attention_amd_cuda.forward execution failed: {e}. Falling back to PyTorch.", UserWarning)
+                pass # Fall through to PyTorch implementation if C++ fails
+
+        # Ultimate fallback to PyTorch implementation (FlashAttentionFunction.apply)
+        # This path is taken if:
+        # - Dropout is enabled (self.dropout_p > 0.0)
+        # - Windowed attention is used (window_size[0] != -1 or window_size[1] != -1)
+        # - OR if Triton was skipped or failed, AND the C++ extension was skipped or failed.
+        warnings.warn("Falling back to PyTorch FlashAttention implementation (FlashAttentionFunction).", UserWarning)
+        # flash_attn_func expects q,k,v as (B, Nq, H, D)
+        return flash_attn_func(
+            q, k, v, # Pass original q, k, v
+            dropout_p=self.dropout_p if self.training else 0.0,
+            softmax_scale=self.scale, # Pass the calculated scale
+            causal=causal,
+            window_size=window_size,
+        )

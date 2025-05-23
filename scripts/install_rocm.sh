@@ -115,8 +115,8 @@ install_rocm() {
     print_section "Installing ROCm"
     print_step "Downloading amdgpu-install package..."
     
-    # Use the latest version (6.4.60400-1)
-    wget -q https://repo.radeon.com/amdgpu-install/6.4/ubuntu/$ubuntu_codename/amdgpu-install_6.4.60400-1_all.deb
+    # Use the latest version (6.4.1b / 6.4.60401-1)
+    wget -q https://repo.radeon.com/amdgpu-install/6.4.1/ubuntu/$ubuntu_codename/amdgpu-install_6.4.60401-1_all.deb
     
     if [ $? -ne 0 ]; then
         print_error "Failed to download amdgpu-install package"
@@ -127,7 +127,7 @@ install_rocm() {
     
     # Install the package
     print_step "Installing amdgpu-install package..."
-    sudo apt install -y ./amdgpu-install_6.4.60400-1_all.deb
+    sudo apt install -y ./amdgpu-install_6.4.60401-1_all.deb
     
     if [ $? -ne 0 ]; then
         print_error "Failed to install amdgpu-install package"
@@ -213,7 +213,7 @@ install_rocm() {
     
     # Clean up
     print_step "Cleaning up..."
-    rm -f amdgpu-install_6.4.60400-1_all.deb
+    rm -f amdgpu-install_6.4.60401-1_all.deb
     
     print_success "ROCm installation completed successfully"
     print_warning "You may need to log out and log back in for group changes to take effect"

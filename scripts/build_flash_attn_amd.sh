@@ -140,12 +140,15 @@ build_triton() {
     cd "$TRITON_DIR"
 
     if [ -d "triton" ]; then
-        print_step "Triton directory already exists. Pulling latest changes."
+        print_step "Triton directory already exists. Pulling latest changes from default branch (main_perf)."
         cd triton
-        git pull
+        git pull # Assumes it's already on main_perf or the desired default
         cd ..
     else
-        print_step "Cloning Triton repository..."
+        print_step "Cloning Triton repository (default branch: main_perf)..."
+        # NOTE: Using the default branch (main_perf) of ROCm/triton.
+        # As of investigation, no specific branch/tag was identified for ROCm 6.4.1b.
+        # If compatibility issues arise, this may need to be adjusted to a specific commit/tag/branch.
         git clone https://github.com/ROCm/triton.git
     fi
     

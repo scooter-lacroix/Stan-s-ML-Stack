@@ -318,7 +318,11 @@ install_aiter() {
     # Clone AITER repository
     update_progress_bar 10
     draw_progress_bar "Cloning AITER repository..."
-    print_step "Cloning AITER repository..."
+    print_step "Cloning AITER repository (default branch: main)..."
+    # NOTE: Using the default branch (main) of ROCm/aiter.
+    # As of investigation (May 2025), the latest tag was v0.1.2, and no specific branch/tag
+    # was identified for ROCm 6.4.1b. If compatibility issues arise,
+    # this may need to be adjusted to a specific commit/tag/branch.
     git clone --recursive https://github.com/ROCm/aiter.git
 
     if [ $? -ne 0 ]; then
@@ -330,6 +334,14 @@ install_aiter() {
 
     # Enter AITER directory
     cd aiter || { print_error "Failed to enter AITER directory"; rm -rf "$temp_dir"; complete_progress_bar; return 1; }
+
+    # NOTE: The following sections apply custom patches for RDNA3 (gfx1100, gfx1101, gfx1102) support.
+    # These include creating a custom aiter/torch/torch_hip.py, patching aiter/__init__.py,
+    # and using a custom setup.py.
+    # This is done to ensure robust RDNA3 compatibility. As of the last review,
+    # it was unclear if the main AITER branch fully incorporated equivalent support
+    # that would render these patches obsolete or conflicting for ROCm 6.4.1b.
+    # These patches are retained to prioritize RDNA3 functionality.
 
     # Create a custom setup.py to fix compatibility issues
     print_step "Creating custom setup.py to improve compatibility..."

@@ -1,5 +1,7 @@
 # Base image with ROCm support
-FROM rocm/dev-ubuntu-22.04:6.4.43482
+# NOTE: The existence of the specific rocm/dev-ubuntu-22.04:6.4.1 tag could not be programmatically verified.
+# Using it as per instructions. If issues arise, this tag may need manual verification/adjustment.
+FROM rocm/dev-ubuntu-22.04:6.4.1
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -11,6 +13,9 @@ ENV LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib
 ENV HIP_VISIBLE_DEVICES=0,1
 ENV CUDA_VISIBLE_DEVICES=0,1
 ENV PYTORCH_ROCM_DEVICE=0,1
+# NOTE: HSA_OVERRIDE_GFX_VERSION is kept as 11.0.0.
+# Its necessity/optimality for ROCm 6.4.1b with gfx1100/gfx1101 was not definitively confirmed.
+# This may require review based on specific hardware and performance testing.
 ENV HSA_OVERRIDE_GFX_VERSION=11.0.0
 ENV HSA_ENABLE_SDMA=0
 ENV GPU_MAX_HEAP_SIZE=100
@@ -66,7 +71,7 @@ RUN ln -sf /usr/bin/ninja /usr/bin/ninja-build || true \
 
 # Install Python dependencies using UV
 RUN /root/.cargo/bin/uv pip install --upgrade pip \
-    && /root/.cargo/bin/uv pip install torch==2.6.0+rocm6.4.43482 torchvision==0.21.0+rocm6.4.43482 --index-url https://download.pytorch.org/whl/rocm6.4.43482 \
+    && /root/.cargo/bin/uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.1 \
     && /root/.cargo/bin/uv pip install numpy scipy matplotlib pandas scikit-learn jupyter \
     && /root/.cargo/bin/uv pip install onnx \
     && /root/.cargo/bin/uv pip install wandb \
