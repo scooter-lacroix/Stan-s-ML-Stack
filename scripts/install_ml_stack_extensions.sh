@@ -66,10 +66,38 @@ else
     ONNX_RUNNING=false
 fi
 
+# Fix ninja-build detection function
+fix_ninja_detection() {
+    if command -v ninja &>/dev/null && ! command -v ninja-build &>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating symlink for ninja-build..."
+        sudo ln -sf $(which ninja) /usr/bin/ninja-build
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build symlink created."
+        return 0
+    elif command -v ninja-build &>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build already available."
+        return 0
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing ninja-build..."
+        if command -v dnf &>/dev/null; then
+            sudo dnf install -y ninja-build
+        elif command -v apt-get &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y ninja-build
+        elif command -v yum &>/dev/null; then
+            sudo yum install -y ninja-build
+        elif command -v pacman &>/dev/null; then
+            sudo pacman -S --noconfirm ninja
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Unknown package manager. Please install ninja-build manually."
+            return 1
+        fi
+        return $?
+    fi
+}
+
 # Check for required dependencies
 log "Checking dependencies..."
-    # Fix ninja-build detection
-    fix_ninja_detection
+# Fix ninja-build detection
+fix_ninja_detection
 DEPS=("git" "python3" "pip")
 MISSING_DEPS=()
 
@@ -160,20 +188,3 @@ echo "ML Stack Extensions Installation Complete!"
 echo "Documentation is available in $HOME/Prod/Stan-s-ML-Stack/docs/extensions/"
 echo "Installation logs are available in $LOG_FILE"
 echo "============================================================"
-
-# Fix ninja-build detection
-fix_ninja_detection() {
-    if command -v ninja &>/dev/null && ! command -v ninja-build &>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Creating symlink for ninja-build..."
-        sudo ln -sf $(which ninja) /usr/bin/ninja-build
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build symlink created."
-        return 0
-    elif command -v ninja-build &>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Ninja-build already available."
-        return 0
-    else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing ninja-build..."
-        sudo apt-get update && sudo apt-get install -y ninja-build
-        return $?
-    fi
-}

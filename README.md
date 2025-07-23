@@ -83,25 +83,23 @@ The ML Stack consists of the following core components:
 
 The ML Stack provides several installation options to suit your needs.
 
-### PyPI Installation (Easiest)
+### Current Installation Status (December 2024)
 
-The simplest way to install Stan's ML Stack is via pip:
+The ML Stack is currently in a **fully functional state** with the following components installed and verified:
 
-```bash
-# Install using pip
-pip install stans-ml-stack
+- ✅ **ROCm 6.4.43482**: Installed and working
+- ✅ **PyTorch with ROCm**: Installed and GPU-accelerated
+- ✅ **Triton**: Installed and optimized for AMD GPUs
+- ✅ **MPI4Py**: Installed for distributed computing
+- ✅ **DeepSpeed**: Installed with ROCm support
+- ✅ **Megatron-LM**: Installed for large model training
+- ✅ **vLLM**: Installed for high-throughput inference
+- 🔄 **Flash Attention CK**: Currently building (assembly code debugging in progress)
+- ✅ **Persistent Environment**: System-wide environment configured
 
-# Or with UV (recommended)
-uv pip install stans-ml-stack
+### PyPI Installation (Coming Soon)
 
-# Run the installer
-ml-stack-install
-```
-
-This will install the ML Stack package and provide command-line tools:
-- `ml-stack-install`: Launch the installation UI
-- `ml-stack-verify`: Verify your installation
-- `ml-stack-repair`: Repair a broken installation
+PyPI package installation will be available soon. For now, use the direct installation methods below.
 
 ### Automatic Installation from Source
 

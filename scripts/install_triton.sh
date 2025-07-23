@@ -36,7 +36,49 @@ log() {
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" >/dev/null 2>&1
+    command -v "$1" > /dev/null 2>&1
+}
+
+# Function to install Python packages with adaptive package management
+install_python_package() {
+    local package_spec="$1"
+    local package_name="$2"
+    local extra_args="${@:3}"
+    
+    # Check if package is already installed (if package_name provided)
+    if [ -n "$package_name" ] && python3 -c "import $package_name" 2>/dev/null; then
+        log "Package $package_name is already installed"
+        return 0
+    fi
+    
+    log "Installing $package_spec..."
+    
+    # Try uv first if available
+    if command_exists uv; then
+        log "Using uv to install $package_spec..."
+        if uv pip install $package_spec $extra_args --system 2>/dev/null || \
+           uv pip install $package_spec $extra_args 2>/dev/null; then
+            log "Successfully installed $package_spec with uv"
+            return 0
+        else
+            log "uv installation failed, falling back to pip..."
+        fi
+    fi
+    
+    # Fallback to pip
+    log "Using pip to install $package_spec..."
+    if pip install $package_spec $extra_args --break-system-packages 2>/dev/null; then
+        log "Successfully installed $package_spec with pip"
+        return 0
+    else
+        log "Failed to install $package_spec with both uv and pip"
+        return 1
+    fi
+}
+
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
 }
 
 # Start installation
@@ -68,23 +110,25 @@ INSTALL_DIR="$HOME/ml_stack/triton"
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
+# Check if Triton is already installed
+if package_installed "triton"; then
+    triton_version=$(python3 -c "import triton; print(triton.__version__)" 2>/dev/null)
+    log "Triton is already installed (version: $triton_version)"
+    read -p "Do you want to reinstall? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log "Skipping Triton installation"
+        exit 0
+    fi
+fi
+
 # Install Python dependencies
 log "Installing Python dependencies..."
-if command_exists uv; then
-    log "Using uv to install dependencies..."
-    uv pip install --upgrade cmake ninja pytest packaging wheel
-else
-    log "Using pip to install dependencies..."
-    pip install --upgrade cmake ninja pytest packaging wheel
-fi
+install_python_package "cmake ninja pytest packaging wheel" --upgrade
 
 # Install Triton directly from PyPI first (simpler approach)
 log "Installing Triton from PyPI..."
-if command_exists uv; then
-    uv pip install triton
-else
-    pip install triton
-fi
+install_python_package "triton"
 
 # Check if the PyPI installation worked
 if python3 -c "import triton; print('Triton version:', triton.__version__)" &>/dev/null; then
@@ -118,9 +162,17 @@ else
         log "Building and installing Triton from source..."
         cd python
         if command_exists uv; then
-            TRITON_BUILD_WITH_ROCM=1 uv pip install -e .
+            log "Using uv for source installation..."
+            if TRITON_BUILD_WITH_ROCM=1 uv pip install -e . --system 2>/dev/null || \
+               TRITON_BUILD_WITH_ROCM=1 uv pip install -e . 2>/dev/null; then
+                log "Successfully installed with uv"
+            else
+                log "uv failed, falling back to pip..."
+                TRITON_BUILD_WITH_ROCM=1 pip install -e . --break-system-packages
+            fi
         else
-            TRITON_BUILD_WITH_ROCM=1 pip install -e .
+            log "Using pip for source installation..."
+            TRITON_BUILD_WITH_ROCM=1 pip install -e . --break-system-packages
         fi
 
         # Check if installation worked

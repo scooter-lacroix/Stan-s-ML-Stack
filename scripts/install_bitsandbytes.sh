@@ -22,7 +22,7 @@
 set -e  # Exit on error
 
 # Create log directory
-LOG_DIR="$HOME/Desktop/ml_stack_extensions/logs"
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
 mkdir -p $LOG_DIR
 
 # Log file
@@ -35,7 +35,50 @@ log() {
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" >/dev/null 2>&1
+    command -v "$1" > /dev/null 2>&1
+}
+
+# Function to install Python packages with adaptive package management
+install_python_package() {
+    local package_spec="$1"
+    local package_name="$2"
+    
+    # Check if package is already installed
+    if [ -n "$package_name" ] && python3 -c "import $package_name" 2>/dev/null; then
+        log "Package $package_name is already installed"
+        return 0
+    fi
+    
+    log "Installing $package_spec..."
+    
+    # Try uv first if available
+    if command_exists uv; then
+        log "Using uv to install $package_spec..."
+        if uv pip install $package_spec --system 2>/dev/null || \
+           uv pip install $package_spec --user 2>/dev/null || \
+           uv pip install $package_spec --break-system-packages 2>/dev/null; then
+            log "Successfully installed $package_spec with uv"
+            return 0
+        else
+            log "uv installation failed, falling back to pip..."
+        fi
+    fi
+    
+    # Fallback to pip
+    log "Using pip to install $package_spec..."
+    if pip install $package_spec --user 2>/dev/null || \
+       pip install $package_spec --break-system-packages 2>/dev/null; then
+        log "Successfully installed $package_spec with pip"
+        return 0
+    else
+        log "Failed to install $package_spec with both uv and pip"
+        return 1
+    fi
+}
+
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
 }
 
 # Start installation
@@ -165,14 +208,27 @@ log "Method 1: Direct pip install with specific version..."
 # Install a specific version known to work with AMD GPUs
 log "Installing bitsandbytes 0.35.0 which is known to work with AMD GPUs..."
 if command_exists uv; then
-    CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0
+    log "Using uv to install bitsandbytes 0.35.0..."
+    if CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0 --system 2>/dev/null || \
+       CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0 --user 2>/dev/null || \
+       CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0 --break-system-packages 2>/dev/null; then
+        log "Successfully installed bitsandbytes with uv"
+    else
+        log "uv installation failed, falling back to pip..."
+        CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --user 2>/dev/null || CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --break-system-packages
+    fi
 else
-    CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --break-system-packages
+    CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --user 2>/dev/null || CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --break-system-packages
 fi
 
 # Create CPU library symlink if it doesn't exist
-SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
-BNB_DIR="$SITE_PACKAGES/bitsandbytes"
+# Try to find the actual bitsandbytes installation directory
+BNB_DIR=$(python3 -c "import bitsandbytes, os; print(os.path.dirname(bitsandbytes.__file__))" 2>/dev/null)
+if [ -z "$BNB_DIR" ]; then
+    # Fallback to site-packages detection
+    SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || python3 -c "import site; print(site.getusersitepackages())")
+    BNB_DIR="$SITE_PACKAGES/bitsandbytes"
+fi
 log "Checking for CPU library in $BNB_DIR..."
 
 if [ -d "$BNB_DIR" ]; then
@@ -199,11 +255,10 @@ fi
 if python3 -c "import bitsandbytes" &>/dev/null; then
     log "Direct pip installation successful!"
 
-    # Create AMD compatibility file
-    SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
-    log "Creating AMD compatibility file at $SITE_PACKAGES/bitsandbytes/amd_compat.py"
-    mkdir -p "$SITE_PACKAGES/bitsandbytes"
-    cat > "$SITE_PACKAGES/bitsandbytes/amd_compat.py" << 'EOF'
+    # Create AMD compatibility file using the actual installation directory
+    log "Creating AMD compatibility file at $BNB_DIR/amd_compat.py"
+    if [ -w "$BNB_DIR" ]; then
+        cat > "$BNB_DIR/amd_compat.py" << 'EOF'
 import torch
 import bitsandbytes as bnb
 
@@ -211,10 +266,14 @@ import bitsandbytes as bnb
 if not hasattr(bnb, 'CUDA_AVAILABLE'):
     bnb.CUDA_AVAILABLE = torch.cuda.is_available()
 EOF
+    else
+        log "Cannot write to $BNB_DIR, skipping AMD compatibility file creation"
+    fi
 
     # Create a custom CUDA setup file
     log "Creating custom CUDA setup file..."
-    cat > "$SITE_PACKAGES/bitsandbytes/cuda_setup/__init__.py" << 'EOF'
+    if [ -w "$BNB_DIR/cuda_setup" ] 2>/dev/null || mkdir -p "$BNB_DIR/cuda_setup" 2>/dev/null; then
+        cat > "$BNB_DIR/cuda_setup/__init__.py" << 'EOF'
 import os
 import torch
 from bitsandbytes.cuda_setup.main import get_compute_capability, get_cuda_version, get_cuda_path
@@ -231,6 +290,9 @@ if torch.version.hip is not None:
     get_cuda_version = dummy_get_cuda_version
     get_compute_capability = dummy_get_compute_capability
 EOF
+    else
+        log "Cannot write to $BNB_DIR/cuda_setup, skipping CUDA setup file creation"
+    fi
 
     # Verify installation
     log "Verifying BITSANDBYTES installation..."
@@ -262,9 +324,17 @@ WHEEL_FILE=$(ls bitsandbytes-*.whl 2>/dev/null | head -n 1)
 if [ -n "$WHEEL_FILE" ]; then
     log "Installing pre-built wheel: $WHEEL_FILE"
     if command_exists uv; then
-        CUDA_VERSION=cpu uv pip install "$WHEEL_FILE"
+        log "Using uv to install wheel..."
+        if CUDA_VERSION=cpu uv pip install "$WHEEL_FILE" --system 2>/dev/null || \
+           CUDA_VERSION=cpu uv pip install "$WHEEL_FILE" --user 2>/dev/null || \
+           CUDA_VERSION=cpu uv pip install "$WHEEL_FILE" --break-system-packages 2>/dev/null; then
+            log "Successfully installed wheel with uv"
+        else
+            log "uv installation failed, falling back to pip..."
+            CUDA_VERSION=cpu pip install "$WHEEL_FILE" --user 2>/dev/null || CUDA_VERSION=cpu pip install "$WHEEL_FILE" --break-system-packages
+        fi
     else
-        CUDA_VERSION=cpu pip install "$WHEEL_FILE" --break-system-packages
+        CUDA_VERSION=cpu pip install "$WHEEL_FILE" --user 2>/dev/null || CUDA_VERSION=cpu pip install "$WHEEL_FILE" --break-system-packages
     fi
 
     # Check if installation was successful
@@ -286,10 +356,17 @@ fi
 log "Method 2: Source installation..."
 if command_exists uv; then
     log "Using uv to install bitsandbytes from source..."
-    ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e .
+    if ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e . --system 2>/dev/null || \
+       ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e . --user 2>/dev/null || \
+       ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e . --break-system-packages 2>/dev/null; then
+        log "Successfully installed from source with uv"
+    else
+        log "uv source installation failed, falling back to pip..."
+        ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --user 2>/dev/null || ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --break-system-packages
+    fi
 else
     log "Using pip to install bitsandbytes from source..."
-    ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e .
+    ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --user 2>/dev/null || ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --break-system-packages
 fi
 
 # Go back to the installation directory

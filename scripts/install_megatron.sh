@@ -178,6 +178,59 @@ check_mpi() {
     fi
 }
 
+# Function to check if C++ compiler is available
+check_cpp_compiler() {
+    if command -v g++ >/dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to install system development packages
+install_system_dev_packages() {
+    print_step "Installing system development packages..."
+    
+    # Install C++ compiler and development tools
+    if command -v dnf >/dev/null 2>&1; then
+        print_step "Using dnf to install development packages..."
+        if sudo dnf install -y gcc-c++ g++ make cmake; then
+            print_success "Development packages installed with dnf"
+            return 0
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        print_step "Using apt-get to install development packages..."
+        if sudo apt-get update && sudo apt-get install -y g++ gcc make cmake build-essential; then
+            print_success "Development packages installed with apt-get"
+            return 0
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        print_step "Using yum to install development packages..."
+        if sudo yum install -y gcc-c++ make cmake; then
+            print_success "Development packages installed with yum"
+            return 0
+        fi
+    elif command -v zypper >/dev/null 2>&1; then
+        print_step "Using zypper to install development packages..."
+        if sudo zypper install -y gcc-c++ make cmake; then
+            print_success "Development packages installed with zypper"
+            return 0
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
+        print_step "Using pacman to install development packages..."
+        if sudo pacman -S --noconfirm gcc make cmake; then
+            print_success "Development packages installed with pacman"
+            return 0
+        fi
+    else
+        print_error "Unknown package manager. Cannot auto-install development packages."
+        return 1
+    fi
+    
+    print_error "Failed to install system development packages"
+    return 1
+}
+
 # Function to install Megatron-LM
 install_megatron() {
     print_header "Installing Megatron-LM"
@@ -196,7 +249,34 @@ install_megatron() {
     fi
 
     print_success "PyTorch is installed"
-    update_progress_bar 10
+    update_progress_bar 5
+    draw_progress_bar "Checking C++ compiler..."
+
+    # Check if C++ compiler is installed
+    if ! check_cpp_compiler; then
+        print_warning "C++ compiler not found. Installing development packages..."
+        update_progress_bar 5
+        draw_progress_bar "Installing development packages..."
+        
+        if install_system_dev_packages; then
+            print_success "Development packages installed successfully"
+            if ! check_cpp_compiler; then
+                print_error "C++ compiler still not available after installation"
+                complete_progress_bar
+                return 1
+            fi
+        else
+            print_error "Failed to install development packages automatically"
+            print_step "Please install C++ compiler manually:"
+            print_step "On Ubuntu/Debian: sudo apt-get install build-essential g++"
+            print_step "On CentOS/RHEL/Fedora: sudo dnf install gcc-c++ g++"
+            complete_progress_bar
+            return 1
+        fi
+    fi
+
+    print_success "C++ compiler is available"
+    update_progress_bar 5
     draw_progress_bar "Checking MPI installation..."
 
     # Check if MPI is installed

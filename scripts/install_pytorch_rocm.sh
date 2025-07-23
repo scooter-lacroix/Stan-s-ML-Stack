@@ -120,6 +120,38 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+    
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
+
 # Main installation function
 install_pytorch_rocm() {
     print_header "PyTorch with ROCm Installation"
@@ -131,12 +163,21 @@ install_pytorch_rocm() {
         # Check if PyTorch has ROCm/HIP support
         if python3 -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
             hip_version=$(python3 -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
-            print_warning "PyTorch with ROCm support is already installed (PyTorch $pytorch_version, ROCm $hip_version)"
-            read -p "Do you want to reinstall? (y/n) " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                print_step "Skipping PyTorch installation"
-                return 0
+            
+            # Test if GPU acceleration works
+            if python3 -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
+                print_success "PyTorch with ROCm support is already installed and working (PyTorch $pytorch_version, ROCm $hip_version)"
+                
+                # Check if --force flag is provided
+                if [[ "$*" == *"--force"* ]] || [[ "$PYTORCH_REINSTALL" == "true" ]]; then
+                    print_warning "Force reinstall requested"
+                else
+                    print_step "PyTorch installation is complete and working. Use --force to reinstall anyway."
+                    return 0
+                fi
+            else
+                print_warning "PyTorch with ROCm support is installed (PyTorch $pytorch_version, ROCm $hip_version) but GPU acceleration is not working"
+                print_step "Will reinstall to fix GPU acceleration issues"
             fi
         else
             print_warning "PyTorch is installed (version $pytorch_version) but without ROCm support"
@@ -204,8 +245,8 @@ install_pytorch_rocm() {
         uv_pip_uninstall() {
             # Check if uv is available as a command
             if command -v uv &> /dev/null; then
-                # Use uv directly as a command
-                uv pip uninstall "$@"
+                # Use uv directly as a command with proper Python
+                uv pip uninstall --python $(which python3) "$@"
             else
                 # Fall back to pip
                 python3 -m pip uninstall "$@"
@@ -225,15 +266,17 @@ install_pytorch_rocm() {
     # Install PyTorch with ROCm support
     print_step "Installing PyTorch with ROCm support..."
 
-    # Create a function to handle uv commands properly
+    # Create a function to handle uv commands properly using the install_python_package function
     uv_pip_install() {
+        local args="$@"
+        
         # Check if uv is available as a command
         if command -v uv &> /dev/null; then
-            # Use uv directly as a command
-            uv pip install "$@"
+            # Use uv pip install
+            uv pip install $args
         else
             # Fall back to pip
-            python3 -m pip install "$@"
+            python3 -m pip install $args
         fi
     }
 

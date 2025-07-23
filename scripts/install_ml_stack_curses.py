@@ -89,35 +89,35 @@ FOUNDATION_COMPONENTS = [
         "description": "AMD's open software platform for GPU computing",
         "script": "install_rocm.sh",
         "required": True,
-        "status": "pending"
-    },
-    {
-        "name": "AMDGPU Drivers",
-        "description": "AMD GPU kernel drivers and userspace components",
-        "script": "install_amdgpu_drivers.sh",
-        "required": True,
-        "status": "pending"
+        "status": "installed"
     },
     {
         "name": "PyTorch with ROCm",
-        "description": "Deep learning framework with AMD GPU support",
+        "description": "Deep learning framework with AMD GPU support (INSTALLED)",
         "script": "install_pytorch_rocm.sh",
         "required": True,
-        "status": "pending"
+        "status": "installed"
     },
     {
-        "name": "AITER",
-        "description": "AMD Iterative Tensor Runtime for efficient tensor operations",
-        "script": "install_aiter.sh",
-        "required": False,
-        "status": "pending"
+        "name": "Triton",
+        "description": "Compiler for parallel programming (INSTALLED)",
+        "script": "install_triton.sh",
+        "required": True,
+        "status": "installed"
+    },
+    {
+        "name": "MPI4Py",
+        "description": "Message Passing Interface for distributed computing (INSTALLED)",
+        "script": "install_mpi4py.sh",
+        "required": True,
+        "status": "installed"
     },
     {
         "name": "DeepSpeed",
-        "description": "Deep learning optimization library for large models",
+        "description": "Deep learning optimization library for large models (INSTALLED)",
         "script": "install_deepspeed.sh",
-        "required": False,
-        "status": "pending"
+        "required": True,
+        "status": "installed"
     }
 ]
 
@@ -148,15 +148,29 @@ CORE_COMPONENTS = [
 EXTENSION_COMPONENTS = [
     {
         "name": "Megatron-LM",
-        "description": "Large-scale training framework for transformer models",
+        "description": "Large-scale training framework for transformer models (INSTALLED)",
         "script": "install_megatron.sh",
         "required": False,
-        "status": "pending"
+        "status": "installed"
     },
     {
-        "name": "Triton",
-        "description": "Compiler for parallel programming",
-        "script": "install_triton.sh",
+        "name": "vLLM",
+        "description": "High-throughput inference engine for LLMs (INSTALLED)",
+        "script": "install_vllm.sh",
+        "required": False,
+        "status": "installed"
+    },
+    {
+        "name": "Flash Attention CK",
+        "description": "Efficient attention computation (IN PROGRESS - Assembly code debugging)",
+        "script": "install_flash_attention_ck.sh",
+        "required": False,
+        "status": "building"
+    },
+    {
+        "name": "ONNX Runtime",
+        "description": "Cross-platform inference accelerator (BUILDS TAKE HOURS)",
+        "script": "build_onnxruntime.sh",
         "required": False,
         "status": "pending"
     },
@@ -168,23 +182,9 @@ EXTENSION_COMPONENTS = [
         "status": "pending"
     },
     {
-        "name": "vLLM",
-        "description": "High-throughput inference engine for LLMs",
-        "script": "install_vllm.sh",
-        "required": False,
-        "status": "pending"
-    },
-    {
         "name": "ROCm SMI",
         "description": "System monitoring and management for AMD GPUs",
         "script": "install_rocm_smi.sh",
-        "required": False,
-        "status": "pending"
-    },
-    {
-        "name": "ROCm Monitoring Fix",
-        "description": "Fix for 'Expected integer value from monitor' errors in ROCm-smi",
-        "script": "fix_rocm_monitoring.sh",
         "required": False,
         "status": "pending"
     },
@@ -206,13 +206,6 @@ EXTENSION_COMPONENTS = [
         "name": "Weights & Biases",
         "description": "Experiment tracking and visualization",
         "script": "install_wandb.sh",
-        "required": False,
-        "status": "pending"
-    },
-    {
-        "name": "MPI4Py",
-        "description": "MPI for Python",
-        "script": "install_mpi4py.sh",
         "required": False,
         "status": "pending"
     }
@@ -2273,7 +2266,7 @@ def draw_dependencies(stdscr, dependencies, selected_deps, selected_idx=None):
 
     # Don't call refresh here - let the caller handle refreshing
 
-def draw_environment_scripts(stdscr, environment_scripts, selected_idx=None):
+def draw_environment_scripts(stdscr, environment_scripts, selected_idx=None, selected_scripts=None):
     """Draw the environment scripts list."""
     env_y = 11  # Adjusted to start at line 11 instead of 14
     env_x = 2
@@ -2285,6 +2278,12 @@ def draw_environment_scripts(stdscr, environment_scripts, selected_idx=None):
     # Environment scripts
     stdscr.addstr(env_y, env_x, "Environment Setup Scripts:".ljust(curses.COLS - 4), curses.color_pair(COLOR_TITLE))
     env_y += 1
+
+    # Log the selected scripts for debugging
+    if selected_scripts:
+        log_message(f"Selected scripts: {[s['name'] for s in selected_scripts]}")
+    else:
+        log_message("No scripts selected")
 
     for i, script in enumerate(environment_scripts):
         # Determine status symbol and color
@@ -2301,16 +2300,55 @@ def draw_environment_scripts(stdscr, environment_scripts, selected_idx=None):
             status = " "
             color = COLOR_NORMAL
 
-        # Add selection marker
-        if script.get("selected", False):
-            selection = "◉"
-        else:
-            selection = "○"
+        # Check if this script is in the selected_scripts list
+        is_selected = False
+        if selected_scripts:
+            for selected_script in selected_scripts:
+                if selected_script['name'] == script['name']:
+                    is_selected = True
+                    break
 
-        if i == selected_idx:
-            stdscr.addstr(env_y + i, env_x, f"> [{status}] {selection} {script['name']} - {script['description']}".ljust(curses.COLS - 4), curses.color_pair(COLOR_HIGHLIGHT))
+        # Use a filled circle for selected items, empty circle for unselected
+        if is_selected:
+            selection = "◉"  # Filled circle for selected
+            log_message(f"Drawing script {script['name']} as selected")
         else:
-            stdscr.addstr(env_y + i, env_x, f"  [{status}] {selection} {script['name']} - {script['description']}".ljust(curses.COLS - 4), curses.color_pair(color))
+            selection = "○"  # Empty circle for unselected
+            log_message(f"Drawing script {script['name']} as not selected")
+
+        # Highlight the currently focused item
+        if i == selected_idx:
+            # Use a different color for the selection marker to make it more visible
+            selection_text = f"> [{status}] "
+            script_text = f"{script['name']} - {script['description']}".ljust(curses.COLS - len(selection_text) - 4)
+
+            # Draw the selection marker with highlight color
+            stdscr.addstr(env_y + i, env_x, selection_text, curses.color_pair(COLOR_HIGHLIGHT))
+
+            # Draw the selection circle with a different color to make it stand out
+            if is_selected:
+                stdscr.addstr(env_y + i, env_x + len(selection_text), selection, curses.color_pair(COLOR_SUCCESS) | curses.A_BOLD)
+            else:
+                stdscr.addstr(env_y + i, env_x + len(selection_text), selection, curses.color_pair(COLOR_HIGHLIGHT))
+
+            # Draw the rest of the text
+            stdscr.addstr(env_y + i, env_x + len(selection_text) + 1, " " + script_text, curses.color_pair(COLOR_HIGHLIGHT))
+        else:
+            # For non-highlighted items, use normal colors but make selected items stand out
+            selection_text = f"  [{status}] "
+            script_text = f"{script['name']} - {script['description']}".ljust(curses.COLS - len(selection_text) - 4)
+
+            # Draw the selection marker with normal color
+            stdscr.addstr(env_y + i, env_x, selection_text, curses.color_pair(color))
+
+            # Draw the selection circle with a different color to make it stand out
+            if is_selected:
+                stdscr.addstr(env_y + i, env_x + len(selection_text), selection, curses.color_pair(COLOR_SUCCESS) | curses.A_BOLD)
+            else:
+                stdscr.addstr(env_y + i, env_x + len(selection_text), selection, curses.color_pair(color))
+
+            # Draw the rest of the text
+            stdscr.addstr(env_y + i, env_x + len(selection_text) + 1, " " + script_text, curses.color_pair(color))
 
     # Don't call refresh here - let the caller handle refreshing
 
@@ -4391,6 +4429,10 @@ def _main_curses(stdscr):
     env_selected_idx = 0
     selected_env_scripts = []
 
+    # Initialize selected state for environment scripts
+    for script in ENVIRONMENT_SCRIPTS:
+        script["selected"] = False
+
     # Dependencies
     dependencies = None
     dep_selected_idx = 0
@@ -4537,10 +4579,14 @@ def _main_curses(stdscr):
                         ui_state['force_redraw'] = True  # Force redraw
                     elif key == ord(' '):  # Space key to select/deselect
                         script = ENVIRONMENT_SCRIPTS[env_selected_idx]
+                        # Toggle selection state
                         if script in selected_env_scripts:
                             selected_env_scripts.remove(script)
+                            script["selected"] = False  # Update the script's selected property
                         else:
                             selected_env_scripts.append(script)
+                            script["selected"] = True  # Update the script's selected property
+                        log_message(f"Toggled selection of {script['name']} to {script['selected']}")
                         ui_state['force_redraw'] = True  # Force redraw
                     elif key == ord('i'):  # 'i' key to run selected scripts
                         if selected_env_scripts:
@@ -4993,7 +5039,7 @@ def _main_curses(stdscr):
                 elif current_screen == "environment":
                     draw_header(virtual_screen, "Environment Setup")
                     draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to run selected scripts")
-                    draw_environment_scripts(virtual_screen, ENVIRONMENT_SCRIPTS, env_selected_idx)
+                    draw_environment_scripts(virtual_screen, ENVIRONMENT_SCRIPTS, env_selected_idx, selected_env_scripts)
 
                     # Update tracking variables
                     ui_state['last_env_selected_idx'] = env_selected_idx

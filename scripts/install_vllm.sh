@@ -50,6 +50,48 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
+# Function to check and install system sentencepiece if needed
+check_and_install_sentencepiece() {
+    log "Checking sentencepiece availability..."
+    
+    # First try to import from system Python
+    if python3 -c "import sys; sys.path.insert(0, '/usr/lib64/python3.13/site-packages'); import sentencepiece; print('System sentencepiece available')" &>/dev/null; then
+        log "✓ System sentencepiece is available"
+        return 0
+    fi
+    
+    # Try to install sentencepiece in virtual environment
+    if package_installed "sentencepiece"; then
+        log "✓ sentencepiece is available in virtual environment"
+        return 0
+    fi
+    
+    log "sentencepiece is not available, checking system packages..."
+    
+    # Check if system sentencepiece packages are installed
+    if rpm -q python3-sentencepiece sentencepiece-libs &>/dev/null; then
+        log "✓ System sentencepiece packages are installed"
+        return 0
+    fi
+    
+    log "Installing system sentencepiece packages..."
+    
+    # Check if we can use sudo
+    if command -v sudo &>/dev/null; then
+        log "Installing sentencepiece system packages with sudo..."
+        if sudo dnf install -y sentencepiece-libs sentencepiece-devel python3-sentencepiece; then
+            log "✓ Successfully installed system sentencepiece packages"
+            return 0
+        else
+            log "⚠ Failed to install system sentencepiece packages with sudo"
+        fi
+    fi
+    
+    log "⚠ Could not install system sentencepiece packages. vLLM may fail to build."
+    log "Please install manually: sudo dnf install -y sentencepiece-libs sentencepiece-devel python3-sentencepiece"
+    return 1
+}
+
 # Function to get Python package version
 get_package_version() {
     python3 -c "import $1; print($1.__version__)" 2>/dev/null || echo "Not installed"
@@ -153,11 +195,49 @@ INSTALL_DIR="$ML_STACK_DIR/vllm_build"
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
-# Set environment variables for AMD GPUs
-export ROCM_PATH=/opt/rocm
+# Set environment variables for AMD GPUs  
+# Detect actual ROCm installation path
+if [ -d "/opt/rocm" ]; then
+    export ROCM_PATH="/opt/rocm"
+elif [ -f "/usr/bin/hipcc" ]; then
+    export ROCM_PATH="/usr"
+    log "ROCm detected in system path (/usr)"
+else
+    export ROCM_PATH="/opt/rocm"  # fallback
+fi
+
+# Ensure CUDA_VISIBLE_DEVICES matches HIP_VISIBLE_DEVICES for vLLM compatibility
+if [ -n "$HIP_VISIBLE_DEVICES" ] && [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+    export CUDA_VISIBLE_DEVICES="$HIP_VISIBLE_DEVICES"
+    log "Set CUDA_VISIBLE_DEVICES to match HIP_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+fi
+
 # Note: HIP_VISIBLE_DEVICES is already set above based on original environment variables
 export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
 export AMD_LOG_LEVEL=0
+
+# Create nvcc compatibility layer if needed
+if ! command -v nvcc >/dev/null 2>&1; then
+    log "Creating nvcc compatibility layer for ROCm..."
+    mkdir -p /tmp/rocm-cuda-compat
+    cat > /tmp/rocm-cuda-compat/nvcc << 'EOF'
+#!/bin/bash
+# ROCm nvcc compatibility wrapper
+if [[ "$*" == *"--version"* ]]; then
+    echo "nvcc: NVIDIA (R) Cuda compiler driver"
+    echo "Copyright (c) 2005-2023 NVIDIA Corporation"
+    echo "Built on ROCm_compatibility_layer"
+    echo "Cuda compilation tools, release 11.8, V11.8.89"
+    echo "Build cuda_11.8.r11.8/compiler.31833905_0"
+else
+    # Pass through to hipcc for actual compilation
+    exec hipcc "$@"
+fi
+EOF
+    chmod +x /tmp/rocm-cuda-compat/nvcc
+    export PATH="/tmp/rocm-cuda-compat:$PATH"
+    log "nvcc compatibility layer created and added to PATH"
+fi
 
 # Double-check environment variables for Ray compatibility
 # Ray has two specific requirements:
@@ -312,8 +392,8 @@ else
     git reset --hard HEAD
     git clean -fd
 
-    # Try different versions - start with v0.3.2 which is known to work
-    for version in "v0.3.2" "v0.3.1" "v0.3.0" "v0.2.5" "v0.2.0" "main" "master"; do
+    # Try vLLM v0.9.0 with ROCm 6.4 support
+    for version in "v0.9.0" "v0.8.5" "v0.8.0" "v0.7.1" "v0.6.3" "v0.5.5" "main" "master"; do
         log "Trying branch/tag: $version"
         git checkout -f $version || continue
 

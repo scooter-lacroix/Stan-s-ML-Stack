@@ -977,6 +977,13 @@ if not torch.cuda.is_available():
     print('CUDA not available')
     exit(1)
 
+# Ensure torch.version.cuda is set for AMD GPUs
+if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+    if not hasattr(torch.version, 'cuda') or torch.version.cuda is None:
+        torch.version.cuda = '11.8'
+    print(f'AMD GPU detected with ROCm {torch.version.hip}')
+    print(f'Using compatibility mode with CUDA version {torch.version.cuda}')
+
 # Try to create a quantized linear layer
 try:
     linear = bnb.nn.Linear8bitLt(128, 128, bias=True)

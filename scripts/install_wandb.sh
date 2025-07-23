@@ -9,7 +9,7 @@
 set -e  # Exit on error
 
 # Create log directory
-LOG_DIR="$HOME/Desktop/ml_stack_extensions/logs"
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
 mkdir -p $LOG_DIR
 
 # Log file
@@ -22,7 +22,50 @@ log() {
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" >/dev/null 2>&1
+    command -v "$1" > /dev/null 2>&1
+}
+
+# Function to install Python packages with adaptive package management
+install_python_package() {
+    local package_spec="$1"
+    local package_name="$2"
+    
+    # Check if package is already installed
+    if [ -n "$package_name" ] && python3 -c "import $package_name" 2>/dev/null; then
+        log "Package $package_name is already installed"
+        return 0
+    fi
+    
+    log "Installing $package_spec..."
+    
+    # Try uv first if available
+    if command_exists uv; then
+        log "Using uv to install $package_spec..."
+        if uv pip install $package_spec --system 2>/dev/null || \
+           uv pip install $package_spec --user 2>/dev/null || \
+           uv pip install $package_spec --break-system-packages 2>/dev/null; then
+            log "Successfully installed $package_spec with uv"
+            return 0
+        else
+            log "uv installation failed, falling back to pip..."
+        fi
+    fi
+    
+    # Fallback to pip
+    log "Using pip to install $package_spec..."
+    if pip install $package_spec --user 2>/dev/null || \
+       pip install $package_spec --break-system-packages 2>/dev/null; then
+        log "Successfully installed $package_spec with pip"
+        return 0
+    else
+        log "Failed to install $package_spec with both uv and pip"
+        return 1
+    fi
+}
+
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
 }
 
 # Start installation
@@ -53,15 +96,21 @@ INSTALL_DIR="$HOME/ml_stack/wandb"
 mkdir -p $INSTALL_DIR
 cd $INSTALL_DIR
 
-# Install WandB
-log "Installing WandB..."
-if command_exists uv; then
-    log "Using uv to install wandb..."
-    uv pip install wandb
-else
-    log "Using pip to install wandb..."
-    pip install wandb --break-system-packages
+# Check if WandB is already installed
+if package_installed "wandb"; then
+    wandb_version=$(python3 -c "import wandb; print(wandb.__version__)" 2>/dev/null)
+    log "WandB is already installed (version: $wandb_version)"
+    read -p "Do you want to reinstall? (y/n) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log "Skipping WandB installation"
+        exit 0
+    fi
 fi
+
+# Install WandB using adaptive method
+log "Installing WandB..."
+install_python_package "wandb" "wandb"
 
 # Verify installation
 log "Verifying WandB installation..."

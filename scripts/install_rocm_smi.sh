@@ -22,7 +22,7 @@
 set -e  # Exit on error
 
 # Create log directory
-LOG_DIR="$HOME/Desktop/ml_stack_extensions/logs"
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
 mkdir -p $LOG_DIR
 
 # Log file
@@ -35,7 +35,45 @@ log() {
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" >/dev/null 2>&1
+    command -v "$1" > /dev/null 2>&1
+}
+
+# Function to install Python packages with adaptive package management
+install_python_package() {
+    local package_spec="$1"
+    local package_name="$2"
+    
+    # Check if package is already installed
+    if python3 -c "import $package_name" 2>/dev/null; then
+        log "Package $package_name is already installed"
+        return 0
+    fi
+    
+    log "Installing $package_name..."
+    
+    # Try uv first if available
+    if command_exists uv; then
+        log "Using uv to install $package_name..."
+        if uv pip install $package_spec --system 2>/dev/null || \
+           uv pip install $package_spec --user 2>/dev/null || \
+           uv pip install $package_spec --break-system-packages 2>/dev/null; then
+            log "Successfully installed $package_name with uv"
+            return 0
+        else
+            log "uv installation failed, falling back to pip..."
+        fi
+    fi
+    
+    # Fallback to pip
+    log "Using pip to install $package_name..."
+    if pip install $package_spec --user 2>/dev/null || \
+       pip install $package_spec --break-system-packages 2>/dev/null; then
+        log "Successfully installed $package_name with pip"
+        return 0
+    else
+        log "Failed to install $package_name with both uv and pip"
+        return 1
+    fi
 }
 
 # Start installation
@@ -72,12 +110,20 @@ log "Installing ROCm SMI Python wrapper..."
 if [ -d "python_smi_tools" ]; then
     cd python_smi_tools
     if [ -f "setup.py" ]; then
+        log "Installing ROCm SMI Python wrapper using adaptive package management..."
         if command_exists uv; then
             log "Using uv to install ROCm SMI Python wrapper..."
-            uv pip install -e .
+            if uv pip install -e . --system 2>/dev/null || \
+               uv pip install -e . --user 2>/dev/null || \
+               uv pip install -e . --break-system-packages 2>/dev/null; then
+                log "Successfully installed ROCm SMI Python wrapper with uv"
+            else
+                log "uv installation failed, falling back to pip..."
+                pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
+            fi
         else
             log "Using pip to install ROCm SMI Python wrapper..."
-            pip install -e . --break-system-packages
+            pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
         fi
     else
         log "No setup.py found in python_smi_tools. Creating a simple wrapper instead."
@@ -214,10 +260,17 @@ EOF
         cd $INSTALL_DIR/python_wrapper
         if command_exists uv; then
             log "Using uv to install ROCm SMI Python wrapper..."
-            uv pip install -e .
+            if uv pip install -e . --system 2>/dev/null || \
+               uv pip install -e . --user 2>/dev/null || \
+               uv pip install -e . --break-system-packages 2>/dev/null; then
+                log "Successfully installed ROCm SMI Python wrapper with uv"
+            else
+                log "uv installation failed, falling back to pip..."
+                pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
+            fi
         else
             log "Using pip to install ROCm SMI Python wrapper..."
-            pip install -e . --break-system-packages
+            pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
         fi
     fi
 else
@@ -355,10 +408,17 @@ EOF
     cd $INSTALL_DIR/python_wrapper
     if command_exists uv; then
         log "Using uv to install ROCm SMI Python wrapper..."
-        uv pip install -e .
+        if uv pip install -e . --system 2>/dev/null || \
+           uv pip install -e . --user 2>/dev/null || \
+           uv pip install -e . --break-system-packages 2>/dev/null; then
+            log "Successfully installed ROCm SMI Python wrapper with uv"
+        else
+            log "uv installation failed, falling back to pip..."
+            pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
+        fi
     else
         log "Using pip to install ROCm SMI Python wrapper..."
-        pip install -e . --break-system-packages
+        pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
     fi
 fi
 

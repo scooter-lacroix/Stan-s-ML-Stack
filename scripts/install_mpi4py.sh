@@ -173,6 +173,66 @@ check_mpi() {
     fi
 }
 
+# Function to install system MPI packages
+install_system_mpi() {
+    print_step "Installing system MPI packages..."
+    
+    # Detect package manager and install appropriate MPI packages
+    if command -v dnf >/dev/null 2>&1; then
+        print_step "Using dnf to install OpenMPI..."
+        if sudo dnf install -y openmpi openmpi-devel environment-modules; then
+            print_success "System MPI packages installed with dnf"
+            # Load the MPI module
+            if [ -f /etc/profile.d/modules.sh ]; then
+                source /etc/profile.d/modules.sh
+                module load mpi/openmpi-x86_64 2>/dev/null || true
+            fi
+            # Add MPI to PATH
+            export PATH="/usr/lib64/openmpi/bin:$PATH"
+            export LD_LIBRARY_PATH="/usr/lib64/openmpi/lib:$LD_LIBRARY_PATH"
+            return 0
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        print_step "Using apt-get to install OpenMPI..."
+        if sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin; then
+            print_success "System MPI packages installed with apt-get"
+            return 0
+        fi
+    elif command -v yum >/dev/null 2>&1; then
+        print_step "Using yum to install OpenMPI..."
+        if sudo yum install -y openmpi openmpi-devel environment-modules; then
+            print_success "System MPI packages installed with yum"
+            # Load the MPI module
+            if [ -f /etc/profile.d/modules.sh ]; then
+                source /etc/profile.d/modules.sh
+                module load mpi/openmpi-x86_64 2>/dev/null || true
+            fi
+            # Add MPI to PATH
+            export PATH="/usr/lib64/openmpi/bin:$PATH"
+            export LD_LIBRARY_PATH="/usr/lib64/openmpi/lib:$LD_LIBRARY_PATH"
+            return 0
+        fi
+    elif command -v zypper >/dev/null 2>&1; then
+        print_step "Using zypper to install OpenMPI..."
+        if sudo zypper install -y openmpi openmpi-devel; then
+            print_success "System MPI packages installed with zypper"
+            return 0
+        fi
+    elif command -v pacman >/dev/null 2>&1; then
+        print_step "Using pacman to install OpenMPI..."
+        if sudo pacman -S --noconfirm openmpi; then
+            print_success "System MPI packages installed with pacman"
+            return 0
+        fi
+    else
+        print_error "Unknown package manager. Cannot auto-install MPI."
+        return 1
+    fi
+    
+    print_error "Failed to install system MPI packages"
+    return 1
+}
+
 # Function to install mpi4py
 install_mpi4py() {
     print_header "Installing mpi4py"
@@ -184,11 +244,32 @@ install_mpi4py() {
     
     # Check if MPI is installed
     if ! check_mpi; then
-        print_error "MPI is not installed. Please install MPI first."
-        print_step "On Ubuntu/Debian: sudo apt-get install libopenmpi-dev"
-        print_step "On CentOS/RHEL: sudo yum install openmpi-devel"
-        complete_progress_bar
-        return 1
+        print_warning "MPI is not installed. Attempting to install system MPI packages..."
+        update_progress_bar 10
+        draw_progress_bar "Installing system MPI..."
+        
+        if install_system_mpi; then
+            print_success "System MPI packages installed successfully"
+            update_progress_bar 10
+            draw_progress_bar "Verifying MPI installation..."
+            
+            # Re-check if MPI is now available
+            if ! check_mpi; then
+                print_error "MPI installation failed or mpirun is not in PATH"
+                print_step "Try adding MPI to your PATH manually or install it with:"
+                print_step "On Ubuntu/Debian: sudo apt-get install libopenmpi-dev openmpi-bin"
+                print_step "On CentOS/RHEL/Fedora: sudo dnf install openmpi openmpi-devel"
+                complete_progress_bar
+                return 1
+            fi
+        else
+            print_error "Failed to install system MPI packages automatically"
+            print_step "Please install MPI manually:"
+            print_step "On Ubuntu/Debian: sudo apt-get install libopenmpi-dev openmpi-bin"
+            print_step "On CentOS/RHEL/Fedora: sudo dnf install openmpi openmpi-devel"
+            complete_progress_bar
+            return 1
+        fi
     fi
     
     print_success "MPI is installed"

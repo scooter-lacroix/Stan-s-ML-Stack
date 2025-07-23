@@ -91,6 +91,10 @@ onnxruntime_build/
 vllm_build/
 .rocm-smi/
 
+# Embedded git repositories (should be handled as submodules)
+nano-vllm/
+ratatui/
+
 # Benchmark and test results
 benchmark_results/
 test_results/

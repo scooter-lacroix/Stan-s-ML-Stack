@@ -229,7 +229,164 @@ print_error() {
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" >/dev/null 2>&1
+    command -v "$1" > /dev/null 2>&1
+}
+
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to update package lists based on detected package manager
+update_package_lists() {
+    local pkg_manager=$(detect_package_manager)
+    
+    print_step "Using $pkg_manager package manager"
+    
+    case $pkg_manager in
+        "dnf")
+            if [ -n "$NONINTERACTIVE" ]; then
+                sudo dnf check-update -y || true  # dnf returns 100 for available updates
+            else
+                sudo dnf check-update -y || true
+            fi
+            ;;
+        "apt")
+            if [ -n "$NONINTERACTIVE" ]; then
+                DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -y
+            else
+                sudo apt-get update -y
+            fi
+            ;;
+        "yum")
+            sudo yum check-update -y || true
+            ;;
+        "pacman")
+            sudo pacman -Sy
+            ;;
+        "zypper")
+            sudo zypper ref
+            ;;
+        *)
+            print_warning "Unknown package manager, skipping package list update"
+            ;;
+    esac
+}
+
+# Function to install packages based on detected package manager
+install_system_package() {
+    local package="$1"
+    local pkg_manager=$(detect_package_manager)
+    
+    # Map package names between different distributions
+    local mapped_package="$package"
+    case $pkg_manager in
+        "dnf"|"yum")
+            case $package in
+                "build-essential") mapped_package="@development-tools" ;;
+                "python3-dev") mapped_package="python3-devel" ;;
+                "libnuma-dev") mapped_package="numactl-devel" ;;
+                "mesa-utils") mapped_package="mesa-demos" ;;
+            esac
+            ;;
+        "pacman")
+            case $package in
+                "build-essential") mapped_package="base-devel" ;;
+                "python3-dev") mapped_package="python" ;;
+                "libnuma-dev") mapped_package="numactl" ;;
+                "mesa-utils") mapped_package="mesa-demos" ;;
+            esac
+            ;;
+        "zypper")
+            case $package in
+                "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
+                "python3-dev") mapped_package="python3-devel" ;;
+                "libnuma-dev") mapped_package="libnuma-devel" ;;
+            esac
+            ;;
+    esac
+    
+    case $pkg_manager in
+        "dnf")
+            if [ -n "$NONINTERACTIVE" ]; then
+                sudo dnf install -y "$mapped_package"
+            else
+                sudo dnf install -y "$mapped_package"
+            fi
+            ;;
+        "apt")
+            if [ -n "$NONINTERACTIVE" ]; then
+                DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$mapped_package"
+            else
+                sudo apt-get install -y "$mapped_package"
+            fi
+            ;;
+        "yum")
+            sudo yum install -y "$mapped_package"
+            ;;
+        "pacman")
+            sudo pacman -S --noconfirm "$mapped_package"
+            ;;
+        "zypper")
+            sudo zypper install -y "$mapped_package"
+            ;;
+        *)
+            print_error "Cannot install $package: unknown package manager"
+            return 1
+            ;;
+    esac
+}
+
+# Function to check if package is installed based on package manager
+package_installed() {
+    local package="$1"
+    local pkg_manager=$(detect_package_manager)
+    
+    case $pkg_manager in
+        "dnf"|"yum")
+            rpm -q "$package" >/dev/null 2>&1
+            ;;
+        "apt")
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"
+            ;;
+        "pacman")
+            pacman -Q "$package" >/dev/null 2>&1
+            ;;
+        "zypper")
+            zypper se -i "$package" | grep -q "^i"
+            ;;
+        *)
+            # Fallback to command existence check
+            command_exists "$package"
+            ;;
+    esac
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+    
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
 }
 
 # Function to detect AMD GPUs
@@ -798,10 +955,9 @@ check_system_dependencies() {
 
     missing_packages=()
 
-    # Check each package with more robust detection
+    # Check each package with adaptive detection based on package manager
     for package in "${required_packages[@]}"; do
-        # Use dpkg-query for more reliable detection
-        if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
+        if ! package_installed "$package"; then
             missing_packages+=("$package")
         fi
     done
@@ -811,17 +967,8 @@ check_system_dependencies() {
         print_warning "Missing system dependencies: ${missing_packages[*]}"
         print_step "Installing missing dependencies..."
 
-        # Use a more interactive approach for sudo
-        echo "Updating package lists with sudo..."
-
-        # Check if we're running in non-interactive mode
-        if [ -n "$NONINTERACTIVE" ]; then
-            # Use DEBIAN_FRONTEND=noninteractive to avoid prompts
-            DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -y
-        else
-            # Interactive mode
-            sudo apt-get update -y
-        fi
+        # Update package lists using adaptive package manager
+        update_package_lists
 
         # Add a small delay to ensure output is flushed
         sleep 0.1
@@ -874,33 +1021,65 @@ check_system_dependencies() {
                     fi
                 fi
             else
-                # Regular package installation
-                if [ -n "$NONINTERACTIVE" ]; then
-                    # Use DEBIAN_FRONTEND=noninteractive to avoid prompts
-                    DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$package"
-                else
-                    # Interactive mode
-                    sudo apt-get install -y "$package"
-                fi
+                # Regular package installation using adaptive system
+                install_system_package "$package"
             fi
 
             # Add a small delay to ensure output is flushed
             sleep 0.1
 
-            # Verify installation with dpkg-query instead of dpkg -l
-            if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
+            # Verify installation using adaptive package checking
+            if package_installed "$package"; then
                 print_success "Installed $package"
             else
                 print_error "Failed to install $package"
             fi
         done
 
-        # Check if installation was successful with more robust detection
+        # Final verification of all packages using adaptive checking
+        print_step "Final verification of installed packages..."
         for package in "${missing_packages[@]}"; do
-            if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
-                print_success "Installed $package"
+            # For verification, we need to check the mapped package name, not the original
+            local pkg_manager=$(detect_package_manager)
+            local mapped_package="$package"
+            case $pkg_manager in
+                "dnf"|"yum")
+                    case $package in
+                        "build-essential") 
+                            # Check for development-tools group by checking for key components
+                            if command_exists gcc && command_exists make; then
+                                print_success "Development tools (build-essential equivalent) are installed"
+                            else
+                                print_error "Development tools installation incomplete"
+                            fi
+                            continue
+                            ;;
+                        "python3-dev") mapped_package="python3-devel" ;;
+                        "libnuma-dev") mapped_package="numactl-devel" ;;
+                        "mesa-utils") mapped_package="mesa-demos" ;;
+                    esac
+                    ;;
+                "pacman")
+                    case $package in
+                        "build-essential") mapped_package="base-devel" ;;
+                        "python3-dev") mapped_package="python" ;;
+                        "libnuma-dev") mapped_package="numactl" ;;
+                        "mesa-utils") mapped_package="mesa-demos" ;;
+                    esac
+                    ;;
+                "zypper")
+                    case $package in
+                        "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
+                        "python3-dev") mapped_package="python3-devel" ;;
+                        "libnuma-dev") mapped_package="libnuma-devel" ;;
+                    esac
+                    ;;
+            esac
+            
+            if package_installed "$mapped_package"; then
+                print_success "Verified $package ($mapped_package) is installed"
             else
-                print_error "Failed to install $package"
+                print_warning "Could not verify installation of $package ($mapped_package)"
             fi
         done
     else
@@ -1007,7 +1186,7 @@ main() {
     complete_progress_bar
 
     print_header "Enhanced ML Stack Environment Setup Complete"
-    print_step "To apply the changes, run: source $HOME/.bashrc"
+    print_step "To apply the changes, run: source ~/.bashrc"
 
     return 0
 }
