@@ -83,9 +83,9 @@ The ML Stack consists of the following core components:
 
 The ML Stack provides several installation options to suit your needs.
 
-### Current Installation Status (December 2024)
+### Current Status
 
-The ML Stack is currently in a **fully functional state** with the following components installed and verified:
+The ML Stack is currently in a **fully functional state** with the following components built and verified:
 
 - ✅ **ROCm 6.4.43482**: Installed and working
 - ✅ **PyTorch with ROCm**: Installed and GPU-accelerated
