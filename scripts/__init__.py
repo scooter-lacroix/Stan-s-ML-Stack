@@ -5,4 +5,4 @@ This package contains the scripts for installing, configuring, and managing
 Stan's ML Stack, a comprehensive machine learning environment optimized for AMD GPUs.
 """
 
-__version__ = "0.1.3-Nirvana"
+__version__ = "0.1.4-Sotapanna"

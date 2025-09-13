@@ -6,6 +6,7 @@ include requirements.txt
 include setup.py
 include pyproject.toml
 
+recursive-include stans_ml_stack *.py
 recursive-include scripts *.py *.sh
 recursive-include assets *
 recursive-include docs *

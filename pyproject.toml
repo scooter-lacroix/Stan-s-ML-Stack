@@ -42,12 +42,12 @@ Issues = "https://github.com/scooter-lacroix/Stans_MLStack/issues"
 Documentation = "https://github.com/scooter-lacroix/Stans_MLStack/wiki"
 
 [project.scripts]
-ml-stack-install = "scripts.install_ml_stack_curses:main"
-ml-stack-verify = "scripts.enhanced_verify_installation_wrapper:main"
-ml-stack-repair = "scripts.repair_ml_stack_wrapper:main"
+ml-stack-install = "stans_ml_stack.cli.install:main"
+ml-stack-verify = "stans_ml_stack.cli.verify:main"
+ml-stack-repair = "stans_ml_stack.cli.repair:main"
 
 [tool.setuptools]
-packages = ["scripts"]
+packages = ["stans_ml_stack"]
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

@@ -60,6 +60,8 @@ logs/
 *.temp
 .DS_Store
 Thumbs.db
+recent_changes_summary.md
+docker_update_instructions.md
 
 # Data files (but not example data)
 data/

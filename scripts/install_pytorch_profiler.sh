@@ -5,7 +5,7 @@
 # GitHub: https://github.com/scooter-lacroix
 # X: https://x.com/scooter_lacroix
 # Patreon: https://patreon.com/ScooterLacroix
-# 
+#
 # If this code saved you time, consider buying me a coffee! ☕
 # "Code is like humor. When you have to explain it, it's bad!" - Cory House
 #
@@ -13,24 +13,102 @@
 # PyTorch Profiler Installation Script for AMD GPUs
 # =============================================================================
 # This script installs and configures PyTorch Profiler for performance analysis
-# of PyTorch models on AMD GPUs.
-#
-# Author: User
-# Date: $(date +"%Y-%m-%d")
+# of PyTorch models on AMD GPUs with enhanced ROCm support.
 # =============================================================================
 
-set -e  # Exit on error
+# ASCII Art Banner
+cat << "EOF"
+   ██████╗ ██╗   ██╗████████╗ ██████╗ ██████╗  ██████╗██╗  ██╗    ██████╗ ██████╗  ██████╗ ███████╗██╗██╗     ███████╗██████╗
+   ██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝██║  ██║    ██╔══██╗██╔═══██╗██╔═══██╗██╔════╝██║██║     ██╔════╝██╔══██╗
+   ██████╔╝ ╚████╔╝    ██║   ██║   ██║██████╔╝██║     ███████║    ██████╔╝██║   ██║██║   ██║█████╗  ██║██║     █████╗  ██████╔╝
+   ██╔═══╝   ╚██╔╝     ██║   ██║   ██║██╔══██╗██║     ██╔══██║    ██╔═══╝ ██║   ██║██║   ██║██╔══╝  ██║██║     ██╔══╝  ██╔══██╗
+   ██║        ██║      ██║   ╚██████╔╝██║  ██║╚██████╗██║  ██║    ██║     ╚██████╔╝╚██████╔╝██║     ██║███████╗███████╗██║  ██║
+   ╚═╝        ╚═╝      ╚═╝    ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝    ╚═╝      ╚═════╝  ╚═════╝ ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝
+EOF
+echo
 
-# Create log directory
-LOG_DIR="$HOME/Desktop/ml_stack_extensions/logs"
-mkdir -p $LOG_DIR
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
 
-# Log file
-LOG_FILE="$LOG_DIR/pytorch_profiler_install_$(date +"%Y%m%d_%H%M%S").log"
+# Function definitions
+print_header() {
+    echo
+    echo "╔═════════════════════════════════════════════════════════╗"
+    echo "║                                                         ║"
+    echo "║               === $1 ===               ║"
+    echo "║                                                         ║"
+    echo "╚═════════════════════════════════════════════════════════╝"
+    echo
+}
 
-# Function to log messages
-log() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
+print_section() {
+    echo
+    echo "┌─────────────────────────────────────────────────────────┐"
+    echo "│ $1"
+    echo "└─────────────────────────────────────────────────────────┘"
+}
+
+print_step() {
+    echo "➤ $1"
+}
+
+print_success() {
+    echo "✓ $1"
+}
+
+print_warning() {
+    echo "⚠ $1"
+}
+
+print_error() {
+    echo "✗ $1"
+}
+
+# Function to print a clean separator line
+print_separator() {
+    echo "───────────────────────────────────────────────────────────"
 }
 
 # Function to check if command exists
@@ -38,525 +116,516 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Start installation
-log "=== Starting PyTorch Profiler Installation ==="
-log "System: $(uname -a)"
-log "ROCm Path: $(which hipcc 2>/dev/null || echo 'Not found')"
-log "Python Version: $(python3 --version)"
-log "PyTorch Version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'Not installed')"
-
-# Check if PyTorch is installed
-if ! python3 -c "import torch" &>/dev/null; then
-    log "Error: PyTorch is not installed. Please install PyTorch with ROCm support first."
-    exit 1
-fi
-
-# Create installation directory
-INSTALL_DIR="$HOME/ml_stack/pytorch_profiler"
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
-
-# Install dependencies
-log "Installing dependencies..."
-pip install tensorboard pandas matplotlib --break-system-packages
-
-# Verify installation
-log "Verifying PyTorch Profiler installation..."
-python3 -c "from torch.profiler import profile, record_function, ProfilerActivity; print('PyTorch Profiler is available')"
-
-if [ $? -eq 0 ]; then
-    log "PyTorch Profiler installation successful!"
-else
-    log "PyTorch Profiler installation failed. Please check the logs."
-    exit 1
-fi
-
-# Create example scripts
-log "Creating example scripts..."
-
-# Basic profiling example
-BASIC_EXAMPLE="$INSTALL_DIR/basic_profiling_example.py"
-cat > $BASIC_EXAMPLE << 'EOF'
-#!/usr/bin/env python3
-"""
-Basic PyTorch Profiler Example
-
-This script demonstrates how to use PyTorch Profiler to analyze the performance
-of a simple neural network on AMD GPUs.
-"""
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.profiler import profile, record_function, ProfilerActivity
-
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name()}")
-
-# Define a simple model
-class SimpleModel(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(SimpleModel, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, output_size)
-    
-    def forward(self, x):
-        with record_function("fc1"):
-            x = self.fc1(x)
-        with record_function("relu"):
-            x = self.relu(x)
-        with record_function("fc2"):
-            x = self.fc2(x)
-        return x
-
-# Create model and move to GPU
-input_size = 1000
-hidden_size = 2000
-output_size = 500
-model = SimpleModel(input_size, hidden_size, output_size).to(device)
-
-# Create optimizer
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# Create dummy data
-batch_size = 64
-x = torch.randn(batch_size, input_size, device=device)
-y = torch.randn(batch_size, output_size, device=device)
-
-# Loss function
-criterion = nn.MSELoss()
-
-# Warm-up
-for _ in range(5):
-    optimizer.zero_grad()
-    output = model(x)
-    loss = criterion(output, y)
-    loss.backward()
-    optimizer.step()
-
-# Profile with PyTorch Profiler
-with profile(
-    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-    record_shapes=True,
-    profile_memory=True,
-    with_stack=True
-) as prof:
-    for _ in range(10):
-        with record_function("training_batch"):
-            optimizer.zero_grad()
-            with record_function("forward"):
-                output = model(x)
-                loss = criterion(output, y)
-            with record_function("backward"):
-                loss.backward()
-            with record_function("optimizer_step"):
-                optimizer.step()
-
-# Print results
-print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-
-# Export trace
-prof.export_chrome_trace("trace.json")
-print("Trace exported to trace.json")
-
-# Export stack trace
-prof.export_stacks("stacks.txt", "self_cuda_time_total")
-print("Stack trace exported to stacks.txt")
-
-print("\nTo view the trace in Chrome:")
-print("1. Open Chrome and navigate to chrome://tracing")
-print("2. Click 'Load' and select the trace.json file")
-EOF
-
-# Advanced profiling example
-ADVANCED_EXAMPLE="$INSTALL_DIR/advanced_profiling_example.py"
-cat > $ADVANCED_EXAMPLE << 'EOF'
-#!/usr/bin/env python3
-"""
-Advanced PyTorch Profiler Example
-
-This script demonstrates advanced usage of PyTorch Profiler, including
-TensorBoard integration, memory profiling, and custom events.
-"""
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import time
-import os
-from torch.profiler import profile, record_function, ProfilerActivity
-from torch.profiler import schedule, tensorboard_trace_handler
-
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name()}")
-
-# Define a more complex model
-class ComplexModel(nn.Module):
-    def __init__(self):
-        super(ComplexModel, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu1 = nn.ReLU(inplace=True)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(128)
-        self.relu2 = nn.ReLU(inplace=True)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(256)
-        self.relu3 = nn.ReLU(inplace=True)
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(256 * 4 * 4, 1024)
-        self.relu4 = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(1024, 10)
-    
-    def forward(self, x):
-        with record_function("conv_block1"):
-            x = self.conv1(x)
-            x = self.bn1(x)
-            x = self.relu1(x)
-            x = self.pool1(x)
-        
-        with record_function("conv_block2"):
-            x = self.conv2(x)
-            x = self.bn2(x)
-            x = self.relu2(x)
-            x = self.pool2(x)
-        
-        with record_function("conv_block3"):
-            x = self.conv3(x)
-            x = self.bn3(x)
-            x = self.relu3(x)
-            x = self.pool3(x)
-        
-        with record_function("classifier"):
-            x = self.flatten(x)
-            x = self.fc1(x)
-            x = self.relu4(x)
-            x = self.dropout(x)
-            x = self.fc2(x)
-        
-        return x
-
-# Create model and move to GPU
-model = ComplexModel().to(device)
-
-# Create optimizer
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# Create dummy data (simulating images)
-batch_size = 32
-x = torch.randn(batch_size, 3, 32, 32, device=device)
-y = torch.randint(0, 10, (batch_size,), device=device)
-
-# Loss function
-criterion = nn.CrossEntropyLoss()
-
-# Create directory for TensorBoard logs
-log_dir = "tb_logs"
-os.makedirs(log_dir, exist_ok=True)
-
-# Define profiler schedule
-def trace_handler(p):
-    output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
-    print(output)
-    p.export_chrome_trace(f"trace_{p.step_num}.json")
-
-# Custom profiling schedule
-my_schedule = schedule(
-    skip_first=5,    # Skip first 5 steps (warm-up)
-    wait=1,          # Wait 1 step
-    warmup=1,        # Warmup for 1 step
-    active=3,        # Profile for 3 steps
-    repeat=1         # Repeat the cycle once
-)
-
-# Training function
-def train(num_epochs=5):
-    # Warm-up
-    print("Warming up...")
-    for _ in range(3):
-        optimizer.zero_grad()
-        output = model(x)
-        loss = criterion(output, y)
-        loss.backward()
-        optimizer.step()
-    
-    # Profile with PyTorch Profiler
-    print("Starting profiling...")
-    with profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        schedule=my_schedule,
-        on_trace_ready=tensorboard_trace_handler(log_dir),
-        record_shapes=True,
-        profile_memory=True,
-        with_stack=True,
-        with_flops=True
-    ) as prof:
-        for epoch in range(num_epochs):
-            print(f"Epoch {epoch+1}/{num_epochs}")
-            
-            # Simulate multiple batches
-            for batch in range(5):
-                with record_function(f"epoch_{epoch}_batch_{batch}"):
-                    # Data loading simulation
-                    with record_function("data_loading"):
-                        time.sleep(0.01)  # Simulate data loading
-                        batch_x = torch.randn(batch_size, 3, 32, 32, device=device)
-                        batch_y = torch.randint(0, 10, (batch_size,), device=device)
-                    
-                    # Training step
-                    optimizer.zero_grad()
-                    
-                    with record_function("forward"):
-                        output = model(batch_x)
-                        loss = criterion(output, batch_y)
-                    
-                    with record_function("backward"):
-                        loss.backward()
-                    
-                    with record_function("optimizer_step"):
-                        optimizer.step()
-                
-                # Step the profiler
-                prof.step()
-    
-    print("Profiling complete!")
-    print(f"TensorBoard logs saved to {log_dir}")
-    print("\nTo view in TensorBoard, run:")
-    print(f"tensorboard --logdir={log_dir}")
-
-if __name__ == "__main__":
-    train()
-EOF
-
-# Memory profiling example
-MEMORY_EXAMPLE="$INSTALL_DIR/memory_profiling_example.py"
-cat > $MEMORY_EXAMPLE << 'EOF'
-#!/usr/bin/env python3
-"""
-Memory Profiling Example
-
-This script demonstrates how to use PyTorch Profiler to analyze memory usage
-of PyTorch models on AMD GPUs.
-"""
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import matplotlib.pyplot as plt
-import pandas as pd
-from torch.profiler import profile, record_function, ProfilerActivity
-
-# Set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name()}")
-
-# Define a model with memory-intensive operations
-class MemoryIntensiveModel(nn.Module):
-    def __init__(self):
-        super(MemoryIntensiveModel, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv2d(256, 512, kernel_size=3, padding=1)
-        self.conv5 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(512 * 1 * 1, 4096)
-        self.fc2 = nn.Linear(4096, 1000)
-        self.relu = nn.ReLU(inplace=True)
-    
-    def forward(self, x):
-        # Store intermediate activations
-        activations = []
-        
-        with record_function("conv_block1"):
-            x = self.conv1(x)
-            x = self.relu(x)
-            activations.append(x.clone())  # Store activation
-            x = self.pool(x)
-        
-        with record_function("conv_block2"):
-            x = self.conv2(x)
-            x = self.relu(x)
-            activations.append(x.clone())  # Store activation
-            x = self.pool(x)
-        
-        with record_function("conv_block3"):
-            x = self.conv3(x)
-            x = self.relu(x)
-            activations.append(x.clone())  # Store activation
-            x = self.pool(x)
-        
-        with record_function("conv_block4"):
-            x = self.conv4(x)
-            x = self.relu(x)
-            activations.append(x.clone())  # Store activation
-            x = self.pool(x)
-        
-        with record_function("conv_block5"):
-            x = self.conv5(x)
-            x = self.relu(x)
-            activations.append(x.clone())  # Store activation
-            x = self.pool(x)
-        
-        with record_function("classifier"):
-            x = self.flatten(x)
-            x = self.fc1(x)
-            x = self.relu(x)
-            activations.append(x.clone())  # Store activation
-            x = self.fc2(x)
-        
-        # Concatenate activations to simulate memory pressure
-        with record_function("memory_pressure"):
-            concat = torch.cat([a.flatten(start_dim=1) for a in activations], dim=1)
-            result = torch.matmul(concat, concat.transpose(0, 1))
-            x = x + result.mean(dim=1, keepdim=True)
-        
-        return x
-
-# Create model and move to GPU
-model = MemoryIntensiveModel().to(device)
-
-# Create optimizer
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# Create dummy data (simulating images)
-batch_size = 16
-x = torch.randn(batch_size, 3, 32, 32, device=device)
-y = torch.randint(0, 1000, (batch_size,), device=device)
-
-# Loss function
-criterion = nn.CrossEntropyLoss()
-
-# Warm-up
-print("Warming up...")
-for _ in range(3):
-    optimizer.zero_grad()
-    output = model(x)
-    loss = criterion(output, y)
-    loss.backward()
-    optimizer.step()
-
-# Profile with PyTorch Profiler
-print("Starting memory profiling...")
-with profile(
-    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-    record_shapes=True,
-    profile_memory=True,
-    with_stack=True
-) as prof:
-    optimizer.zero_grad()
-    with record_function("forward"):
-        output = model(x)
-        loss = criterion(output, y)
-    with record_function("backward"):
-        loss.backward()
-    with record_function("optimizer_step"):
-        optimizer.step()
-
-# Print memory stats
-print("\nMemory Stats by Operator:")
-memory_stats = prof.key_averages().table(sort_by="self_cuda_memory_usage", row_limit=10)
-print(memory_stats)
-
-# Export trace
-prof.export_chrome_trace("memory_trace.json")
-print("Memory trace exported to memory_trace.json")
-
-# Analyze and visualize memory usage
-events = prof.events()
-memory_events = []
-
-for evt in events:
-    if evt.cuda_memory_usage != 0:
-        memory_events.append({
-            'name': evt.name,
-            'memory_usage': evt.cuda_memory_usage / (1024 * 1024),  # Convert to MB
-            'self_memory_usage': evt.self_cuda_memory_usage / (1024 * 1024),  # Convert to MB
-            'device': evt.device
-        })
-
-if memory_events:
-    # Convert to DataFrame
-    df = pd.DataFrame(memory_events)
-    
-    # Plot memory usage by operator
-    plt.figure(figsize=(12, 6))
-    top_memory_ops = df.nlargest(10, 'self_memory_usage')
-    plt.barh(top_memory_ops['name'], top_memory_ops['self_memory_usage'])
-    plt.xlabel('Self Memory Usage (MB)')
-    plt.title('Top 10 Memory-Intensive Operations')
-    plt.tight_layout()
-    plt.savefig('memory_usage_by_op.png')
-    print("Memory usage plot saved to memory_usage_by_op.png")
-else:
-    print("No memory events recorded")
-
-print("\nMemory Profiling Tips:")
-print("1. Look for large memory allocations in the 'self_cuda_memory_usage' column")
-print("2. Check for memory leaks by monitoring memory usage over time")
-print("3. Use smaller batch sizes or gradient accumulation for large models")
-print("4. Consider using checkpointing for memory-intensive models")
-print("5. Use mixed precision training to reduce memory usage")
-EOF
-
-# Make the example scripts executable
-chmod +x $BASIC_EXAMPLE $ADVANCED_EXAMPLE $MEMORY_EXAMPLE
-
-log "Created example scripts:"
-log "- Basic profiling: $BASIC_EXAMPLE"
-log "- Advanced profiling: $ADVANCED_EXAMPLE"
-log "- Memory profiling: $MEMORY_EXAMPLE"
-
-# Create a README file
-README_FILE="$INSTALL_DIR/README.md"
-cat > $README_FILE << 'EOF'
-# PyTorch Profiler Examples
-
-This directory contains examples of using PyTorch Profiler with AMD GPUs.
-
-## Basic Profiling Example
-
-```bash
-python basic_profiling_example.py
-```
-
-This example demonstrates:
-- Basic profiling setup
-- Recording function calls
-- Analyzing CPU and GPU performance
-- Exporting Chrome traces
-
-## Advanced Profiling Example
-
-```bash
-python advanced_profiling_example.py
-```
-
-This example demonstrates:
-- TensorBoard integration
-- Custom profiling schedules
-- Memory profiling
-- FLOP counting
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
+}
+
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
+
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Function to detect ROCm version with regex patterns
+detect_rocm_version() {
+    local rocm_version=""
+
+    # Try rocminfo first
+    if command_exists rocminfo; then
+        rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | sed -n 's/.*ROCm Version:\s*\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' | head -n 1)
+    fi
+
+    # Fallback to directory listing with regex
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+    fi
+
+    # Fallback to hipcc version
+    if [ -z "$rocm_version" ] && command_exists hipcc; then
+        hipcc_version=$(hipcc --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+        if [ -n "$hipcc_version" ]; then
+            rocm_version="$hipcc_version"
+        fi
+    fi
+
+    echo "$rocm_version"
+}
+
+# Function to detect GPU architecture
+detect_gpu_architecture() {
+    local gpu_arch=""
+
+    if command_exists rocminfo; then
+        # Try to get GPU architecture from rocminfo
+        gpu_arch=$(rocminfo 2>/dev/null | grep -i "gfx" | head -n 1 | grep -oE 'gfx[0-9]+' | head -n 1)
+    fi
+
+    # Fallback to common architectures based on ROCm version
+    if [ -z "$gpu_arch" ]; then
+        local rocm_version=$(detect_rocm_version)
+        local major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
+
+        case $major_version in
+            6)
+                gpu_arch="gfx1100"  # RDNA3
+                ;;
+            5)
+                gpu_arch="gfx1030"  # RDNA2
+                ;;
+            *)
+                gpu_arch="gfx1100"  # Default to latest
+                ;;
+        esac
+    fi
+
+    echo "$gpu_arch"
+}
+
+# Function to install rocminfo if missing
+install_rocminfo() {
+    local package_manager=$(detect_package_manager)
+
+    print_step "Installing rocminfo using $package_manager..."
+
+    case $package_manager in
+        apt)
+            sudo apt-get update && sudo apt-get install -y rocminfo
+            ;;
+        dnf)
+            sudo dnf install -y rocminfo
+            ;;
+        yum)
+            sudo yum install -y rocminfo
+            ;;
+        pacman)
+            sudo pacman -S rocminfo
+            ;;
+        zypper)
+            sudo zypper install -y rocminfo
+            ;;
+        *)
+            print_error "Unsupported package manager: $package_manager"
+            return 1
+            ;;
+    esac
+
+    if command_exists rocminfo; then
+        print_success "rocminfo installed successfully"
+        return 0
+    else
+        print_error "Failed to install rocminfo"
+        return 1
+    fi
+}
+
+# Function to setup ROCm environment variables
+setup_rocm_environment() {
+    print_step "Setting up ROCm environment variables..."
+
+    # Detect GPU architecture for optimal configuration
+    local gpu_arch=$(detect_gpu_architecture)
+    HSA_OVERRIDE_GFX_VERSION="${gpu_arch#gfx}"  # Remove 'gfx' prefix
+    PYTORCH_ROCM_ARCH="$gpu_arch"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Set HSA_TOOLS_LIB if rocprofiler library exists
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+        print_step "ROCm profiler library found and configured"
+    else
+        # Try to install rocprofiler
+        if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+            print_step "Installing rocprofiler for HSA tools support..."
+            sudo apt-get update && sudo apt-get install -y rocprofiler
+            if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                print_success "ROCm profiler installed and configured"
+            else
+                HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler installation failed, disabling HSA tools"
+            fi
+        else
+            HSA_TOOLS_LIB=0
+            print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+        fi
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+        unset PYTORCH_CUDA_ALLOC_CONF
+        print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+    fi
+
+    print_success "ROCm environment variables configured"
+}
+
+# Function to check for dry run mode
+is_dry_run() {
+    [[ "$*" == *"--dry-run"* ]]
+}
+
+# Function to check for force flag
+is_force() {
+    [[ "$*" == *"--force"* ]]
+}
+
+# Function to handle errors with retry mechanism
+retry_command() {
+    local max_attempts=3
+    local attempt=1
+    local command="$1"
+    local error_msg="$2"
+
+    while [ $attempt -le $max_attempts ]; do
+        print_step "Attempt $attempt/$max_attempts: $command"
+        if eval "$command"; then
+            return 0
+        else
+            print_warning "Attempt $attempt failed"
+            if [ $attempt -lt $max_attempts ]; then
+                sleep 2
+            fi
+        fi
+        ((attempt++))
+    done
+
+    print_error "$error_msg"
+    return 1
+}
+
+# Function to detect container environment
+is_container() {
+    # Check for common container indicators
+    if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q container /proc/1/cgroup 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to detect WSL environment
+is_wsl() {
+    if grep -q "microsoft" /proc/version 2>/dev/null || [ -n "$WSL_DISTRO_NAME" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Main installation function
+install_pytorch_profiler() {
+    print_header "PyTorch Profiler Installation"
+
+    # Check for dry run
+    if is_dry_run "$@"; then
+        print_warning "DRY RUN MODE - No actual changes will be made"
+        echo
+    fi
+
+    # Detect environment
+    print_section "Environment Detection"
+
+    if is_container; then
+        print_step "Container environment detected"
+    fi
+
+    if is_wsl; then
+        print_step "WSL environment detected"
+    fi
+
+    # Check if PyTorch is installed
+    print_section "Checking PyTorch Installation"
+
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
+
+    if $PYTHON_CMD -c "import torch" &>/dev/null; then
+        pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
+
+        # Check if PyTorch has ROCm/HIP support
+        if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
+            hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
+
+            # Test if GPU acceleration works
+            if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
+                print_success "PyTorch with ROCm support is already installed and working (PyTorch $pytorch_version, ROCm $hip_version)"
+
+                # Check if --force flag is provided
+                if is_force "$@"; then
+                    print_warning "Force reinstall requested - proceeding with reinstallation"
+                    print_step "Will reinstall PyTorch Profiler dependencies"
+                else
+                    print_step "PyTorch installation is complete. Use --force to reinstall profiler dependencies anyway."
+                fi
+            else
+                print_warning "PyTorch with ROCm support is installed (PyTorch $pytorch_version, ROCm $hip_version) but GPU acceleration is not working"
+                print_step "Will install PyTorch Profiler (GPU acceleration may be limited)"
+            fi
+        else
+            print_warning "PyTorch is installed (version $pytorch_version) but without ROCm support"
+            print_step "Will install PyTorch Profiler (GPU profiling may not work)"
+        fi
+    else
+        print_error "PyTorch is not installed. Please install PyTorch with ROCm support first."
+        print_step "Run: ./install_pytorch_rocm.sh"
+        return 1
+    fi
+
+    # Check ROCm installation
+    print_section "Checking ROCm Installation"
+
+    if command_exists rocminfo; then
+        print_success "rocminfo found"
+    else
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            if ! is_dry_run "$@"; then
+                if ! install_rocminfo; then
+                    print_error "Failed to install rocminfo"
+                    return 1
+                fi
+            else
+                print_step "[DRY RUN] Would install rocminfo"
+            fi
+        else
+            print_error "ROCm is not installed. Please install ROCm first."
+            return 1
+        fi
+    fi
+
+    # Detect ROCm version
+    rocm_version=$(detect_rocm_version)
+    if [ -z "$rocm_version" ]; then
+        print_warning "Could not detect ROCm version, using default version 6.4.0"
+        rocm_version="6.4.0"
+    else
+        print_success "Detected ROCm version: $rocm_version"
+    fi
+
+    # Setup ROCm environment
+    if ! is_dry_run "$@"; then
+        setup_rocm_environment
+    else
+        print_step "[DRY RUN] Would setup ROCm environment variables"
+    fi
+
+    # Check if uv is installed
+    print_section "Installing PyTorch Profiler Dependencies"
+
+    if ! command_exists uv; then
+        if ! is_dry_run "$@"; then
+            print_step "Installing uv package manager..."
+            python3 -m pip install uv
+
+            # Add uv to PATH if it was installed in a user directory
+            if [ -f "$HOME/.local/bin/uv" ]; then
+                export PATH="$HOME/.local/bin:$PATH"
+            fi
+
+            # Add uv to PATH if it was installed via cargo
+            if [ -f "$HOME/.cargo/bin/uv" ]; then
+                export PATH="$HOME/.cargo/bin:$PATH"
+            fi
+
+            if ! command_exists uv; then
+                print_error "Failed to install uv package manager"
+                print_step "Falling back to pip"
+            else
+                print_success "Installed uv package manager"
+            fi
+        else
+            print_step "[DRY RUN] Would install uv package manager"
+        fi
+    else
+        print_success "uv package manager is already installed"
+    fi
+
+    # Ask user for installation preference
+    echo
+    echo -e "${CYAN}${BOLD}PyTorch Profiler Installation Options:${RESET}"
+    echo "1) Global installation (recommended for system-wide use)"
+    echo "2) Virtual environment (isolated installation)"
+    echo "3) Auto-detect (try global, fallback to venv if needed)"
+    echo
+    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+
+    case $INSTALL_CHOICE in
+        1)
+            INSTALL_METHOD="global"
+            print_step "Using global installation method"
+            ;;
+        2)
+            INSTALL_METHOD="venv"
+            print_step "Using virtual environment method"
+            ;;
+        3|*)
+            INSTALL_METHOD="auto"
+            print_step "Using auto-detect method"
+            ;;
+    esac
+
+    # Create a function to handle uv commands properly with venv fallback
+    uv_pip_install() {
+        local args="$@"
+
+        # Check if uv is available as a command
+        if command_exists uv; then
+            case $INSTALL_METHOD in
+                "global")
+                    if ! is_dry_run "$@"; then
+                        print_step "Installing globally with pip..."
+                        python3 -m pip install --break-system-packages $args
+                    else
+                        print_step "[DRY RUN] Would install globally with pip: $args"
+                    fi
+                    PYTORCH_VENV_PYTHON=""
+                    ;;
+                "venv")
+                    if ! is_dry_run "$@"; then
+                        print_step "Creating uv virtual environment..."
+                        VENV_DIR="./pytorch_profiler_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    else
+                        print_step "[DRY RUN] Would create virtual environment and install: $args"
+                    fi
+                    ;;
+                "auto")
+                    if ! is_dry_run "$@"; then
+                        # Try global install first
+                        print_step "Attempting global installation with uv..."
+                        local install_output
+                        install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                        local install_exit_code=$?
+
+                        if echo "$install_output" | grep -q "externally managed"; then
+                            print_warning "Global installation failed due to externally managed environment"
+                            print_step "Creating uv virtual environment for installation..."
+
+                            # Create uv venv in project directory
+                            VENV_DIR="./pytorch_profiler_venv"
+                            if [ ! -d "$VENV_DIR" ]; then
+                                uv venv "$VENV_DIR"
+                            fi
+
+                            # Activate venv and install
+                            source "$VENV_DIR/bin/activate"
+                            print_step "Installing in virtual environment..."
+                            uv pip install $args
+
+                            # Store venv path for verification
+                            PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                            print_success "Installed in virtual environment: $VENV_DIR"
+                        elif [ $install_exit_code -eq 0 ]; then
+                            print_success "Global installation successful"
+                            PYTORCH_VENV_PYTHON=""
+                        else
+                            print_error "Global installation failed with unknown error:"
+                            echo "$install_output"
+                            print_step "Falling back to virtual environment..."
+
+                            # Create uv venv in project directory
+                            VENV_DIR="./pytorch_profiler_venv"
+                            if [ ! -d "$VENV_DIR" ]; then
+                                uv venv "$VENV_DIR"
+                            fi
+
+                            # Activate venv and install
+                            source "$VENV_DIR/bin/activate"
+                            print_step "Installing in virtual environment..."
+                            uv pip install $args
+
+                            # Store venv path for verification
+                            PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                            print_success "Installed in virtual environment: $VENV_DIR"
+                        fi
+                    else
+                        print_step "[DRY RUN] Would attempt auto-detect installation: $args"
+                    fi
+                    ;;
+            esac
+        else
+            # Fall back to pip
+            if ! is_dry_run "$@"; then
+                print_step "Installing with pip..."
+                python3 -m pip install $args
+            else
+                print_step "[DRY RUN] Would install with pip: $args"
+            fi
+            PYTORCH_VENV_PYTHON=""
+        fi
+    }
+
+    # Install PyTorch Profiler dependencies
 - Custom events
 
 ## Memory Profiling Example
@@ -583,9 +652,40 @@ tensorboard --logdir=tb_logs
 ```
 EOF
 
-log "Created README file: $README_FILE"
+}
 
-log "=== PyTorch Profiler Installation Complete ==="
-log "Installation Directory: $INSTALL_DIR"
-log "Log File: $LOG_FILE"
-log "Documentation: $HOME/Desktop/ml_stack_extensions/docs/pytorch_profiler_guide.md"
+# Set script options
+DRY_RUN=false
+FORCE=false
+INSTALL_METHOD="auto"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --force)
+            FORCE=true
+            shift
+            ;;
+        --show-env)
+            show_env
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--dry-run] [--force] [--show-env]"
+            exit 1
+            ;;
+    esac
+done
+
+# Don't exit on error in dry run mode
+if [ "$DRY_RUN" = false ]; then
+    set -e  # Exit on error
+fi
+
+# Run the installation function with all script arguments
+install_pytorch_profiler "$@"

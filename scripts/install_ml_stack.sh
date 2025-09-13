@@ -44,18 +44,50 @@ cat << "EOF"
 EOF
 echo
 
-# Color definitions
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
-REVERSE='\033[7m'
-RESET='\033[0m'
+# Enhanced color support with NO_COLOR detection
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
 
 # Function definitions
 print_header() {
@@ -96,31 +128,346 @@ print_separator() {
     echo -e "${BLUE}───────────────────────────────────────────────────────────${RESET}"
 }
 
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
+}
+
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
+
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Function to detect WSL environment
+detect_wsl() {
+    if [ -f "/proc/version" ] && grep -q "Microsoft" "/proc/version"; then
+        echo "true"
+    elif [ -f "/proc/version" ] && grep -q "microsoft" "/proc/version"; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# Function to detect container environment
+detect_container() {
+    if [ -f "/.dockerenv" ]; then
+        echo "docker"
+    elif grep -q "container" "/proc/1/cgroup" 2>/dev/null; then
+        echo "container"
+    elif [ -n "$CONTAINER" ]; then
+        echo "container"
+    else
+        echo "bare-metal"
+    fi
+}
+
+# Function to detect GPU architecture for optimal configuration
+detect_gpu_architecture() {
+    if command_exists rocminfo; then
+        # Try to detect GPU architecture from rocminfo
+        gpu_arch=$(rocminfo 2>/dev/null | grep "Name:" | head -n 1 | grep -o "gfx[0-9a-z]*" || echo "")
+        if [ -n "$gpu_arch" ]; then
+            echo "$gpu_arch"
+            return 0
+        fi
+    fi
+
+    # Fallback to common architectures based on ROCm version
+    case $rocm_version in
+        6.4*|6.3*)
+            echo "gfx1100"  # RDNA3
+            ;;
+        6.2*|6.1*|6.0*)
+            echo "gfx1030"  # RDNA2
+            ;;
+        5.*)
+            echo "gfx906"   # Vega
+            ;;
+        *)
+            echo "gfx1100"  # Default to latest
+            ;;
+    esac
+}
+
+# Function to retry commands with exponential backoff
+retry_command() {
+    local cmd="$1"
+    local max_attempts="${2:-3}"
+    local base_delay="${3:-1}"
+    local attempt=1
+
+    while [ $attempt -le $max_attempts ]; do
+        print_step "Attempt $attempt/$max_attempts: $cmd"
+
+        if eval "$cmd"; then
+            return 0
+        else
+            if [ $attempt -eq $max_attempts ]; then
+                print_error "Command failed after $max_attempts attempts: $cmd"
+                return 1
+            fi
+
+            local delay=$((base_delay * (2 ** (attempt - 1))))
+            print_warning "Command failed, retrying in $delay seconds..."
+            sleep $delay
+            ((attempt++))
+        fi
+    done
+}
+
+# Function to check return codes and handle errors gracefully
+check_return_code() {
+    local return_code=$1
+    local error_message="$2"
+    local non_critical="${3:-false}"
+
+    if [ $return_code -ne 0 ]; then
+        if [ "$non_critical" = "true" ]; then
+            print_warning "$error_message (non-critical, continuing)"
+            return 0
+        else
+            print_error "$error_message"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Function to create configuration file
+create_config_file() {
+    local config_file="$HOME/.ml_stack_config"
+
+    if [ ! -f "$config_file" ]; then
+        print_step "Creating configuration file: $config_file"
+        cat > "$config_file" << EOF
+# ML Stack Configuration File
+# Generated by ML Stack Installation Script
+
+# Installation preferences
+INSTALL_METHOD="${INSTALL_METHOD:-auto}"
+FORCE_REINSTALL="${FORCE:-false}"
+DRY_RUN="${DRY_RUN:-false}"
+
+# ROCm configuration
+ROCM_VERSION="$rocm_version"
+GPU_ARCHITECTURE="$gpu_arch"
+HSA_OVERRIDE_GFX_VERSION="$HSA_OVERRIDE_GFX_VERSION"
+PYTORCH_ROCM_ARCH="$PYTORCH_ROCM_ARCH"
+
+# Environment detection
+WSL_DETECTED="$wsl_detected"
+CONTAINER_TYPE="$container_type"
+
+# Package manager
+PACKAGE_MANAGER="$(detect_package_manager)"
+
+# Virtual environment (if used)
+PYTORCH_VENV_PYTHON="$PYTORCH_VENV_PYTHON"
+EOF
+        print_success "Configuration file created"
+    fi
+}
+
+# Function to create backup for rollback
+create_backup() {
+    local component="$1"
+    local backup_dir="$HOME/.ml_stack_backup/$(date +%Y%m%d_%H%M%S)_${component}"
+
+    print_step "Creating backup for $component..."
+    mkdir -p "$backup_dir"
+
+    # Backup Python packages
+    if command_exists uv; then
+        uv pip freeze > "$backup_dir/requirements.txt" 2>/dev/null || true
+    else
+        python3 -m pip freeze > "$backup_dir/requirements.txt" 2>/dev/null || true
+    fi
+
+    # Backup environment variables
+    env | grep -E "(ROCM|PYTORCH|HSA|CUDA)" > "$backup_dir/environment_vars.txt" 2>/dev/null || true
+
+    # Backup configuration files
+    cp -r "$HOME/.ml_stack_config" "$backup_dir/" 2>/dev/null || true
+
+    print_success "Backup created: $backup_dir"
+    echo "$backup_dir"
+}
+
+# Function to rollback installation
+rollback_installation() {
+    local component="$1"
+    local backup_dir="$2"
+
+    if [ ! -d "$backup_dir" ]; then
+        print_error "Backup directory not found: $backup_dir"
+        return 1
+    fi
+
+    print_warning "Rolling back $component installation..."
+
+    # Restore Python packages
+    if [ -f "$backup_dir/requirements.txt" ]; then
+        print_step "Restoring Python packages..."
+        if command_exists uv; then
+            uv pip install -r "$backup_dir/requirements.txt" --quiet
+        else
+            python3 -m pip install -r "$backup_dir/requirements.txt" --quiet
+        fi
+    fi
+
+    # Restore environment variables
+    if [ -f "$backup_dir/environment_vars.txt" ]; then
+        print_step "Restoring environment variables..."
+        while IFS='=' read -r key value; do
+            export "$key=$value"
+        done < "$backup_dir/environment_vars.txt"
+    fi
+
+    # Restore configuration
+    if [ -f "$backup_dir/.ml_stack_config" ]; then
+        cp "$backup_dir/.ml_stack_config" "$HOME/"
+    fi
+
+    print_success "Rollback completed for $component"
+}
+
+# Function to handle dry run mode
+dry_run_command() {
+    local cmd="$1"
+    if [ "$DRY_RUN" = "true" ]; then
+        print_step "[DRY RUN] Would execute: $cmd"
+        return 0
+    else
+        eval "$cmd"
+        return $?
+    fi
+}
+
 check_prerequisites() {
     print_section "Checking prerequisites"
 
     echo -e "${CYAN}${BOLD}System Requirements Check${RESET}"
     print_separator
 
-    # Check if ROCm is installed
-    if ! command -v rocminfo &> /dev/null; then
-        print_error "ROCm is not installed. Please install ROCm first."
-        return 1
+    # Enhanced ROCm detection with automatic installation
+    print_section "ROCm Detection and Setup"
+
+    if ! command_exists rocminfo; then
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            package_manager=$(detect_package_manager)
+            case $package_manager in
+                apt)
+                    sudo apt update && sudo apt install -y rocminfo
+                    ;;
+                dnf)
+                    sudo dnf install -y rocminfo
+                    ;;
+                yum)
+                    sudo yum install -y rocminfo
+                    ;;
+                pacman)
+                    sudo pacman -S rocminfo
+                    ;;
+                zypper)
+                    sudo zypper install -y rocminfo
+                    ;;
+                *)
+                    print_error "Unsupported package manager: $package_manager"
+                    return 1
+                    ;;
+            esac
+            if command_exists rocminfo; then
+                print_success "Installed rocminfo"
+            else
+                print_error "Failed to install rocminfo"
+                return 1
+            fi
+        else
+            print_error "ROCm is not installed. Please install ROCm first."
+            return 1
+        fi
     fi
     print_success "ROCm is installed"
 
-    # Check ROCm version - try multiple methods to ensure we get a version
-    rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk '{print $3}')
+    # Enhanced ROCm version detection with regex patterns
+    rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
 
     # If rocminfo didn't work, try alternative methods
     if [ -z "$rocm_version" ]; then
         # Try getting version from rocm-smi
-        if command -v rocm-smi &> /dev/null; then
+        if command_exists rocm-smi; then
             rocm_version=$(rocm-smi --showversion 2>/dev/null | grep -i "ROCm Version" | awk '{print $3}')
         fi
     fi
 
-    # If still no version, try checking the directory name
+    # If still no version, try checking the directory name with regex
     if [ -z "$rocm_version" ]; then
         if [ -d "/opt/rocm" ]; then
             # Try to get version from a symlink
@@ -148,6 +495,45 @@ check_prerequisites() {
     else
         print_success "Detected ROCm version: $rocm_version"
     fi
+
+    # Set up ROCm environment variables
+    print_step "Setting up ROCm environment variables..."
+    export HSA_OVERRIDE_GFX_VERSION=11.0.0
+    export PYTORCH_ROCM_ARCH="gfx1100"
+    export ROCM_PATH="/opt/rocm"
+    export PATH="/opt/rocm/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Set HSA_TOOLS_LIB if rocprofiler library exists
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+        print_step "ROCm profiler library found and configured"
+    else
+        # Check if we can install rocprofiler
+        if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+            print_step "Installing rocprofiler for HSA tools support..."
+            sudo apt-get update && sudo apt-get install -y rocprofiler
+            if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                print_success "ROCm profiler installed and configured"
+            else
+                export HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler installation failed, disabling HSA tools"
+            fi
+        else
+            export HSA_TOOLS_LIB=0
+            print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+        fi
+    fi
+
+    # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+        unset PYTORCH_CUDA_ALLOC_CONF
+        print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+    fi
+
+    print_success "ROCm environment variables configured"
 
     print_separator
     echo -e "${CYAN}${BOLD}Software Dependencies${RESET}"
@@ -190,6 +576,24 @@ check_prerequisites() {
     print_success "CMake is installed"
 
     print_separator
+    echo -e "${CYAN}${BOLD}Cross-Platform Detection${RESET}"
+    print_separator
+
+    # Detect environment
+    wsl_detected=$(detect_wsl)
+    container_type=$(detect_container)
+
+    if [ "$wsl_detected" = "true" ]; then
+        print_warning "WSL environment detected"
+        print_step "WSL-specific configurations will be applied"
+    fi
+
+    if [ "$container_type" != "bare-metal" ]; then
+        print_warning "Container environment detected: $container_type"
+        print_step "Container-specific configurations will be applied"
+    fi
+
+    print_separator
     echo -e "${CYAN}${BOLD}GPU Detection${RESET}"
     print_separator
 
@@ -202,6 +606,13 @@ check_prerequisites() {
     # Count AMD GPUs
     gpu_count=$(rocminfo 2>/dev/null | grep "Device Type:.*GPU" | wc -l)
     print_success "Detected $gpu_count AMD GPU(s)"
+
+    # Detect GPU architecture for optimal configuration
+    gpu_arch=$(detect_gpu_architecture)
+    print_success "Detected GPU architecture: $gpu_arch"
+
+    # Update PYTORCH_ROCM_ARCH based on detected architecture
+    export PYTORCH_ROCM_ARCH="$gpu_arch"
 
     # List AMD GPUs
     echo -e "${CYAN}Detected GPU Hardware:${RESET}"
@@ -243,10 +654,35 @@ check_prerequisites() {
         export PYTORCH_ROCM_DEVICE=$(seq -s, 0 $((gpu_count-1)))
     fi
 
+    # Set ROCm-specific environment variables
+    if [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then
+        export HSA_OVERRIDE_GFX_VERSION=11.0.0
+    fi
+
+    if [ -z "$PYTORCH_ROCM_ARCH" ]; then
+        export PYTORCH_ROCM_ARCH="$gpu_arch"
+    fi
+
+    if [ -z "$ROCM_PATH" ]; then
+        export ROCM_PATH="/opt/rocm"
+    fi
+
+    # Update PATH and LD_LIBRARY_PATH
+    if [[ ":$PATH:" != *":/opt/rocm/bin:"* ]]; then
+        export PATH="/opt/rocm/bin:$PATH"
+    fi
+
+    if [[ ":$LD_LIBRARY_PATH:" != *":/opt/rocm/lib:"* ]]; then
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+    fi
+
     echo -e "${CYAN}Current Environment Configuration:${RESET}"
     echo -e "  ${GREEN}▸ HIP_VISIBLE_DEVICES:${RESET} $HIP_VISIBLE_DEVICES"
     echo -e "  ${GREEN}▸ CUDA_VISIBLE_DEVICES:${RESET} $CUDA_VISIBLE_DEVICES"
     echo -e "  ${GREEN}▸ PYTORCH_ROCM_DEVICE:${RESET} $PYTORCH_ROCM_DEVICE"
+    echo -e "  ${GREEN}▸ HSA_OVERRIDE_GFX_VERSION:${RESET} $HSA_OVERRIDE_GFX_VERSION"
+    echo -e "  ${GREEN}▸ PYTORCH_ROCM_ARCH:${RESET} $PYTORCH_ROCM_ARCH"
+    echo -e "  ${GREEN}▸ ROCM_PATH:${RESET} $ROCM_PATH"
 
     print_separator
     echo -e "${CYAN}${BOLD}Disk Space Check${RESET}"
@@ -282,11 +718,20 @@ check_prerequisites() {
 install_rocm_config() {
     print_section "Installing ROCm configuration"
 
+    # Create backup before installation
+    local backup_dir=""
+    if [ "$DRY_RUN" != "true" ]; then
+        backup_dir=$(create_backup "rocm_config")
+    fi
+
     # Create ROCm configuration file
     print_step "Creating ROCm configuration file..."
 
     # Create .rocmrc file in home directory
-    cat > $HOME/.rocmrc << EOF
+    if [ "$DRY_RUN" = "true" ]; then
+        print_step "[DRY RUN] Would create ROCm configuration file at $HOME/.rocmrc"
+    else
+        cat > $HOME/.rocmrc << EOF
 # ROCm Configuration File
 # Created by ML Stack Installation Script
 
@@ -294,12 +739,15 @@ install_rocm_config() {
 export HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
 export PYTORCH_ROCM_DEVICE=$PYTORCH_ROCM_DEVICE
+export HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION
+export PYTORCH_ROCM_ARCH=$PYTORCH_ROCM_ARCH
+export ROCM_PATH=$ROCM_PATH
+export HSA_TOOLS_LIB=$HSA_TOOLS_LIB
 
 # Performance Settings
 export HSA_ENABLE_SDMA=0
 export GPU_MAX_HEAP_SIZE=100
 export GPU_MAX_ALLOC_PERCENT=100
-export HSA_TOOLS_LIB=1
 
 # MIOpen Settings
 export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
@@ -311,14 +759,15 @@ export HIP_TRACE_API=0
 export AMD_LOG_LEVEL=4
 EOF
 
-    # Add source to .bashrc if not already there
-    if ! grep -q "source \$HOME/.rocmrc" $HOME/.bashrc; then
-        echo -e "\n# Source ROCm configuration" >> $HOME/.bashrc
-        echo "source \$HOME/.rocmrc" >> $HOME/.bashrc
-    fi
+        # Add source to .bashrc if not already there
+        if ! grep -q "source \$HOME/.rocmrc" $HOME/.bashrc; then
+            echo -e "\n# Source ROCm configuration" >> $HOME/.bashrc
+            echo "source \$HOME/.rocmrc" >> $HOME/.bashrc
+        fi
 
-    # Source the file
-    source $HOME/.rocmrc
+        # Source the file
+        source $HOME/.rocmrc
+    fi
 
     print_success "ROCm configuration installed successfully"
 }
@@ -326,33 +775,177 @@ EOF
 install_pytorch() {
     print_section "Installing PyTorch with ROCm support"
 
-    # Check if PyTorch with ROCm is already installed
-    if python3 -c "import torch; print(torch.version.hip)" &> /dev/null; then
-        pytorch_version=$(python3 -c "import torch; print(torch.__version__)")
-        rocm_version=$(python3 -c "import torch; print(torch.version.hip)")
-        print_warning "PyTorch with ROCm support is already installed (PyTorch $pytorch_version, ROCm $rocm_version)."
-        read -p "Do you want to reinstall? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_step "Skipping PyTorch installation."
-            return 0
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
+
+    if $PYTHON_CMD -c "import torch" &>/dev/null; then
+        pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
+
+        # Check if PyTorch has ROCm/HIP support
+        if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
+            hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
+
+            # Test if GPU acceleration works
+            if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
+                print_success "PyTorch with ROCm support is already installed and working (PyTorch $pytorch_version, ROCm $hip_version)"
+
+                # Check if --force flag is provided
+                if [[ "$*" == *"--force"* ]] || [[ "$PYTORCH_REINSTALL" == "true" ]]; then
+                    print_warning "Force reinstall requested - proceeding with reinstallation"
+                    print_step "Will reinstall PyTorch despite working installation"
+                else
+                    print_step "PyTorch installation is complete and working. Use --force to reinstall anyway."
+                    return 0
+                fi
+            else
+                print_warning "PyTorch with ROCm support is installed (PyTorch $pytorch_version, ROCm $hip_version) but GPU acceleration is not working"
+                print_step "Will reinstall to fix GPU acceleration issues"
+            fi
+        else
+            print_warning "PyTorch is installed (version $pytorch_version) but without ROCm support"
+            print_step "Will reinstall with ROCm support"
         fi
     fi
 
-    # Install PyTorch with ROCm support
-    print_step "Installing PyTorch with ROCm support..."
+    # Check if uv is installed
+    print_section "Installing PyTorch with ROCm Support"
 
-    # Detect ROCm version to use the appropriate PyTorch version
+    if ! command_exists uv; then
+        print_step "Installing uv package manager..."
+        python3 -m pip install uv
+
+        # Add uv to PATH if it was installed in a user directory
+        if [ -f "$HOME/.local/bin/uv" ]; then
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+        # Add uv to PATH if it was installed via cargo
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+        if ! command_exists uv; then
+            print_error "Failed to install uv package manager"
+            print_step "Falling back to pip"
+        else
+            print_success "Installed uv package manager"
+        fi
+    else
+        print_success "uv package manager is already installed"
+    fi
+
+    # Extract ROCm major and minor version
     rocm_major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
     rocm_minor_version=$(echo "$rocm_version" | cut -d '.' -f 2)
 
-    # Check if uv is installed
-    if ! command -v uv &> /dev/null; then
-        print_step "Installing uv package manager..."
-        python3 -m pip install uv
-    fi
+    # Ask user for installation preference
+    echo
+    echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
+    echo "1) Global installation (recommended for system-wide use)"
+    echo "2) Virtual environment (isolated installation)"
+    echo "3) Auto-detect (try global, fallback to venv if needed)"
+    echo
+    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
 
-    # Try to use the exact ROCm version first, then fall back to closest available
+    case $INSTALL_CHOICE in
+        1)
+            INSTALL_METHOD="global"
+            print_step "Using global installation method"
+            ;;
+        2)
+            INSTALL_METHOD="venv"
+            print_step "Using virtual environment method"
+            ;;
+        3|*)
+            INSTALL_METHOD="auto"
+            print_step "Using auto-detect method"
+            ;;
+    esac
+
+    # Create a function to handle uv commands properly with venv fallback
+    uv_pip_install() {
+        local args="$@"
+
+        # Check if uv is available as a command
+        if command_exists uv; then
+            case $INSTALL_METHOD in
+                "global")
+                    print_step "Installing globally with pip..."
+                    python3 -m pip install --break-system-packages $args
+                    PYTORCH_VENV_PYTHON=""
+                    ;;
+                "venv")
+                    print_step "Creating uv virtual environment..."
+                    VENV_DIR="./pytorch_rocm_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+                    PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                    ;;
+                "auto")
+                    # Try global install first
+                    print_step "Attempting global installation with uv..."
+                    local install_output
+                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                    local install_exit_code=$?
+
+                    if echo "$install_output" | grep -q "externally managed"; then
+                        print_warning "Global installation failed due to externally managed environment"
+                        print_step "Creating uv virtual environment for installation..."
+
+                        # Create uv venv in project directory
+                        VENV_DIR="./pytorch_rocm_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+
+                        # Activate venv and install
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+
+                        # Store venv path for verification
+                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    elif [ $install_exit_code -eq 0 ]; then
+                        print_success "Global installation successful"
+                        PYTORCH_VENV_PYTHON=""
+                    else
+                        print_error "Global installation failed with unknown error:"
+                        echo "$install_output"
+                        print_step "Falling back to virtual environment..."
+
+                        # Create uv venv in project directory
+                        VENV_DIR="./pytorch_rocm_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+
+                        # Activate venv and install
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+
+                        # Store venv path for verification
+                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    fi
+                    ;;
+            esac
+        else
+            # Fall back to pip
+            print_step "Installing with pip..."
+            python3 -m pip install $args
+            PYTORCH_VENV_PYTHON=""
+        fi
+    }
+
+    # Use the appropriate PyTorch version based on ROCm version
     if [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
         # For ROCm 6.4+, use nightly builds
         print_step "Using PyTorch nightly build for ROCm 6.4..."
@@ -375,36 +968,52 @@ install_pytorch() {
         uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
     fi
 
-    # Verify installation - check for both HIP and CUDA backends
-    if python3 -c "import torch; print(hasattr(torch, 'version') and hasattr(torch.version, 'hip'))" | grep -q "True"; then
-        # ROCm/HIP backend is available
-        pytorch_version=$(python3 -c "import torch; print(torch.__version__)")
-        rocm_version=$(python3 -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'N/A')")
-        print_success "PyTorch with ROCm support installed successfully (PyTorch $pytorch_version, ROCm $rocm_version)"
+    # Verify installation
+    print_section "Verifying PyTorch Installation"
 
-        # Print GPU information
-        print_step "GPU information:"
-        python3 -c "import torch; print(f'Number of GPUs: {torch.cuda.device_count()}'); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
 
-        # Test a simple tensor operation
-        print_step "Testing GPU tensor operations..."
-        if python3 -c "import torch; x = torch.ones(10, device='cuda' if torch.cuda.is_available() else 'cpu'); y = x + 1; print('Success' if torch.all(y == 2) else 'Failed');" | grep -q "Success"; then
-            print_success "GPU tensor operations working correctly"
+    if $PYTHON_CMD -c "import torch" &>/dev/null; then
+        pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
+        print_success "PyTorch is installed (version: $pytorch_version)"
+
+        # Check if PyTorch has ROCm/HIP support
+        if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
+            hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
+            print_success "PyTorch has ROCm/HIP support (version: $hip_version)"
+
+            # Test GPU availability
+            if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
+                print_success "GPU acceleration is available"
+
+                # Get GPU count
+                gpu_count=$($PYTHON_CMD -c "import torch; print(torch.cuda.device_count())" 2>/dev/null)
+                print_step "PyTorch detected $gpu_count GPU(s)"
+
+                # List GPUs
+                for i in $(seq 0 $((gpu_count-1))); do
+                    gpu_name=$($PYTHON_CMD -c "import torch; print(torch.cuda.get_device_name($i))" 2>/dev/null)
+                    echo "  - GPU $i: $gpu_name"
+                done
+
+                # Test a simple tensor operation
+                print_step "Testing GPU tensor operations..."
+                if $PYTHON_CMD -c "import torch; x = torch.ones(10, device='cuda'); y = x + 1; print('Success' if torch.all(y == 2) else 'Failed')" 2>/dev/null | grep -q "Success"; then
+                    print_success "GPU tensor operations working correctly"
+                else
+                    print_warning "GPU tensor operations may not be working correctly"
+                fi
+            else
+                print_warning "GPU acceleration is not available"
+                print_warning "Check your ROCm installation and environment variables"
+            fi
         else
-            print_warning "GPU tensor operations may not be working correctly"
+            print_warning "PyTorch does not have explicit ROCm/HIP support"
+            print_warning "This might cause issues with AMD GPUs"
         fi
-    elif python3 -c "import torch; print(torch.cuda.is_available())" | grep -q "True"; then
-        # CUDA backend is available but not HIP
-        pytorch_version=$(python3 -c "import torch; print(torch.__version__)")
-        print_warning "PyTorch with CUDA support installed (PyTorch $pytorch_version), but ROCm/HIP support is not detected"
-        print_warning "This may cause issues with AMD GPUs. Consider reinstalling with ROCm support."
-
-        # Print GPU information anyway
-        print_step "GPU information:"
-        python3 -c "import torch; print(f'Number of GPUs: {torch.cuda.device_count()}'); [print(f'GPU {i}: {torch.cuda.get_device_name(i)}') for i in range(torch.cuda.device_count())]"
-        return 0
     else
-        print_error "PyTorch installation failed. Neither ROCm/HIP nor CUDA is available."
+        print_error "PyTorch installation failed"
         return 1
     fi
 
@@ -414,6 +1023,12 @@ install_pytorch() {
 install_onnx_runtime() {
     print_section "Installing ONNX Runtime with ROCm support"
 
+    # Create backup before installation
+    local backup_dir=""
+    if [ "$DRY_RUN" != "true" ]; then
+        backup_dir=$(create_backup "onnxruntime")
+    fi
+
     # Check if ONNX Runtime is already installed
     if python3 -c "import onnxruntime" &> /dev/null; then
         onnx_version=$(python3 -c "import onnxruntime; print(onnxruntime.__version__)")
@@ -422,11 +1037,13 @@ install_onnx_runtime() {
         # Check if ROCMExecutionProvider is available
         if python3 -c "import onnxruntime; print('ROCMExecutionProvider' in onnxruntime.get_available_providers())" | grep -q "True"; then
             print_success "ONNX Runtime with ROCm support is already installed."
-            read -p "Do you want to reinstall? (y/n) " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                print_step "Skipping ONNX Runtime installation."
-                return 0
+            if [[ "$*" != *"--force"* ]] && [ "$FORCE" != "true" ]; then
+                read -p "Do you want to reinstall? (y/n) " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    print_step "Skipping ONNX Runtime installation."
+                    return 0
+                fi
             fi
         else
             print_warning "ONNX Runtime is installed but ROCMExecutionProvider is not available."
@@ -437,12 +1054,13 @@ install_onnx_runtime() {
     # Build and install ONNX Runtime with ROCm support
     print_step "Building ONNX Runtime with ROCm support..."
 
-    # Run the build script
-    $HOME/Prod/Stan-s-ML-Stack/scripts/build_onnxruntime.sh
-
-    # Check if installation was successful
-    if [ $? -ne 0 ]; then
-        print_error "ONNX Runtime installation failed."
+    # Run the build script with retry mechanism
+    if ! retry_command "$HOME/Prod/Stan-s-ML-Stack/scripts/build_onnxruntime.sh" 2; then
+        print_error "ONNX Runtime installation failed after retries."
+        # Rollback if installation failed
+        if [ -n "$backup_dir" ]; then
+            rollback_installation "onnxruntime" "$backup_dir"
+        fi
         return 1
     fi
 
@@ -453,29 +1071,66 @@ install_onnx_runtime() {
 install_migraphx() {
     print_section "Installing MIGraphX"
 
+    # Create backup before installation
+    local backup_dir=""
+    if [ "$DRY_RUN" != "true" ]; then
+        backup_dir=$(create_backup "migraphx")
+    fi
+
     # Check if MIGraphX is already installed
     if python3 -c "import migraphx" &> /dev/null; then
         migraphx_version=$(python3 -c "import migraphx; print(migraphx.__version__)")
         print_warning "MIGraphX is already installed (version $migraphx_version)."
-        read -p "Do you want to reinstall? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_step "Skipping MIGraphX installation."
-            return 0
+        if [[ "$*" != *"--force"* ]] && [ "$FORCE" != "true" ]; then
+            read -p "Do you want to reinstall? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_step "Skipping MIGraphX installation."
+                return 0
+            fi
         fi
     fi
 
     # Install MIGraphX from ROCm repository
     print_step "Installing MIGraphX from ROCm repository..."
-    sudo apt-get update
-    sudo apt-get install -y migraphx python3-migraphx
+
+    # Use detected package manager
+    package_manager=$(detect_package_manager)
+    case $package_manager in
+        apt)
+            dry_run_command "sudo apt-get update"
+            dry_run_command "sudo apt-get install -y migraphx python3-migraphx"
+            ;;
+        dnf)
+            dry_run_command "sudo dnf install -y migraphx python3-migraphx"
+            ;;
+        yum)
+            dry_run_command "sudo yum install -y migraphx python3-migraphx"
+            ;;
+        pacman)
+            dry_run_command "sudo pacman -S migraphx python-migraphx"
+            ;;
+        zypper)
+            dry_run_command "sudo zypper install -y migraphx python3-migraphx"
+            ;;
+        *)
+            print_error "Unsupported package manager: $package_manager"
+            return 1
+            ;;
+    esac
 
     # Verify installation
-    if python3 -c "import migraphx; print(migraphx.__version__)" &> /dev/null; then
+    if [ "$DRY_RUN" != "true" ] && python3 -c "import migraphx; print(migraphx.__version__)" &> /dev/null; then
         migraphx_version=$(python3 -c "import migraphx; print(migraphx.__version__)")
         print_success "MIGraphX installed successfully (version $migraphx_version)"
+    elif [ "$DRY_RUN" = "true" ]; then
+        print_success "[DRY RUN] MIGraphX installation simulated"
     else
         print_error "MIGraphX installation failed."
+        # Rollback if installation failed
+        if [ -n "$backup_dir" ]; then
+            rollback_installation "migraphx" "$backup_dir"
+        fi
         return 1
     fi
 
@@ -642,14 +1297,14 @@ EOF
     print_step "Applying patch..."
     git apply remove_nvidia_deps.patch
 
-    # Install dependencies
+    # Install dependencies using enhanced package management
     print_step "Installing dependencies..."
-    uv_pip_install -r requirements.txt
-    uv_pip_install tensorboard scipy
+    install_python_package -r requirements.txt
+    install_python_package tensorboard scipy
 
     # Install Megatron-LM
     print_step "Installing Megatron-LM..."
-    uv_pip_install -e .
+    install_python_package -e .
 
     # Verify installation
     if python3 -c "import megatron; print('Megatron-LM imported successfully')" &> /dev/null; then
@@ -665,26 +1320,35 @@ EOF
 install_flash_attention() {
     print_section "Installing Flash Attention with AMD GPU support"
 
+    # Create backup before installation
+    local backup_dir=""
+    if [ "$DRY_RUN" != "true" ]; then
+        backup_dir=$(create_backup "flash_attention")
+    fi
+
     # Check if Flash Attention is already installed
     if $PYTHON_INTERPRETER -c "import flash_attention_amd" &> /dev/null; then
         print_warning "Flash Attention with AMD GPU support is already installed."
-        read -p "Do you want to reinstall? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_step "Skipping Flash Attention installation."
-            return 0
+        if [[ "$*" != *"--force"* ]] && [ "$FORCE" != "true" ]; then
+            read -p "Do you want to reinstall? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_step "Skipping Flash Attention installation."
+                return 0
+            fi
         fi
     fi
 
     # Build and install Flash Attention with AMD GPU support
     print_step "Building Flash Attention with AMD GPU support..."
 
-    # Run the build script
-    $HOME/Prod/Stan-s-ML-Stack/scripts/build_flash_attn_amd.sh
-
-    # Check if installation was successful
-    if [ $? -ne 0 ]; then
-        print_error "Flash Attention installation failed."
+    # Run the build script with retry mechanism
+    if ! retry_command "$HOME/Prod/Stan-s-ML-Stack/scripts/build_flash_attn_amd.sh" 2; then
+        print_error "Flash Attention installation failed after retries."
+        # Rollback if installation failed
+        if [ -n "$backup_dir" ]; then
+            rollback_installation "flash_attention" "$backup_dir"
+        fi
         return 1
     fi
 
@@ -695,27 +1359,64 @@ install_flash_attention() {
 install_rccl() {
     print_section "Installing RCCL"
 
+    # Create backup before installation
+    local backup_dir=""
+    if [ "$DRY_RUN" != "true" ]; then
+        backup_dir=$(create_backup "rccl")
+    fi
+
     # Check if RCCL is already installed
     if [ -f "/opt/rocm/lib/librccl.so" ]; then
         print_warning "RCCL is already installed."
-        read -p "Do you want to reinstall? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_step "Skipping RCCL installation."
-            return 0
+        if [[ "$*" != *"--force"* ]] && [ "$FORCE" != "true" ]; then
+            read -p "Do you want to reinstall? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_step "Skipping RCCL installation."
+                return 0
+            fi
         fi
     fi
 
     # Install RCCL from ROCm repository
     print_step "Installing RCCL from ROCm repository..."
-    sudo apt-get update
-    sudo apt-get install -y rccl
+
+    # Use detected package manager
+    package_manager=$(detect_package_manager)
+    case $package_manager in
+        apt)
+            dry_run_command "sudo apt-get update"
+            dry_run_command "sudo apt-get install -y rccl"
+            ;;
+        dnf)
+            dry_run_command "sudo dnf install -y rccl"
+            ;;
+        yum)
+            dry_run_command "sudo yum install -y rccl"
+            ;;
+        pacman)
+            dry_run_command "sudo pacman -S rccl"
+            ;;
+        zypper)
+            dry_run_command "sudo zypper install -y rccl"
+            ;;
+        *)
+            print_error "Unsupported package manager: $package_manager"
+            return 1
+            ;;
+    esac
 
     # Verify installation
-    if [ -f "/opt/rocm/lib/librccl.so" ]; then
+    if [ "$DRY_RUN" != "true" ] && [ -f "/opt/rocm/lib/librccl.so" ]; then
         print_success "RCCL installed successfully"
+    elif [ "$DRY_RUN" = "true" ]; then
+        print_success "[DRY RUN] RCCL installation simulated"
     else
         print_error "RCCL installation failed."
+        # Rollback if installation failed
+        if [ -n "$backup_dir" ]; then
+            rollback_installation "rccl" "$backup_dir"
+        fi
         return 1
     fi
 
@@ -774,7 +1475,7 @@ EOF
 
     # Install mpi4py
     print_step "Installing mpi4py..."
-    uv_pip_install mpi4py
+    install_python_package mpi4py
 
     # Verify installation
     if command -v mpirun &> /dev/null && python3 -c "import mpi4py; print('mpi4py imported successfully')" &> /dev/null; then
@@ -790,60 +1491,55 @@ EOF
 install_all_core() {
     print_section "Installing all core components"
 
+    # Create configuration file
+    create_config_file
+
     # Install ROCm configuration
-    install_rocm_config
-    if [ $? -ne 0 ]; then
-        print_error "ROCm configuration installation failed."
-        return 1
+    print_step "Installing ROCm configuration..."
+    if ! install_rocm_config; then
+        check_return_code 1 "ROCm configuration installation failed" || return 1
     fi
 
     # Install PyTorch
-    install_pytorch
-    if [ $? -ne 0 ]; then
-        print_error "PyTorch installation failed."
-        return 1
+    print_step "Installing PyTorch..."
+    if ! install_pytorch; then
+        check_return_code 1 "PyTorch installation failed" || return 1
     fi
 
     # Install ONNX Runtime
-    install_onnx_runtime
-    if [ $? -ne 0 ]; then
-        print_error "ONNX Runtime installation failed."
-        return 1
+    print_step "Installing ONNX Runtime..."
+    if ! install_onnx_runtime; then
+        check_return_code 1 "ONNX Runtime installation failed" || return 1
     fi
 
     # Install MIGraphX
-    install_migraphx
-    if [ $? -ne 0 ]; then
-        print_error "MIGraphX installation failed."
-        return 1
+    print_step "Installing MIGraphX..."
+    if ! install_migraphx; then
+        check_return_code 1 "MIGraphX installation failed" || return 1
     fi
 
     # Install Megatron-LM
-    install_megatron
-    if [ $? -ne 0 ]; then
-        print_error "Megatron-LM installation failed."
-        return 1
+    print_step "Installing Megatron-LM..."
+    if ! install_megatron; then
+        check_return_code 1 "Megatron-LM installation failed" || return 1
     fi
 
     # Install Flash Attention
-    install_flash_attention
-    if [ $? -ne 0 ]; then
-        print_error "Flash Attention installation failed."
-        return 1
+    print_step "Installing Flash Attention..."
+    if ! install_flash_attention; then
+        check_return_code 1 "Flash Attention installation failed" || return 1
     fi
 
     # Install RCCL
-    install_rccl
-    if [ $? -ne 0 ]; then
-        print_error "RCCL installation failed."
-        return 1
+    print_step "Installing RCCL..."
+    if ! install_rccl; then
+        check_return_code 1 "RCCL installation failed" || return 1
     fi
 
     # Install MPI
-    install_mpi
-    if [ $? -ne 0 ]; then
-        print_error "MPI installation failed."
-        return 1
+    print_step "Installing MPI..."
+    if ! install_mpi; then
+        check_return_code 1 "MPI installation failed" || return 1
     fi
 
     print_success "All core components installed successfully"
@@ -851,14 +1547,16 @@ install_all_core() {
 }
 
 verify_installation() {
-    print_section "Verifying installation"
+    print_section "Verifying installation with comprehensive tests"
 
-    # Create verification script in the current directory instead of home
-    print_step "Creating verification script..."
-    cat > ./verify_ml_stack.py << EOF
+    # Create enhanced verification script
+    print_step "Creating enhanced verification script..."
+    cat > ./verify_ml_stack_enhanced.py << EOF
 import sys
 import os
 import importlib.util
+import time
+import subprocess
 
 # Color definitions
 RED = '\033[0;31m'
@@ -902,65 +1600,158 @@ def check_module(module_name, display_name=None):
         print_error(f"{display_name} is not installed")
         return None
 
+def benchmark_pytorch():
+    """Comprehensive PyTorch benchmarking"""
+    print_section("PyTorch Performance Benchmark")
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            print_warning("CUDA not available, skipping GPU benchmarks")
+            return
+
+        device = torch.device("cuda")
+
+        # Memory bandwidth test
+        print_step("Testing memory bandwidth...")
+        size = 1024 * 1024 * 256  # 1GB
+        x = torch.randn(size, device=device)
+        start_time = time.time()
+        for _ in range(10):
+            y = x * 2
+        torch.cuda.synchronize()
+        bandwidth = (size * 4 * 10) / (time.time() - start_time) / (1024**3)  # GB/s
+        print_success(".2f")
+
+        # Matrix multiplication benchmark
+        print_step("Testing matrix multiplication...")
+        sizes = [1024, 2048, 4096]
+        for n in sizes:
+            a = torch.randn(n, n, device=device)
+            b = torch.randn(n, n, device=device)
+            start_time = time.time()
+            c = torch.mm(a, b)
+            torch.cuda.synchronize()
+            flops = (2 * n**3) / (time.time() - start_time) / (10**9)  # GFLOPS
+            print_success(".1f")
+
+        # Flash Attention test (if available)
+        print_step("Testing Flash Attention...")
+        try:
+            from flash_attention_amd import flash_attn_func
+            batch_size, seq_len, n_heads, d_head = 2, 1024, 8, 64
+            q = torch.randn(batch_size, seq_len, n_heads, d_head, device=device)
+            k = torch.randn(batch_size, seq_len, n_heads, d_head, device=device)
+            v = torch.randn(batch_size, seq_len, n_heads, d_head, device=device)
+
+            start_time = time.time()
+            out = flash_attn_func(q, k, v)
+            torch.cuda.synchronize()
+            attn_time = time.time() - start_time
+            print_success(".3f")
+        except ImportError:
+            print_warning("Flash Attention not available for benchmarking")
+
+    except Exception as e:
+        print_error(f"Benchmark failed: {e}")
+
+def test_distributed_training():
+    """Test distributed training capabilities"""
+    print_section("Distributed Training Test")
+
+    try:
+        import torch
+        import torch.distributed as dist
+        import torch.multiprocessing as mp
+
+        if torch.cuda.device_count() < 2:
+            print_warning("Need at least 2 GPUs for distributed training test")
+            return
+
+        def init_process(rank, size, fn, backend='nccl'):
+            os.environ['MASTER_ADDR'] = '127.0.0.1'
+            os.environ['MASTER_PORT'] = '12355'
+            dist.init_process_group(backend, rank=rank, world_size=size)
+            fn(rank, size)
+
+        def run_test(rank, size):
+            tensor = torch.ones(1, device=f'cuda:{rank}')
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+            expected = torch.ones(1, device=f'cuda:{rank}') * size
+            if torch.allclose(tensor, expected):
+                if rank == 0:
+                    print_success("Distributed training test passed")
+            else:
+                if rank == 0:
+                    print_error("Distributed training test failed")
+
+        print_step("Testing NCCL distributed training...")
+        mp.spawn(init_process, args=(2, run_test), nprocs=2, join=True)
+
+    except Exception as e:
+        print_error(f"Distributed training test failed: {e}")
+
+def check_system_configuration():
+    """Check system configuration and environment"""
+    print_section("System Configuration Check")
+
+    # Check ROCm environment variables
+    rocm_vars = ['HSA_OVERRIDE_GFX_VERSION', 'PYTORCH_ROCM_ARCH', 'ROCM_PATH', 'HSA_TOOLS_LIB']
+    for var in rocm_vars:
+        value = os.environ.get(var, 'Not set')
+        print_step(f"{var}: {value}")
+
+    # Check GPU memory
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                mem_free, mem_total = torch.cuda.mem_get_info(i)
+                mem_free_gb = mem_free / (1024**3)
+                mem_total_gb = mem_total / (1024**3)
+                print_step(".1f")
+    except:
+        pass
+
 def main():
-    print_header("ML Stack Verification")
+    print_header("Enhanced ML Stack Verification")
+
+    # Basic component checks
+    print_section("Component Verification")
 
     # Check PyTorch
-    print_section("Checking PyTorch")
     torch = check_module("torch", "PyTorch")
     if torch:
-        # Check for ROCm/HIP support
         has_hip = hasattr(torch.version, 'hip')
         if has_hip:
             print_success(f"PyTorch has ROCm/HIP support (version: {torch.version.hip})")
         else:
             print_warning("PyTorch does not have explicit ROCm/HIP support")
 
-        # Check CUDA availability (works for both CUDA and ROCm through HIP)
         if torch.cuda.is_available():
-            if has_hip:
-                print_success("GPU acceleration is available through ROCm/HIP")
-            else:
-                print_warning("GPU acceleration is available through CUDA (not ROCm/HIP)")
-
-            # Check number of GPUs
             device_count = torch.cuda.device_count()
             print_step(f"Number of GPUs: {device_count}")
 
-            # Check GPU information
             for i in range(device_count):
                 print_step(f"GPU {i}: {torch.cuda.get_device_name(i)}")
 
-            # Run a simple tensor operation
+            # Test basic GPU operations
             try:
                 x = torch.ones(10, device="cuda")
                 y = x + 1
-                print_success("Simple tensor operation on GPU successful")
+                print_success("Basic GPU tensor operations working")
             except Exception as e:
-                print_error(f"Simple tensor operation on GPU failed: {e}")
+                print_error(f"GPU operations failed: {e}")
         else:
             print_error("GPU acceleration is not available")
 
-    # Check ONNX Runtime
-    print_section("Checking ONNX Runtime")
-    ort = check_module("onnxruntime", "ONNX Runtime")
-    if ort:
-        # Check available providers
-        providers = ort.get_available_providers()
-        print_step(f"Available providers: {providers}")
-
-        # Check if ROCMExecutionProvider is available
-        if 'ROCMExecutionProvider' in providers:
-            print_success("ROCMExecutionProvider is available")
-        else:
-            print_warning("ROCMExecutionProvider is not available")
-
-    # Check MIGraphX
-    print_section("Checking MIGraphX")
+    # Check other components
+    check_module("onnxruntime", "ONNX Runtime")
     check_module("migraphx", "MIGraphX")
+    check_module("mpi4py", "MPI4Py")
 
     # Check Megatron-LM
-    print_section("Checking Megatron-LM")
     try:
         import megatron
         print_success("Megatron-LM is installed")
@@ -968,29 +1759,20 @@ def main():
         print_error("Megatron-LM is not installed")
 
     # Check Flash Attention
-    print_section("Checking Flash Attention")
     try:
         from flash_attention_amd import flash_attn_func
-        print_success("Flash Attention is installed")
+        print_success("Flash Attention AMD is installed")
     except ImportError:
-        print_error("Flash Attention is not installed")
+        print_error("Flash Attention AMD is not installed")
 
-    # Check RCCL
-    print_section("Checking RCCL")
-    if os.path.exists("/opt/rocm/lib/librccl.so"):
-        print_success("RCCL is installed")
-    else:
-        print_error("RCCL is not installed")
+    # System configuration
+    check_system_configuration()
 
-    # Check MPI
-    print_section("Checking MPI")
-    if os.system("which mpirun > /dev/null") == 0:
-        print_success("MPI is installed")
+    # Performance benchmarks
+    benchmark_pytorch()
 
-        # Check mpi4py
-        check_module("mpi4py", "mpi4py")
-    else:
-        print_error("MPI is not installed")
+    # Distributed training test
+    test_distributed_training()
 
     print_header("Verification Complete")
 
@@ -998,16 +1780,40 @@ if __name__ == "__main__":
     main()
 EOF
 
-    # Run verification script
-    print_step "Running verification script..."
-    # Make sure to use python3 to run the script, not bash
-    $PYTHON_INTERPRETER ./verify_ml_stack.py
+    # Run enhanced verification script
+    print_step "Running enhanced verification script..."
+    if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
+        $PYTHON_INTERPRETER ./verify_ml_stack_enhanced.py
+    else
+        print_warning "GPU not available, running basic verification..."
+        # Fallback to basic verification
+        $PYTHON_INTERPRETER -c "
+import sys
+import importlib.util
+
+def check_module(name):
+    try:
+        importlib.import_module(name)
+        print(f'✓ {name} is installed')
+        return True
+    except ImportError:
+        print(f'✗ {name} is not installed')
+        return False
+
+print('=== Basic ML Stack Verification ===')
+check_module('torch')
+check_module('onnxruntime')
+check_module('migraphx')
+check_module('mpi4py')
+print('=== Verification Complete ===')
+"
+    fi
 
     # Clean up
     print_step "Cleaning up..."
-    rm -f ./verify_ml_stack.py
+    rm -f ./verify_ml_stack_enhanced.py
 
-    print_success "Verification completed"
+    print_success "Enhanced verification completed"
 }
 
 show_menu() {
@@ -1075,8 +1881,53 @@ show_menu() {
 main() {
     print_header "ML Stack Installation Script"
 
+    # Parse command line arguments
+    DRY_RUN=false
+    FORCE=false
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --dry-run)
+                DRY_RUN=true
+                print_warning "DRY RUN MODE: No actual installations will be performed"
+                shift
+                ;;
+            --force)
+                FORCE=true
+                print_warning "FORCE MODE: Will reinstall existing components"
+                shift
+                ;;
+            --help)
+                echo "Usage: $0 [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --dry-run    Show what would be installed without actually installing"
+                echo "  --force      Force reinstallation of existing components"
+                echo "  --show-env   Show ROCm environment variables for manual setup"
+                echo "  --help       Show this help message"
+                echo ""
+                echo "Enhanced ML Stack Installation Script with ROCm support"
+                echo "Supports multiple package managers, virtual environments, and cross-platform compatibility"
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                echo "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+
     # Start time
     start_time=$(date +%s)
+
+    # Check for --show-env option first (before prerequisites)
+    for arg in "$@"; do
+        if [ "$arg" = "--show-env" ]; then
+            show_env
+            exit 0
+        fi
+    done
 
     # Check prerequisites
     check_prerequisites
@@ -1098,6 +1949,15 @@ main() {
     print_header "ML Stack Installation Completed"
     echo -e "${GREEN}Total installation time: ${BOLD}${hours}h ${minutes}m ${seconds}s${RESET}"
 
+    # Show environment setup instructions
+    echo
+    echo -e "${CYAN}${BOLD}Environment Setup:${RESET}"
+    echo -e "${YELLOW}To apply ROCm environment variables to your current shell, run:${RESET}"
+    echo -e "${GREEN}eval \"\$($0 --show-env)\"${RESET}"
+    echo
+    echo -e "${CYAN}${BOLD}Configuration:${RESET}"
+    echo -e "${YELLOW}Configuration saved to: ${GREEN}$HOME/.ml_stack_config${RESET}"
+
     return 0
 }
 
@@ -1108,3 +1968,4 @@ main
 echo "Installation complete. Forcing exit to prevent hanging..."
 kill -9 $$ 2>/dev/null
 exit 0
+

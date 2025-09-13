@@ -10,70 +10,119 @@
 # "Code is like humor. When you have to explain it, it's bad!" - Cory House
 #
 # =============================================================================
-# BITSANDBYTES Installation Script for AMD GPUs
+# BITSANDBYTES Installation Script for AMD GPUs with Enhanced Standards
 # =============================================================================
 # This script installs BITSANDBYTES for efficient 4-bit and 8-bit quantization
 # with AMD GPU support through PyTorch and ROCm.
 #
-# Author: User
-# Date: $(date +"%Y-%m-%d")
+# Enhanced with modern installation standards including:
+# - Multi-package-manager ROCm detection
+# - Installation method choices (global/venv/auto)
+# - Externally managed environment support
+# - Comprehensive error handling and recovery
+# - Enhanced user experience with colors and progress
+# - Virtual environment support with uv
+# - Cross-platform compatibility
 # =============================================================================
 
-set -e  # Exit on error
+# ASCII Art Banner
+cat << "EOF"
+  ██████╗ ██╗████████╗███████╗ █████╗ ███╗   ██╗██████╗ ██████╗ ██╗   ██╗████████╗███████╗███████╗
+  ██╔══██╗██║╚══██╔══╝██╔════╝██╔══██╗████╗  ██║██╔══██╗██╔══██╗╚██╗ ██╔╝╚══██╔══╝██╔════╝██╔════╝
+  ██████╔╝██║   ██║   ███████╗███████║██╔██╗ ██║██║  ██║██████╔╝ ╚████╔╝    ██║   █████╗  ███████╗
+  ██╔══██╗██║   ██║   ╚════██║██╔══██║██║╚██╗██║██║  ██║██╔══██╗  ╚██╔╝     ██║   ██╔══╝  ╚════██║
+  ██████╔╝██║   ██║   ███████║██║  ██║██║ ╚████║██████╔╝██████╔╝   ██║      ██║   ███████╗███████║
+  ╚═════╝ ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═════╝    ╚═╝      ╚═╝   ╚══════╝╚══════╝
+EOF
+echo
 
-# Create log directory
-LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
-mkdir -p $LOG_DIR
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
 
-# Log file
-LOG_FILE="$LOG_DIR/bitsandbytes_install_$(date +"%Y%m%d_%H%M%S").log"
+# Function definitions
+print_header() {
+    echo
+    echo "╔═════════════════════════════════════════════════════════╗"
+    echo "║                                                         ║"
+    echo "║               === $1 ===               ║"
+    echo "║                                                         ║"
+    echo "╚═════════════════════════════════════════════════════════╝"
+    echo
+}
 
-# Function to log messages
-log() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
+print_section() {
+    echo
+    echo "┌─────────────────────────────────────────────────────────┐"
+    echo "│ $1"
+    echo "└─────────────────────────────────────────────────────────┘"
+}
+
+print_step() {
+    echo "➤ $1"
+}
+
+print_success() {
+    echo "✓ $1"
+}
+
+print_warning() {
+    echo "⚠ $1"
+}
+
+print_error() {
+    echo "✗ $1"
+}
+
+# Function to print a clean separator line
+print_separator() {
+    echo "───────────────────────────────────────────────────────────"
 }
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" > /dev/null 2>&1
-}
-
-# Function to install Python packages with adaptive package management
-install_python_package() {
-    local package_spec="$1"
-    local package_name="$2"
-    
-    # Check if package is already installed
-    if [ -n "$package_name" ] && python3 -c "import $package_name" 2>/dev/null; then
-        log "Package $package_name is already installed"
-        return 0
-    fi
-    
-    log "Installing $package_spec..."
-    
-    # Try uv first if available
-    if command_exists uv; then
-        log "Using uv to install $package_spec..."
-        if uv pip install $package_spec --system 2>/dev/null || \
-           uv pip install $package_spec --user 2>/dev/null || \
-           uv pip install $package_spec --break-system-packages 2>/dev/null; then
-            log "Successfully installed $package_spec with uv"
-            return 0
-        else
-            log "uv installation failed, falling back to pip..."
-        fi
-    fi
-    
-    # Fallback to pip
-    log "Using pip to install $package_spec..."
-    if pip install $package_spec --user 2>/dev/null || \
-       pip install $package_spec --break-system-packages 2>/dev/null; then
-        log "Successfully installed $package_spec with pip"
-        return 0
-    else
-        log "Failed to install $package_spec with both uv and pip"
-        return 1
-    fi
+    command -v "$1" >/dev/null 2>&1
 }
 
 # Function to check if Python package is installed
@@ -81,587 +130,751 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
-# Start installation
-log "=== Starting BITSANDBYTES Installation ==="
-log "System: $(uname -a)"
-log "ROCm Path: $(which hipcc 2>/dev/null || echo 'Not found')"
-log "Python Version: $(python3 --version)"
-log "PyTorch Version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'Not installed')"
-
-# Check for required dependencies
-log "Checking dependencies..."
-DEPS=("git" "python3" "pip")
-MISSING_DEPS=()
-
-for dep in "${DEPS[@]}"; do
-    if ! command_exists $dep; then
-        MISSING_DEPS+=("$dep")
-    fi
-done
-
-if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    log "Missing dependencies: ${MISSING_DEPS[*]}"
-    log "Please install them and run this script again."
-    exit 1
-fi
-
-# Create installation directory
-INSTALL_DIR="$HOME/ml_stack/bitsandbytes"
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
-
-# Set environment variables for AMD GPUs
-export ROCM_HOME=/opt/rocm
-export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
-export CMAKE_PREFIX_PATH=$ROCM_HOME
-
-# Create a directory for the source code
-if [ ! -d "bitsandbytes" ]; then
-    log "Cloning BITSANDBYTES repository..."
-    git clone https://github.com/TimDettmers/bitsandbytes.git
-    cd bitsandbytes
-else
-    log "BITSANDBYTES repository already exists, updating..."
-    cd bitsandbytes
-    git reset --hard HEAD
-    git checkout main || git checkout master
-    git pull
-fi
-
-# Check if the file exists before trying to patch
-if [ -f "csrc/kernels.cu" ]; then
-    log "Found kernels.cu file, applying ROCm patch for AMD GPUs..."
-
-    # Backup the original file
-    cp csrc/kernels.cu csrc/kernels.cu.backup
-
-    # Instead of using patch, directly modify the file
-    log "Directly modifying kernels.cu for AMD compatibility..."
-
-    # Check if the file already has AMD modifications
-    if grep -q "__HIP_PLATFORM_AMD__" csrc/kernels.cu; then
-        log "File already has AMD modifications, skipping patch..."
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
     else
-        # Add AMD compatibility at the top of the file
-        sed -i '1i\
-#ifdef __HIP_PLATFORM_AMD__\
-#define CUDA_ARCH 1\
-#include <hip/hip_runtime.h>\
-#define __ldg(ptr) (*(ptr))\
-#define __syncthreads() __syncthreads()\
-#define CUDA_ARCH_PTX 700\
-#else' csrc/kernels.cu
-
-        # Find the first include line and add the endif after it
-        sed -i '/^#include/,/^$/ s/^$/\n#endif\n/' csrc/kernels.cu
+        echo "unknown"
     fi
-else
-    log "kernels.cu file not found, skipping patch..."
-fi
+}
 
-# Create a more comprehensive AMD compatibility layer
-log "Creating additional AMD compatibility files..."
-
-# Create a hip_runtime.h file if it doesn't exist
-mkdir -p csrc/hip
-cat > csrc/hip/hip_runtime.h << 'EOF'
-// HIP compatibility layer for AMD GPUs
-#pragma once
-#include <stdint.h>
-
-#define __global__ __attribute__((global))
-#define __device__ __attribute__((device))
-#define __host__ __attribute__((host))
-#define __shared__ __attribute__((shared))
-
-typedef int cudaError_t;
-typedef int cudaDeviceProp;
-typedef int cudaStream_t;
-typedef int CUstream;
-
-#define cudaSuccess 0
-#define cudaErrorMemoryAllocation 1
-#define cudaErrorInvalidValue 2
-
-inline cudaError_t cudaMalloc(void** ptr, size_t size) { return 0; }
-inline cudaError_t cudaFree(void* ptr) { return 0; }
-inline cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, int kind) { return 0; }
-inline cudaError_t cudaMemcpyAsync(void* dst, const void* src, size_t count, int kind, cudaStream_t stream) { return 0; }
-inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* prop, int device) { return 0; }
-inline cudaError_t cudaGetDevice(int* device) { return 0; }
-inline cudaError_t cudaSetDevice(int device) { return 0; }
-inline cudaError_t cudaStreamCreate(cudaStream_t* stream) { return 0; }
-inline cudaError_t cudaStreamDestroy(cudaStream_t stream) { return 0; }
-inline cudaError_t cudaStreamSynchronize(cudaStream_t stream) { return 0; }
-inline const char* cudaGetErrorString(cudaError_t error) { return "CUDA error"; }
-EOF
-
-# Install BITSANDBYTES with ROCm support
-log "Installing BITSANDBYTES with ROCm support..."
-
-# Try multiple installation methods
-log "Trying multiple installation methods for maximum compatibility..."
-
-# Method 1: Direct pip install with specific version
-log "Method 1: Direct pip install with specific version..."
-
-# Install a specific version known to work with AMD GPUs
-log "Installing bitsandbytes 0.35.0 which is known to work with AMD GPUs..."
-if command_exists uv; then
-    log "Using uv to install bitsandbytes 0.35.0..."
-    if CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0 --system 2>/dev/null || \
-       CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0 --user 2>/dev/null || \
-       CUDA_VERSION=cpu uv pip install bitsandbytes==0.35.0 --break-system-packages 2>/dev/null; then
-        log "Successfully installed bitsandbytes with uv"
+# Function to detect if running in WSL
+detect_wsl() {
+    if [ -f /proc/version ] && grep -qi microsoft /proc/version; then
+        echo "true"
     else
-        log "uv installation failed, falling back to pip..."
-        CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --user 2>/dev/null || CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --break-system-packages
+        echo "false"
     fi
-else
-    CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --user 2>/dev/null || CUDA_VERSION=cpu pip install bitsandbytes==0.35.0 --break-system-packages
-fi
+}
 
-# Create CPU library symlink if it doesn't exist
-# Try to find the actual bitsandbytes installation directory
-BNB_DIR=$(python3 -c "import bitsandbytes, os; print(os.path.dirname(bitsandbytes.__file__))" 2>/dev/null)
-if [ -z "$BNB_DIR" ]; then
-    # Fallback to site-packages detection
-    SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || python3 -c "import site; print(site.getusersitepackages())")
-    BNB_DIR="$SITE_PACKAGES/bitsandbytes"
-fi
-log "Checking for CPU library in $BNB_DIR..."
+# Function to detect if running in container
+detect_container() {
+    if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q container /proc/1/cgroup 2>/dev/null; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
 
-if [ -d "$BNB_DIR" ]; then
-    # Check if the CPU library exists
-    if [ ! -f "$BNB_DIR/libbitsandbytes_cpu.so" ]; then
-        log "CPU library not found, creating it..."
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
 
-        # Try to find any existing library
-        EXISTING_LIB=$(find "$BNB_DIR" -name "*.so" | head -n 1)
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
 
-        if [ -n "$EXISTING_LIB" ]; then
-            log "Found existing library: $EXISTING_LIB"
-            cp "$EXISTING_LIB" "$BNB_DIR/libbitsandbytes_cpu.so"
-            log "Created CPU library symlink"
-        else
-            log "No existing library found, creating empty one..."
-            # Create an empty library as a last resort
-            touch "$BNB_DIR/libbitsandbytes_cpu.so"
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Function to detect GPU architecture
+detect_gpu_arch() {
+    if command_exists rocminfo; then
+        # Try to get GPU architecture from rocminfo
+        gpu_arch=$(rocminfo 2>/dev/null | grep -i "gfx" | head -n 1 | grep -o "gfx[0-9]*" | head -n 1)
+        if [ -n "$gpu_arch" ]; then
+            echo "$gpu_arch"
+            return 0
         fi
     fi
-fi
 
-# Check if installation was successful
-if python3 -c "import bitsandbytes" &>/dev/null; then
-    log "Direct pip installation successful!"
+    # Fallback to common architectures based on ROCm version
+    if [ -n "$rocm_version" ]; then
+        rocm_major=$(echo "$rocm_version" | cut -d '.' -f 1)
+        rocm_minor=$(echo "$rocm_version" | cut -d '.' -f 2)
 
-    # Create AMD compatibility file using the actual installation directory
-    log "Creating AMD compatibility file at $BNB_DIR/amd_compat.py"
-    if [ -w "$BNB_DIR" ]; then
-        cat > "$BNB_DIR/amd_compat.py" << 'EOF'
-import torch
-import bitsandbytes as bnb
-
-# Add AMD compatibility
-if not hasattr(bnb, 'CUDA_AVAILABLE'):
-    bnb.CUDA_AVAILABLE = torch.cuda.is_available()
-EOF
+        if [ "$rocm_major" -ge 6 ]; then
+            echo "gfx1100"  # RDNA3 architecture
+        elif [ "$rocm_major" -eq 5 ]; then
+            echo "gfx1030"  # RDNA2 architecture
+        else
+            echo "gfx90a"   # CDNA architecture
+        fi
     else
-        log "Cannot write to $BNB_DIR, skipping AMD compatibility file creation"
+        echo "gfx90a"  # Default fallback
+    fi
+}
+
+# Function to handle uv commands with venv fallback
+uv_pip_install() {
+    local args="$@"
+
+    # Check if uv is available as a command
+    if command -v uv &> /dev/null; then
+        case $INSTALL_METHOD in
+            "global")
+                print_step "Installing globally with pip..."
+                python3 -m pip install --break-system-packages $args
+                BITSANDBYTES_VENV_PYTHON=""
+                ;;
+            "venv")
+                print_step "Creating uv virtual environment..."
+                VENV_DIR="./bitsandbytes_venv"
+                if [ ! -d "$VENV_DIR" ]; then
+                    uv venv "$VENV_DIR"
+                fi
+                source "$VENV_DIR/bin/activate"
+                print_step "Installing in virtual environment..."
+                uv pip install $args
+                BITSANDBYTES_VENV_PYTHON="$VENV_DIR/bin/python"
+                print_success "Installed in virtual environment: $VENV_DIR"
+                ;;
+            "auto")
+                # Try global install first
+                print_step "Attempting global installation with uv..."
+                local install_output
+                install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                local install_exit_code=$?
+
+                if echo "$install_output" | grep -q "externally managed"; then
+                    print_warning "Global installation failed due to externally managed environment"
+                    print_step "Creating uv virtual environment for installation..."
+
+                    # Create uv venv in project directory
+                    VENV_DIR="./bitsandbytes_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+
+                    # Activate venv and install
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+
+                    # Store venv path for verification
+                    BITSANDBYTES_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                elif [ $install_exit_code -eq 0 ]; then
+                    print_success "Global installation successful"
+                    BITSANDBYTES_VENV_PYTHON=""
+                else
+                    print_error "Global installation failed with unknown error:"
+                    echo "$install_output"
+                    print_step "Falling back to virtual environment..."
+
+                    # Create uv venv in project directory
+                    VENV_DIR="./bitsandbytes_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+
+                    # Activate venv and install
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+
+                    # Store venv path for verification
+                    BITSANDBYTES_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                fi
+                ;;
+        esac
+    else
+        # Fall back to pip
+        print_step "Installing with pip..."
+        python3 -m pip install $args
+        BITSANDBYTES_VENV_PYTHON=""
+    fi
+}
+
+# Function to install bitsandbytes with enhanced error handling
+install_bitsandbytes_enhanced() {
+    print_header "BITSANDBYTES Installation"
+
+    # Check if bitsandbytes is already installed
+    PYTHON_CMD=${BITSANDBYTES_VENV_PYTHON:-python3}
+
+    if $PYTHON_CMD -c "import bitsandbytes" &>/dev/null; then
+        bnb_version=$($PYTHON_CMD -c "import bitsandbytes; print(bitsandbytes.__version__)" 2>/dev/null)
+
+        # Check if --force flag is provided
+        if [[ "$*" == *"--force"* ]] || [[ "$BITSANDBYTES_REINSTALL" == "true" ]]; then
+            print_warning "Force reinstall requested - proceeding with reinstallation"
+            print_step "Will reinstall bitsandbytes despite working installation"
+        else
+            print_success "bitsandbytes is already installed and working (version $bnb_version)"
+            print_step "Use --force to reinstall anyway."
+            return 0
+        fi
     fi
 
-    # Create a custom CUDA setup file
-    log "Creating custom CUDA setup file..."
-    if [ -w "$BNB_DIR/cuda_setup" ] 2>/dev/null || mkdir -p "$BNB_DIR/cuda_setup" 2>/dev/null; then
-        cat > "$BNB_DIR/cuda_setup/__init__.py" << 'EOF'
-import os
-import torch
-from bitsandbytes.cuda_setup.main import get_compute_capability, get_cuda_version, get_cuda_path
+    # Check ROCm installation
+    print_section "Checking ROCm Installation"
 
-# Override CUDA detection for AMD GPUs
-def dummy_get_cuda_version(*args, **kwargs):
-    return "11.8"
+    if command_exists rocminfo; then
+        print_success "rocminfo found"
 
-def dummy_get_compute_capability(*args, **kwargs):
-    return "8.0"
+        # Set up ROCm environment variables
+        print_step "Setting up ROCm environment variables..."
+        export HSA_OVERRIDE_GFX_VERSION=11.0.0
+        export PYTORCH_ROCM_ARCH=$(detect_gpu_arch)
+        export ROCM_PATH="/opt/rocm"
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
 
-# Replace functions with AMD-compatible versions
-if torch.version.hip is not None:
-    get_cuda_version = dummy_get_cuda_version
-    get_compute_capability = dummy_get_compute_capability
-EOF
+        # Set HSA_TOOLS_LIB if rocprofiler library exists
+        if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+            export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+            print_step "ROCm profiler library found and configured"
+        else
+            # Check if we can install rocprofiler
+            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                sudo apt-get update && sudo apt-get install -y rocprofiler
+                if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                    print_success "ROCm profiler installed and configured"
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler installation failed, disabling HSA tools"
+                fi
+            else
+                export HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+            fi
+        fi
+
+        # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
+        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+            unset PYTORCH_CUDA_ALLOC_CONF
+            print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+        fi
+
+        print_success "ROCm environment variables configured"
     else
-        log "Cannot write to $BNB_DIR/cuda_setup, skipping CUDA setup file creation"
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            package_manager=$(detect_package_manager)
+            case $package_manager in
+                apt)
+                    sudo apt update && sudo apt install -y rocminfo
+                    ;;
+                dnf)
+                    sudo dnf install -y rocminfo
+                    ;;
+                yum)
+                    sudo yum install -y rocminfo
+                    ;;
+                pacman)
+                    sudo pacman -S rocminfo
+                    ;;
+                zypper)
+                    sudo zypper install -y rocminfo
+                    ;;
+                *)
+                    print_error "Unsupported package manager: $package_manager"
+                    return 1
+                    ;;
+            esac
+            if command_exists rocminfo; then
+                print_success "Installed rocminfo"
+            else
+                print_error "Failed to install rocminfo"
+                return 1
+            fi
+        else
+            print_error "ROCm is not installed. Please install ROCm first."
+            return 1
+        fi
     fi
+
+    # Detect ROCm version
+    rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    fi
+
+    if [ -z "$rocm_version" ]; then
+        print_warning "Could not detect ROCm version, using default version 6.4.0"
+        rocm_version="6.4.0"
+    else
+        print_success "Detected ROCm version: $rocm_version"
+    fi
+
+    # Check cross-platform compatibility
+    print_section "Cross-Platform Compatibility Check"
+
+    wsl_detected=$(detect_wsl)
+    container_detected=$(detect_container)
+
+    if [ "$wsl_detected" = "true" ]; then
+        print_warning "WSL environment detected"
+        print_step "Some ROCm features may be limited in WSL"
+    fi
+
+    if [ "$container_detected" = "true" ]; then
+        print_warning "Container environment detected"
+        print_step "Ensure ROCm is properly configured in the container"
+    fi
+
+    # Check if uv is installed
+    print_section "Installing bitsandbytes with ROCm Support"
+
+    if ! command_exists uv; then
+        print_step "Installing uv package manager..."
+        python3 -m pip install uv
+
+        # Add uv to PATH if it was installed in a user directory
+        if [ -f "$HOME/.local/bin/uv" ]; then
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+        # Add uv to PATH if it was installed via cargo
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+        if ! command_exists uv; then
+            print_error "Failed to install uv package manager"
+            print_step "Falling back to pip"
+        else
+            print_success "Installed uv package manager"
+        fi
+    else
+        print_success "uv package manager is already installed"
+    fi
+
+    # Ask user for installation preference
+    echo
+    echo -e "${CYAN}${BOLD}bitsandbytes Installation Options:${RESET}"
+    echo "1) Global installation (recommended for system-wide use)"
+    echo "2) Virtual environment (isolated installation)"
+    echo "3) Auto-detect (try global, fallback to venv if needed)"
+    echo
+    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+
+    case $INSTALL_CHOICE in
+        1)
+            INSTALL_METHOD="global"
+            print_step "Using global installation method"
+            ;;
+        2)
+            INSTALL_METHOD="venv"
+            print_step "Using virtual environment method"
+            ;;
+        3|*)
+            INSTALL_METHOD="auto"
+            print_step "Using auto-detect method"
+            ;;
+    esac
+
+    # Install bitsandbytes using the enhanced method
+    print_step "Installing bitsandbytes with ROCm support..."
+
+    # Try different installation strategies
+    uv_pip_install bitsandbytes
 
     # Verify installation
-    log "Verifying BITSANDBYTES installation..."
-    python3 -c "import bitsandbytes as bnb; import torch; print('BITSANDBYTES version:', bnb.__version__); print('CUDA available:', torch.cuda.is_available())"
+    print_section "Verifying Installation"
 
-    # If verification was successful, exit
-    if [ $? -eq 0 ]; then
-        log "BITSANDBYTES installation successful!"
-        exit 0
-    fi
-else
-    log "Direct pip installation failed, trying next method..."
-fi
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${BITSANDBYTES_VENV_PYTHON:-python3}
 
-# Method 2: Try with pre-built wheels
-log "Method 2: Trying pre-built wheels..."
-mkdir -p build
-cd build
+    if $PYTHON_CMD -c "import bitsandbytes" &>/dev/null; then
+        bnb_version=$($PYTHON_CMD -c "import bitsandbytes; print(bitsandbytes.__version__)" 2>/dev/null)
+        print_success "bitsandbytes is installed (version: $bnb_version)"
 
-# Download pre-built binaries for AMD GPUs
-log "Downloading pre-built binaries for AMD GPUs..."
-wget -q https://github.com/arlo-phoenix/bitsandbytes-rocm-5.6/releases/download/0.35.0/bitsandbytes-0.35.0-py3-none-any.whl || \
-wget -q https://github.com/arlo-phoenix/bitsandbytes-rocm-5.6/releases/download/0.34.0/bitsandbytes-0.34.0-py3-none-any.whl || \
-wget -q https://github.com/TimDettmers/bitsandbytes/releases/download/0.35.0/bitsandbytes-0.35.0-py3-none-any.whl || \
-wget -q https://github.com/TimDettmers/bitsandbytes/releases/download/0.34.0/bitsandbytes-0.34.0-py3-none-any.whl
-
-# Install the downloaded wheel
-WHEEL_FILE=$(ls bitsandbytes-*.whl 2>/dev/null | head -n 1)
-if [ -n "$WHEEL_FILE" ]; then
-    log "Installing pre-built wheel: $WHEEL_FILE"
-    if command_exists uv; then
-        log "Using uv to install wheel..."
-        if CUDA_VERSION=cpu uv pip install "$WHEEL_FILE" --system 2>/dev/null || \
-           CUDA_VERSION=cpu uv pip install "$WHEEL_FILE" --user 2>/dev/null || \
-           CUDA_VERSION=cpu uv pip install "$WHEEL_FILE" --break-system-packages 2>/dev/null; then
-            log "Successfully installed wheel with uv"
+        # Test basic functionality
+        if $PYTHON_CMD -c "import bitsandbytes as bnb; import torch; print('CUDA available:', torch.cuda.is_available())" 2>/dev/null; then
+            print_success "bitsandbytes basic functionality working"
         else
-            log "uv installation failed, falling back to pip..."
-            CUDA_VERSION=cpu pip install "$WHEEL_FILE" --user 2>/dev/null || CUDA_VERSION=cpu pip install "$WHEEL_FILE" --break-system-packages
+            print_warning "bitsandbytes basic functionality may have issues"
         fi
     else
-        CUDA_VERSION=cpu pip install "$WHEEL_FILE" --user 2>/dev/null || CUDA_VERSION=cpu pip install "$WHEEL_FILE" --break-system-packages
+        print_error "bitsandbytes installation failed"
+        return 1
     fi
 
-    # Check if installation was successful
-    if python3 -c "import bitsandbytes" &>/dev/null; then
-        log "Pre-built binary installation successful!"
-        cd ..
-        cd ..
-        exit 0
+    # Create enhanced test script
+    create_enhanced_test_script
+
+    print_success "bitsandbytes installation completed successfully"
+
+    # Provide usage information
+    echo
+    echo -e "${CYAN}${BOLD}Quick Start Example:${RESET}"
+    if [ -n "$BITSANDBYTES_VENV_PYTHON" ]; then
+        echo -e "${GREEN}source ./bitsandbytes_venv/bin/activate${RESET}"
+        echo -e "${GREEN}python -c \"import bitsandbytes as bnb; import torch; print('bitsandbytes version:', bnb.__version__); print('GPU available:', torch.cuda.is_available())\"${RESET}"
     else
-        log "Pre-built binary installation failed, trying next method..."
-        cd ..
+        echo -e "${GREEN}python3 -c \"import bitsandbytes as bnb; import torch; print('bitsandbytes version:', bnb.__version__); print('GPU available:', torch.cuda.is_available())\"${RESET}"
     fi
-else
-    log "No pre-built binaries found, trying next method..."
-    cd ..
-fi
+    echo
+    echo -e "${YELLOW}${BOLD}Note:${RESET} ${YELLOW}ROCm environment variables are set for this session.${RESET}"
+    echo -e "${YELLOW}For future sessions, you may need to run:${RESET}"
 
-# Method 2: Source installation
-log "Method 2: Source installation..."
-if command_exists uv; then
-    log "Using uv to install bitsandbytes from source..."
-    if ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e . --system 2>/dev/null || \
-       ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e . --user 2>/dev/null || \
-       ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm uv pip install -e . --break-system-packages 2>/dev/null; then
-        log "Successfully installed from source with uv"
-    else
-        log "uv source installation failed, falling back to pip..."
-        ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --user 2>/dev/null || ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --break-system-packages
+    # Output the actual environment variables that were set
+    echo -e "${GREEN}export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\"${RESET}"
+    echo -e "${GREEN}export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\"${RESET}"
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo -e "${GREEN}export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\"${RESET}"
     fi
-else
-    log "Using pip to install bitsandbytes from source..."
-    ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --user 2>/dev/null || ROCM_HOME=/opt/rocm PYTORCH_ROCM_ARCH=gfx90a CMAKE_PREFIX_PATH=/opt/rocm pip install -e . --break-system-packages
-fi
+    echo -e "${GREEN}export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\"${RESET}"
+    echo -e "${GREEN}export ROCM_PATH=\"$ROCM_PATH\"${RESET}"
+    echo -e "${GREEN}export PATH=\"$PATH\"${RESET}"
+    echo -e "${GREEN}export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\"${RESET}"
+    echo
 
-# Go back to the installation directory
-cd ..
+    return 0
+}
 
-# Method 3: PyPI installation
-log "Checking if installation was successful..."
-if ! python3 -c "import bitsandbytes" &>/dev/null; then
-    log "Method 3: PyPI installation..."
-    # Source package manager utilities
-    source "$(dirname "$0")/package_manager_utils.sh"
-
-    # Install bitsandbytes
-    install_package "bitsandbytes"
-fi
-
-# Method 4: Direct pip installation with specific version
-if ! python3 -c "import bitsandbytes" &>/dev/null; then
-    log "Method 4: Direct pip installation with specific version..."
-    # Source package manager utilities if not already sourced
-    if ! type install_package &>/dev/null; then
-        source "$(dirname "$0")/package_manager_utils.sh"
-    fi
-
-    # Install specific version of bitsandbytes
-    install_package "bitsandbytes" "0.40.2"
-fi
-
-# Method 5: Install from GitHub
-if ! python3 -c "import bitsandbytes" &>/dev/null; then
-    log "Method 5: Installing from GitHub..."
-    cd "$HOME/Prod/Stan-s-ML-Stack/scripts"
-    if [ -d "bitsandbytes_github" ]; then
-        log "Removing existing bitsandbytes_github directory..."
-        rm -rf bitsandbytes_github
-    fi
-
-    log "Cloning bitsandbytes from GitHub..."
-    git clone https://github.com/TimDettmers/bitsandbytes.git bitsandbytes_github
-    cd bitsandbytes_github
-
-    log "Installing bitsandbytes from GitHub..."
-    # Source package manager utilities if not already sourced
-    if ! type install_package &>/dev/null; then
-        source "$(dirname "$0")/package_manager_utils.sh"
-    fi
-
-    # Install from current directory with CUDA_VERSION=cpu
-    CUDA_VERSION=cpu install_package "." "" "--no-deps"
-fi
-
-# Create a compatibility layer for AMD GPUs
-log "Creating compatibility layer for AMD GPUs..."
-SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
-mkdir -p "$SITE_PACKAGES/bitsandbytes/cuda_setup"
-
-cat > "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.new" << 'EOF'
-import os
-import torch
-from bitsandbytes.cuda_setup.main import *
-
-# Add AMD compatibility
-def get_compute_capability():
-    if hasattr(torch.version, 'hip') and torch.version.hip is not None:
-        return "gfx90a"  # Default for AMD GPUs
-    else:
-        # Original function for NVIDIA GPUs
-        return original_get_compute_capability()
-
-# Save the original function
-original_get_compute_capability = get_compute_capability
-
-# Override CUDA checks for AMD GPUs
-def override_cuda_checks():
-    global CUDA_AVAILABLE
-    if hasattr(torch.version, 'hip') and torch.version.hip is not None:
-        CUDA_AVAILABLE = True
-        return True
-    return CUDA_AVAILABLE
-
-# Apply overrides
-override_cuda_checks()
-EOF
-
-# Backup the original file and replace it with our modified version
-if [ -f "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py" ]; then
-    cp "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py" "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.bak"
-    cat "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.new" >> "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py"
-    rm "$SITE_PACKAGES/bitsandbytes/cuda_setup/main.py.new"
-fi
-
-# Create AMD compatibility file
-cat > "$SITE_PACKAGES/bitsandbytes/amd_compat.py" << 'EOF'
-import torch
-import bitsandbytes as bnb
-
-# Add AMD compatibility
-if not hasattr(bnb, 'CUDA_AVAILABLE'):
-    bnb.CUDA_AVAILABLE = torch.cuda.is_available()
-EOF
-
-# Verify installation
-log "Verifying BITSANDBYTES installation..."
-python3 -c "import bitsandbytes as bnb; import torch; print('BITSANDBYTES version:', bnb.__version__); bnb.CUDA_AVAILABLE = torch.cuda.is_available(); print('CUDA available:', bnb.CUDA_AVAILABLE)"
-
-if [ $? -eq 0 ]; then
-    log "BITSANDBYTES installation successful!"
-else
-    log "BITSANDBYTES installation failed. Please check the logs."
-    exit 1
-fi
-
-# Create a simple test script
-TEST_SCRIPT="$INSTALL_DIR/test_bitsandbytes.py"
-cat > $TEST_SCRIPT << 'EOF'
+# Function to create enhanced test script
+create_enhanced_test_script() {
+    TEST_SCRIPT="./test_bitsandbytes_enhanced.py"
+    cat > $TEST_SCRIPT << 'EOF'
 #!/usr/bin/env python3
+"""
+Enhanced BITSANDBYTES Test Script
+Tests quantization functionality with AMD GPU support
+"""
+
 import torch
 import bitsandbytes as bnb
 import time
 import numpy as np
+import sys
+
+def print_header(text):
+    print(f"\n{'='*60}")
+    print(f" {text}")
+    print(f"{'='*60}")
+
+def print_success(text):
+    print(f"✓ {text}")
+
+def print_warning(text):
+    print(f"⚠ {text}")
+
+def print_error(text):
+    print(f"✗ {text}")
 
 def test_linear_8bit():
     """Test 8-bit linear layer."""
-    print("=== Testing 8-bit Linear Layer ===")
+    print_header("Testing 8-bit Linear Layer")
 
-    # Create input tensor
-    batch_size = 32
-    input_dim = 768
-    output_dim = 768
+    try:
+        # Create input tensor
+        batch_size = 32
+        input_dim = 768
+        output_dim = 768
 
-    # Create input on GPU
-    x = torch.randn(batch_size, input_dim, device='cuda')
+        # Create input on GPU if available
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        x = torch.randn(batch_size, input_dim, device=device)
 
-    # Create FP32 linear layer
-    fp32_linear = torch.nn.Linear(input_dim, output_dim).to('cuda')
+        # Create FP32 linear layer
+        fp32_linear = torch.nn.Linear(input_dim, output_dim).to(device)
 
-    # Create 8-bit linear layer
-    int8_linear = bnb.nn.Linear8bitLt(input_dim, output_dim, has_fp16_weights=False).to('cuda')
+        # Create 8-bit linear layer
+        int8_linear = bnb.nn.Linear8bitLt(input_dim, output_dim, has_fp16_weights=False).to(device)
 
-    # Copy weights from FP32 to 8-bit
-    int8_linear.weight.data = fp32_linear.weight.data.clone()
-    int8_linear.bias.data = fp32_linear.bias.data.clone()
+        # Copy weights from FP32 to 8-bit
+        int8_linear.weight.data = fp32_linear.weight.data.clone()
+        int8_linear.bias.data = fp32_linear.bias.data.clone()
 
-    # Forward pass with FP32
-    fp32_output = fp32_linear(x)
+        # Forward pass with FP32
+        fp32_output = fp32_linear(x)
 
-    # Forward pass with 8-bit
-    int8_output = int8_linear(x)
+        # Forward pass with 8-bit
+        int8_output = int8_linear(x)
 
-    # Check results
-    error = torch.abs(fp32_output - int8_output).mean().item()
-    print(f"Mean absolute error: {error:.6f}")
+        # Check results
+        error = torch.abs(fp32_output - int8_output).mean().item()
+        print(f"Mean absolute error: {error:.6f}")
 
-    # Benchmark
-    n_runs = 100
+        # Benchmark
+        n_runs = 100
 
-    # Warm up
-    for _ in range(10):
-        _ = fp32_linear(x)
-        _ = int8_linear(x)
-    torch.cuda.synchronize()
+        # Warm up
+        for _ in range(10):
+            _ = fp32_linear(x)
+            _ = int8_linear(x)
+        if device == 'cuda':
+            torch.cuda.synchronize()
 
-    # Benchmark FP32
-    start_time = time.time()
-    for _ in range(n_runs):
-        _ = fp32_linear(x)
-    torch.cuda.synchronize()
-    fp32_time = (time.time() - start_time) / n_runs
+        # Benchmark FP32
+        start_time = time.time()
+        for _ in range(n_runs):
+            _ = fp32_linear(x)
+        if device == 'cuda':
+            torch.cuda.synchronize()
+        fp32_time = (time.time() - start_time) / n_runs
 
-    # Benchmark 8-bit
-    start_time = time.time()
-    for _ in range(n_runs):
-        _ = int8_linear(x)
-    torch.cuda.synchronize()
-    int8_time = (time.time() - start_time) / n_runs
+        # Benchmark 8-bit
+        start_time = time.time()
+        for _ in range(n_runs):
+            _ = int8_linear(x)
+        if device == 'cuda':
+            torch.cuda.synchronize()
+        int8_time = (time.time() - start_time) / n_runs
 
-    print(f"FP32 time: {fp32_time*1000:.3f} ms")
-    print(f"8-bit time: {int8_time*1000:.3f} ms")
-    print(f"Speedup: {fp32_time/int8_time:.2f}x")
-    print(f"Memory savings: ~{100 * (1 - 8/32):.1f}%")
+        print(f"FP32 time: {fp32_time*1000:.3f} ms")
+        print(f"8-bit time: {int8_time*1000:.3f} ms")
+        print(f"Speedup: {fp32_time/int8_time:.2f}x")
+        print(f"Memory savings: ~{100 * (1 - 8/32):.1f}%")
 
-    return error < 0.01  # Check if error is acceptable
+        success = error < 0.01
+        if success:
+            print_success("8-bit linear layer test passed")
+        else:
+            print_warning("8-bit linear layer test failed - high error")
+
+        return success
+
+    except Exception as e:
+        print_error(f"8-bit linear layer test failed with error: {e}")
+        return False
 
 def test_linear_4bit():
     """Test 4-bit linear layer."""
-    print("\n=== Testing 4-bit Linear Layer ===")
+    print_header("Testing 4-bit Linear Layer")
 
-    # Create input tensor
-    batch_size = 32
-    input_dim = 768
-    output_dim = 768
+    try:
+        # Create input tensor
+        batch_size = 32
+        input_dim = 768
+        output_dim = 768
 
-    # Create input on GPU
-    x = torch.randn(batch_size, input_dim, device='cuda', dtype=torch.float16)
+        # Create input on GPU if available
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        x = torch.randn(batch_size, input_dim, device=device, dtype=torch.float16)
 
-    # Create FP16 linear layer
-    fp16_linear = torch.nn.Linear(input_dim, output_dim).to('cuda').to(torch.float16)
+        # Create FP16 linear layer
+        fp16_linear = torch.nn.Linear(input_dim, output_dim).to(device).to(torch.float16)
 
-    # Create 4-bit linear layer
-    int4_linear = bnb.nn.Linear4bit(
-        input_dim, output_dim,
-        bias=True,
-        compute_dtype=torch.float16,
-        compress_statistics=True,
-        quant_type="nf4"
-    ).to('cuda')
+        # Create 4-bit linear layer
+        int4_linear = bnb.nn.Linear4bit(
+            input_dim, output_dim,
+            bias=True,
+            compute_dtype=torch.float16,
+            compress_statistics=True,
+            quant_type="nf4"
+        ).to(device)
 
-    # Forward pass with FP16
-    fp16_output = fp16_linear(x)
+        # Forward pass with FP16
+        fp16_output = fp16_linear(x)
 
-    # Forward pass with 4-bit
-    int4_output = int4_linear(x)
+        # Forward pass with 4-bit
+        int4_output = int4_linear(x)
 
-    # Check results
-    error = torch.abs(fp16_output - int4_output).mean().item()
-    print(f"Mean absolute error: {error:.6f}")
+        # Check results
+        error = torch.abs(fp16_output - int4_output).mean().item()
+        print(f"Mean absolute error: {error:.6f}")
 
-    # Benchmark
-    n_runs = 100
+        # Benchmark
+        n_runs = 100
 
-    # Warm up
-    for _ in range(10):
-        _ = fp16_linear(x)
-        _ = int4_linear(x)
-    torch.cuda.synchronize()
+        # Warm up
+        for _ in range(10):
+            _ = fp16_linear(x)
+            _ = int4_linear(x)
+        if device == 'cuda':
+            torch.cuda.synchronize()
 
-    # Benchmark FP16
-    start_time = time.time()
-    for _ in range(n_runs):
-        _ = fp16_linear(x)
-    torch.cuda.synchronize()
-    fp16_time = (time.time() - start_time) / n_runs
+        # Benchmark FP16
+        start_time = time.time()
+        for _ in range(n_runs):
+            _ = fp16_linear(x)
+        if device == 'cuda':
+            torch.cuda.synchronize()
+        fp16_time = (time.time() - start_time) / n_runs
 
-    # Benchmark 4-bit
-    start_time = time.time()
-    for _ in range(n_runs):
-        _ = int4_linear(x)
-    torch.cuda.synchronize()
-    int4_time = (time.time() - start_time) / n_runs
+        # Benchmark 4-bit
+        start_time = time.time()
+        for _ in range(n_runs):
+            _ = int4_linear(x)
+        if device == 'cuda':
+            torch.cuda.synchronize()
+        int4_time = (time.time() - start_time) / n_runs
 
-    print(f"FP16 time: {fp16_time*1000:.3f} ms")
-    print(f"4-bit time: {int4_time*1000:.3f} ms")
-    print(f"Speedup: {fp16_time/int4_time:.2f}x")
-    print(f"Memory savings: ~{100 * (1 - 4/16):.1f}%")
+        print(f"FP16 time: {fp16_time*1000:.3f} ms")
+        print(f"4-bit time: {int4_time*1000:.3f} ms")
+        print(f"Speedup: {fp16_time/int4_time:.2f}x")
+        print(f"Memory savings: ~{100 * (1 - 4/16):.1f}%")
 
-    return error < 0.05  # Check if error is acceptable
+        success = error < 0.05
+        if success:
+            print_success("4-bit linear layer test passed")
+        else:
+            print_warning("4-bit linear layer test failed - high error")
+
+        return success
+
+    except Exception as e:
+        print_error(f"4-bit linear layer test failed with error: {e}")
+        return False
 
 def test_optimizers():
     """Test 8-bit optimizers."""
-    print("\n=== Testing 8-bit Optimizers ===")
+    print_header("Testing 8-bit Optimizers")
 
-    # Create a simple model
-    model = torch.nn.Sequential(
-        torch.nn.Linear(128, 256),
-        torch.nn.ReLU(),
-        torch.nn.Linear(256, 128)
-    ).to('cuda')
+    try:
+        # Create a simple model
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model = torch.nn.Sequential(
+            torch.nn.Linear(128, 256),
+            torch.nn.ReLU(),
+            torch.nn.Linear(256, 128)
+        ).to(device)
 
-    # Create 8-bit optimizer
-    optimizer = bnb.optim.Adam8bit(
-        model.parameters(),
-        lr=1e-3,
-        betas=(0.9, 0.999),
-        eps=1e-8,
-        weight_decay=0
-    )
+        # Create 8-bit optimizer
+        optimizer = bnb.optim.Adam8bit(
+            model.parameters(),
+            lr=1e-3,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=0
+        )
 
-    # Create input and target
-    x = torch.randn(32, 128, device='cuda')
-    y = torch.randn(32, 128, device='cuda')
+        # Create input and target
+        x = torch.randn(32, 128, device=device)
+        y = torch.randn(32, 128, device=device)
 
-    # Training loop
-    for _ in range(5):
-        optimizer.zero_grad()
-        output = model(x)
-        loss = torch.nn.functional.mse_loss(output, y)
-        loss.backward()
-        optimizer.step()
+        # Training loop
+        for _ in range(5):
+            optimizer.zero_grad()
+            output = model(x)
+            loss = torch.nn.functional.mse_loss(output, y)
+            loss.backward()
+            optimizer.step()
 
-    print(f"Final loss: {loss.item():.6f}")
-    print("8-bit optimizer test completed successfully!")
+        print(f"Final loss: {loss.item():.6f}")
+        print_success("8-bit optimizer test completed successfully")
 
-    return True
+        return True
+
+    except Exception as e:
+        print_error(f"8-bit optimizer test failed with error: {e}")
+        return False
+
+def benchmark_quantization():
+    """Benchmark quantization performance."""
+    print_header("Quantization Performance Benchmark")
+
+    try:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model_sizes = [768, 1024, 2048, 4096]
+
+        results = []
+
+        for size in model_sizes:
+            print(f"\nTesting model size: {size}x{size}")
+
+            # Create model
+            model_fp32 = torch.nn.Linear(size, size).to(device)
+            model_int8 = bnb.nn.Linear8bitLt(size, size, has_fp16_weights=False).to(device)
+
+            # Copy weights
+            model_int8.weight.data = model_fp32.weight.data.clone()
+            model_int8.bias.data = model_fp32.bias.data.clone()
+
+            # Create input
+            x = torch.randn(16, size, device=device)
+
+            # Warm up
+            for _ in range(5):
+                _ = model_fp32(x)
+                _ = model_int8(x)
+            if device == 'cuda':
+                torch.cuda.synchronize()
+
+            # Benchmark FP32
+            start_time = time.time()
+            for _ in range(50):
+                _ = model_fp32(x)
+            if device == 'cuda':
+                torch.cuda.synchronize()
+            fp32_time = (time.time() - start_time) / 50
+
+            # Benchmark INT8
+            start_time = time.time()
+            for _ in range(50):
+                _ = model_int8(x)
+            if device == 'cuda':
+                torch.cuda.synchronize()
+            int8_time = (time.time() - start_time) / 50
+
+            speedup = fp32_time / int8_time
+            memory_savings = 100 * (1 - 8/32)
+
+            print(f"  FP32 time: {fp32_time*1000:.3f} ms")
+            print(f"  INT8 time: {int8_time*1000:.3f} ms")
+            print(f"  Speedup: {speedup:.2f}x")
+            print(f"  Memory savings: {memory_savings:.1f}%")
+
+            results.append({
+                'size': size,
+                'fp32_time': fp32_time,
+                'int8_time': int8_time,
+                'speedup': speedup,
+                'memory_savings': memory_savings
+            })
+
+        print_success("Quantization benchmark completed")
+        return results
+
+    except Exception as e:
+        print_error(f"Benchmark failed with error: {e}")
+        return None
 
 def main():
     """Run all tests."""
-    print("=== BITSANDBYTES Tests ===")
-    print(f"BITSANDBYTES version: {bnb.__version__}")
-    print(f"CUDA available: {bnb.CUDA_AVAILABLE}")
+    print_header("BITSANDBYTES Enhanced Test Suite")
+    print(f"bitsandbytes version: {bnb.__version__}")
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
 
-    # Get GPU information
-    print(f"PyTorch CUDA: {torch.version.cuda}")
-    print(f"Number of GPUs: {torch.cuda.device_count()}")
-    for i in range(torch.cuda.device_count()):
-        print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+    if torch.cuda.is_available():
+        print(f"GPU count: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
 
     # Run tests
     tests = [
@@ -676,11 +889,14 @@ def main():
             result = test_fn()
             results.append((name, result))
         except Exception as e:
-            print(f"Error in {name} test: {e}")
+            print_error(f"Error in {name} test: {e}")
             results.append((name, False))
 
+    # Run benchmark
+    benchmark_results = benchmark_quantization()
+
     # Print summary
-    print("\n=== Test Summary ===")
+    print_header("Test Summary")
     all_passed = True
     for name, result in results:
         status = "PASSED" if result else "FAILED"
@@ -688,18 +904,61 @@ def main():
         all_passed = all_passed and result
 
     if all_passed:
-        print("\nAll tests passed successfully!")
+        print_success("All tests passed successfully!")
+        return 0
     else:
-        print("\nSome tests failed. Please check the logs.")
+        print_warning("Some tests failed. Please check the output above.")
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 EOF
 
-log "Created test script at $TEST_SCRIPT"
-log "You can run it with: python3 $TEST_SCRIPT"
+    chmod +x $TEST_SCRIPT
+    print_success "Created enhanced test script at $TEST_SCRIPT"
+    print_step "Run it with: python3 $TEST_SCRIPT"
+}
+
+# Main script logic
+set -e  # Exit on error
+
+# Create log directory
+LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
+mkdir -p $LOG_DIR
+
+# Log file
+LOG_FILE="$LOG_DIR/bitsandbytes_install_$(date +"%Y%m%d_%H%M%S").log"
+
+# Function to log messages
+log() {
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
+}
+
+# Start installation
+log "=== Starting BITSANDBYTES Installation ==="
+log "System: $(uname -a)"
+log "ROCm Path: $(which hipcc 2>/dev/null || echo 'Not found')"
+log "Python Version: $(python3 --version)"
+log "PyTorch Version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'Not installed')"
+
+# Check for --show-env option
+if [[ "$1" == "--show-env" ]]; then
+    show_env
+    exit 0
+fi
+
+# Check for --dry-run option
+if [[ "$*" == *"--dry-run"* ]]; then
+    print_warning "DRY RUN MODE - No actual installation will be performed"
+    print_step "This would install bitsandbytes with the following configuration:"
+    print_step "- Installation method: auto-detect"
+    print_step "- ROCm support: enabled"
+    print_step "- Virtual environment: auto-create if needed"
+    exit 0
+fi
+
+# Run the enhanced installation function
+install_bitsandbytes_enhanced "$@"
 
 log "=== BITSANDBYTES Installation Complete ==="
-log "Installation Directory: $INSTALL_DIR"
 log "Log File: $LOG_FILE"
-log "Documentation: $HOME/Desktop/ml_stack_extensions/docs/bitsandbytes_guide.md"

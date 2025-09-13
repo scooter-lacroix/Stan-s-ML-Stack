@@ -34,7 +34,7 @@ print_warning() {
 }
 
 # Set variables
-VERSION="0.1.4-secure"
+VERSION="0.1.4-Sotapanna"
 IMAGE_NAME="bartholemewii/stans-ml-stack"
 
 print_header "Verifying Stan's ML Stack Docker Image v${VERSION}"

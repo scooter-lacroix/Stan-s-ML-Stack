@@ -85,21 +85,17 @@ The ML Stack provides several installation options to suit your needs.
 
 ### Current Status
 
-The ML Stack is currently in a **fully functional state** with the following components built and verified:
+- 🔄 **Flash Attention CK**: Flash Attention CK is in pre-release testing and debugging
 
-- ✅ **ROCm 6.4.43482**: Installed and working
-- ✅ **PyTorch with ROCm**: Installed and GPU-accelerated
-- ✅ **Triton**: Installed and optimized for AMD GPUs
-- ✅ **MPI4Py**: Installed for distributed computing
-- ✅ **DeepSpeed**: Installed with ROCm support
-- ✅ **Megatron-LM**: Installed for large model training
-- ✅ **vLLM**: Installed for high-throughput inference
-- 🔄 **Flash Attention CK**: Currently building (assembly code debugging in progress)
-- ✅ **Persistent Environment**: System-wide environment configured
+### PyPI Installation
 
-### PyPI Installation (Coming Soon)
+Install the ML Stack via PyPI:
 
-PyPI package installation will be available soon. For now, use the direct installation methods below.
+```bash
+pip install stans-ml-stack
+```
+
+This will install the core package with all necessary dependencies.
 
 ### Automatic Installation from Source
 

@@ -23,7 +23,7 @@ ENV SKIP_GPU_DETECTION=1
 
 # Label the image
 LABEL maintainer="Stanley Chisango (Scooter Lacroix) <scooterlacroix@gmail.com>"
-LABEL version="0.1.4-secure"
+LABEL version="0.1.4-Sotapanna"
 LABEL description="Stan's ML Stack - A lightweight machine learning environment optimized for AMD GPUs"
 
 # Install minimal system dependencies with security updates
@@ -53,16 +53,16 @@ WORKDIR /workspace
 RUN ln -sf /usr/bin/ninja /usr/bin/ninja-build || true \
     && ln -sf /opt/rocm /usr/local/cuda || true
 
+# Copy ML Stack files first for package installation
+COPY . /workspace/Stans_MLStack/
+
 # Install minimal Python dependencies with security fixes
 RUN pip3 install --upgrade pip \
     && pip3 install setuptools>=70.0.0 wheel>=0.38.1 \
-    && pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm5.6 \
+    && pip3 install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.4 \
     && pip3 install numpy scipy \
-    && pip3 install psutil tqdm requests pyyaml \
-    && pip3 install stans-ml-stack
-
-# Copy ML Stack files
-COPY . /workspace/Stans_MLStack/
+    && pip3 install onnxruntime psutil tqdm requests pyyaml \
+    && pip3 install -e /workspace/Stans_MLStack/
 
 # Make scripts executable
 RUN chmod +x /workspace/Stans_MLStack/scripts/*.sh /workspace/Stans_MLStack/scripts/*.py
@@ -90,9 +90,11 @@ echo "docker run --device=/dev/kfd --device=/dev/dri --group-add video -it barth
 # Run basic verification script to check installation
 RUN echo "Running basic verification..." \
     && python3 -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())" \
+    && python3 -c "import onnxruntime; print('ONNX Runtime version:', onnxruntime.__version__)" \
     && python3 -c "import psutil; print('psutil version:', psutil.__version__)" \
     && python3 -c "import tqdm; print('tqdm version:', tqdm.__version__)" \
-    && python3 -c "import yaml; print('PyYAML version:', yaml.__version__)"
+    && python3 -c "import yaml; print('PyYAML version:', yaml.__version__)" \
+    && python3 -c "import stans_ml_stack; print('Stan\'s ML Stack imported successfully')"
 
 # Expose ports for services (Jupyter, TensorBoard, etc.)
 EXPOSE 8888 6006 8080

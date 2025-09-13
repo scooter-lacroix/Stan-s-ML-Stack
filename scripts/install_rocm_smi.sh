@@ -13,12 +13,178 @@
 # ROCm SMI Installation Script for AMD GPUs
 # =============================================================================
 # This script installs and configures ROCm System Management Interface (SMI)
-# for monitoring and profiling AMD GPUs.
-#
-# Author: User
-# Date: $(date +"%Y-%m-%d")
+# for monitoring and profiling AMD GPUs with enhanced robustness and user experience.
 # =============================================================================
 
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
+
+# ASCII Art Banner
+cat << "EOF"
+  ██████╗  ██████╗  ██████╗███╗   ███╗    ███████╗███╗   ███╗██╗
+  ██╔══██╗██╔═══██╗██╔════╝████╗ ████║    ██╔════╝████╗ ████║██║
+  ██████╔╝██║   ██║██║     ██╔████╔██║    ███████╗██╔████╔██║██║
+  ██╔══██╗██║   ██║██║     ██║╚██╔╝██║    ╚════██║██║╚██╔╝██║██║
+  ██║  ██║╚██████╔╝╚██████╗██║ ╚═╝ ██║    ███████║██║ ╚═╝ ██║██║
+  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚═╝     ╚═╝    ╚══════╝╚═╝     ╚═╝╚═╝
+EOF
+echo
+
+# Function definitions
+print_header() {
+    echo
+    echo "╔═════════════════════════════════════════════════════════╗"
+    echo "║                                                         ║"
+    echo "║               === $1 ===               ║"
+    echo "║                                                         ║"
+    echo "╚═════════════════════════════════════════════════════════╝"
+    echo
+}
+
+print_section() {
+    echo
+    echo "┌─────────────────────────────────────────────────────────┐"
+    echo "│ $1"
+    echo "└─────────────────────────────────────────────────────────┘"
+}
+
+print_step() {
+    echo "➤ $1"
+}
+
+print_success() {
+    echo "✓ $1"
+}
+
+print_warning() {
+    echo "⚠ $1"
+}
+
+print_error() {
+    echo "✗ $1"
+}
+
+# Function to print a clean separator line
+print_separator() {
+    echo "───────────────────────────────────────────────────────────"
+}
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
+}
+
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
+
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Set script options
 set -e  # Exit on error
 
 # Create log directory
@@ -33,100 +199,354 @@ log() {
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
 }
 
-# Function to check if command exists
-command_exists() {
-    command -v "$1" > /dev/null 2>&1
-}
+# Parse command line arguments
+DRY_RUN=false
+FORCE=false
+SHOW_ENV=false
+INSTALL_METHOD="auto"
 
-# Function to install Python packages with adaptive package management
-install_python_package() {
-    local package_spec="$1"
-    local package_name="$2"
-    
-    # Check if package is already installed
-    if python3 -c "import $package_name" 2>/dev/null; then
-        log "Package $package_name is already installed"
-        return 0
-    fi
-    
-    log "Installing $package_name..."
-    
-    # Try uv first if available
-    if command_exists uv; then
-        log "Using uv to install $package_name..."
-        if uv pip install $package_spec --system 2>/dev/null || \
-           uv pip install $package_spec --user 2>/dev/null || \
-           uv pip install $package_spec --break-system-packages 2>/dev/null; then
-            log "Successfully installed $package_name with uv"
-            return 0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --force)
+            FORCE=true
+            shift
+            ;;
+        --show-env)
+            SHOW_ENV=true
+            shift
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --dry-run     Show what would be done without making changes"
+            echo "  --force       Force reinstallation even if already installed"
+            echo "  --show-env    Show ROCm environment variables"
+            echo "  --help        Show this help message"
+            echo ""
+            echo "Environment variables:"
+            echo "  ROCM_SMI_VENV_PYTHON  Path to Python executable in virtual environment"
+            echo "  ROCM_SMI_REINSTALL    Set to 'true' to force reinstallation"
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Check for force reinstall from environment variable
+if [[ "$ROCM_SMI_REINSTALL" == "true" ]] || [[ "$FORCE" == "true" ]]; then
+    FORCE=true
+fi
+
+# Main installation function
+install_rocm_smi() {
+    print_header "ROCm SMI Installation"
+
+    # Check if ROCm SMI is already installed
+    if command_exists rocm-smi; then
+        rocm_smi_version=$(rocm-smi --version 2>&1 | head -n 1)
+        print_success "ROCm SMI is already installed (version: $rocm_smi_version)"
+
+        # Check if --force flag is provided
+        if [[ "$FORCE" == "true" ]]; then
+            print_warning "Force reinstall requested - proceeding with reinstallation"
+            print_step "Will reinstall ROCm SMI despite working installation"
         else
-            log "uv installation failed, falling back to pip..."
+            print_step "ROCm SMI installation is complete. Use --force to reinstall."
+            return 0
         fi
     fi
-    
-    # Fallback to pip
-    log "Using pip to install $package_name..."
-    if pip install $package_spec --user 2>/dev/null || \
-       pip install $package_spec --break-system-packages 2>/dev/null; then
-        log "Successfully installed $package_name with pip"
-        return 0
-    else
-        log "Failed to install $package_name with both uv and pip"
-        return 1
-    fi
-}
 
-# Start installation
-log "=== Starting ROCm SMI Installation ==="
-log "System: $(uname -a)"
-log "ROCm Path: $(which hipcc 2>/dev/null || echo 'Not found')"
+    # Check if ROCm is installed
+    print_section "Checking ROCm Installation"
 
-# Check if ROCm SMI is already installed
-if command_exists rocm-smi; then
-    log "ROCm SMI is already installed: $(rocm-smi --version 2>&1)"
-    log "Checking for updates..."
-else
-    log "ROCm SMI is not installed. Installing..."
-fi
+    if command_exists rocminfo; then
+        print_success "rocminfo found"
 
-# Create installation directory
-INSTALL_DIR="$HOME/ml_stack/rocm_smi"
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
+        # Set up ROCm environment variables
+        print_step "Setting up ROCm environment variables..."
+        export HSA_OVERRIDE_GFX_VERSION=11.0.0
+        export PYTORCH_ROCM_ARCH="gfx1100"
+        export ROCM_PATH="/opt/rocm"
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
 
-# Clone ROCm SMI repository
-if [ ! -d "rocm_smi_lib" ]; then
-    log "Cloning ROCm SMI repository..."
-    git clone https://github.com/RadeonOpenCompute/rocm_smi_lib.git
-    cd rocm_smi_lib
-else
-    log "ROCm SMI repository already exists, updating..."
-    cd rocm_smi_lib
-    git pull
-fi
-
-# Install Python wrapper
-log "Installing ROCm SMI Python wrapper..."
-if [ -d "python_smi_tools" ]; then
-    cd python_smi_tools
-    if [ -f "setup.py" ]; then
-        log "Installing ROCm SMI Python wrapper using adaptive package management..."
-        if command_exists uv; then
-            log "Using uv to install ROCm SMI Python wrapper..."
-            if uv pip install -e . --system 2>/dev/null || \
-               uv pip install -e . --user 2>/dev/null || \
-               uv pip install -e . --break-system-packages 2>/dev/null; then
-                log "Successfully installed ROCm SMI Python wrapper with uv"
+        # Set HSA_TOOLS_LIB if rocprofiler library exists
+        if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+            export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+            print_step "ROCm profiler library found and configured"
+        else
+            # Check if we can install rocprofiler
+            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                sudo apt-get update && sudo apt-get install -y rocprofiler
+                if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                    print_success "ROCm profiler installed and configured"
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler installation failed, disabling HSA tools"
+                fi
             else
-                log "uv installation failed, falling back to pip..."
-                pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
+                export HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+            fi
+        fi
+
+        # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
+        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+            unset PYTORCH_CUDA_ALLOC_CONF
+            print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+        fi
+
+        print_success "ROCm environment variables configured"
+    else
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            package_manager=$(detect_package_manager)
+            case $package_manager in
+                apt)
+                    sudo apt update && sudo apt install -y rocminfo
+                    ;;
+                dnf)
+                    sudo dnf install -y rocminfo
+                    ;;
+                yum)
+                    sudo yum install -y rocminfo
+                    ;;
+                pacman)
+                    sudo pacman -S rocminfo
+                    ;;
+                zypper)
+                    sudo zypper install -y rocminfo
+                    ;;
+                *)
+                    print_error "Unsupported package manager: $package_manager"
+                    return 1
+                    ;;
+            esac
+            if command_exists rocminfo; then
+                print_success "Installed rocminfo"
+            else
+                print_error "Failed to install rocminfo"
+                return 1
             fi
         else
-            log "Using pip to install ROCm SMI Python wrapper..."
-            pip install -e . --user 2>/dev/null || pip install -e . --break-system-packages
+            print_error "ROCm is not installed. Please install ROCm first."
+            return 1
+        fi
+    fi
+
+    # Detect ROCm version
+    rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    fi
+
+    if [ -z "$rocm_version" ]; then
+        print_warning "Could not detect ROCm version, using default version 6.4.0"
+        rocm_version="6.4.0"
+    else
+        print_success "Detected ROCm version: $rocm_version"
+    fi
+
+    # Check if uv is installed
+    print_section "Installing ROCm SMI with Python Support"
+
+    if ! command_exists uv; then
+        print_step "Installing uv package manager..."
+        python3 -m pip install uv
+
+        # Add uv to PATH if it was installed in a user directory
+        if [ -f "$HOME/.local/bin/uv" ]; then
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+        # Add uv to PATH if it was installed via cargo
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+        if ! command_exists uv; then
+            print_error "Failed to install uv package manager"
+            print_step "Falling back to pip"
+        else
+            print_success "Installed uv package manager"
         fi
     else
-        log "No setup.py found in python_smi_tools. Creating a simple wrapper instead."
+        print_success "uv package manager is already installed"
+    fi
+
+    # Ask user for installation preference
+    echo
+    echo -e "${CYAN}${BOLD}ROCm SMI Installation Options:${RESET}"
+    echo "1) Global installation (recommended for system-wide use)"
+    echo "2) Virtual environment (isolated installation)"
+    echo "3) Auto-detect (try global, fallback to venv if needed)"
+    echo
+    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+
+    case $INSTALL_CHOICE in
+        1)
+            INSTALL_METHOD="global"
+            print_step "Using global installation method"
+            ;;
+        2)
+            INSTALL_METHOD="venv"
+            print_step "Using virtual environment method"
+            ;;
+        3|*)
+            INSTALL_METHOD="auto"
+            print_step "Using auto-detect method"
+            ;;
+    esac
+
+    # Create installation directory
+    INSTALL_DIR="$HOME/ml_stack/rocm_smi"
+    mkdir -p $INSTALL_DIR
+    cd $INSTALL_DIR
+
+    # Clone ROCm SMI repository
+    if [ ! -d "rocm_smi_lib" ]; then
+        print_step "Cloning ROCm SMI repository..."
+        if [[ "$DRY_RUN" == "true" ]]; then
+            print_step "[DRY RUN] Would clone https://github.com/RadeonOpenCompute/rocm_smi_lib.git"
+        else
+            git clone https://github.com/RadeonOpenCompute/rocm_smi_lib.git
+            if [ $? -ne 0 ]; then
+                print_error "Failed to clone ROCm SMI repository"
+                return 1
+            fi
+            print_success "Cloned ROCm SMI repository"
+        fi
+        cd rocm_smi_lib
+    else
+        print_step "ROCm SMI repository already exists, updating..."
+        cd rocm_smi_lib
+        if [[ "$DRY_RUN" == "true" ]]; then
+            print_step "[DRY RUN] Would update repository"
+        else
+            git pull
+            if [ $? -ne 0 ]; then
+                print_warning "Failed to update repository, continuing with existing version"
+            else
+                print_success "Updated ROCm SMI repository"
+            fi
+        fi
+    fi
+
+    # Install Python wrapper
+    print_step "Installing ROCm SMI Python wrapper..."
+    if [ -d "python_smi_tools" ]; then
+        cd python_smi_tools
+        if [ -f "setup.py" ]; then
+            print_step "Installing ROCm SMI Python wrapper using enhanced package management..."
+
+            # Create a function to handle uv commands properly with venv fallback
+            uv_pip_install() {
+                local args="$@"
+
+                # Check if uv is available as a command
+                if command -v uv &> /dev/null; then
+                    case $INSTALL_METHOD in
+                        "global")
+                            print_step "Installing globally with pip..."
+                            python3 -m pip install --break-system-packages $args
+                            ROCM_SMI_VENV_PYTHON=""
+                            ;;
+                        "venv")
+                            print_step "Creating uv virtual environment..."
+                            VENV_DIR="./rocm_smi_venv"
+                            if [ ! -d "$VENV_DIR" ]; then
+                                uv venv "$VENV_DIR"
+                            fi
+                            source "$VENV_DIR/bin/activate"
+                            print_step "Installing in virtual environment..."
+                            uv pip install $args
+                            ROCM_SMI_VENV_PYTHON="$VENV_DIR/bin/python"
+                            print_success "Installed in virtual environment: $VENV_DIR"
+                            ;;
+                        "auto")
+                            # Try global install first
+                            print_step "Attempting global installation with uv..."
+                            local install_output
+                            install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                            local install_exit_code=$?
+
+                            if echo "$install_output" | grep -q "externally managed"; then
+                                print_warning "Global installation failed due to externally managed environment"
+                                print_step "Creating uv virtual environment for installation..."
+
+                                # Create uv venv in project directory
+                                VENV_DIR="./rocm_smi_venv"
+                                if [ ! -d "$VENV_DIR" ]; then
+                                    uv venv "$VENV_DIR"
+                                fi
+
+                                # Activate venv and install
+                                source "$VENV_DIR/bin/activate"
+                                print_step "Installing in virtual environment..."
+                                uv pip install $args
+
+                                # Store venv path for verification
+                                ROCM_SMI_VENV_PYTHON="$VENV_DIR/bin/python"
+                                print_success "Installed in virtual environment: $VENV_DIR"
+                            elif [ $install_exit_code -eq 0 ]; then
+                                print_success "Global installation successful"
+                                ROCM_SMI_VENV_PYTHON=""
+                            else
+                                print_error "Global installation failed with unknown error:"
+                                echo "$install_output"
+                                print_step "Falling back to virtual environment..."
+
+                                # Create uv venv in project directory
+                                VENV_DIR="./rocm_smi_venv"
+                                if [ ! -d "$VENV_DIR" ]; then
+                                    uv venv "$VENV_DIR"
+                                fi
+
+                                # Activate venv and install
+                                source "$VENV_DIR/bin/activate"
+                                print_step "Installing in virtual environment..."
+                                uv pip install $args
+
+                                # Store venv path for verification
+                                ROCM_SMI_VENV_PYTHON="$VENV_DIR/bin/python"
+                                print_success "Installed in virtual environment: $VENV_DIR"
+                            fi
+                            ;;
+                    esac
+                else
+                    # Fall back to pip
+                    print_step "Installing with pip..."
+                    python3 -m pip install $args
+                    ROCM_SMI_VENV_PYTHON=""
+                fi
+            }
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+                print_step "[DRY RUN] Would install ROCm SMI Python wrapper"
+            else
+                uv_pip_install -e .
+                if [ $? -ne 0 ]; then
+                    print_error "Failed to install ROCm SMI Python wrapper"
+                    return 1
+                fi
+                print_success "Installed ROCm SMI Python wrapper"
+            fi
+        else
+            print_warning "No setup.py found in python_smi_tools. Creating a simple wrapper instead."
         mkdir -p $INSTALL_DIR/python_wrapper
         cat > $INSTALL_DIR/python_wrapper/rocm_smi_lib.py << 'EOF'
 #!/usr/bin/env python3
@@ -422,20 +842,40 @@ EOF
     fi
 fi
 
-# Verify installation
-log "Verifying ROCm SMI installation..."
-python3 -c "from rocm_smi_lib import rsmi; print('ROCm SMI Python wrapper installed successfully')"
+    # Verify installation
+    print_section "Verifying ROCm SMI Installation"
 
-if [ $? -eq 0 ]; then
-    log "ROCm SMI Python wrapper installation successful!"
-else
-    log "ROCm SMI Python wrapper installation failed. Please check the logs."
-    exit 1
-fi
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${ROCM_SMI_VENV_PYTHON:-python3}
 
-# Create a simple monitoring script
-MONITOR_SCRIPT="$INSTALL_DIR/monitor_gpus.py"
-cat > $MONITOR_SCRIPT << 'EOF'
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_step "[DRY RUN] Would verify ROCm SMI Python wrapper installation"
+    else
+        print_step "Testing ROCm SMI Python wrapper..."
+        if $PYTHON_CMD -c "from rocm_smi_lib import rsmi; print('ROCm SMI Python wrapper installed successfully')" 2>/dev/null; then
+            print_success "ROCm SMI Python wrapper installation successful"
+
+            # Test basic functionality
+            print_step "Testing basic ROCm SMI functionality..."
+            if $PYTHON_CMD -c "from rocm_smi_lib import rsmi; rsmi.rsmi_init(0); count = rsmi.rsmi_num_monitor_devices(); rsmi.rsmi_shut_down(); print(f'Found {count[0]} GPU device(s)')" 2>/dev/null; then
+                print_success "ROCm SMI basic functionality working"
+            else
+                print_warning "ROCm SMI basic functionality test failed, but wrapper is installed"
+            fi
+        else
+            print_error "ROCm SMI Python wrapper installation failed"
+            return 1
+        fi
+    fi
+
+    # Create monitoring script
+    print_step "Creating GPU monitoring script..."
+    MONITOR_SCRIPT="$INSTALL_DIR/monitor_gpus.py"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_step "[DRY RUN] Would create GPU monitoring script at $MONITOR_SCRIPT"
+    else
+        cat > $MONITOR_SCRIPT << 'EOF'
 #!/usr/bin/env python3
 """
 ROCm SMI GPU Monitoring Script
@@ -730,15 +1170,15 @@ if __name__ == '__main__':
     main()
 EOF
 
-# Make the script executable
-chmod +x $MONITOR_SCRIPT
+        # Make the script executable
+        chmod +x $MONITOR_SCRIPT
+        print_success "Created GPU monitoring script at $MONITOR_SCRIPT"
 
-log "Created GPU monitoring script at $MONITOR_SCRIPT"
-log "You can run it with: python3 $MONITOR_SCRIPT"
+        # Create wrapper script
+        print_step "Creating ROCm SMI wrapper example script..."
+        WRAPPER_SCRIPT="$INSTALL_DIR/rocm_smi_wrapper.py"
 
-# Create a simple wrapper script
-WRAPPER_SCRIPT="$INSTALL_DIR/rocm_smi_wrapper.py"
-cat > $WRAPPER_SCRIPT << 'EOF'
+        cat > $WRAPPER_SCRIPT << 'EOF'
 #!/usr/bin/env python3
 """
 ROCm SMI Python Wrapper Example
@@ -910,13 +1350,79 @@ if __name__ == '__main__':
     main()
 EOF
 
-# Make the script executable
-chmod +x $WRAPPER_SCRIPT
+        # Make the script executable
+        chmod +x $WRAPPER_SCRIPT
+        print_success "Created ROCm SMI wrapper example at $WRAPPER_SCRIPT"
 
-log "Created ROCm SMI wrapper example at $WRAPPER_SCRIPT"
-log "You can run it with: python3 $WRAPPER_SCRIPT"
+        # Show completion message
+        clear
+        cat << "EOF"
 
-log "=== ROCm SMI Installation Complete ==="
-log "Installation Directory: $INSTALL_DIR"
-log "Log File: $LOG_FILE"
-log "Documentation: $HOME/Desktop/ml_stack_extensions/docs/rocm_smi_guide.md"
+    ╔═════════════════════════════════════════════════════════╗
+    ║                                                         ║
+    ║  ██████╗  ██████╗  ██████╗███╗   ███╗    ███████╗███╗   ███╗██╗  ║
+    ║  ██╔══██╗██╔═══██╗██╔════╝████╗ ████║    ██╔════╝████╗ ████║██║  ║
+    ║  ██████╔╝██║   ██║██║     ██╔████╔██║    ███████╗██╔████╔██║██║  ║
+    ║  ██╔══██╗██║   ██║██║     ██║╚██╔╝██║    ╚════██║██║╚██╔╝██║██║  ║
+    ║  ██║  ██║╚██████╔╝╚██████╗██║ ╚═╝ ██║    ███████║██║ ╚═╝ ██║██║  ║
+    ║  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚═╝     ╚═╝    ╚══════╝╚═╝     ╚═╝╚═╝  ║
+    ║                                                         ║
+    ║  Installation Completed Successfully!                   ║
+    ║                                                         ║
+    ║  ROCm SMI is now ready for GPU monitoring and profiling ║
+    ║                                                         ║
+    ╚═════════════════════════════════════════════════════════╝
+
+EOF
+
+        print_success "ROCm SMI installation completed successfully"
+
+        # Provide usage examples
+        echo
+        echo -e "${CYAN}${BOLD}Quick Start Examples:${RESET}"
+        if [ -n "$ROCM_SMI_VENV_PYTHON" ]; then
+            echo -e "${GREEN}source ./rocm_smi_venv/bin/activate${RESET}"
+            echo -e "${GREEN}$ROCM_SMI_VENV_PYTHON $MONITOR_SCRIPT${RESET}"
+            echo -e "${GREEN}$ROCM_SMI_VENV_PYTHON $WRAPPER_SCRIPT${RESET}"
+        else
+            echo -e "${GREEN}python3 $MONITOR_SCRIPT${RESET}"
+            echo -e "${GREEN}python3 $WRAPPER_SCRIPT${RESET}"
+        fi
+        echo
+        echo -e "${YELLOW}${BOLD}Note:${RESET} ${YELLOW}ROCm environment variables are set for this session.${RESET}"
+        echo -e "${YELLOW}For future sessions, you may need to run:${RESET}"
+
+        # Output the actual environment variables that were set
+        echo -e "${GREEN}export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\"${RESET}"
+        echo -e "${GREEN}export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\"${RESET}"
+        if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+            echo -e "${GREEN}export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\"${RESET}"
+        fi
+        echo -e "${GREEN}export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\"${RESET}"
+        echo -e "${GREEN}export ROCM_PATH=\"$ROCM_PATH\"${RESET}"
+        echo -e "${GREEN}export PATH=\"$PATH\"${RESET}"
+        echo -e "${GREEN}export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\"${RESET}"
+        echo
+        echo -e "${CYAN}${BOLD}To apply these settings to your current shell, run:${RESET}"
+        echo -e "${GREEN}eval \"\$(./install_rocm_smi.sh --show-env)\"${RESET}"
+        echo
+
+        # Add a small delay to ensure the message is seen
+        echo -e "${GREEN}${BOLD}Returning to main menu in 3 seconds...${RESET}"
+        sleep 1
+        echo -e "${GREEN}${BOLD}Installation complete. Exiting now.${RESET}"
+        sleep 1
+
+        return 0
+    fi
+}
+
+# Check for --show-env option
+if [[ "$SHOW_ENV" == "true" ]]; then
+    show_env
+    exit 0
+fi
+
+# Run the installation function with all script arguments
+install_rocm_smi "$@"
+

@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: stans-ml-stack:0.1.2
+    image: stans-ml-stack:0.1.4-Sotapanna
     container_name: stans-ml-stack
     volumes:
       - ./data:/workspace/Stans_MLStack/data

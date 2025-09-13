@@ -272,8 +272,14 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
         stderr = ""
 
         # Set up non-blocking I/O
-        for fd in [process.stdout, process.stderr]:
-            fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        stdout_fd = None
+        stderr_fd = None
+        if process.stdout:
+            stdout_fd = process.stdout.fileno()
+            fcntl.fcntl(stdout_fd, fcntl.F_SETFL, fcntl.fcntl(stdout_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        if process.stderr:
+            stderr_fd = process.stderr.fileno()
+            fcntl.fcntl(stderr_fd, fcntl.F_SETFL, fcntl.fcntl(stderr_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
 
         # Set up the timeout
         start_time = time.time()
@@ -282,10 +288,19 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
         # Process output until the process completes or times out
         while process.poll() is None and time.time() < deadline:
             # Wait for output using select with a small timeout
-            ready_to_read, _, _ = select.select([process.stdout, process.stderr], [], [], 0.1)
+            ready_fds = []
+            if stdout_fd is not None:
+                ready_fds.append(stdout_fd)
+            if stderr_fd is not None:
+                ready_fds.append(stderr_fd)
+
+            if ready_fds:
+                ready_to_read, _, _ = select.select(ready_fds, [], [], 0.1)
+            else:
+                ready_to_read = []
 
             # Process stdout
-            if process.stdout in ready_to_read:
+            if stdout_fd is not None and stdout_fd in ready_to_read and process.stdout:
                 try:
                     output = process.stdout.read()
                     if output:
@@ -296,7 +311,7 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
                     time.sleep(0.01)
 
             # Process stderr
-            if process.stderr in ready_to_read:
+            if stderr_fd is not None and stderr_fd in ready_to_read and process.stderr:
                 try:
                     output = process.stderr.read()
                     if output:
@@ -347,6 +362,18 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
             except Exception as e:
                 log_message(f"Error killing process: {e}", "ERROR")
 
+        # Close file descriptors if they were opened
+        try:
+            if process.stdout:
+                process.stdout.close()
+        except Exception:
+            pass
+        try:
+            if process.stderr:
+                process.stderr.close()
+        except Exception:
+            pass
+
         return_code = process.returncode
         log_message(f"Command completed with return code: {return_code}")
 
@@ -363,8 +390,50 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
         log_message(f"Error executing command: {str(e)}", "ERROR")
         return 1, "", f"Error: {str(e)}"
 
+def setup_rocm_environment() -> Dict[str, str]:
+    """Set up ROCm environment variables and PATH management."""
+    log_message("Setting up ROCm environment variables...")
+
+    env_vars = {}
+
+    # Set up ROCm environment variables
+    env_vars["HSA_OVERRIDE_GFX_VERSION"] = "11.0.0"
+    env_vars["PYTORCH_ROCM_ARCH"] = "gfx1100"
+    env_vars["ROCM_PATH"] = "/opt/rocm"
+
+    # Set HSA_TOOLS_LIB if rocprofiler library exists
+    return_code, _, _ = run_command("ls -la /opt/rocm/lib/librocprofiler-sdk-tool.so 2>/dev/null", timeout=5)
+    if return_code == 0:
+        env_vars["HSA_TOOLS_LIB"] = "/opt/rocm/lib/librocprofiler-sdk-tool.so"
+        log_message("ROCm profiler library found and configured")
+    else:
+        env_vars["HSA_TOOLS_LIB"] = "0"
+        log_message("ROCm profiler library not found, disabling HSA tools")
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if "PYTORCH_CUDA_ALLOC_CONF" in os.environ:
+        env_vars["PYTORCH_ALLOC_CONF"] = os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+        log_message("Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF")
+
+    # Set up PATH and LD_LIBRARY_PATH
+    current_path = os.environ.get("PATH", "")
+    current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+
+    if "/opt/rocm/bin" not in current_path:
+        env_vars["PATH"] = f"/opt/rocm/bin:{current_path}"
+    else:
+        env_vars["PATH"] = current_path
+
+    if "/opt/rocm/lib" not in current_ld_path:
+        env_vars["LD_LIBRARY_PATH"] = f"/opt/rocm/lib:{current_ld_path}"
+    else:
+        env_vars["LD_LIBRARY_PATH"] = current_ld_path
+
+    log_message("ROCm environment variables configured")
+    return env_vars
+
 def detect_hardware() -> Dict[str, Any]:
-    """Detect hardware information."""
+    """Detect hardware information with enhanced ROCm detection."""
     log_message("Detecting hardware...")
 
     hardware_info = {
@@ -376,23 +445,23 @@ def detect_hardware() -> Dict[str, Any]:
         "python_version": platform.python_version(),
         "amd_gpus": [],
         "rocm_version": None,
-        "rocm_path": None
+        "rocm_path": None,
+        "rocm_env_vars": {}
     }
 
-    # Check if ROCm is installed
+    # Check if ROCm is installed with enhanced detection
     return_code, stdout, _ = run_command("which rocminfo", timeout=5)
     if return_code == 0 and stdout.strip():
         log_message("ROCm is installed")
         hardware_info["rocm_path"] = os.path.dirname(os.path.dirname(stdout.strip()))
 
-        # Try to get ROCm version using relative paths where possible
+        # Try to get ROCm version using multiple methods
         return_code, stdout, _ = run_command("ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\\+\\.[0-9]\\+\\.[0-9]\\+' | head -n 1", timeout=5)
         if return_code == 0 and stdout.strip():
             hardware_info["rocm_version"] = stdout.strip()
             log_message(f"ROCm version: {hardware_info['rocm_version']}")
         else:
             # Try alternative method to get ROCm version
-            # Use which to find rocminfo path
             rocm_cmd = "which rocminfo 2>/dev/null"
             rc, rocminfo_path, _ = run_command(rocm_cmd, timeout=5)
             if rc == 0 and rocminfo_path.strip():
@@ -408,8 +477,18 @@ def detect_hardware() -> Dict[str, Any]:
                 if return_code == 0 and stdout.strip():
                     hardware_info["rocm_version"] = stdout.strip()
                     log_message(f"ROCm version: {hardware_info['rocm_version']}")
+
+        # Set up ROCm environment variables
+        hardware_info["rocm_env_vars"] = setup_rocm_environment()
+
     else:
         log_message("ROCm is not installed or not in PATH")
+        # Check if ROCm directory exists but rocminfo is not in PATH
+        return_code, _, _ = run_command("ls -d /opt/rocm 2>/dev/null", timeout=5)
+        if return_code == 0:
+            log_message("ROCm directory found, attempting to set up environment")
+            hardware_info["rocm_path"] = "/opt/rocm"
+            hardware_info["rocm_env_vars"] = setup_rocm_environment()
 
     # Detect AMD GPUs using multiple methods
     # Method 1: rocminfo
@@ -552,6 +631,113 @@ def check_dependencies() -> Dict[str, bool]:
     log_message("Dependency check completed")
     return dependencies
 
+def install_python_package(package: str, install_method: str = "auto", extra_args: str = "") -> Tuple[bool, str]:
+    """Install Python package with uv or pip, handling different installation methods."""
+    log_message(f"Installing Python package: {package} with method: {install_method}")
+
+    # Check if uv is available
+    return_code, _, _ = run_command("which uv", timeout=5)
+    uv_available = return_code == 0
+
+    if not uv_available:
+        log_message("uv not found, installing it", "WARNING")
+        # Try to install uv
+        install_uv_cmd = "curl -sSf https://astral.sh/uv/install.sh | sh"
+        return_code, _, stderr = run_command(install_uv_cmd, timeout=60)
+        if return_code != 0:
+            log_message(f"Failed to install uv: {stderr}", "ERROR")
+            log_message("Falling back to pip", "WARNING")
+            uv_available = False
+        else:
+            # Add uv to PATH
+            os.environ["PATH"] = f"{os.path.expanduser('~/.local/bin')}:{os.path.expanduser('~/.cargo/bin')}:{os.environ.get('PATH', '')}"
+            uv_available = True
+
+    success = False
+    venv_path = ""
+    error_msg = ""
+
+    if uv_available:
+        if install_method == "global":
+            log_message("Installing globally with uv...")
+            cmd = f"uv pip install --python $(which python3) {extra_args} {package}"
+            return_code, stdout, stderr = run_command(cmd, timeout=300)
+            if return_code == 0:
+                success = True
+            else:
+                error_msg = f"Global installation failed: {stderr}"
+                if "externally managed" in stderr:
+                    error_msg += " (Environment is externally managed)"
+
+        elif install_method == "venv":
+            log_message("Creating uv virtual environment...")
+            venv_dir = "./pytorch_rocm_venv"
+            if not os.path.exists(venv_dir):
+                return_code, _, stderr = run_command(f"uv venv {venv_dir}", timeout=60)
+                if return_code != 0:
+                    error_msg = f"Failed to create venv: {stderr}"
+                    return False, error_msg
+
+            # Activate venv and install
+            log_message("Installing in virtual environment...")
+            cmd = f"source {venv_dir}/bin/activate && uv pip install {extra_args} {package}"
+            return_code, stdout, stderr = run_command(cmd, timeout=300)
+            if return_code == 0:
+                success = True
+                venv_path = venv_dir
+            else:
+                error_msg = f"Venv installation failed: {stderr}"
+
+        elif install_method == "auto":
+            # Try global install first
+            log_message("Attempting global installation with uv...")
+            cmd = f"uv pip install --python $(which python3) {extra_args} {package}"
+            return_code, stdout, stderr = run_command(cmd, timeout=300)
+
+            if return_code == 0:
+                success = True
+                log_message("Global installation successful")
+            elif "externally managed" in stderr:
+                log_message("Global installation failed due to externally managed environment")
+                log_message("Creating uv virtual environment for installation...")
+
+                # Create uv venv
+                venv_dir = "./pytorch_rocm_venv"
+                if not os.path.exists(venv_dir):
+                    return_code, _, stderr = run_command(f"uv venv {venv_dir}", timeout=60)
+                    if return_code != 0:
+                        error_msg = f"Failed to create venv: {stderr}"
+                        return False, error_msg
+
+                # Activate venv and install
+                log_message("Installing in virtual environment...")
+                cmd = f"source {venv_dir}/bin/activate && uv pip install {extra_args} {package}"
+                return_code, stdout, stderr = run_command(cmd, timeout=300)
+                if return_code == 0:
+                    success = True
+                    venv_path = venv_dir
+                    log_message("Virtual environment installation successful")
+                else:
+                    error_msg = f"Venv installation failed: {stderr}"
+            else:
+                error_msg = f"Global installation failed with unknown error: {stderr}"
+    else:
+        # Fall back to pip
+        log_message("Installing with pip...")
+        cmd = f"python3 -m pip install {extra_args} {package}"
+        return_code, stdout, stderr = run_command(cmd, timeout=300)
+        if return_code == 0:
+            success = True
+        else:
+            error_msg = f"Pip installation failed: {stderr}"
+
+    if success:
+        log_message(f"Successfully installed {package}")
+        return True, venv_path
+    else:
+        log_message(f"Failed to install {package}: {error_msg}", "ERROR")
+        return False, error_msg
+
 def install_dependencies(deps_to_install: List[str], stdscr) -> bool:
     """Install dependencies."""
     if not deps_to_install:
@@ -682,8 +868,53 @@ def install_dependencies(deps_to_install: List[str], stdscr) -> bool:
     time.sleep(2)
     return True
 
-def install_component(component: Dict[str, Any], stdscr, log_win) -> bool:
-    """Install a component."""
+def select_installation_method(stdscr) -> str:
+    """Present installation method selection menu."""
+    methods = [
+        ("global", "Global installation (recommended for system-wide use)"),
+        ("venv", "Virtual environment (isolated installation)"),
+        ("auto", "Auto-detect (try global, fallback to venv if needed)")
+    ]
+
+    selected_idx = 2  # Default to auto-detect
+
+    while True:
+        # Clear screen and draw header
+        stdscr.clear()
+        draw_header(stdscr, "Installation Method Selection")
+        draw_footer(stdscr, "Use arrow keys to navigate, Enter to select")
+
+        # Draw menu
+        menu_y = 11
+        stdscr.addstr(menu_y, 2, "Choose PyTorch installation method:".ljust(curses.COLS - 4), curses.color_pair(COLOR_TITLE))
+        menu_y += 2
+
+        for i, (method, description) in enumerate(methods):
+            if i == selected_idx:
+                stdscr.addstr(menu_y + i, 2, f"> [{i+1}] {method.upper()}: {description}".ljust(curses.COLS - 4), curses.color_pair(COLOR_HIGHLIGHT))
+            else:
+                stdscr.addstr(menu_y + i, 2, f"  [{i+1}] {method.upper()}: {description}".ljust(curses.COLS - 4), curses.color_pair(COLOR_NORMAL))
+
+        stdscr.refresh()
+
+        # Get user input
+        key = stdscr.getch()
+
+        if key == curses.KEY_UP:
+            selected_idx = (selected_idx - 1) % len(methods)
+        elif key == curses.KEY_DOWN:
+            selected_idx = (selected_idx + 1) % len(methods)
+        elif key in [10, 13]:  # Enter
+            return methods[selected_idx][0]
+        elif key == ord('q'):
+            return "cancel"
+        elif key >= ord('1') and key <= ord('3'):
+            idx = key - ord('1')
+            if idx < len(methods):
+                return methods[idx][0]
+
+def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info: Optional[Dict[str, Any]] = None) -> bool:
+    """Install a component with enhanced installation methods."""
     name = component["name"]
     script = component["script"]
     script_path = os.path.join(SCRIPTS_DIR, script)
@@ -742,6 +973,114 @@ def install_component(component: Dict[str, Any], stdscr, log_win) -> bool:
     log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
     log_win.addstr("] 0%\n", curses.color_pair(COLOR_INFO))
     log_win.refresh()
+
+    # Special handling for PyTorch with ROCm
+    if name == "PyTorch with ROCm":
+        log_message("Installing PyTorch with ROCm using enhanced installation methods", "INFO")
+
+        # Check if PyTorch is already installed
+        python_cmd = "python3"
+        if run_command(f"{python_cmd} -c 'import torch' 2>/dev/null", timeout=10)[0] == 0:
+            pytorch_version = run_command(f"{python_cmd} -c 'import torch; print(torch.__version__)' 2>/dev/null", timeout=10)[1].strip()
+            log_message(f"PyTorch {pytorch_version} is already installed")
+
+            # Check if it has ROCm support
+            if run_command(f"{python_cmd} -c 'import torch; print(hasattr(torch.version, \"hip\"))' 2>/dev/null", timeout=10)[1].strip() == "True":
+                hip_version = run_command(f"{python_cmd} -c 'import torch; print(torch.version.hip if hasattr(torch.version, \"hip\") else \"None\")' 2>/dev/null", timeout=10)[1].strip()
+                log_message(f"PyTorch has ROCm support (version: {hip_version})")
+
+                # Check GPU availability
+                if run_command(f"{python_cmd} -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null", timeout=10)[1].strip() == "True":
+                    log_message("GPU acceleration is working")
+                    log_win.addstr("PyTorch with ROCm support is already installed and working!\n", curses.color_pair(COLOR_SUCCESS))
+                    log_win.refresh()
+                    return True
+                else:
+                    log_message("GPU acceleration not working, will reinstall")
+            else:
+                log_message("PyTorch installed but without ROCm support, will reinstall")
+
+        # Present installation method selection
+        install_method = select_installation_method(stdscr)
+        if install_method == "cancel":
+            log_win.addstr("Installation cancelled by user.\n", curses.color_pair(COLOR_WARNING))
+            log_win.refresh()
+            return False
+
+        log_message(f"Selected installation method: {install_method}")
+
+        # Determine PyTorch version based on ROCm version
+        rocm_version = hardware_info.get("rocm_version", "6.4.0") if hardware_info else "6.4.0"
+        if not rocm_version:
+            rocm_version = "6.4.0"
+
+        rocm_major = int(rocm_version.split('.')[0])
+        rocm_minor = int(rocm_version.split('.')[1])
+
+        if rocm_major == 6 and rocm_minor >= 4:
+            pytorch_index = "https://download.pytorch.org/whl/nightly/rocm6.4"
+            pytorch_version = "--pre torch torchvision torchaudio"
+        elif rocm_major == 6 and rocm_minor >= 3:
+            pytorch_index = "https://download.pytorch.org/whl/rocm6.3"
+            pytorch_version = "torch torchvision torchaudio"
+        elif rocm_major == 6:
+            pytorch_index = "https://download.pytorch.org/whl/rocm6.2"
+            pytorch_version = "torch torchvision torchaudio"
+        elif rocm_major == 5:
+            pytorch_index = "https://download.pytorch.org/whl/rocm5.7"
+            pytorch_version = "torch torchvision torchaudio"
+        else:
+            pytorch_index = "https://download.pytorch.org/whl/rocm6.3"
+            pytorch_version = "torch torchvision torchaudio"
+
+        # Install PyTorch with selected method
+        extra_args = f"--index-url {pytorch_index}"
+        success, result_info = install_python_package(pytorch_version, install_method, extra_args)
+        venv_path = result_info if success else ""
+        error_msg = result_info if not success else ""
+
+        if success:
+            # Set environment variables for the session
+            if hardware_info and "rocm_env_vars" in hardware_info:
+                for key, value in hardware_info["rocm_env_vars"].items():
+                    os.environ[key] = value
+                    log_message(f"Set environment variable: {key}={value}")
+
+            # Show completion message with ASCII art
+            log_win.addstr("\n" + "="*70 + "\n", curses.color_pair(COLOR_TITLE))
+            log_win.addstr("PyTorch with ROCm Installation Completed Successfully!\n", curses.color_pair(COLOR_SUCCESS) | curses.A_BOLD)
+            log_win.addstr("="*70 + "\n\n", curses.color_pair(COLOR_TITLE))
+
+            # Show usage instructions
+            if venv_path:
+                log_win.addstr("✓ PyTorch installed in virtual environment\n", curses.color_pair(COLOR_SUCCESS))
+                log_win.addstr(f"✓ Virtual environment: {venv_path}\n\n", curses.color_pair(COLOR_INFO))
+                log_win.addstr("To use PyTorch, run:\n", curses.color_pair(COLOR_INFO))
+                log_win.addstr(f"  source {venv_path}/bin/activate\n", curses.color_pair(COLOR_INFO))
+                log_win.addstr("  python3 -c \"import torch; print('PyTorch:', torch.__version__); print('ROCm:', torch.version.hip if hasattr(torch.version, 'hip') else 'N/A'); print('GPU available:', torch.cuda.is_available())\"\n\n", curses.color_pair(COLOR_INFO))
+            else:
+                log_win.addstr("✓ PyTorch installed globally\n\n", curses.color_pair(COLOR_SUCCESS))
+                log_win.addstr("To verify installation, run:\n", curses.color_pair(COLOR_INFO))
+                log_win.addstr("  python3 -c \"import torch; print('PyTorch:', torch.__version__); print('ROCm:', torch.version.hip if hasattr(torch.version, 'hip') else 'N/A'); print('GPU available:', torch.cuda.is_available())\"\n\n", curses.color_pair(COLOR_INFO))
+
+            # Show environment variables
+            log_win.addstr("Environment variables set for this session:\n", curses.color_pair(COLOR_INFO))
+            if hardware_info and "rocm_env_vars" in hardware_info:
+                for key, value in hardware_info["rocm_env_vars"].items():
+                    log_win.addstr(f"  export {key}=\"{value}\"\n", curses.color_pair(COLOR_INFO))
+
+            log_win.refresh()
+            return True
+        else:
+            log_win.addstr("\n" + "✗ PyTorch installation failed\n", curses.color_pair(COLOR_ERROR))
+            log_win.addstr(f"Error: {error_msg}\n", curses.color_pair(COLOR_ERROR))
+            log_win.addstr("\nTroubleshooting suggestions:\n", curses.color_pair(COLOR_WARNING))
+            log_win.addstr("• Check your internet connection\n", curses.color_pair(COLOR_WARNING))
+            log_win.addstr("• Verify ROCm installation: rocminfo\n", curses.color_pair(COLOR_WARNING))
+            log_win.addstr("• Try a different installation method\n", curses.color_pair(COLOR_WARNING))
+            log_win.addstr("• Check the logs for more details\n", curses.color_pair(COLOR_WARNING))
+            log_win.refresh()
+            return False
 
     # Special handling for Flash Attention
     if name == "Flash Attention":
@@ -1216,8 +1555,9 @@ exit $exit_code
     refresh_interval = 0.1  # More frequent refresh (100ms) for better responsiveness
 
     # Set stdout to non-blocking mode
-    fl = fcntl.fcntl(process.stdout, fcntl.F_GETFL)
-    fcntl.fcntl(process.stdout, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+    if process.stdout:
+        fl = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETFL)
+        fcntl.fcntl(process.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
     while process.poll() is None:
         # Check if there's data to read (with a short timeout)
@@ -1227,7 +1567,7 @@ exit $exit_code
         needs_refresh = False
 
         # Process available output
-        if process.stdout in r:
+        if process.stdout and process.stdout in r:
             try:
                 # Read as much as possible without blocking
                 while True:
@@ -1551,11 +1891,12 @@ exit $exit_code
                     curses.curs_set(0)
 
                     # Send password to the process
-                    try:
-                        process.stdin.write(password + "\n")
-                        process.stdin.flush()
-                    except Exception as e:
-                        log_message(f"Error sending password: {str(e)}", "ERROR")
+                    if process.stdin:
+                        try:
+                            process.stdin.write(password + "\n")
+                            process.stdin.flush()
+                        except Exception as e:
+                            log_message(f"Error sending password: {str(e)}", "ERROR")
 
                     # Reset password mode
                     password_mode = False
@@ -1639,29 +1980,30 @@ exit $exit_code
             pass
 
     # Read any remaining output
-    while True:
-        try:
-            line = process.stdout.readline()
-            if not line:
+    if process.stdout:
+        while True:
+            try:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                # Strip ANSI escape codes for display
+                clean_line = strip_ansi_codes(line)
+                output_lines.append(clean_line)
+                log_message(f"[{name}] {clean_line.strip()}")
+                log_win.addstr(clean_line)
+
+                # Get current cursor position
+                y, _ = log_win.getyx()
+
+                # Always scroll to ensure we see the latest output
+                max_y, _ = log_win.getmaxyx()
+                if y >= max_y - 10:  # Increased scroll threshold for better visibility
+                    log_win.scroll(1)
+
+                # Force refresh after each line to ensure real-time updates
+                log_win.refresh()
+            except:
                 break
-            # Strip ANSI escape codes for display
-            clean_line = strip_ansi_codes(line)
-            output_lines.append(clean_line)
-            log_message(f"[{name}] {clean_line.strip()}")
-            log_win.addstr(clean_line)
-
-            # Get current cursor position
-            y, _ = log_win.getyx()
-
-            # Always scroll to ensure we see the latest output
-            max_y, _ = log_win.getmaxyx()
-            if y >= max_y - 10:  # Increased scroll threshold for better visibility
-                log_win.scroll(1)
-
-            # Force refresh after each line to ensure real-time updates
-            log_win.refresh()
-        except:
-            break
 
     # Show completion message and update progress to 100%
     try:
@@ -1709,16 +2051,17 @@ exit $exit_code
             remaining_output_timeout = time.time() + 3  # 3 second timeout
 
             while process.poll() is None and time.time() < remaining_output_timeout:
-                r, _, _ = select.select([process.stdout], [], [], 0.1)
-                if process.stdout in r:
-                    line = process.stdout.readline()
-                    if line:
-                        # Strip ANSI escape codes for display
-                        clean_line = strip_ansi_codes(line)
-                        output_lines.append(clean_line)
-                        log_message(f"[{name}] {clean_line.strip()}")
-                        log_win.addstr(clean_line)
-                        log_win.refresh()
+                if process.stdout:
+                    r, _, _ = select.select([process.stdout], [], [], 0.1)
+                    if process.stdout in r:
+                        line = process.stdout.readline()
+                        if line:
+                            # Strip ANSI escape codes for display
+                            clean_line = strip_ansi_codes(line)
+                            output_lines.append(clean_line)
+                            log_message(f"[{name}] {clean_line.strip()}")
+                            log_win.addstr(clean_line)
+                            log_win.refresh()
         except Exception as e:
             log_message(f"Error reading final output: {str(e)}", "WARNING")
 
@@ -1769,7 +2112,8 @@ exit $exit_code
     del password_win
 
     # Wait for the process to complete with a timeout
-    process.stdout.close()
+    if process.stdout:
+        process.stdout.close()
     try:
         # Use component-specific timeout for problematic components
         termination_timeout = 2 if aggressive_termination else 5
@@ -2169,41 +2513,52 @@ def draw_menu(stdscr, selected_idx, menu_items):
     # This allows the function to work with both regular windows and pads
 
 def draw_header(stdscr, title):
-    """Draw a header with the given title."""
+    """Draw a header with the given title and enhanced ASCII art."""
     # Get screen dimensions
     _, max_x = stdscr.getmaxyx()  # We only need max_x
 
     # Clear the header area first to prevent artifacts
-    for i in range(0, 5):
+    for i in range(0, 8):
         stdscr.addstr(i, 0, " " * (max_x - 1))
 
-    # Draw stars in the background
-    for i in range(1, 3):
-        for j in range(2, max_x - 2, 8):
-            stdscr.addstr(i, j, "✧", curses.color_pair(COLOR_INFO))
+    # Draw enhanced ASCII art banner
+    banner_lines = [
+        " ██████╗ ████████╗ █████╗ ███╗   ██╗███████╗    ███╗   ███╗██╗         ███████╗████████╗ █████╗  ██████╗██╗  ██╗",
+        "██╔═══██╗╚══██╔══╝██╔══██╗████╗  ██║██╔════╝    ████╗ ████║██║         ██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝",
+        "██║   ██║   ██║   ███████║██╔██╗ ██║███████╗    ██╔████╔██║██║         ███████╗   ██║   ███████║██║     █████╔╝ ",
+        "██║   ██║   ██║   ██╔══██║██║╚██╗██║╚════██║    ██║╚██╔╝██║██║         ╚════██║   ██║   ██╔══██║██║     ██╔═██╗ ",
+        "╚██████╔╝   ██║   ██║  ██║██║ ╚████║███████║    ██║ ╚═╝ ██║███████╗    ███████║   ██║   ██║  ██║╚██████╗██║  ██╗",
+        " ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝    ╚═╝     ╚═╝╚══════╝    ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝"
+    ]
 
-    # Draw the title with a fancy border
-    title_text = "• ✵ Stan's ML Stack Installer © ✵ •"
+    # Calculate center position for banner
+    banner_width = len(banner_lines[0])
+    banner_x = (max_x - banner_width) // 2
 
-    # Only add the specific title if it's not the welcome screen
-    if title != "ML Stack Installation" and title != "Welcome to Stan's ML Stack Installer ✵ ©":
-        title_text = f"{title_text} - {title}"
+    # Draw the banner with colors
+    for i, line in enumerate(banner_lines):
+        if i < 6:  # Ensure we don't go beyond screen height
+            try:
+                # Use different colors for different parts of the banner
+                color = [COLOR_TITLE, COLOR_INFO, COLOR_SUCCESS, COLOR_INFO, COLOR_WARNING, COLOR_TITLE][i % 6]
+                stdscr.addstr(i, banner_x, line, curses.color_pair(color) | curses.A_BOLD)
+            except:
+                pass
+
+    # Draw the title below the banner
+    title_text = f"• ✵ {title} ✵ •"
+    title_x = (max_x - len(title_text)) // 2
 
     # Create a fancy border
     border_char = "•"
     border = border_char * (len(title_text))
 
-    # Calculate center position
-    center_x = (max_x - len(border)) // 2
-
-    # Draw the fancy header - perfectly aligned with the rows of "✧" stars
-    # Top border at line 1, title at line 2, bottom border at line 3
-    stdscr.addstr(1, center_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
-    stdscr.addstr(2, center_x, title_text, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
-    stdscr.addstr(3, center_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+    # Draw the fancy title header
+    stdscr.addstr(6, title_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+    stdscr.addstr(7, title_x, title_text, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
 
     # Draw a separator line
-    stdscr.addstr(4, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    stdscr.addstr(8, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
     # Don't call refresh here - let the caller handle refreshing
     # This allows the function to work with both regular windows and pads
 
@@ -3309,7 +3664,7 @@ def main(stdscr):
     draw_footer(stdscr, "Press 'q' to quit, arrow keys to navigate, Enter to select")
 
     # Main menu
-    menu_items = ["Hardware Detection", "Environment Setup", "Dependencies", "Components", "Installation", "Logs", "Exit"]
+    menu_items = ["Hardware Detection", "Environment Setup", "Dependencies", "Components", "Installation", "System Benchmarking", "Logs", "Exit"]
     selected_idx = 0
     current_screen = "menu"
 
@@ -3330,6 +3685,16 @@ def main(stdscr):
     comp_selected_idx = 0
     inst_selected_section = 0
     inst_selected_idx = 0
+
+    # Benchmarking variables
+    benchmark_selected_idx: int = 0
+    benchmark_results: Dict[str, Any] = {}
+    benchmark_options: List[str] = [
+        "Run Pre-Installation Benchmarks",
+        "Run Post-Installation Benchmarks",
+        "Compare Before/After Results",
+        "View Benchmark Results"
+    ]
 
     # Create log window
     log_win = create_log_window(stdscr)
@@ -3488,91 +3853,95 @@ def main(stdscr):
                     max_width = curses.COLS - hw_x - 4  # Maximum width for text to avoid boundary errors
 
                     # System information
-                    try:
-                        virtual_screen.addstr(hw_y, hw_x, "System Information:", curses.color_pair(COLOR_TITLE))
-                        hw_y += 1
-
-                        # Truncate long strings to prevent boundary errors
-                        system_info = f"System: {hardware_info['system']} {hardware_info['release']}"
-                        if len(system_info) > max_width:
-                            system_info = system_info[:max_width-3] + "..."
-                        virtual_screen.addstr(hw_y, hw_x, system_info, curses.color_pair(COLOR_NORMAL))
-                        hw_y += 1
-
-                        machine_info = f"Machine: {hardware_info['machine']}"
-                        if len(machine_info) > max_width:
-                            machine_info = machine_info[:max_width-3] + "..."
-                        virtual_screen.addstr(hw_y, hw_x, machine_info, curses.color_pair(COLOR_NORMAL))
-                        hw_y += 1
-
-                        processor_info = f"Processor: {hardware_info['processor']}"
-                        if len(processor_info) > max_width:
-                            processor_info = processor_info[:max_width-3] + "..."
-                        virtual_screen.addstr(hw_y, hw_x, processor_info, curses.color_pair(COLOR_NORMAL))
-                        hw_y += 1
-
-                        python_info = f"Python Version: {hardware_info['python_version']}"
-                        if len(python_info) > max_width:
-                            python_info = python_info[:max_width-3] + "..."
-                        virtual_screen.addstr(hw_y, hw_x, python_info, curses.color_pair(COLOR_NORMAL))
-                        hw_y += 2
-                    except Exception as e:
-                        log_message(f"Error displaying system information: {str(e)}")
-                        hw_y += 5  # Skip to next section if there's an error
-
-                    # ROCm information
-                    try:
-                        virtual_screen.addstr(hw_y, hw_x, "ROCm Information:", curses.color_pair(COLOR_TITLE))
-                        hw_y += 1
-                        if hardware_info['rocm_path']:
-                            rocm_path = f"ROCm Path: {hardware_info['rocm_path']}"
-                            if len(rocm_path) > max_width:
-                                rocm_path = rocm_path[:max_width-3] + "..."
-                            virtual_screen.addstr(hw_y, hw_x, rocm_path, curses.color_pair(COLOR_SUCCESS))
-                            hw_y += 1
-                            if hardware_info['rocm_version']:
-                                rocm_version = f"ROCm Version: {hardware_info['rocm_version']}"
-                                if len(rocm_version) > max_width:
-                                    rocm_version = rocm_version[:max_width-3] + "..."
-                                virtual_screen.addstr(hw_y, hw_x, rocm_version, curses.color_pair(COLOR_SUCCESS))
-                            else:
-                                virtual_screen.addstr(hw_y, hw_x, "ROCm Version: Not detected", curses.color_pair(COLOR_WARNING))
-                        else:
-                            virtual_screen.addstr(hw_y, hw_x, "ROCm: Not installed or not in PATH", curses.color_pair(COLOR_ERROR))
-                        hw_y += 2
-                    except Exception as e:
-                        log_message(f"Error displaying ROCm information: {str(e)}")
-                        hw_y += 3  # Skip to next section if there's an error
-
-                    # GPU information
-                    try:
-                        virtual_screen.addstr(hw_y, hw_x, "GPU Information:", curses.color_pair(COLOR_TITLE))
-                        hw_y += 1
-                        if hardware_info['amd_gpus']:
-                            gpu_count = f"Found {len(hardware_info['amd_gpus'])} AMD GPU(s):"
-                            virtual_screen.addstr(hw_y, hw_x, gpu_count, curses.color_pair(COLOR_SUCCESS))
+                    if hardware_info:
+                        try:
+                            virtual_screen.addstr(hw_y, hw_x, "System Information:", curses.color_pair(COLOR_TITLE))
                             hw_y += 1
 
-                            # Get maximum Y coordinate to avoid writing beyond screen boundaries
-                            max_y, _ = virtual_screen.getmaxyx()
+                            # Truncate long strings to prevent boundary errors
+                            system_info = f"System: {hardware_info['system']} {hardware_info['release']}"
+                            if len(system_info) > max_width:
+                                system_info = system_info[:max_width-3] + "..."
+                            virtual_screen.addstr(hw_y, hw_x, system_info, curses.color_pair(COLOR_NORMAL))
+                            hw_y += 1
 
-                            for i, gpu in enumerate(hardware_info['amd_gpus']):
-                                # Check if we're still within screen boundaries
-                                if hw_y >= max_y - 2:  # Leave space for footer
-                                    break
+                            machine_info = f"Machine: {hardware_info['machine']}"
+                            if len(machine_info) > max_width:
+                                machine_info = machine_info[:max_width-3] + "..."
+                            virtual_screen.addstr(hw_y, hw_x, machine_info, curses.color_pair(COLOR_NORMAL))
+                            hw_y += 1
 
-                                # Truncate GPU name if too long
-                                gpu_info = f"{i+1}. {gpu}"
-                                if len(gpu_info) > max_width - 2:  # Account for indentation
-                                    gpu_info = gpu_info[:max_width-5] + "..."
+                            processor_info = f"Processor: {hardware_info['processor']}"
+                            if len(processor_info) > max_width:
+                                processor_info = processor_info[:max_width-3] + "..."
+                            virtual_screen.addstr(hw_y, hw_x, processor_info, curses.color_pair(COLOR_NORMAL))
+                            hw_y += 1
 
-                                virtual_screen.addstr(hw_y, hw_x + 2, gpu_info, curses.color_pair(COLOR_NORMAL))
+                            python_info = f"Python Version: {hardware_info['python_version']}"
+                            if len(python_info) > max_width:
+                                python_info = python_info[:max_width-3] + "..."
+                            virtual_screen.addstr(hw_y, hw_x, python_info, curses.color_pair(COLOR_NORMAL))
+                            hw_y += 2
+                        except Exception as e:
+                            log_message(f"Error displaying system information: {str(e)}")
+                            hw_y += 5  # Skip to next section if there's an error
+
+                        # ROCm information
+                        try:
+                            virtual_screen.addstr(hw_y, hw_x, "ROCm Information:", curses.color_pair(COLOR_TITLE))
+                            hw_y += 1
+                            if hardware_info.get('rocm_path'):
+                                rocm_path = f"ROCm Path: {hardware_info['rocm_path']}"
+                                if len(rocm_path) > max_width:
+                                    rocm_path = rocm_path[:max_width-3] + "..."
+                                virtual_screen.addstr(hw_y, hw_x, rocm_path, curses.color_pair(COLOR_SUCCESS))
                                 hw_y += 1
-                        else:
-                            virtual_screen.addstr(hw_y, hw_x, "No AMD GPUs detected", curses.color_pair(COLOR_ERROR))
+                                if hardware_info.get('rocm_version'):
+                                    rocm_version = f"ROCm Version: {hardware_info['rocm_version']}"
+                                    if len(rocm_version) > max_width:
+                                        rocm_version = rocm_version[:max_width-3] + "..."
+                                    virtual_screen.addstr(hw_y, hw_x, rocm_version, curses.color_pair(COLOR_SUCCESS))
+                                else:
+                                    virtual_screen.addstr(hw_y, hw_x, "ROCm Version: Not detected", curses.color_pair(COLOR_WARNING))
+                            else:
+                                virtual_screen.addstr(hw_y, hw_x, "ROCm: Not installed or not in PATH", curses.color_pair(COLOR_ERROR))
+                            hw_y += 2
+                        except Exception as e:
+                            log_message(f"Error displaying ROCm information: {str(e)}")
+                            hw_y += 3  # Skip to next section if there's an error
+
+                        # GPU information
+                        try:
+                            virtual_screen.addstr(hw_y, hw_x, "GPU Information:", curses.color_pair(COLOR_TITLE))
                             hw_y += 1
-                    except Exception as e:
-                        log_message(f"Error displaying GPU information: {str(e)}")
+                            if hardware_info.get('amd_gpus'):
+                                gpu_count = f"Found {len(hardware_info['amd_gpus'])} AMD GPU(s):"
+                                virtual_screen.addstr(hw_y, hw_x, gpu_count, curses.color_pair(COLOR_SUCCESS))
+                                hw_y += 1
+
+                                # Get maximum Y coordinate to avoid writing beyond screen boundaries
+                                max_y, _ = virtual_screen.getmaxyx()
+
+                                for i, gpu in enumerate(hardware_info['amd_gpus']):
+                                    # Check if we're still within screen boundaries
+                                    if hw_y >= max_y - 2:  # Leave space for footer
+                                        break
+
+                                    # Truncate GPU name if too long
+                                    gpu_info = f"{i+1}. {gpu}"
+                                    if len(gpu_info) > max_width - 2:  # Account for indentation
+                                        gpu_info = gpu_info[:max_width-5] + "..."
+
+                                    virtual_screen.addstr(hw_y, hw_x + 2, gpu_info, curses.color_pair(COLOR_NORMAL))
+                                    hw_y += 1
+                            else:
+                                virtual_screen.addstr(hw_y, hw_x, "No AMD GPUs detected", curses.color_pair(COLOR_ERROR))
+                                hw_y += 1
+                        except Exception as e:
+                            log_message(f"Error displaying GPU information: {str(e)}")
+                    else:
+                        virtual_screen.addstr(hw_y, hw_x, "Hardware information not available.", curses.color_pair(COLOR_WARNING))
+                        hw_y += 1
 
                     # Copy virtual screen to real screen
                     update_screen()
@@ -3990,7 +4359,7 @@ def main(stdscr):
                     log_win.clear()
                     log_win.addstr(f"Running {script['name']}...\n", curses.color_pair(COLOR_INFO))
                     log_win.refresh()
-                    install_component(script, stdscr, log_win)
+                    install_component(script, stdscr, log_win, hardware_info)
 
         elif current_screen == "dependencies":
             if key == ord('r'):
@@ -4113,7 +4482,7 @@ def main(stdscr):
                     for component in selected_components:
                         log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
                         log_win.refresh()
-                        install_component(component, stdscr, log_win)
+                        install_component(component, stdscr, log_win, hardware_info)
                 else:
                     # If no components are selected, install the currently highlighted component
                     if comp_selected_section == 0 and comp_selected_idx < len(FOUNDATION_COMPONENTS):
@@ -4122,21 +4491,21 @@ def main(stdscr):
                         log_win.clear()
                         log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                         log_win.refresh()
-                        install_component(component, stdscr, log_win)
+                        install_component(component, stdscr, log_win, hardware_info)
                     elif comp_selected_section == 1 and comp_selected_idx < len(CORE_COMPONENTS):
                         component = CORE_COMPONENTS[comp_selected_idx]
                         current_screen = "logs"
                         log_win.clear()
                         log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                         log_win.refresh()
-                        install_component(component, stdscr, log_win)
+                        install_component(component, stdscr, log_win, hardware_info)
                     elif comp_selected_section == 2 and comp_selected_idx < len(EXTENSION_COMPONENTS):
                         component = EXTENSION_COMPONENTS[comp_selected_idx]
                         current_screen = "logs"
                         log_win.clear()
                         log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                         log_win.refresh()
-                        install_component(component, stdscr, log_win)
+                        install_component(component, stdscr, log_win, hardware_info)
 
         elif current_screen == "installation":
             if key == curses.KEY_UP:
@@ -4339,7 +4708,7 @@ def main(stdscr):
                                     # Run verification script
                                     verify_script = next((c for c in CORE_COMPONENTS if c["name"] == "Verify Installation"), None)
                                     if verify_script:
-                                        install_component(verify_script, stdscr, log_win)
+                                        install_component(verify_script, stdscr, log_win, hardware_info)
 
                                     # After verification is done, return to menu
                                     current_screen = "menu"
@@ -4353,7 +4722,7 @@ def main(stdscr):
                                     # Run repair script
                                     repair_script = next((c for c in CORE_COMPONENTS if c["name"] == "Repair ML Stack"), None)
                                     if repair_script:
-                                        install_component(repair_script, stdscr, log_win)
+                                        install_component(repair_script, stdscr, log_win, hardware_info)
 
                                     # After repair is done, return to menu
                                     current_screen = "menu"
@@ -4418,7 +4787,7 @@ def _main_curses(stdscr):
     draw_footer(stdscr, "Press 'q' to quit, arrow keys to navigate, Enter to select")
 
     # Main menu
-    menu_items = ["Hardware Detection", "Environment Setup", "Dependencies", "Components", "Installation", "Logs", "Exit"]
+    menu_items = ["Hardware Detection", "Environment Setup", "Dependencies", "Components", "Installation", "System Benchmarking", "Logs", "Exit"]
     selected_idx = 0
     current_screen = "menu"
 
@@ -4443,6 +4812,16 @@ def _main_curses(stdscr):
     comp_selected_idx = 0
     inst_selected_section = 0
     inst_selected_idx = 0
+
+    # Benchmarking variables
+    benchmark_selected_idx: int = 0
+    benchmark_results: Dict[str, Any] = {}
+    benchmark_options: List[str] = [
+        "Run Pre-Installation Benchmarks",
+        "Run Post-Installation Benchmarks",
+        "Compare Before/After Results",
+        "View Benchmark Results"
+    ]
 
     # Create log window
     log_win = create_log_window(stdscr)
@@ -4555,6 +4934,9 @@ def _main_curses(stdscr):
                         elif menu_items[selected_idx] == "Installation":
                             current_screen = "installation"
                             ui_state['force_redraw'] = True  # Force redraw
+                        elif menu_items[selected_idx] == "System Benchmarking":
+                            current_screen = "benchmarking"
+                            ui_state['force_redraw'] = True  # Force redraw
                         elif menu_items[selected_idx] == "Logs":
                             current_screen = "logs"
                             ui_state['force_redraw'] = True  # Force redraw
@@ -4599,7 +4981,7 @@ def _main_curses(stdscr):
                             for script in selected_env_scripts:
                                 log_win.addstr(f"\nRunning {script['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_component(script, stdscr, log_win)
+                                install_component(script, stdscr, log_win, hardware_info)
                         else:
                             # If no scripts are selected, run the currently highlighted script
                             script = ENVIRONMENT_SCRIPTS[env_selected_idx]
@@ -4714,7 +5096,7 @@ def _main_curses(stdscr):
                             for component in selected_components:
                                 log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                                 # Give a brief pause between components
@@ -4730,19 +5112,19 @@ def _main_curses(stdscr):
                                 component = FOUNDATION_COMPONENTS[comp_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif comp_selected_section == 1 and comp_selected_idx < len(CORE_COMPONENTS):
                                 component = CORE_COMPONENTS[comp_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif comp_selected_section == 2 and comp_selected_idx < len(EXTENSION_COMPONENTS):
                                 component = EXTENSION_COMPONENTS[comp_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                             # Return to components screen after installation
@@ -4837,15 +5219,38 @@ def _main_curses(stdscr):
                             log_win.addstr(f"Installing {len(selected_components)} selected components...\n", curses.color_pair(COLOR_INFO))
                             log_win.refresh()
 
+                            # Check if pre-installation benchmarks should be run
+                            if "pre_install" not in benchmark_results:
+                                log_win.addstr("\nRunning pre-installation benchmarks...\n", curses.color_pair(COLOR_INFO))
+                                log_win.refresh()
+                                run_pre_installation_benchmarks(stdscr, log_win, benchmark_results)
+                                log_win.addstr("Pre-installation benchmarks completed.\n", curses.color_pair(COLOR_SUCCESS))
+                                log_win.refresh()
+
                             # Install each selected component
                             for component in selected_components:
                                 log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info) # Pass hardware_info
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                                 # Give a brief pause between components
                                 time.sleep(1)
+
+                            # Run post-installation benchmarks
+                            log_win.addstr("\nRunning post-installation benchmarks...\n", curses.color_pair(COLOR_INFO))
+                            log_win.refresh()
+                            run_post_installation_benchmarks(stdscr, log_win, benchmark_results)
+                            log_win.addstr("Post-installation benchmarks completed.\n", curses.color_pair(COLOR_SUCCESS))
+                            log_win.refresh()
+
+                            # Generate comparison report if both benchmark sets are available
+                            if "pre_install" in benchmark_results and "post_install" in benchmark_results:
+                                log_win.addstr("\nGenerating benchmark comparison report...\n", curses.color_pair(COLOR_INFO))
+                                log_win.refresh()
+                                generate_comparison_report(stdscr, log_win, benchmark_results)
+                                log_win.addstr("Benchmark comparison report generated.\n", curses.color_pair(COLOR_SUCCESS))
+                                log_win.refresh()
 
                             # Return to installation screen after all installations
                             current_screen = "installation"
@@ -4858,19 +5263,19 @@ def _main_curses(stdscr):
                                 component = FOUNDATION_COMPONENTS[inst_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif inst_selected_section == 1 and inst_selected_idx < len(CORE_COMPONENTS):
                                 component = CORE_COMPONENTS[inst_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif inst_selected_section == 2 and inst_selected_idx < len(EXTENSION_COMPONENTS):
                                 component = EXTENSION_COMPONENTS[inst_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win)
+                                install_result = install_component(component, stdscr, log_win, hardware_info)
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                             # Return to installation screen after installation
@@ -4879,6 +5284,20 @@ def _main_curses(stdscr):
                             log_message("Returned to installation screen after installation")
 
                             ui_state['force_redraw'] = True  # Force redraw
+
+                elif current_screen == "benchmarking":
+                    if key == curses.KEY_UP:
+                        benchmark_selected_idx = (benchmark_selected_idx - 1) % len(benchmark_options)
+                        ui_state['force_redraw'] = True  # Force redraw
+                    elif key == curses.KEY_DOWN:
+                        benchmark_selected_idx = (benchmark_selected_idx + 1) % len(benchmark_options)
+                        ui_state['force_redraw'] = True  # Force redraw
+                    elif key == ord(' '):  # Space to select/run benchmark
+                        run_benchmark_option(benchmark_selected_idx, stdscr, log_win, benchmark_results, benchmark_options)
+                        ui_state['force_redraw'] = True  # Force redraw
+                    elif key == ord('r'):  # 'r' key to run selected benchmark
+                        run_benchmark_option(benchmark_selected_idx, stdscr, log_win, benchmark_results, benchmark_options)
+                        ui_state['force_redraw'] = True  # Force redraw
 
                 elif current_screen == "logs":
                     if key == ord('r'):  # 'r' key to refresh logs
@@ -4990,41 +5409,44 @@ def _main_curses(stdscr):
                     hw_x = 4
                     max_width = curses.COLS - hw_x - 4  # Maximum width for text to avoid boundary errors
 
-                    try:
-                        virtual_screen.addstr(hw_y, hw_x, f"System: {hardware_info['system']} {hardware_info['release']}".ljust(max_width), curses.color_pair(COLOR_INFO))
-                        hw_y += 1
-                        virtual_screen.addstr(hw_y, hw_x, f"Machine: {hardware_info['machine']}".ljust(max_width), curses.color_pair(COLOR_INFO))
-                        hw_y += 1
-                        virtual_screen.addstr(hw_y, hw_x, f"Processor: {hardware_info['processor']}".ljust(max_width), curses.color_pair(COLOR_INFO))
-                        hw_y += 1
-                        virtual_screen.addstr(hw_y, hw_x, f"Python Version: {hardware_info['python_version']}".ljust(max_width), curses.color_pair(COLOR_INFO))
-                        hw_y += 2
-
-                        # ROCm information
-                        if hardware_info['rocm_path']:
-                            virtual_screen.addstr(hw_y, hw_x, f"ROCm Path: {hardware_info['rocm_path']}".ljust(max_width), curses.color_pair(COLOR_SUCCESS))
+                    if hardware_info is not None:
+                        try:
+                            virtual_screen.addstr(hw_y, hw_x, f"System: {hardware_info.get('system', 'Unknown')} {hardware_info.get('release', 'Unknown')}".ljust(max_width), curses.color_pair(COLOR_INFO))
                             hw_y += 1
-                            if hardware_info['rocm_version']:
-                                virtual_screen.addstr(hw_y, hw_x, f"ROCm Version: {hardware_info['rocm_version']}".ljust(max_width), curses.color_pair(COLOR_SUCCESS))
+                            virtual_screen.addstr(hw_y, hw_x, f"Machine: {hardware_info.get('machine', 'Unknown')}".ljust(max_width), curses.color_pair(COLOR_INFO))
+                            hw_y += 1
+                            virtual_screen.addstr(hw_y, hw_x, f"Processor: {hardware_info.get('processor', 'Unknown')}".ljust(max_width), curses.color_pair(COLOR_INFO))
+                            hw_y += 1
+                            virtual_screen.addstr(hw_y, hw_x, f"Python Version: {hardware_info.get('python_version', 'Unknown')}".ljust(max_width), curses.color_pair(COLOR_INFO))
+                            hw_y += 2
+
+                            # ROCm information
+                            if hardware_info.get('rocm_path'):
+                                virtual_screen.addstr(hw_y, hw_x, f"ROCm Path: {hardware_info['rocm_path']}".ljust(max_width), curses.color_pair(COLOR_SUCCESS))
+                                hw_y += 1
+                                if hardware_info.get('rocm_version'):
+                                    virtual_screen.addstr(hw_y, hw_x, f"ROCm Version: {hardware_info['rocm_version']}".ljust(max_width), curses.color_pair(COLOR_SUCCESS))
+                                else:
+                                    virtual_screen.addstr(hw_y, hw_x, "ROCm Version: Not detected".ljust(max_width), curses.color_pair(COLOR_WARNING))
                             else:
-                                virtual_screen.addstr(hw_y, hw_x, "ROCm Version: Not detected".ljust(max_width), curses.color_pair(COLOR_WARNING))
-                        else:
-                            virtual_screen.addstr(hw_y, hw_x, "ROCm: Not installed".ljust(max_width), curses.color_pair(COLOR_WARNING))
-                        hw_y += 2
+                                virtual_screen.addstr(hw_y, hw_x, "ROCm: Not installed".ljust(max_width), curses.color_pair(COLOR_WARNING))
+                            hw_y += 2
 
-                        # GPU information
-                        if hardware_info['amd_gpus']:
-                            virtual_screen.addstr(hw_y, hw_x, f"Found {len(hardware_info['amd_gpus'])} AMD GPU(s):".ljust(max_width), curses.color_pair(COLOR_SUCCESS))
-                            hw_y += 1
-                            for i, gpu in enumerate(hardware_info['amd_gpus']):
-                                # Truncate GPU name if it's too long
-                                gpu_name = gpu[:max_width - 4]  # Leave room for the bullet point and spacing
-                                virtual_screen.addstr(hw_y + i, hw_x + 2, f"• {gpu_name}".ljust(max_width - 2), curses.color_pair(COLOR_INFO))
-                        else:
-                            virtual_screen.addstr(hw_y, hw_x, "No AMD GPUs detected".ljust(max_width), curses.color_pair(COLOR_WARNING))
-                    except Exception as e:
-                        log_message(f"Error displaying hardware info: {str(e)}")
-                        virtual_screen.addstr(hw_y, hw_x, f"Error displaying hardware info: {str(e)}".ljust(max_width), curses.color_pair(COLOR_ERROR))
+                            # GPU information
+                            if hardware_info.get('amd_gpus'):
+                                virtual_screen.addstr(hw_y, hw_x, f"Found {len(hardware_info['amd_gpus'])} AMD GPU(s):".ljust(max_width), curses.color_pair(COLOR_SUCCESS))
+                                hw_y += 1
+                                for i, gpu in enumerate(hardware_info['amd_gpus']):
+                                    # Truncate GPU name if it's too long
+                                    gpu_name = gpu[:max_width - 4]  # Leave room for the bullet point and spacing
+                                    virtual_screen.addstr(hw_y + i, hw_x + 2, f"• {gpu_name}".ljust(max_width - 2), curses.color_pair(COLOR_INFO))
+                            else:
+                                virtual_screen.addstr(hw_y, hw_x, "No AMD GPUs detected".ljust(max_width), curses.color_pair(COLOR_WARNING))
+                        except Exception as e:
+                            log_message(f"Error displaying hardware info: {str(e)}")
+                            virtual_screen.addstr(hw_y, hw_x, f"Error displaying hardware info: {str(e)}".ljust(max_width), curses.color_pair(COLOR_ERROR))
+                    else:
+                        virtual_screen.addstr(hw_y, hw_x, "Hardware information not available".ljust(max_width), curses.color_pair(COLOR_WARNING))
 
                     # Add debug info at the bottom of the screen
                     try:
@@ -5129,9 +5551,10 @@ def _main_curses(stdscr):
                     # Copy virtual screen to real screen
                     update_screen()
 
-                elif current_screen == "logs":
-                    draw_header(virtual_screen, "Logs")
-                    draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh logs")
+                elif current_screen == "benchmarking":
+                    draw_header(virtual_screen, "System Benchmarking")
+                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'r' to run benchmarks")
+                    draw_benchmarking_screen(virtual_screen, benchmark_selected_idx, benchmark_results, benchmark_options)
 
                     # Display logs
                     log_y = 11
@@ -5221,7 +5644,252 @@ def safe_main(stdscr):
             pass
 
 # Entry point function for the package
-def main():
+def draw_benchmarking_screen(stdscr, selected_idx: int, benchmark_results: Dict[str, Any], benchmark_options: List[str]):
+    """Draw the benchmarking screen."""
+    y = 11
+    x = 4
+
+    # Display benchmark options
+    stdscr.addstr(y, x, "Available Benchmarking Options:", curses.color_pair(COLOR_TITLE))
+    y += 2
+
+    for i, option in enumerate(benchmark_options):
+        if i == selected_idx:
+            stdscr.addstr(y + i, x, f"> [{i+1}] {option}".ljust(curses.COLS - 8), curses.color_pair(COLOR_HIGHLIGHT))
+        else:
+            stdscr.addstr(y + i, x, f"  [{i+1}] {option}".ljust(curses.COLS - 8), curses.color_pair(COLOR_NORMAL))
+
+    y += len(benchmark_options) + 2
+
+    # Display current benchmark status
+    stdscr.addstr(y, x, "Benchmark Status:", curses.color_pair(COLOR_TITLE))
+    y += 2
+
+    if "pre_install" in benchmark_results:
+        stdscr.addstr(y, x, "✓ Pre-installation benchmarks completed", curses.color_pair(COLOR_SUCCESS))
+        y += 1
+
+    if "post_install" in benchmark_results:
+        stdscr.addstr(y, x, "✓ Post-installation benchmarks completed", curses.color_pair(COLOR_SUCCESS))
+        y += 1
+
+    if "pre_install" in benchmark_results and "post_install" in benchmark_results:
+        stdscr.addstr(y, x, "✓ Comparison report available", curses.color_pair(COLOR_SUCCESS))
+        y += 1
+
+    # Instructions
+    y = curses.LINES - 6
+    stdscr.addstr(y, x, "Instructions:", curses.color_pair(COLOR_INFO))
+    y += 1
+    stdscr.addstr(y, x, "• Use arrow keys to navigate", curses.color_pair(COLOR_NORMAL))
+    y += 1
+    stdscr.addstr(y, x, "• Press Space or 'r' to run selected benchmark", curses.color_pair(COLOR_NORMAL))
+    y += 1
+    stdscr.addstr(y, x, "• Press 'b' to go back to main menu", curses.color_pair(COLOR_NORMAL))
+
+def run_benchmark_option(option_idx: int, stdscr, log_win, benchmark_results: Dict[str, Any], benchmark_options: List[str]):
+    """Run the selected benchmark option."""
+    option = benchmark_options[option_idx]
+
+    if option_idx == 0:  # Pre-installation benchmarks
+        run_pre_installation_benchmarks(stdscr, log_win, benchmark_results)
+    elif option_idx == 1:  # Post-installation benchmarks
+        run_post_installation_benchmarks(stdscr, log_win, benchmark_results)
+    elif option_idx == 2:  # Compare results
+        generate_comparison_report(stdscr, log_win, benchmark_results)
+    elif option_idx == 3:  # View results
+        display_benchmark_results(stdscr, log_win, benchmark_results)
+
+def run_pre_installation_benchmarks(stdscr, log_win, benchmark_results):
+    """Run pre-installation benchmarks."""
+    log_win.clear()
+    log_win.addstr(0, 0, "Running Pre-Installation Benchmarks...\n", curses.color_pair(COLOR_INFO))
+    log_win.refresh()
+
+    # Create benchmark results directory
+    benchmark_dir = os.path.join(MLSTACK_DIR, "benchmark_results")
+    os.makedirs(benchmark_dir, exist_ok=True)
+
+    # Run each benchmark script
+    benchmark_scripts = [
+        ("Flash Attention", "benchmarks/flash_attention_benchmark.py", ["--batch-sizes", "1", "--seq-lengths", "128", "256"]),
+        ("PyTorch GPU", "benchmarks/pytorch_gpu_benchmark.py", ["--output-dir", os.path.join(benchmark_dir, "pre_install_pytorch")]),
+        ("Memory Bandwidth", "benchmarks/memory_bandwidth_benchmark.py", []),
+        ("Transformer", "benchmarks/transformer_benchmark.py", [])
+    ]
+
+    results = {}
+    for name, script, args in benchmark_scripts:
+        log_win.addstr(f"\nRunning {name} benchmark...\n", curses.color_pair(COLOR_INFO))
+        log_win.refresh()
+
+        # Run the benchmark script
+        script_path = os.path.join(MLSTACK_DIR, script)
+        if os.path.exists(script_path):
+            cmd = ["python3", script_path] + args
+            return_code, stdout, stderr = run_command(" ".join(cmd), cwd=MLSTACK_DIR)
+
+            if return_code == 0:
+                log_win.addstr(f"✓ {name} benchmark completed successfully\n", curses.color_pair(COLOR_SUCCESS))
+                results[name] = {"status": "success", "output": stdout}
+            else:
+                log_win.addstr(f"✗ {name} benchmark failed\n", curses.color_pair(COLOR_ERROR))
+                results[name] = {"status": "failed", "error": stderr}
+        else:
+            log_win.addstr(f"✗ {name} benchmark script not found\n", curses.color_pair(COLOR_ERROR))
+            results[name] = {"status": "not_found"}
+
+        log_win.refresh()
+
+    benchmark_results["pre_install"] = results
+    log_win.addstr("\nPre-installation benchmarks completed!\n", curses.color_pair(COLOR_SUCCESS))
+    log_win.refresh()
+    time.sleep(2)
+
+def run_post_installation_benchmarks(stdscr, log_win, benchmark_results):
+    """Run post-installation benchmarks."""
+    log_win.clear()
+    log_win.addstr(0, 0, "Running Post-Installation Benchmarks...\n", curses.color_pair(COLOR_INFO))
+    log_win.refresh()
+
+    # Create benchmark results directory
+    benchmark_dir = os.path.join(MLSTACK_DIR, "benchmark_results")
+    os.makedirs(benchmark_dir, exist_ok=True)
+
+    # Run each benchmark script
+    benchmark_scripts = [
+        ("Flash Attention", "benchmarks/flash_attention_benchmark.py", ["--batch-sizes", "1", "--seq-lengths", "128", "256"]),
+        ("PyTorch GPU", "benchmarks/pytorch_gpu_benchmark.py", ["--output-dir", os.path.join(benchmark_dir, "post_install_pytorch")]),
+        ("Memory Bandwidth", "benchmarks/memory_bandwidth_benchmark.py", []),
+        ("Transformer", "benchmarks/transformer_benchmark.py", [])
+    ]
+
+    results = {}
+    for name, script, args in benchmark_scripts:
+        log_win.addstr(f"\nRunning {name} benchmark...\n", curses.color_pair(COLOR_INFO))
+        log_win.refresh()
+
+        # Run the benchmark script
+        script_path = os.path.join(MLSTACK_DIR, script)
+        if os.path.exists(script_path):
+            cmd = ["python3", script_path] + args
+            return_code, stdout, stderr = run_command(" ".join(cmd), cwd=MLSTACK_DIR)
+
+            if return_code == 0:
+                log_win.addstr(f"✓ {name} benchmark completed successfully\n", curses.color_pair(COLOR_SUCCESS))
+                results[name] = {"status": "success", "output": stdout}
+            else:
+                log_win.addstr(f"✗ {name} benchmark failed\n", curses.color_pair(COLOR_ERROR))
+                results[name] = {"status": "failed", "error": stderr}
+        else:
+            log_win.addstr(f"✗ {name} benchmark script not found\n", curses.color_pair(COLOR_ERROR))
+            results[name] = {"status": "not_found"}
+
+        log_win.refresh()
+
+    benchmark_results["post_install"] = results
+    log_win.addstr("\nPost-installation benchmarks completed!\n", curses.color_pair(COLOR_SUCCESS))
+    log_win.refresh()
+    time.sleep(2)
+
+def generate_comparison_report(stdscr, log_win, benchmark_results):
+    """Generate comparison report between pre and post installation."""
+    log_win.clear()
+    log_win.addstr(0, 0, "Generating Benchmark Comparison Report...\n", curses.color_pair(COLOR_INFO))
+    log_win.refresh()
+
+    if "pre_install" not in benchmark_results or "post_install" not in benchmark_results:
+        log_win.addstr("Error: Both pre and post installation benchmarks must be run first.\n", curses.color_pair(COLOR_ERROR))
+        log_win.refresh()
+        time.sleep(3)
+        return
+
+    # Generate comparison report
+    report_lines = []
+    report_lines.append("=" * 70)
+    report_lines.append("ML STACK BENCHMARK COMPARISON REPORT")
+    report_lines.append("=" * 70)
+    report_lines.append("")
+
+    pre_results = benchmark_results["pre_install"]
+    post_results = benchmark_results["post_install"]
+
+    for benchmark_name in pre_results:
+        report_lines.append(f"Benchmark: {benchmark_name}")
+        report_lines.append("-" * 40)
+
+        pre_status = pre_results[benchmark_name]["status"]
+        post_status = post_results[benchmark_name]["status"]
+
+        report_lines.append(f"Pre-install status:  {pre_status}")
+        report_lines.append(f"Post-install status: {post_status}")
+
+        if pre_status == "success" and post_status == "success":
+            report_lines.append("✓ Both benchmarks completed successfully")
+        elif pre_status == "success" and post_status != "success":
+            report_lines.append("⚠ Pre-install successful, post-install failed")
+        elif pre_status != "success" and post_status == "success":
+            report_lines.append("✓ Pre-install failed, post-install successful")
+        else:
+            report_lines.append("✗ Both benchmarks failed")
+
+        report_lines.append("")
+
+    report_lines.append("=" * 70)
+    report_lines.append("Report generated at: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    report_lines.append("=" * 70)
+
+    # Display report
+    for i, line in enumerate(report_lines):
+        if i < curses.LINES - 5:  # Leave space for footer
+            log_win.addstr(i, 0, line[:curses.COLS-1], curses.color_pair(COLOR_NORMAL))
+
+    log_win.refresh()
+
+    # Save report to file
+    report_file = os.path.join(MLSTACK_DIR, "benchmark_results", f"comparison_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    os.makedirs(os.path.dirname(report_file), exist_ok=True)
+
+    with open(report_file, "w") as f:
+        f.write("\n".join(report_lines))
+
+    log_win.addstr(curses.LINES - 3, 0, f"Report saved to: {report_file}", curses.color_pair(COLOR_SUCCESS))
+    log_win.refresh()
+    time.sleep(5)
+
+def display_benchmark_results(stdscr, log_win, benchmark_results):
+    """Display benchmark results."""
+    log_win.clear()
+    log_win.addstr(0, 0, "Benchmark Results Summary\n", curses.color_pair(COLOR_TITLE))
+    log_win.addstr(1, 0, "=" * 50 + "\n", curses.color_pair(COLOR_TITLE))
+
+    y = 3
+
+    if not benchmark_results:
+        log_win.addstr(y, 0, "No benchmark results available.\n", curses.color_pair(COLOR_WARNING))
+        log_win.addstr(y + 1, 0, "Run benchmarks first using options 1 or 2.\n", curses.color_pair(COLOR_INFO))
+    else:
+        for phase, results in benchmark_results.items():
+            phase_name = "Pre-Installation" if phase == "pre_install" else "Post-Installation"
+            log_win.addstr(y, 0, f"{phase_name} Results:\n", curses.color_pair(COLOR_INFO))
+            y += 1
+
+            for benchmark_name, result in results.items():
+                status = result["status"]
+                if status == "success":
+                    log_win.addstr(y, 2, f"✓ {benchmark_name}: Success", curses.color_pair(COLOR_SUCCESS))
+                elif status == "failed":
+                    log_win.addstr(y, 2, f"✗ {benchmark_name}: Failed", curses.color_pair(COLOR_ERROR))
+                else:
+                    log_win.addstr(y, 2, f"? {benchmark_name}: {status}", curses.color_pair(COLOR_WARNING))
+                y += 1
+
+            y += 1
+
+    log_win.refresh()
+    time.sleep(5)
+
+def cli_main() -> int:
     """
     Main entry point for the ML Stack installer.
     This function is called when the script is run directly or through the ml-stack-install command.
@@ -5241,4 +5909,4 @@ def main():
 
 if __name__ == "__main__":
     import sys
-    sys.exit(main())
+    sys.exit(cli_main())

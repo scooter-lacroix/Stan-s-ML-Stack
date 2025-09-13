@@ -1,66 +1,112 @@
 #!/bin/bash
 #
-# WandB Installation Script for ML Stack
+# Weights & Biases (WandB) Installation Script for ML Stack
 #
 # This script installs Weights & Biases (WandB), a tool for experiment tracking,
 # model visualization, and collaboration.
 #
+# Enhanced with modern installation standards including ROCm support,
+# multiple installation methods, and comprehensive error handling.
+#
 
-set -e  # Exit on error
+# ASCII Art Banner
+cat << "EOF"
+██╗    ██╗ █████╗ ███╗   ██╗██████╗ ██████╗
+██║    ██║██╔══██╗████╗  ██║██╔══██╗██╔══██╗
+██║ █╗ ██║███████║██╔██╗ ██║██║  ██║██████╔╝
+██║███╗██║██╔══██║██║╚██╗██║██║  ██║██╔══██╗
+╚███╔███╔╝██║  ██║██║ ╚████║██████╔╝██████╔╝
+ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═════╝
+EOF
+echo
 
-# Create log directory
-LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
-mkdir -p $LOG_DIR
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
 
-# Log file
-LOG_FILE="$LOG_DIR/wandb_install_$(date +"%Y%m%d_%H%M%S").log"
+# Function definitions
+print_header() {
+    echo
+    echo "╔═════════════════════════════════════════════════════════╗"
+    echo "║                                                         ║"
+    echo "║               === $1 ===               ║"
+    echo "║                                                         ║"
+    echo "╚═════════════════════════════════════════════════════════╝"
+    echo
+}
 
-# Function to log messages
-log() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
+print_section() {
+    echo
+    echo "┌─────────────────────────────────────────────────────────┐"
+    echo "│ $1"
+    echo "└─────────────────────────────────────────────────────────┘"
+}
+
+print_step() {
+    echo "➤ $1"
+}
+
+print_success() {
+    echo "✓ $1"
+}
+
+print_warning() {
+    echo "⚠ $1"
+}
+
+print_error() {
+    echo "✗ $1"
+}
+
+# Function to print a clean separator line
+print_separator() {
+    echo "───────────────────────────────────────────────────────────"
 }
 
 # Function to check if command exists
 command_exists() {
-    command -v "$1" > /dev/null 2>&1
-}
-
-# Function to install Python packages with adaptive package management
-install_python_package() {
-    local package_spec="$1"
-    local package_name="$2"
-    
-    # Check if package is already installed
-    if [ -n "$package_name" ] && python3 -c "import $package_name" 2>/dev/null; then
-        log "Package $package_name is already installed"
-        return 0
-    fi
-    
-    log "Installing $package_spec..."
-    
-    # Try uv first if available
-    if command_exists uv; then
-        log "Using uv to install $package_spec..."
-        if uv pip install $package_spec --system 2>/dev/null || \
-           uv pip install $package_spec --user 2>/dev/null || \
-           uv pip install $package_spec --break-system-packages 2>/dev/null; then
-            log "Successfully installed $package_spec with uv"
-            return 0
-        else
-            log "uv installation failed, falling back to pip..."
-        fi
-    fi
-    
-    # Fallback to pip
-    log "Using pip to install $package_spec..."
-    if pip install $package_spec --user 2>/dev/null || \
-       pip install $package_spec --break-system-packages 2>/dev/null; then
-        log "Successfully installed $package_spec with pip"
-        return 0
-    else
-        log "Failed to install $package_spec with both uv and pip"
-        return 1
-    fi
+    command -v "$1" >/dev/null 2>&1
 }
 
 # Function to check if Python package is installed
@@ -68,76 +114,161 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
-# Start installation
-log "=== Starting WandB Installation ==="
-log "System: $(uname -a)"
-log "Python Version: $(python3 --version)"
-log "PyTorch Version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'Not installed')"
-
-# Check for required dependencies
-log "Checking dependencies..."
-DEPS=("python3" "pip")
-MISSING_DEPS=()
-
-for dep in "${DEPS[@]}"; do
-    if ! command_exists $dep; then
-        MISSING_DEPS+=("$dep")
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
     fi
-done
+}
 
-if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    log "Missing dependencies: ${MISSING_DEPS[*]}"
-    log "Please install them and run this script again."
-    exit 1
-fi
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
 
-# Create installation directory
-INSTALL_DIR="$HOME/ml_stack/wandb"
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
-
-# Check if WandB is already installed
-if package_installed "wandb"; then
-    wandb_version=$(python3 -c "import wandb; print(wandb.__version__)" 2>/dev/null)
-    log "WandB is already installed (version: $wandb_version)"
-    read -p "Do you want to reinstall? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log "Skipping WandB installation"
-        exit 0
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
     fi
-fi
+}
 
-# Install WandB using adaptive method
-log "Installing WandB..."
-install_python_package "wandb" "wandb"
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for WandB GPU operations
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
 
-# Verify installation
-log "Verifying WandB installation..."
-python3 -c "import wandb; print('WandB version:', wandb.__version__)"
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
 
-# If verification failed, try installing with pip directly
-if [ $? -ne 0 ]; then
-    log "First installation attempt failed, trying alternative method..."
-    pip install --upgrade pip
-    pip install --upgrade setuptools wheel
-    pip install wandb --no-cache-dir
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
 
-    # Verify again
-    log "Verifying WandB installation (second attempt)..."
-    python3 -c "import wandb; print('WandB version:', wandb.__version__)"
-fi
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
 
-if [ $? -eq 0 ]; then
-    log "WandB installation successful!"
-else
-    log "WandB installation failed. Please check the logs."
-    exit 1
-fi
+# Function to detect ROCm and GPU architecture
+detect_rocm() {
+    print_section "ROCm Detection and Configuration"
 
-# Create a simple test script
-TEST_SCRIPT="$INSTALL_DIR/test_wandb.py"
-cat > $TEST_SCRIPT << 'EOF'
+    if command_exists rocminfo; then
+        print_success "rocminfo found"
+
+        # Set up ROCm environment variables
+        print_step "Setting up ROCm environment variables..."
+        export HSA_OVERRIDE_GFX_VERSION=11.0.0
+        export PYTORCH_ROCM_ARCH="gfx1100"
+        export ROCM_PATH="/opt/rocm"
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+        # Set HSA_TOOLS_LIB if rocprofiler library exists
+        if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+            export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+            print_step "ROCm profiler library found and configured"
+        else
+            # Check if we can install rocprofiler
+            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                sudo apt-get update && sudo apt-get install -y rocprofiler
+                if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                    print_success "ROCm profiler installed and configured"
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler installation failed, disabling HSA tools"
+                fi
+            else
+                export HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+            fi
+        fi
+
+        # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
+        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+            unset PYTORCH_CUDA_ALLOC_CONF
+            print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+        fi
+
+        print_success "ROCm environment variables configured"
+        return 0
+    else
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            package_manager=$(detect_package_manager)
+            case $package_manager in
+                apt)
+                    sudo apt update && sudo apt install -y rocminfo
+                    ;;
+                dnf)
+                    sudo dnf install -y rocminfo
+                    ;;
+                yum)
+                    sudo yum install -y rocminfo
+                    ;;
+                pacman)
+                    sudo pacman -S rocminfo
+                    ;;
+                zypper)
+                    sudo zypper install -y rocminfo
+                    ;;
+                *)
+                    print_error "Unsupported package manager: $package_manager"
+                    return 1
+                    ;;
+            esac
+            if command_exists rocminfo; then
+                print_success "Installed rocminfo"
+                # Recursively call detect_rocm now that rocminfo is installed
+                detect_rocm
+                return $?
+            else
+                print_error "Failed to install rocminfo"
+                return 1
+            fi
+        else
+            print_warning "ROCm is not installed. WandB will work without GPU acceleration."
+            return 1
+        fi
+    fi
+}
+
+# Function to create WandB test script
+create_test_script() {
+    local test_script="$1"
+    cat > "$test_script" << 'EOF'
 #!/usr/bin/env python3
 import wandb
 import torch
@@ -283,17 +414,12 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
+}
 
-log "Created test script at $TEST_SCRIPT"
-log "You can run it with: python3 $TEST_SCRIPT"
-
-# Create documentation directory
-DOCS_DIR="$HOME/Desktop/ml_stack_extensions/docs"
-mkdir -p $DOCS_DIR
-
-# Create documentation
-DOCS_FILE="$DOCS_DIR/wandb_guide.md"
-cat > $DOCS_FILE << 'EOF'
+# Function to create WandB documentation
+create_documentation() {
+    local docs_file="$1"
+    cat > "$docs_file" << 'EOF'
 # Weights & Biases (WandB) Guide
 
 ## Overview
@@ -390,10 +516,339 @@ wandb.finish()
 - [WandB GitHub Repository](https://github.com/wandb/wandb)
 - [WandB Python API Reference](https://docs.wandb.ai/ref/python)
 EOF
+}
 
-log "Created documentation at $DOCS_FILE"
+# Main installation function
+install_wandb() {
+    print_header "WandB Installation"
 
-log "=== WandB Installation Complete ==="
-log "Installation Directory: $INSTALL_DIR"
-log "Log File: $LOG_FILE"
-log "Documentation: $DOCS_FILE"
+    # Parse command line arguments
+    DRY_RUN=false
+    FORCE=false
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --dry-run)
+                DRY_RUN=true
+                print_step "Dry run mode enabled - no changes will be made"
+                shift
+                ;;
+            --force)
+                FORCE=true
+                print_step "Force reinstall enabled"
+                shift
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                return 1
+                ;;
+        esac
+    done
+
+    # Check for required dependencies
+    print_section "Checking Dependencies"
+    DEPS=("python3" "pip")
+    MISSING_DEPS=()
+
+    for dep in "${DEPS[@]}"; do
+        if ! command_exists $dep; then
+            MISSING_DEPS+=("$dep")
+        fi
+    done
+
+    if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
+        print_error "Missing dependencies: ${MISSING_DEPS[*]}"
+        print_step "Please install them and run this script again."
+        return 1
+    fi
+
+    print_success "All dependencies found"
+
+    # Detect ROCm for GPU support
+    detect_rocm
+
+    # Check if WandB is already installed
+    print_section "Checking Existing Installation"
+
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${WANDB_VENV_PYTHON:-python3}
+
+    if package_installed "wandb"; then
+        wandb_version=$($PYTHON_CMD -c "import wandb; print(wandb.__version__)" 2>/dev/null)
+        print_success "WandB is already installed (version: $wandb_version)"
+
+        # Check if --force flag is provided
+        if [[ "$FORCE" == "true" ]]; then
+            print_warning "Force reinstall requested - proceeding with reinstallation"
+        else
+            print_step "WandB installation is complete. Use --force to reinstall anyway."
+            return 0
+        fi
+    fi
+
+    # Check if uv is installed
+    print_section "Package Manager Setup"
+
+    if ! command_exists uv; then
+        print_step "Installing uv package manager..."
+        python3 -m pip install uv
+
+        # Add uv to PATH if it was installed in a user directory
+        if [ -f "$HOME/.local/bin/uv" ]; then
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+        # Add uv to PATH if it was installed via cargo
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+        if ! command_exists uv; then
+            print_error "Failed to install uv package manager"
+            print_step "Falling back to pip"
+        else
+            print_success "Installed uv package manager"
+        fi
+    else
+        print_success "uv package manager is already installed"
+    fi
+
+    # Ask user for installation preference
+    echo
+    echo -e "${CYAN}${BOLD}WandB Installation Options:${RESET}"
+    echo "1) Global installation (recommended for system-wide use)"
+    echo "2) Virtual environment (isolated installation)"
+    echo "3) Auto-detect (try global, fallback to venv if needed)"
+    echo
+    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+
+    case $INSTALL_CHOICE in
+        1)
+            INSTALL_METHOD="global"
+            print_step "Using global installation method"
+            ;;
+        2)
+            INSTALL_METHOD="venv"
+            print_step "Using virtual environment method"
+            ;;
+        3|*)
+            INSTALL_METHOD="auto"
+            print_step "Using auto-detect method"
+            ;;
+    esac
+
+    # Create a function to handle uv commands properly with venv fallback
+    uv_pip_install() {
+        local args="$@"
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            print_step "[DRY RUN] Would install with: uv pip install $args"
+            return 0
+        fi
+
+        # Check if uv is available as a command
+        if command_exists uv; then
+            case $INSTALL_METHOD in
+                "global")
+                    print_step "Installing globally with pip..."
+                    python3 -m pip install --break-system-packages $args
+                    WANDB_VENV_PYTHON=""
+                    ;;
+                "venv")
+                    print_step "Creating uv virtual environment..."
+                    VENV_DIR="./wandb_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+                    WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                    ;;
+                "auto")
+                    # Try global install first
+                    print_step "Attempting global installation with uv..."
+                    local install_output
+                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                    local install_exit_code=$?
+
+                    if echo "$install_output" | grep -q "externally managed"; then
+                        print_warning "Global installation failed due to externally managed environment"
+                        print_step "Creating uv virtual environment for installation..."
+
+                        # Create uv venv in project directory
+                        VENV_DIR="./wandb_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+
+                        # Activate venv and install
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+
+                        # Store venv path for verification
+                        WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    elif [ $install_exit_code -eq 0 ]; then
+                        print_success "Global installation successful"
+                        WANDB_VENV_PYTHON=""
+                    else
+                        print_error "Global installation failed with unknown error:"
+                        echo "$install_output"
+                        print_step "Falling back to virtual environment..."
+
+                        # Create uv venv in project directory
+                        VENV_DIR="./wandb_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+
+                        # Activate venv and install
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+
+                        # Store venv path for verification
+                        WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    fi
+                    ;;
+            esac
+        else
+            # Fall back to pip
+            print_step "Installing with pip..."
+            python3 -m pip install $args
+            WANDB_VENV_PYTHON=""
+        fi
+    }
+
+    # Install WandB
+    print_section "Installing WandB"
+    uv_pip_install wandb
+
+    # Verify installation
+    print_section "Verifying Installation"
+
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${WANDB_VENV_PYTHON:-python3}
+
+    if $PYTHON_CMD -c "import wandb" &>/dev/null; then
+        wandb_version=$($PYTHON_CMD -c "import wandb; print(wandb.__version__)" 2>/dev/null)
+        print_success "WandB is installed (version: $wandb_version)"
+
+        # Test basic functionality
+        print_step "Testing WandB basic functionality..."
+        if $PYTHON_CMD -c "import wandb; print('WandB import successful')" &>/dev/null; then
+            print_success "WandB basic functionality verified"
+        else
+            print_warning "WandB basic functionality test failed"
+        fi
+    else
+        print_error "WandB installation failed"
+        return 1
+    fi
+
+    # Create installation directory
+    INSTALL_DIR="$HOME/ml_stack/wandb"
+    if [[ "$DRY_RUN" == "false" ]]; then
+        mkdir -p $INSTALL_DIR
+    else
+        print_step "[DRY RUN] Would create directory: $INSTALL_DIR"
+    fi
+
+    # Create test script
+    TEST_SCRIPT="$INSTALL_DIR/test_wandb.py"
+    if [[ "$DRY_RUN" == "false" ]]; then
+        create_test_script "$TEST_SCRIPT"
+        print_success "Created test script at $TEST_SCRIPT"
+    else
+        print_step "[DRY RUN] Would create test script at $TEST_SCRIPT"
+    fi
+
+    # Create documentation directory
+    DOCS_DIR="$HOME/Desktop/ml_stack_extensions/docs"
+    if [[ "$DRY_RUN" == "false" ]]; then
+        mkdir -p $DOCS_DIR
+    else
+        print_step "[DRY RUN] Would create docs directory: $DOCS_DIR"
+    fi
+
+    # Create documentation
+    DOCS_FILE="$DOCS_DIR/wandb_guide.md"
+    if [[ "$DRY_RUN" == "false" ]]; then
+        create_documentation "$DOCS_FILE"
+        print_success "Created documentation at $DOCS_FILE"
+    else
+        print_step "[DRY RUN] Would create documentation at $DOCS_FILE"
+    fi
+
+    # Show completion message
+    if [[ "$DRY_RUN" == "false" ]]; then
+        clear
+        cat << "EOF"
+
+        ╔═════════════════════════════════════════════════════════╗
+        ║                                                         ║
+        ║  ██╗    ██╗ █████╗ ███╗   ██╗██████╗ ██████╗           ║
+        ║  ██║    ██║██╔══██╗████╗  ██║██╔══██╗██╔══██╗          ║
+        ║  ██║ █╗ ██║███████║██╔██╗ ██║██║  ██║██████╔╝          ║
+        ║  ██║███╗██║██╔══██║██║╚██╗██║██║  ██║██╔══██╗          ║
+        ║  ╚███╔███╔╝██║  ██║██║ ╚████║██████╔╝██████╔╝          ║
+        ║   ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚═════╝           ║
+        ║                                                         ║
+        ║  Installation Completed Successfully!                   ║
+        ║                                                         ║
+        ║  WandB is now ready for experiment tracking and         ║
+        ║  model visualization.                                   ║
+        ║                                                         ║
+        ╚═════════════════════════════════════════════════════════╝
+
+EOF
+
+        print_success "WandB installation completed successfully"
+
+        # Provide usage examples
+        echo
+        echo -e "${CYAN}${BOLD}Quick Start Examples:${RESET}"
+        if [ -n "$WANDB_VENV_PYTHON" ]; then
+            echo -e "${GREEN}source ./wandb_venv/bin/activate${RESET}"
+            echo -e "${GREEN}python -c \"import wandb; print('WandB version:', wandb.__version__)\"${RESET}"
+        else
+            echo -e "${GREEN}python3 -c \"import wandb; print('WandB version:', wandb.__version__)\"${RESET}"
+        fi
+        echo -e "${GREEN}python3 $TEST_SCRIPT --all${RESET}"
+        echo
+        echo -e "${YELLOW}${BOLD}Note:${RESET} ${YELLOW}ROCm environment variables are set for GPU acceleration.${RESET}"
+        echo -e "${YELLOW}For future sessions, you may need to run:${RESET}"
+
+        # Output the actual environment variables that were set
+        echo -e "${GREEN}export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\"${RESET}"
+        echo -e "${GREEN}export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\"${RESET}"
+        if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+            echo -e "${GREEN}export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\"${RESET}"
+        fi
+        echo -e "${GREEN}export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\"${RESET}"
+        echo -e "${GREEN}export ROCM_PATH=\"$ROCM_PATH\"${RESET}"
+        echo -e "${GREEN}export PATH=\"$PATH\"${RESET}"
+        echo -e "${GREEN}export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\"${RESET}"
+        echo
+        echo -e "${CYAN}${BOLD}To apply these settings to your current shell, run:${RESET}"
+        echo -e "${GREEN}eval \"\$(./install_wandb.sh --show-env)\"${RESET}"
+        echo
+    else
+        print_success "Dry run completed - no changes were made"
+    fi
+
+    return 0
+}
+
+# Check for --show-env option
+if [[ "$1" == "--show-env" ]]; then
+    show_env
+    exit 0
+fi
+
+# Run the installation function with all script arguments
+install_wandb "$@"

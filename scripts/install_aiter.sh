@@ -27,18 +27,50 @@ cat << "EOF"
 EOF
 echo
 
-# Color definitions
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-UNDERLINE='\033[4m'
-BLINK='\033[5m'
-REVERSE='\033[7m'
-RESET='\033[0m'
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
 
 # Progress bar variables
 PROGRESS_BAR_WIDTH=50
@@ -187,6 +219,173 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to detect if running in WSL
+detect_wsl() {
+    if [ -f /proc/version ] && grep -q "Microsoft" /proc/version; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# Function to detect if running in a container
+detect_container() {
+    if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q "docker\|container\|lxc\|podman" /proc/1/cgroup 2>/dev/null; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# Function to detect if running on Windows
+detect_windows() {
+    if [ -n "$WSL_DISTRO_NAME" ] || [ -n "$WSLENV" ]; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
+
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Function to create default configuration file
+create_default_config() {
+    local config_file="$1"
+    cat > "$config_file" << 'EOF'
+# AITER Installation Configuration File
+# This file contains default settings for AITER installation
+# Modify these values to customize your installation
+
+# Installation method: global, venv, auto
+INSTALL_METHOD=auto
+
+# Virtual environment directory (used when INSTALL_METHOD=venv)
+VENV_DIR=./aiter_rocm_venv
+
+# ROCm settings
+HSA_OVERRIDE_GFX_VERSION=11.0.0
+PYTORCH_ROCM_ARCH=gfx1100;gfx1101;gfx1102
+ROCM_PATH=/opt/rocm
+
+# Build options
+BUILD_ISOLATION=true
+NO_DEPS=false
+
+# Testing options
+RUN_TESTS=true
+TEST_TIMEOUT=60
+
+# Logging options
+LOG_LEVEL=INFO
+LOG_FILE=./aiter_install.log
+
+# Color options
+USE_COLORS=true
+NO_COLOR=false
+EOF
+}
+
+# Function to load configuration file
+load_config() {
+    local config_file="$1"
+
+    if [ -f "$config_file" ]; then
+        print_step "Loading configuration from $config_file"
+
+        # Read the config file line by line and export variables properly
+        while IFS='=' read -r key value; do
+            # Skip comments and empty lines
+            [[ $key =~ ^[[:space:]]*# ]] && continue
+            [[ -z "$key" ]] && continue
+
+            # Remove leading/trailing whitespace
+            key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+            # Export the variable
+            export "$key"="$value"
+        done < "$config_file"
+
+        # Override command line arguments if config specifies them
+        if [ -n "$INSTALL_METHOD" ]; then
+            case $INSTALL_METHOD in
+                global|venv|auto)
+                    print_step "Using config-specified installation method: $INSTALL_METHOD"
+                    ;;
+                *)
+                    print_warning "Invalid INSTALL_METHOD in config, using default"
+                    ;;
+            esac
+        fi
+
+        print_success "Configuration loaded"
+    else
+        print_step "No configuration file found, using defaults"
+        print_step "To customize installation, create aiter_config.sh with your settings"
+    fi
+}
+
 # Global variables for cleanup
 TEMP_DIRS=()
 TEMP_FILES=()
@@ -235,12 +434,106 @@ handle_signal() {
 trap handle_signal INT TERM HUP PIPE
 trap cleanup EXIT
 
+# Check for --show-env option first (before other processing)
+if [[ "$1" == "--show-env" ]]; then
+    show_env
+    exit 0
+fi
+
+# Parse command line arguments
+FORCE_INSTALL=false
+DRY_RUN=false
+CREATE_CONFIG=false
+CONFIG_FILE="./aiter_config.sh"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --force)
+            FORCE_INSTALL=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --create-config)
+            CREATE_CONFIG=true
+            shift
+            ;;
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --force         Force reinstallation even if AITER is already installed"
+            echo "  --dry-run       Show what would be done without actually installing"
+            echo "  --create-config Create a default configuration file"
+            echo "  --config FILE   Use specified configuration file"
+            echo "  --show-env      Show ROCm environment variables"
+            echo "  --help          Show this help message"
+            echo ""
+            echo "Enhanced AITER Installation Script with ROCm support"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Handle create config option
+if [ "$CREATE_CONFIG" = true ]; then
+    print_step "Creating default configuration file: $CONFIG_FILE"
+    create_default_config "$CONFIG_FILE"
+    print_success "Configuration file created. Edit it to customize your installation."
+    exit 0
+fi
+
+# Load configuration if file exists
+load_config "$CONFIG_FILE"
+
 # Main installation function
 install_aiter() {
     # Hide cursor during installation for cleaner output
     tput civis
 
     print_header "AITER Installation"
+
+    # Handle dry run
+    if [ "$DRY_RUN" = true ]; then
+        print_warning "DRY RUN MODE - No actual installation will be performed"
+        echo
+    fi
+
+    # Detect environment
+    print_section "Environment Detection"
+    is_wsl=$(detect_wsl)
+    is_container=$(detect_container)
+    is_windows=$(detect_windows)
+
+    if [ "$is_wsl" = "true" ]; then
+        print_step "Detected Windows Subsystem for Linux (WSL)"
+        print_warning "WSL detected - some ROCm features may have limited functionality"
+    fi
+
+    if [ "$is_container" = "true" ]; then
+        print_step "Detected container environment"
+        print_warning "Container environment detected - ensure ROCm is properly configured"
+    fi
+
+    if [ "$is_windows" = "true" ]; then
+        print_step "Detected Windows environment"
+        print_warning "Windows detected - ensure WSL2 is properly configured for ROCm"
+    fi
+
+    if [ "$is_wsl" = "false" ] && [ "$is_container" = "false" ] && [ "$is_windows" = "false" ]; then
+        print_step "Detected native Linux environment"
+    fi
 
     # Initialize progress bar
     init_progress_bar 100
@@ -249,14 +542,114 @@ install_aiter() {
 
     # Check if AITER is already installed
     if package_installed "aiter"; then
-        print_warning "AITER is already installed"
-        read -p "Do you want to reinstall? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_step "Skipping AITER installation"
-            complete_progress_bar
-            return 0
+        if [ "$FORCE_INSTALL" = true ]; then
+            print_warning "AITER is already installed but --force flag was provided"
+            print_step "Will reinstall AITER"
+        else
+            print_warning "AITER is already installed"
+            read -p "Do you want to reinstall? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_step "Skipping AITER installation"
+                complete_progress_bar
+                return 0
+            fi
         fi
+    fi
+
+    # Check if ROCm is installed
+    print_section "Checking ROCm Installation"
+
+    if command_exists rocminfo; then
+        print_success "rocminfo found"
+
+        # Set up ROCm environment variables
+        print_step "Setting up ROCm environment variables..."
+        export HSA_OVERRIDE_GFX_VERSION=11.0.0
+        export PYTORCH_ROCM_ARCH="gfx1100"
+        export ROCM_PATH="/opt/rocm"
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+        # Set HSA_TOOLS_LIB if rocprofiler library exists
+        if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+            export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+            print_step "ROCm profiler library found and configured"
+        else
+            # Check if we can install rocprofiler
+            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                sudo apt-get update && sudo apt-get install -y rocprofiler
+                if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                    print_success "ROCm profiler installed and configured"
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler installation failed, disabling HSA tools"
+                fi
+            else
+                export HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+            fi
+        fi
+
+        # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
+        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+            unset PYTORCH_CUDA_ALLOC_CONF
+            print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+        fi
+
+        print_success "ROCm environment variables configured"
+    else
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            package_manager=$(detect_package_manager)
+            case $package_manager in
+                apt)
+                    sudo apt update && sudo apt install -y rocminfo
+                    ;;
+                dnf)
+                    sudo dnf install -y rocminfo
+                    ;;
+                yum)
+                    sudo yum install -y rocminfo
+                    ;;
+                pacman)
+                    sudo pacman -S rocminfo
+                    ;;
+                zypper)
+                    sudo zypper install -y rocminfo
+                    ;;
+                *)
+                    print_error "Unsupported package manager: $package_manager"
+                    return 1
+                    ;;
+            esac
+            if command_exists rocminfo; then
+                print_success "Installed rocminfo"
+            else
+                print_error "Failed to install rocminfo"
+                return 1
+            fi
+        else
+            print_error "ROCm is not installed. Please install ROCm first."
+            return 1
+        fi
+    fi
+
+    # Detect ROCm version
+    rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    fi
+
+    if [ -z "$rocm_version" ]; then
+        print_warning "Could not detect ROCm version, using default version 6.4.0"
+        rocm_version="6.4.0"
+    else
+        print_success "Detected ROCm version: $rocm_version"
     fi
 
     # Check if PyTorch is installed
@@ -296,6 +689,56 @@ install_aiter() {
         complete_progress_bar
         return 1
     fi
+
+    # Check if uv is installed
+    if ! command_exists uv; then
+        print_step "Installing uv package manager..."
+        python3 -m pip install uv
+
+        # Add uv to PATH if it was installed in a user directory
+        if [ -f "$HOME/.local/bin/uv" ]; then
+            export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+        # Add uv to PATH if it was installed via cargo
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+        if ! command_exists uv; then
+            print_error "Failed to install uv package manager"
+            print_step "Falling back to pip"
+        else
+            print_success "Installed uv package manager"
+        fi
+    else
+        print_success "uv package manager is already installed"
+    fi
+
+    # Ask user for installation preference
+    echo
+    echo -e "${CYAN}${BOLD}AITER Installation Options:${RESET}"
+    echo "1) Global installation (recommended for system-wide use)"
+    echo "2) Virtual environment (isolated installation)"
+    echo "3) Auto-detect (try global, fallback to venv if needed)"
+    echo
+    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+
+    case $INSTALL_CHOICE in
+        1)
+            INSTALL_METHOD="global"
+            print_step "Using global installation method"
+            ;;
+        2)
+            INSTALL_METHOD="venv"
+            print_step "Using virtual environment method"
+            ;;
+        3|*)
+            INSTALL_METHOD="auto"
+            print_step "Using auto-detect method"
+            ;;
+    esac
 
     # Create a temporary directory for installation
     update_progress_bar 10
@@ -759,73 +1202,175 @@ EOF
         print_warning "Failed to initialize some submodules, continuing anyway"
     fi
 
+    # Create a function to handle uv commands properly with venv fallback
+    uv_pip_install() {
+        local args="$@"
+
+        # Check if uv is available as a command
+        if command_exists uv; then
+            case $INSTALL_METHOD in
+                "global")
+                    print_step "Installing globally with pip..."
+                    python3 -m pip install --break-system-packages $args
+                    AITER_VENV_PYTHON=""
+                    ;;
+                "venv")
+                    print_step "Creating uv virtual environment..."
+                    VENV_DIR="./aiter_rocm_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+                    AITER_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                    ;;
+                "auto")
+                    # Try global install first
+                    print_step "Attempting global installation with uv..."
+                    local install_output
+                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                    local install_exit_code=$?
+
+                    if echo "$install_output" | grep -q "externally managed"; then
+                        print_warning "Global installation failed due to externally managed environment"
+                        print_step "Creating uv virtual environment for installation..."
+
+                        # Create uv venv in project directory
+                        VENV_DIR="./aiter_rocm_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+
+                        # Activate venv and install
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+
+                        # Store venv path for verification
+                        AITER_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    elif [ $install_exit_code -eq 0 ]; then
+                        print_success "Global installation successful"
+                        AITER_VENV_PYTHON=""
+                    else
+                        print_error "Global installation failed with unknown error:"
+                        echo "$install_output"
+                        print_step "Falling back to virtual environment..."
+
+                        # Create uv venv in project directory
+                        VENV_DIR="./aiter_rocm_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            uv venv "$VENV_DIR"
+                        fi
+
+                        # Activate venv and install
+                        source "$VENV_DIR/bin/activate"
+                        print_step "Installing in virtual environment..."
+                        uv pip install $args
+
+                        # Store venv path for verification
+                        AITER_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    fi
+                    ;;
+            esac
+        else
+            # Fall back to pip
+            print_step "Installing with pip..."
+            python3 -m pip install $args
+            AITER_VENV_PYTHON=""
+        fi
+    }
+
     # Install required dependencies first
     update_progress_bar 15
     draw_progress_bar "Installing required dependencies..."
     print_step "Installing required dependencies first..."
 
-    # Check if uv is available and use it
-    if command_exists uv; then
-        print_step "Using uv to install dependencies..."
-        uv pip install packaging pybind11 pandas einops psutil numpy setuptools wheel typing-extensions
-    else
-        print_step "Using pip to install dependencies..."
-        python3 -m pip install packaging pybind11 pandas einops psutil numpy setuptools wheel typing-extensions
-    fi
+    uv_pip_install packaging pybind11 pandas einops psutil numpy setuptools wheel typing-extensions
 
     # Install AITER
     update_progress_bar 20
     draw_progress_bar "Installing AITER..."
     print_step "Installing AITER..."
 
-    # Check if uv is available and use it
-    if command_exists uv; then
-        print_step "Using uv to install AITER..."
-        # Use trap to handle SIGPIPE and other signals
-        trap 'print_warning "Installation interrupted, trying alternative method..."; break' SIGPIPE SIGINT SIGTERM
+    # Use the appropriate installation method
+    case $INSTALL_METHOD in
+        "global")
+            print_step "Installing AITER globally..."
+            # Use trap to handle SIGPIPE and other signals
+            trap 'print_warning "Installation interrupted, trying alternative method..."; break' SIGPIPE SIGINT SIGTERM
 
-        # Try different installation methods
-        set +e  # Don't exit on error
-        uv pip install -e . --no-build-isolation
-        install_result=$?
-
-        if [ $install_result -ne 0 ]; then
-            print_warning "First installation attempt failed, trying without build isolation..."
-            uv pip install -e .
+            # Try different installation methods
+            set +e  # Don't exit on error
+            python3 -m pip install --break-system-packages -e . --no-build-isolation
             install_result=$?
-        fi
 
-        if [ $install_result -ne 0 ]; then
-            print_warning "Second installation attempt failed, trying with --no-deps..."
-            uv pip install -e . --no-deps
+            if [ $install_result -ne 0 ]; then
+                print_warning "First installation attempt failed, trying without build isolation..."
+                python3 -m pip install --break-system-packages -e .
+                install_result=$?
+            fi
+
+            if [ $install_result -ne 0 ]; then
+                print_warning "Second installation attempt failed, trying with --no-deps..."
+                python3 -m pip install --break-system-packages -e . --no-deps
+                install_result=$?
+            fi
+            set -e  # Return to normal error handling
+            trap - SIGPIPE SIGINT SIGTERM  # Reset trap
+            ;;
+        "venv")
+            print_step "Installing AITER in virtual environment..."
+            # Use trap to handle SIGPIPE and other signals
+            trap 'print_warning "Installation interrupted, trying alternative method..."; break' SIGPIPE SIGINT SIGTERM
+
+            # Try different installation methods
+            set +e  # Don't exit on error
+            uv pip install -e . --no-build-isolation
             install_result=$?
-        fi
-        set -e  # Return to normal error handling
-        trap - SIGPIPE SIGINT SIGTERM  # Reset trap
-    else
-        print_step "Using pip to install AITER..."
-        # Use trap to handle SIGPIPE and other signals
-        trap 'print_warning "Installation interrupted, trying alternative method..."; break' SIGPIPE SIGINT SIGTERM
 
-        # Try different installation methods
-        set +e  # Don't exit on error
-        python3 -m pip install -e . --no-build-isolation
-        install_result=$?
+            if [ $install_result -ne 0 ]; then
+                print_warning "First installation attempt failed, trying without build isolation..."
+                uv pip install -e .
+                install_result=$?
+            fi
 
-        if [ $install_result -ne 0 ]; then
-            print_warning "First installation attempt failed, trying without build isolation..."
-            python3 -m pip install -e .
+            if [ $install_result -ne 0 ]; then
+                print_warning "Second installation attempt failed, trying with --no-deps..."
+                uv pip install -e . --no-deps
+                install_result=$?
+            fi
+            set -e  # Return to normal error handling
+            trap - SIGPIPE SIGINT SIGTERM  # Reset trap
+            ;;
+        "auto")
+            print_step "Installing AITER with auto-detection..."
+            # Use trap to handle SIGPIPE and other signals
+            trap 'print_warning "Installation interrupted, trying alternative method..."; break' SIGPIPE SIGINT SIGTERM
+
+            # Try different installation methods
+            set +e  # Don't exit on error
+            uv_pip_install -e . --no-build-isolation
             install_result=$?
-        fi
 
-        if [ $install_result -ne 0 ]; then
-            print_warning "Second installation attempt failed, trying with --no-deps..."
-            python3 -m pip install -e . --no-deps
-            install_result=$?
-        fi
-        set -e  # Return to normal error handling
-        trap - SIGPIPE SIGINT SIGTERM  # Reset trap
-    fi
+            if [ $install_result -ne 0 ]; then
+                print_warning "First installation attempt failed, trying without build isolation..."
+                uv_pip_install -e .
+                install_result=$?
+            fi
+
+            if [ $install_result -ne 0 ]; then
+                print_warning "Second installation attempt failed, trying with --no-deps..."
+                uv_pip_install -e . --no-deps
+                install_result=$?
+            fi
+            set -e  # Return to normal error handling
+            trap - SIGPIPE SIGINT SIGTERM  # Reset trap
+            ;;
+    esac
 
     if [ $install_result -ne 0 ]; then
         print_error "Failed to install AITER after multiple attempts"
@@ -842,8 +1387,11 @@ EOF
     # Add a small delay to ensure the installation is complete
     sleep 2
 
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${AITER_VENV_PYTHON:-python3}
+
     # Force Python to reload modules
-    python3 -c "import importlib; import sys; [sys.modules.pop(m, None) for m in list(sys.modules.keys()) if m.startswith('aiter')]" &>/dev/null
+    $PYTHON_CMD -c "import importlib; import sys; [sys.modules.pop(m, None) for m in list(sys.modules.keys()) if m.startswith('aiter')]" &>/dev/null
 
     # Create a comprehensive test file to verify functionality with RDNA 3 GPUs
     print_step "Creating a comprehensive test file..."
@@ -1220,7 +1768,7 @@ EOF
     # Use timeout command if available, but still capture and display output
     if command_exists timeout; then
         # Run with timeout but still show output
-        timeout 60s python3 /tmp/test_aiter.py > "$test_pipe" 2>&1 &
+        timeout 60s $PYTHON_CMD /tmp/test_aiter.py > "$test_pipe" 2>&1 &
         test_pid=$!
 
         # Show a progress indicator while test is running
@@ -1306,7 +1854,7 @@ EOF
         fi
     else
         # If timeout command is not available, run with our own timeout mechanism
-        python3 /tmp/test_aiter.py > "$test_pipe" 2>&1 &
+        $PYTHON_CMD /tmp/test_aiter.py > "$test_pipe" 2>&1 &
         test_pid=$!
 
         # Show a progress indicator while test is running
@@ -1553,17 +2101,40 @@ EOF
     # Provide a helpful usage example
     echo
     echo -e "${CYAN}${BOLD}Quick Start Example:${RESET}"
-    echo -e "${GREEN}python3 -c \"import torch; import aiter; print('AITER is working with PyTorch', torch.__version__)\"${RESET}"
+    if [ -n "$AITER_VENV_PYTHON" ]; then
+        echo -e "${GREEN}source ./aiter_rocm_venv/bin/activate${RESET}"
+        echo -e "${GREEN}python -c \"import torch; import aiter; print('AITER is working with PyTorch', torch.__version__)\"${RESET}"
+    else
+        echo -e "${GREEN}python3 -c \"import torch; import aiter; print('AITER is working with PyTorch', torch.__version__)\"${RESET}"
+    fi
     echo
 
     # Verify the installation one last time with a simple import test
-    if python3 -c "import aiter; print('✓ AITER is properly installed')" 2>/dev/null; then
+    if $PYTHON_CMD -c "import aiter; print('✓ AITER is properly installed')" 2>/dev/null; then
         echo -e "${GREEN}✓ Verified AITER is properly installed and importable${RESET}"
     else
         echo -e "${YELLOW}⚠ AITER may not be properly installed. Please check the installation logs.${RESET}"
     fi
 
     echo
+    echo -e "${YELLOW}${BOLD}Note:${RESET} ${YELLOW}ROCm environment variables are set for this session.${RESET}"
+    echo -e "${YELLOW}For future sessions, you may need to run:${RESET}"
+
+    # Output the actual environment variables that were set
+    echo -e "${GREEN}export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\"${RESET}"
+    echo -e "${GREEN}export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\"${RESET}"
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo -e "${GREEN}export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\"${RESET}"
+    fi
+    echo -e "${GREEN}export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\"${RESET}"
+    echo -e "${GREEN}export ROCM_PATH=\"$ROCM_PATH\"${RESET}"
+    echo -e "${GREEN}export PATH=\"$PATH\"${RESET}"
+    echo -e "${GREEN}export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\"${RESET}"
+    echo
+    echo -e "${CYAN}${BOLD}To apply these settings to your current shell, run:${RESET}"
+    echo -e "${GREEN}eval \"\$(./install_aiter.sh --show-env)\"${RESET}"
+    echo
+
     echo -e "${GREEN}${BOLD}Returning to main menu in 3 seconds...${RESET}"
     sleep 3
 

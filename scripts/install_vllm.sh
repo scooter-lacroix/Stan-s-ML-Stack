@@ -19,6 +19,176 @@
 # Date: $(date +"%Y-%m-%d")
 # =============================================================================
 
+# ASCII Art Banner
+cat << "EOF"
+
+██╗   ██╗██╗     ██╗     ███╗   ███╗    ███████╗ ██████╗ ██████╗     █████╗ ███╗   ███╗██████╗
+██║   ██║██║     ██║     ████╗ ████║    ██╔════╝██╔═══██╗██╔══██╗   ██╔══██╗████╗ ████║██╔══██╗
+██║   ██║██║     ██║     ██╔████╔██║    █████╗  ██║   ██║██████╔╝   ███████║██╔████╔██║██║  ██║
+╚██╗ ██╔╝██║     ██║     ██║╚██╔╝██║    ██╔══╝  ██║   ██║██╔══██╗   ██╔══██║██║╚██╔╝██║██║  ██║
+ ╚████╔╝ ███████╗███████╗██║ ╚═╝ ██║    ██║     ╚██████╔╝██║  ██║   ██║  ██║██║ ╚═╝ ██║██████╔╝
+  ╚═══╝  ╚══════╝╚══════╝╚═╝     ╚═╝    ╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝  ╚═╝╚═╝     ╚═╝╚═════╝
+
+EOF
+echo
+
+# Check if terminal supports colors
+if [ -t 1 ]; then
+    # Check if NO_COLOR environment variable is set
+    if [ -z "$NO_COLOR" ]; then
+        # Terminal supports colors
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[0;33m'
+        BLUE='\033[0;34m'
+        MAGENTA='\033[0;35m'
+        CYAN='\033[0;36m'
+        BOLD='\033[1m'
+        UNDERLINE='\033[4m'
+        BLINK='\033[5m'
+        REVERSE='\033[7m'
+        RESET='\033[0m'
+    else
+        # NO_COLOR is set, don't use colors
+        RED=''
+        GREEN=''
+        YELLOW=''
+        BLUE=''
+        MAGENTA=''
+        CYAN=''
+        BOLD=''
+        UNDERLINE=''
+        BLINK=''
+        REVERSE=''
+        RESET=''
+    fi
+else
+    # Not a terminal, don't use colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    MAGENTA=''
+    CYAN=''
+    BOLD=''
+    UNDERLINE=''
+    BLINK=''
+    REVERSE=''
+    RESET=''
+fi
+
+# Function definitions
+print_header() {
+    echo
+    echo "╔═════════════════════════════════════════════════════════╗"
+    echo "║                                                         ║"
+    echo "║               === $1 ===               ║"
+    echo "║                                                         ║"
+    echo "╚═════════════════════════════════════════════════════════╝"
+    echo
+}
+
+print_section() {
+    echo
+    echo "┌─────────────────────────────────────────────────────────┐"
+    echo "│ $1"
+    echo "└─────────────────────────────────────────────────────────┘"
+}
+
+print_step() {
+    echo "➤ $1"
+}
+
+print_success() {
+    echo "✓ $1"
+}
+
+print_warning() {
+    echo "⚠ $1"
+}
+
+print_error() {
+    echo "✗ $1"
+}
+
+# Function to print a clean separator line
+print_separator() {
+    echo "───────────────────────────────────────────────────────────"
+}
+
+# Function to check if command exists
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Function to check if Python package is installed
+package_installed() {
+    python3 -c "import $1" &>/dev/null
+}
+
+# Function to detect package manager
+detect_package_manager() {
+    if command_exists dnf; then
+        echo "dnf"
+    elif command_exists apt-get; then
+        echo "apt"
+    elif command_exists yum; then
+        echo "yum"
+    elif command_exists pacman; then
+        echo "pacman"
+    elif command_exists zypper; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+# Function to use uv or pip for Python packages
+install_python_package() {
+    local package="$1"
+    shift
+    local extra_args="$@"
+
+    if command_exists uv; then
+        print_step "Installing $package with uv..."
+        uv pip install --python $(which python3) $extra_args "$package"
+    else
+        print_step "Installing $package with pip..."
+        python3 -m pip install $extra_args "$package"
+    fi
+}
+
+# Function to show environment variables
+show_env() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
 set -e  # Exit on error
 
 # Trap to ensure we exit properly
@@ -38,16 +208,6 @@ LOG_FILE="$LOG_DIR/vllm_install_$(date +"%Y%m%d_%H%M%S").log"
 # Function to log messages
 log() {
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
-}
-
-# Function to check if command exists
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# Function to check if Python package is installed
-package_installed() {
-    python3 -c "import $1" &>/dev/null
 }
 
 # Function to check and install system sentencepiece if needed
@@ -171,50 +331,156 @@ fix_ninja_detection() {
     fi
 }
 
-# Check for required dependencies
-log "Checking dependencies..."
-# Fix ninja-build detection
-fix_ninja_detection
-DEPS=("git" "python3" "pip" "cmake" "ninja-build")
-MISSING_DEPS=()
+# Main installation function
+install_vllm() {
+    print_header "vLLM Installation for AMD GPUs"
 
-for dep in "${DEPS[@]}"; do
-    if ! command_exists $dep; then
-        MISSING_DEPS+=("$dep")
+    # Check if vLLM is already installed
+    # Use venv Python if available, otherwise system python3
+    PYTHON_CMD=${VLLM_VENV_PYTHON:-python3}
+
+    if $PYTHON_CMD -c "import vllm" &>/dev/null; then
+        vllm_version=$($PYTHON_CMD -c "import vllm; print(getattr(vllm, '__version__', 'Unknown'))" 2>/dev/null)
+
+        # Check if --force flag is provided
+        if [[ "$*" == *"--force"* ]] || [[ "$VLLM_REINSTALL" == "true" ]]; then
+            print_warning "Force reinstall requested - proceeding with reinstallation"
+            print_step "Will reinstall vLLM despite working installation"
+        else
+            print_success "vLLM is already installed (version: $vllm_version)"
+            print_step "vLLM installation is complete. Use --force to reinstall anyway."
+            return 0
+        fi
     fi
-done
 
-if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    log "Missing dependencies: ${MISSING_DEPS[*]}"
-    log "Please install them and run this script again."
-    exit 1
-fi
+    # Check if ROCm is installed
+    print_section "Checking ROCm Installation"
 
-# Create installation directory
-INSTALL_DIR="$ML_STACK_DIR/vllm_build"
-mkdir -p $INSTALL_DIR
-cd $INSTALL_DIR
+    if command_exists rocminfo; then
+        print_success "rocminfo found"
 
-# Set environment variables for AMD GPUs  
-# Detect actual ROCm installation path
-if [ -d "/opt/rocm" ]; then
-    export ROCM_PATH="/opt/rocm"
-elif [ -f "/usr/bin/hipcc" ]; then
-    export ROCM_PATH="/usr"
-    log "ROCm detected in system path (/usr)"
-else
-    export ROCM_PATH="/opt/rocm"  # fallback
-fi
+        # Set up ROCm environment variables
+        print_step "Setting up ROCm environment variables..."
+        export HSA_OVERRIDE_GFX_VERSION=11.0.0
+        export PYTORCH_ROCM_ARCH="gfx1100"
+        export ROCM_PATH="/opt/rocm"
+        export PATH="/opt/rocm/bin:$PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
 
-# Ensure CUDA_VISIBLE_DEVICES matches HIP_VISIBLE_DEVICES for vLLM compatibility
-if [ -n "$HIP_VISIBLE_DEVICES" ] && [ -z "$CUDA_VISIBLE_DEVICES" ]; then
-    export CUDA_VISIBLE_DEVICES="$HIP_VISIBLE_DEVICES"
-    log "Set CUDA_VISIBLE_DEVICES to match HIP_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
-fi
+        # Set HSA_TOOLS_LIB if rocprofiler library exists
+        if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+            export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+            print_step "ROCm profiler library found and configured"
+        else
+            # Check if we can install rocprofiler
+            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                sudo apt-get update && sudo apt-get install -y rocprofiler
+                if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                    print_success "ROCm profiler installed and configured"
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler installation failed, disabling HSA tools"
+                fi
+            else
+                export HSA_TOOLS_LIB=0
+                print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+            fi
+        fi
 
-# Note: HIP_VISIBLE_DEVICES is already set above based on original environment variables
-export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
-export AMD_LOG_LEVEL=0
+        # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
+        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+            unset PYTORCH_CUDA_ALLOC_CONF
+            print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+        fi
+
+        print_success "ROCm environment variables configured"
+    else
+        print_step "rocminfo not found in PATH, checking for ROCm installation..."
+        if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+            print_step "ROCm directory found, attempting to install rocminfo..."
+            package_manager=$(detect_package_manager)
+            case $package_manager in
+                apt)
+                    sudo apt update && sudo apt install -y rocminfo
+                    ;;
+                dnf)
+                    sudo dnf install -y rocminfo
+                    ;;
+                yum)
+                    sudo yum install -y rocminfo
+                    ;;
+                pacman)
+                    sudo pacman -S rocminfo
+                    ;;
+                zypper)
+                    sudo zypper install -y rocminfo
+                    ;;
+                *)
+                    print_error "Unsupported package manager: $package_manager"
+                    return 1
+                    ;;
+            esac
+            if command_exists rocminfo; then
+                print_success "Installed rocminfo"
+            else
+                print_error "Failed to install rocminfo"
+                return 1
+            fi
+        else
+            print_error "ROCm is not installed. Please install ROCm first."
+            return 1
+        fi
+    fi
+
+    # Detect ROCm version
+    rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    fi
+
+    if [ -z "$rocm_version" ]; then
+        print_warning "Could not detect ROCm version, using default version 6.4.0"
+        rocm_version="6.4.0"
+    else
+        print_success "Detected ROCm version: $rocm_version"
+    fi
+
+    # Check for required dependencies
+    print_section "Checking Dependencies"
+    # Fix ninja-build detection
+    fix_ninja_detection
+    DEPS=("git" "python3" "pip" "cmake" "ninja-build")
+    MISSING_DEPS=()
+
+    for dep in "${DEPS[@]}"; do
+        if ! command_exists $dep; then
+            MISSING_DEPS+=("$dep")
+        fi
+    done
+
+    if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
+        print_error "Missing dependencies: ${MISSING_DEPS[*]}"
+        print_step "Please install them and run this script again."
+        return 1
+    fi
+
+    # Create installation directory
+    INSTALL_DIR="$ML_STACK_DIR/vllm_build"
+    mkdir -p $INSTALL_DIR
+    cd $INSTALL_DIR
+
+    # Ensure CUDA_VISIBLE_DEVICES matches HIP_VISIBLE_DEVICES for vLLM compatibility
+    if [ -n "$HIP_VISIBLE_DEVICES" ] && [ -z "$CUDA_VISIBLE_DEVICES" ]; then
+        export CUDA_VISIBLE_DEVICES="$HIP_VISIBLE_DEVICES"
+        log "Set CUDA_VISIBLE_DEVICES to match HIP_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+    fi
+
+    # Note: HIP_VISIBLE_DEVICES is already set above based on original environment variables
+    export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
+    export AMD_LOG_LEVEL=0
 
 # Create nvcc compatibility layer if needed
 if ! command -v nvcc >/dev/null 2>&1; then
@@ -272,6 +538,113 @@ source "$SCRIPT_DIR/package_manager_utils.sh"
 # Ensure uv is installed
 ensure_uv_installed
 
+# Ask user for installation preference
+echo
+echo -e "${CYAN}${BOLD}vLLM Installation Options:${RESET}"
+echo "1) Global installation (recommended for system-wide use)"
+echo "2) Virtual environment (isolated installation)"
+echo "3) Auto-detect (try global, fallback to venv if needed)"
+echo
+read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+
+case $INSTALL_CHOICE in
+    1)
+        INSTALL_METHOD="global"
+        print_step "Using global installation method"
+        ;;
+    2)
+        INSTALL_METHOD="venv"
+        print_step "Using virtual environment method"
+        ;;
+    3|*)
+        INSTALL_METHOD="auto"
+        print_step "Using auto-detect method"
+        ;;
+esac
+
+# Create a function to handle uv commands properly with venv fallback
+uv_pip_install() {
+    local args="$@"
+
+    # Check if uv is available as a command
+    if command_exists uv; then
+        case $INSTALL_METHOD in
+            "global")
+                print_step "Installing globally with pip..."
+                python3 -m pip install --break-system-packages $args
+                VLLM_VENV_PYTHON=""
+                ;;
+            "venv")
+                print_step "Creating uv virtual environment..."
+                VENV_DIR="./vllm_rocm_venv"
+                if [ ! -d "$VENV_DIR" ]; then
+                    uv venv "$VENV_DIR"
+                fi
+                source "$VENV_DIR/bin/activate"
+                print_step "Installing in virtual environment..."
+                uv pip install $args
+                VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
+                print_success "Installed in virtual environment: $VENV_DIR"
+                ;;
+            "auto")
+                # Try global install first
+                print_step "Attempting global installation with uv..."
+                local install_output
+                install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                local install_exit_code=$?
+
+                if echo "$install_output" | grep -q "externally managed"; then
+                    print_warning "Global installation failed due to externally managed environment"
+                    print_step "Creating uv virtual environment for installation..."
+
+                    # Create uv venv in project directory
+                    VENV_DIR="./vllm_rocm_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+
+                    # Activate venv and install
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+
+                    # Store venv path for verification
+                    VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                elif [ $install_exit_code -eq 0 ]; then
+                    print_success "Global installation successful"
+                    VLLM_VENV_PYTHON=""
+                else
+                    print_error "Global installation failed with unknown error:"
+                    echo "$install_output"
+                    print_step "Falling back to virtual environment..."
+
+                    # Create uv venv in project directory
+                    VENV_DIR="./vllm_rocm_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        uv venv "$VENV_DIR"
+                    fi
+
+                    # Activate venv and install
+                    source "$VENV_DIR/bin/activate"
+                    print_step "Installing in virtual environment..."
+                    uv pip install $args
+
+                    # Store venv path for verification
+                    VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                fi
+                ;;
+        esac
+    else
+        # Fall back to pip
+        print_step "Installing with pip..."
+        python3 -m pip install $args
+        VLLM_VENV_PYTHON=""
+    fi
+}
+
 # Check if PyTorch is already installed
 if package_installed "torch"; then
     PYTORCH_VERSION=$(get_package_version "torch")
@@ -291,10 +664,10 @@ else
 fi
 
 # Install Python dependencies
-log "Installing Python dependencies..."
-uv pip install --upgrade pip setuptools wheel ninja pybind11 cmake packaging
-log "Installing additional required dependencies..."
-uv pip install aioprometheus ray psutil huggingface_hub tokenizers
+print_section "Installing Python Dependencies"
+uv_pip_install --upgrade pip setuptools wheel ninja pybind11 cmake packaging
+print_step "Installing additional required dependencies..."
+uv_pip_install aioprometheus ray psutil huggingface_hub tokenizers
 
 # Create CUDA compatibility layer for AMD GPUs
 log "Creating CUDA compatibility layer for AMD GPUs..."
@@ -323,11 +696,11 @@ for dep in "torch" "transformers" "aioprometheus" "ray" "psutil" "huggingface_hu
 done
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    log "Missing dependencies: ${MISSING_DEPS[*]}"
-    log "Installing missing dependencies..."
+    print_error "Missing dependencies: ${MISSING_DEPS[*]}"
+    print_step "Installing missing dependencies..."
     for dep in "${MISSING_DEPS[@]}"; do
-        log "Installing $dep..."
-        uv pip install "$dep"
+        print_step "Installing $dep..."
+        uv_pip_install "$dep"
     done
 fi
 
@@ -530,8 +903,8 @@ setup(
 EOF
 
             # Install with custom setup.py
-            log "Installing vLLM with custom setup.py for Python 3.12..."
-            SKIP_CUDA_BUILD=1 FORCE_CMAKE=1 uv pip install -e . --no-build-isolation
+            print_step "Installing vLLM with custom setup.py for Python 3.12..."
+            SKIP_CUDA_BUILD=1 FORCE_CMAKE=1 uv_pip_install -e . --no-build-isolation
         else
             # For Python 3.11 and below, use normal installation
             log "Using Python $PYTHON_VERSION, installing with standard approach..."
@@ -1676,7 +2049,71 @@ https://docs.ray.io/en/latest/ray-core/gpu-support.html
 You can also use the provided helper script to run vLLM with the correct environment variables:
 $ /home/stan/Prod/Stan-s-ML-Stack/scripts/run_vllm.sh python3 your_script.py
 EOF
-
 log "Created usage notes at $INSTALL_DIR/VLLM_USAGE_NOTES.txt"
 
+# Parse command line arguments
+DRY_RUN=false
+FORCE=false
+SHOW_ENV=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=true
+            print_warning "DRY RUN MODE: No actual installation will be performed"
+            ;;
+        --force)
+            FORCE=true
+            print_warning "FORCE MODE: Will reinstall even if vLLM is already installed"
+            ;;
+        --show-env)
+            SHOW_ENV=true
+            ;;
+        --help|-h)
+            echo "vLLM Installation Script for AMD GPUs"
+            echo ""
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --dry-run     Show what would be done without actually installing"
+            echo "  --force       Force reinstallation even if vLLM is already installed"
+            echo "  --show-env    Show recommended environment variables"
+            echo "  --help, -h    Show this help message"
+            echo ""
+            exit 0
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# Handle show-env option
+if [[ "$SHOW_ENV" == "true" ]]; then
+    show_env
+    exit 0
+fi
+
+# Run the installation function
+if [[ "$DRY_RUN" == "true" ]]; then
+    print_header "DRY RUN MODE"
+    print_warning "This is a dry run - no actual installation will be performed"
+    print_step "Would check if vLLM is already installed"
+    print_step "Would set up ROCm environment variables"
+    print_step "Would install dependencies"
+    print_step "Would clone and build vLLM from source"
+    print_step "Would verify installation"
+    print_success "Dry run completed successfully"
+    exit 0
+fi
+
+# Run the installation function with force flag if specified
+if [[ "$FORCE" == "true" ]]; then
+    VLLM_REINSTALL=true
+fi
+
+install_vllm "$@"
 
