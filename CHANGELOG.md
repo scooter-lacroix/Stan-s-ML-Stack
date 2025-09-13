@@ -49,7 +49,7 @@ All notable changes to Stan's ML Stack will be documented in this file.
 - Fixed UI refresh issues and input responsiveness problems
 - Improved handling of long-running operations
 
-## [0.1.2] - 2024-06-01 (Sotapanna)
+## [0.1.2] - 2024-06-01 (Magga)
 
 ### Added
 - Support for AMD Radeon RX 7700 XT
