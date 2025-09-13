@@ -9,7 +9,6 @@ The following backup and archive files are stored here:
 - `install_vllm.sh.bak` - Backup of VLLM installation script
 - `install_ml_stack_extensions.sh.bak` - Backup of ML Stack extensions installer
 - `verify_and_build.sh.bak` - Backup of verification and build script
-- `integration_test_report_20250913_005712.txt` - Integration test report from 2025-09-13
 
 ## Purpose
 
