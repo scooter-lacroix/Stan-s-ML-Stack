@@ -503,9 +503,13 @@ fi
 
 # Verify RCCL
 print_section "Verifying RCCL"
-if [ -f "/opt/rocm/lib/librccl.so" ]; then
+if [ -f "/usr/lib/x86_64-linux-gnu/librccl.so" ] || [ -f "/opt/rocm/lib/librccl.so" ]; then
     print_success "RCCL is installed"
-    rccl_path=$(ls -la /opt/rocm/lib/librccl.so)
+    if [ -f "/usr/lib/x86_64-linux-gnu/librccl.so" ]; then
+        rccl_path=$(ls -la /usr/lib/x86_64-linux-gnu/librccl.so)
+    else
+        rccl_path=$(ls -la /opt/rocm/lib/librccl.so)
+    fi
     print_step "RCCL path: $rccl_path"
 else
     print_error "RCCL is not installed."
@@ -675,7 +679,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
         echo -e "- Flash Attention: ${RED}Not installed${RESET}"
     fi
 
-    echo -e "- RCCL: $([ -f "/opt/rocm/lib/librccl.so" ] && echo -e "${GREEN}Installed${RESET}" || echo -e "${RED}Not installed${RESET}")"
+    echo -e "- RCCL: $([ -f "/usr/lib/x86_64-linux-gnu/librccl.so" ] || [ -f "/opt/rocm/lib/librccl.so" ] && echo -e "${GREEN}Installed${RESET}" || echo -e "${RED}Not installed${RESET}")"
     echo -e "- MPI: $(command_exists mpirun && echo -e "${GREEN}Installed${RESET}" || echo -e "${RED}Not installed${RESET}")"
 
     # Check Megatron-LM with fallback
@@ -743,7 +747,7 @@ else
         echo "- Flash Attention: Not installed"
     fi
 
-    echo "- RCCL: $([ -f "/opt/rocm/lib/librccl.so" ] && echo "Installed" || echo "Not installed")"
+    echo "- RCCL: $([ -f "/usr/lib/x86_64-linux-gnu/librccl.so" ] || [ -f "/opt/rocm/lib/librccl.so" ] && echo "Installed" || echo "Not installed")"
     echo "- MPI: $(command_exists mpirun && echo "Installed" || echo "Not installed")"
 
     # Check Megatron-LM with fallback

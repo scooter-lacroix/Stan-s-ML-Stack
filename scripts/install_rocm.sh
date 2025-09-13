@@ -362,12 +362,32 @@ install_rocm() {
             if [[ "$*" == *"--force"* ]]; then
                 print_warning "Force reinstall requested - proceeding with reinstallation"
             else
-                read -p "Do you want to reinstall? (y/n) " -n 1 -r
                 echo
-                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                    print_step "Skipping ROCm installation"
-                    return 0
-                fi
+                echo -e "${CYAN}${BOLD}ROCm is already installed. What would you like to do?${RESET}"
+                echo "1) Skip installation"
+                echo "2) Reinstall ROCm"
+                echo "3) Install additional components only"
+                echo
+                read -p "Choose option (1-3) [1]: " REINSTALL_CHOICE
+                REINSTALL_CHOICE=${REINSTALL_CHOICE:-1}
+
+                case $REINSTALL_CHOICE in
+                    1)
+                        print_step "Skipping ROCm installation"
+                        return 0
+                        ;;
+                    2)
+                        print_warning "Proceeding with ROCm reinstallation"
+                        ;;
+                    3)
+                        print_step "Installing additional components only"
+                        INSTALL_ADDITIONAL=true
+                        ;;
+                    *)
+                        print_step "Skipping ROCm installation"
+                        return 0
+                        ;;
+                esac
             fi
         fi
     fi
@@ -457,39 +477,45 @@ install_rocm() {
     fi
     
     # Choose installation method
-    print_section "Installation Options"
-    echo
-    echo -e "${CYAN}${BOLD}ROCm Installation Methods:${RESET}"
-    echo "1) Standard installation (ROCm runtime + basic tools)"
-    echo "2) Minimal installation (ROCm runtime only)"
-    echo "3) Full installation (ROCm + development tools + libraries)"
-    echo "4) Custom installation (select specific components)"
-    echo
-    read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
-    INSTALL_METHOD=${INSTALL_METHOD:-1}
+    if [ "$INSTALL_ADDITIONAL" = true ]; then
+        print_section "Additional Components Installation"
+        INSTALL_TYPE="additional"
+        print_step "Installing additional components only"
+    else
+        print_section "Installation Options"
+        echo
+        echo -e "${CYAN}${BOLD}ROCm Installation Methods:${RESET}"
+        echo "1) Standard installation (ROCm runtime + basic tools)"
+        echo "2) Minimal installation (ROCm runtime only)"
+        echo "3) Full installation (ROCm + development tools + libraries)"
+        echo "4) Custom installation (select specific components)"
+        echo
+        read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
+        INSTALL_METHOD=${INSTALL_METHOD:-1}
 
-    case $INSTALL_METHOD in
-        1)
-            INSTALL_TYPE="standard"
-            print_step "Using standard installation method"
-            ;;
-        2)
-            INSTALL_TYPE="minimal"
-            print_step "Using minimal installation method"
-            ;;
-        3)
-            INSTALL_TYPE="full"
-            print_step "Using full installation method"
-            ;;
-        4)
-            INSTALL_TYPE="custom"
-            print_step "Using custom installation method"
-            ;;
-        *)
-            INSTALL_TYPE="standard"
-            print_step "Using default standard installation method"
-            ;;
-    esac
+        case $INSTALL_METHOD in
+            1)
+                INSTALL_TYPE="standard"
+                print_step "Using standard installation method"
+                ;;
+            2)
+                INSTALL_TYPE="minimal"
+                print_step "Using minimal installation method"
+                ;;
+            3)
+                INSTALL_TYPE="full"
+                print_step "Using full installation method"
+                ;;
+            4)
+                INSTALL_TYPE="custom"
+                print_step "Using custom installation method"
+                ;;
+            *)
+                INSTALL_TYPE="standard"
+                print_step "Using default standard installation method"
+                ;;
+        esac
+    fi
 
     echo
     echo -e "${CYAN}${BOLD}Virtual Environment Options:${RESET}"
@@ -525,59 +551,61 @@ install_rocm() {
             ;;
     esac
 
-    # Download and install amdgpu-install package
-    print_section "Installing ROCm"
+    # Download and install amdgpu-install package (skip for additional components)
+    if [ "$INSTALL_ADDITIONAL" != true ]; then
+        print_section "Installing ROCm"
 
-    # Use the latest version (6.4.60400-1)
-    if [ "$DRY_RUN" != true ]; then
-        retry_command "wget -q https://repo.radeon.com/amdgpu-install/6.4/$repo/$ubuntu_codename/amdgpu-install_6.4.60400-1_all.deb" 3 2
-        if [ $? -ne 0 ]; then
-            print_error "Failed to download amdgpu-install package after retries"
-            return 1
+        # Use the latest version (6.4.60400-1)
+        if [ "$DRY_RUN" != true ]; then
+            retry_command "wget -q https://repo.radeon.com/amdgpu-install/6.4/$repo/$ubuntu_codename/amdgpu-install_6.4.60400-1_all.deb" 3 2
+            if [ $? -ne 0 ]; then
+                print_error "Failed to download amdgpu-install package after retries"
+                return 1
+            fi
+            print_success "Downloaded amdgpu-install package"
+        else
+            execute_command "wget -q https://repo.radeon.com/amdgpu-install/6.4/$repo/$ubuntu_codename/amdgpu-install_6.4.60400-1_all.deb" "Downloading amdgpu-install package..."
         fi
-        print_success "Downloaded amdgpu-install package"
-    else
-        execute_command "wget -q https://repo.radeon.com/amdgpu-install/6.4/$repo/$ubuntu_codename/amdgpu-install_6.4.60400-1_all.deb" "Downloading amdgpu-install package..."
-    fi
 
-    # Install the package
-    execute_command "sudo apt install -y ./amdgpu-install_6.4.60400-1_all.deb" "Installing amdgpu-install package..."
+        # Install the package
+        execute_command "sudo apt install -y ./amdgpu-install_6.4.60400-1_all.deb" "Installing amdgpu-install package..."
 
-    if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
-        print_error "Failed to install amdgpu-install package"
-        return 1
-    elif [ "$DRY_RUN" != true ]; then
-        print_success "Installed amdgpu-install package"
-    fi
-    
-    # Update package lists
-    print_step "Updating package lists..."
-    sudo apt update
-    
-    if [ $? -ne 0 ]; then
-        print_warning "Failed to update package lists, continuing anyway"
-    else
-        print_success "Updated package lists"
-    fi
-    
-    # Install prerequisites
-    print_step "Installing prerequisites..."
-    sudo apt install -y python3-setuptools python3-wheel
-    
-    if [ $? -ne 0 ]; then
-        print_warning "Failed to install some prerequisites, continuing anyway"
-    else
-        print_success "Installed prerequisites"
-    fi
-    
-    # Add user to render and video groups
-    print_step "Adding user to render and video groups..."
-    sudo usermod -a -G render,video $LOGNAME
-    
-    if [ $? -ne 0 ]; then
-        print_warning "Failed to add user to groups, continuing anyway"
-    else
-        print_success "Added user to render and video groups"
+        if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
+            print_error "Failed to install amdgpu-install package"
+            return 1
+        elif [ "$DRY_RUN" != true ]; then
+            print_success "Installed amdgpu-install package"
+        fi
+
+        # Update package lists
+        print_step "Updating package lists..."
+        sudo apt update
+
+        if [ $? -ne 0 ]; then
+            print_warning "Failed to update package lists, continuing anyway"
+        else
+            print_success "Updated package lists"
+        fi
+
+        # Install prerequisites
+        print_step "Installing prerequisites..."
+        sudo apt install -y python3-setuptools python3-wheel
+
+        if [ $? -ne 0 ]; then
+            print_warning "Failed to install some prerequisites, continuing anyway"
+        else
+            print_success "Installed prerequisites"
+        fi
+
+        # Add user to render and video groups
+        print_step "Adding user to render and video groups..."
+        sudo usermod -a -G render,video $LOGNAME
+
+        if [ $? -ne 0 ]; then
+            print_warning "Failed to add user to groups, continuing anyway"
+        else
+            print_success "Added user to render and video groups"
+        fi
     fi
     
     # Install ROCm based on selected method
@@ -606,6 +634,7 @@ install_rocm() {
             echo "4) rocm-libs (additional libraries)"
             echo "5) rocm-opencl (OpenCL support)"
             echo "6) rocm-hip (HIP runtime)"
+            echo "7) rccl (ROCm Communication Collectives Library)"
             echo
             read -p "Enter component numbers to install (space-separated) [2]: " COMPONENTS
             COMPONENTS=${COMPONENTS:-2}
@@ -618,6 +647,36 @@ install_rocm() {
                     4) sudo apt install -y rocm-libs ;;
                     5) sudo apt install -y rocm-opencl ;;
                     6) sudo apt install -y rocm-hip ;;
+                    7) sudo apt install -y librccl-dev librccl1 ;;
+                esac
+            done
+            ;;
+        "additional")
+            # Install additional components only
+            echo
+            echo -e "${CYAN}${BOLD}Available Additional Components:${RESET}"
+            echo "1) rocm-dev (development tools)"
+            echo "2) rocm-libs (additional libraries)"
+            echo "3) rocm-opencl (OpenCL support)"
+            echo "4) rocm-hip (HIP runtime)"
+            echo "5) rccl (ROCm Communication Collectives Library)"
+            echo "6) rocm-smi (ROCm System Management Interface)"
+            echo
+            read -p "Enter component numbers to install (space-separated) [5]: " COMPONENTS
+            COMPONENTS=${COMPONENTS:-5}
+
+            for comp in $COMPONENTS; do
+                case $comp in
+                    1) sudo apt install -y rocm-dev ;;
+                    2) sudo apt install -y rocm-libs ;;
+                    3) sudo apt install -y rocm-opencl ;;
+                    4) sudo apt install -y rocm-hip ;;
+                    5)
+                        # Install RCCL directly
+                        print_step "Installing RCCL..."
+                        sudo apt update && sudo apt install -y librccl-dev librccl1
+                        ;;
+                    6) sudo apt install -y rocm-smi ;;
                 esac
             done
             ;;

@@ -10,12 +10,11 @@ readme = "README.md"
 authors = [
     {name = "Stanley Chisango (Scooter Lacroix)", email = "scooterlacroix@gmail.com"}
 ]
-license = {text = "MIT"}
+license = "MIT"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -47,7 +46,9 @@ ml-stack-verify = "stans_ml_stack.cli.verify:main"
 ml-stack-repair = "stans_ml_stack.cli.repair:main"
 
 [tool.setuptools]
-packages = ["stans_ml_stack"]
+
+[tool.setuptools.packages.find]
+namespaces = true
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

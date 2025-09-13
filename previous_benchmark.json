@@ -1,35 +1,35 @@
 {
-  "timestamp": 1757742700.770266,
+  "timestamp": 1757787933.0384972,
   "system_benchmarks": {
     "cpu": {
-      "cpu_benchmark_time": 0.03592181205749512,
+      "cpu_benchmark_time": 0.035021066665649414,
       "cpu_count": 16,
       "cpu_count_logical": 16,
-      "cpu_freq": 4479.860500000001
+      "cpu_freq": 4664.3693125
     },
     "memory": {
-      "memory_benchmark_time": 0.04945015907287598,
-      "total_memory": 66481876992,
-      "available_memory": 43457822720
+      "memory_benchmark_time": 0.04971122741699219,
+      "total_memory": 67010248704,
+      "available_memory": 59263037440
     },
     "disk": {
-      "disk_write_time": 0.004225969314575195,
-      "disk_read_time": 0.0009646415710449219
+      "disk_write_time": 0.0034635066986083984,
+      "disk_read_time": 0.0007367134094238281
     },
     "gpu": {
       "gpu_available": true,
       "gpu_count": 2,
-      "gpu_name": "AMD Radeon RX 7800 XT"
+      "gpu_name": "Radeon RX 7900 XTX"
     }
   },
   "ml_benchmarks": {
     "matrix_multiplication": {
-      "matrix_mult_time": 6.628036499023438e-05,
+      "matrix_mult_time": 5.91278076171875e-05,
       "device": "cuda",
       "matrix_size": 1024
     },
     "convolution": {
-      "conv_time": 0.0006208419799804688,
+      "conv_time": 0.0005967617034912109,
       "device": "cuda",
       "input_shape": [
         1,
@@ -45,7 +45,7 @@
       ]
     },
     "memory_transfer": {
-      "memory_transfer_time": 1.774745225906372,
+      "memory_transfer_time": 0.8561146259307861,
       "data_size_mb": 400.0
     }
   }

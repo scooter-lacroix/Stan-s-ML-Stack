@@ -64,7 +64,6 @@ setup(
     },
     scripts=[
         "scripts/install_ml_stack_curses.py",
-        "scripts/enhanced_verify_installation.sh",
         "scripts/repair_ml_stack.sh",
         "scripts/install_rocm.sh",
         "scripts/install_pytorch_rocm.sh",
@@ -84,8 +83,6 @@ setup(
         "scripts/setup_environment.sh",
         "scripts/enhanced_setup_environment.sh",
         "scripts/verify_installation.sh",
-        "scripts/enhanced_verify_installation.sh",
-        "scripts/custom_verify_installation.sh",
         "scripts/verify_and_build.sh",
         "scripts/create_persistent_env.sh",
     ],
