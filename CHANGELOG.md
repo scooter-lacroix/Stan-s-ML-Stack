@@ -31,7 +31,7 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ### Fixed
 - **Debian Compatibility**: Resolved ROCm 7.0.0 installation issues on Debian trixie through Ubuntu package compatibility
-- **Package Availability Detection**: Fixed package availability detection for ROCm 7.0.0 across distributions
+- **Package Availability Detection**: Fixed package availability detection for ROCm 7.0.0 across distros
 - **Framework Installation Conflicts**: Resolved conflicts between ROCm 7.0.0 and existing framework installations
 - **Environment Variable Conflicts**: Fixed HSA_TOOLS_LIB and GPU architecture detection issues with ROCm 7.0.0
 - **Source Compilation Issues**: Resolved build system conflicts when compiling ROCm components from source
