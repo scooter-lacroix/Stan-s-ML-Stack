@@ -552,8 +552,39 @@ install_triton_pypi() {
         return 0
     fi
 
-    # Install Triton using the enhanced package installer
-    uv_pip_install "triton"
+    # Get ROCm version to determine appropriate Triton version
+    local rocm_version=$(detect_rocm_version)
+    local rocm_major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
+
+    # Install Triton based on ROCm version
+    if [ "$rocm_major_version" -eq 7 ]; then
+        # For ROCm 7.0, try multiple sources
+        print_step "Installing Triton for ROCm 7.0..."
+
+        # Try Triton 3.3.1 from PyPI first
+        if uv_pip_install "triton==3.3.1" 2>/dev/null; then
+            print_success "Triton 3.3.1 installed successfully!"
+        # Try from ROCm manylinux repository
+        elif uv_pip_install triton --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ 2>/dev/null; then
+            print_success "Triton installed from ROCm manylinux repository!"
+        # Try compiling from source as last resort
+        elif [ "$FORCE" = true ]; then
+            print_warning "Triton 3.3.1 not available, attempting to compile from source..."
+            print_step "This may take considerable time and requires development tools"
+            # Install build dependencies first
+            uv_pip_install cmake ninja pytest packaging wheel --upgrade
+            # Try to compile from source
+            uv_pip_install triton --no-binary triton
+        # Fallback to latest version
+        else
+            print_warning "Triton 3.3.1 not available, trying latest version..."
+            uv_pip_install "triton"
+        fi
+    else
+        # For ROCm 6.x and older, use latest available version
+        print_step "Installing latest Triton for ROCm $rocm_version..."
+        uv_pip_install "triton"
+    fi
 
     # Check if installation worked
     local python_cmd=${TRITON_VENV_PYTHON:-python3}

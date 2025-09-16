@@ -376,12 +376,12 @@ install_pytorch_rocm() {
         rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
     fi
 
-    if [ -z "$rocm_version" ]; then
-        print_warning "Could not detect ROCm version, using default version 6.4.0"
-        rocm_version="6.4.0"
-    else
-        print_success "Detected ROCm version: $rocm_version"
-    fi
+        if [ -z "$rocm_version" ]; then
+            print_warning "Could not detect ROCm version, using default version 7.0.0"
+            rocm_version="7.0.0"
+        else
+            print_success "Detected ROCm version: $rocm_version"
+        fi
 
     # Check if uv is installed
     print_section "Installing PyTorch with ROCm Support"
@@ -559,7 +559,28 @@ install_pytorch_rocm() {
     }
 
     # Use the appropriate PyTorch version based on ROCm version
-    if [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
+    if [ "$rocm_major_version" -eq 7 ]; then
+        # For ROCm 7.0+, try different sources
+        print_step "Installing PyTorch for ROCm 7.0..."
+
+        # Try PyTorch's official nightly builds first
+        if uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0 2>/dev/null; then
+            print_success "Successfully installed PyTorch nightly build for ROCm 7.0"
+        # Try ROCm's manylinux repository
+        elif uv_pip_install torch torchvision torchaudio --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ 2>/dev/null; then
+            print_success "Successfully installed PyTorch from ROCm manylinux repository"
+        # Try compiling from source as last resort
+        elif [ "$INSTALL_METHOD" != "auto" ] && [ "$FORCE" = true ]; then
+            print_warning "ROCm 7.0 PyTorch builds not available, attempting to compile from source..."
+            print_step "This may take considerable time and requires development tools"
+            # Try to install build dependencies and compile
+            uv_pip_install torch torchvision torchaudio --no-binary torch --no-binary torchvision --no-binary torchaudio
+        # Fallback to ROCm 6.4 builds if 7.0 not available
+        else
+            print_warning "ROCm 7.0 PyTorch builds not available, falling back to ROCm 6.4..."
+            uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.4
+        fi
+    elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
         # For ROCm 6.4+, use nightly builds
         print_step "Using PyTorch nightly build for ROCm 6.4..."
         uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
