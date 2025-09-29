@@ -518,6 +518,127 @@ check_mpi() {
     fi
 }
 
+# Function to build UCX with ROCm support
+build_ucx_with_rocm() {
+    print_step "Building UCX with ROCm support..."
+
+    # Create temp directory
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || return 1
+
+    # Clone UCX source
+    if ! git clone --recursive https://github.com/openucx/ucx.git; then
+        print_error "Failed to clone UCX repository"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    cd ucx || return 1
+
+    # Checkout version 1.13.x (more stable)
+    if ! git checkout v1.13.x; then
+        print_error "Failed to checkout UCX v1.13.x"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Autogen, configure and build
+    if ! ./autogen.sh; then
+        print_error "UCX autogen failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    if ! ./configure --prefix="$HOME/.local" --with-rocm="$ROCM_PATH" --without-knem --without-cuda --enable-gtest --enable-examples CFLAGS="-Wno-enum-int-mismatch -Wno-error"; then
+        print_error "UCX configure failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Build and install
+    if ! make -j$(nproc) && make install; then
+        print_error "UCX build/install failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Cleanup
+    cd - >/dev/null
+    rm -rf "$temp_dir"
+
+    return 0
+}
+
+# Function to build OpenMPI with UCX and ROCm support for GPU-aware MPI
+build_openmpi_with_ucx_rocm() {
+    print_step "Building OpenMPI with UCX and ROCm support for GPU-aware MPI..."
+
+    # Create temp directory
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || return 1
+
+    # Download OpenMPI source from official releases
+    if ! wget -q https://download.open-mpi.org/release/open-mpi/v5.0/openmpi-5.0.2.tar.bz2; then
+        print_error "Failed to download OpenMPI source"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Extract and enter directory
+    if ! tar -xf openmpi-5.0.2.tar.bz2; then
+        print_error "Failed to extract OpenMPI source"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    cd openmpi-5.0.2 || return 1
+
+    # Only run autogen if configure doesn't exist (for git builds)
+    if [ ! -f configure ]; then
+        if ! ./autogen.pl; then
+            print_error "OpenMPI autogen failed"
+            cd - >/dev/null
+            rm -rf "$temp_dir"
+            return 1
+        fi
+    fi
+
+    # Configure with UCX and ROCm support
+    if ! ./configure --prefix="$HOME/.local" --with-ucx="$HOME/.local"; then
+        print_error "OpenMPI configure failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Build and install
+    if ! make -j$(nproc) && make install; then
+        print_error "OpenMPI build/install failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Cleanup
+    cd - >/dev/null
+    rm -rf "$temp_dir"
+
+    # Set environment for GPU-aware MPI
+    export PATH="$HOME/.local/bin:$PATH"
+    export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
+
+    return 0
+}
+
 # Function to install system MPI packages
 install_system_mpi() {
     print_step "Installing system MPI packages..."
@@ -539,8 +660,12 @@ install_system_mpi() {
         fi
     elif command -v apt-get >/dev/null 2>&1; then
         print_step "Using apt-get to install OpenMPI..."
+        # Try with sudo first, fallback to direct installation if sudo fails
         if sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin; then
             print_success "System MPI packages installed with apt-get"
+            return 0
+        elif apt-get update && apt-get install -y libopenmpi-dev openmpi-bin; then
+            print_success "System MPI packages installed with apt-get (no sudo)"
             return 0
         fi
     elif command -v yum >/dev/null 2>&1; then
@@ -637,10 +762,67 @@ install_mpi4py() {
                     return 1
                 fi
             else
+                # If system package installation fails, try alternative approaches
+                print_warning "System package installation failed, trying alternatives..."
+
+                # Try to install OpenMPI with CUDA support via nix
+                if command -v nix >/dev/null 2>&1 || [ -x "/nix/var/nix/profiles/default/bin/nix" ]; then
+                    print_step "Installing OpenMPI with CUDA support via nix..."
+                    export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+                    if nix-env -iA nixpkgs.openmpi; then
+                        print_success "OpenMPI with CUDA support installed via nix"
+                        export PATH="$HOME/.nix-profile/bin:$PATH"
+                        return 0
+                    fi
+                fi
+
+                # Try to build OpenMPI with basic CUDA/ROCm support first
+                print_step "Building OpenMPI with basic CUDA/ROCm support..."
+                if build_openmpi_with_rocm; then
+                    print_success "OpenMPI built and installed with basic CUDA/ROCm support"
+                    return 0
+                fi
+
+                # If that fails, try GPU-aware MPI with UCX and ROCm support
+                print_step "Building GPU-aware MPI with UCX and ROCm support..."
+                if build_ucx_with_rocm && build_openmpi_with_ucx_rocm; then
+                    print_success "GPU-aware MPI built and installed with UCX and ROCm support"
+                    return 0
+                fi
+
+                # Fallback: Try to install OpenMPI via pip
+                print_step "Trying to install OpenMPI via pip..."
+                if python3 -m pip install --break-system-packages openmpi; then
+                    print_success "OpenMPI installed via pip"
+                    # Add pip-installed OpenMPI to PATH if it has binaries
+                    export PATH="$HOME/.local/bin:$PATH" 2>/dev/null || true
+                    return 0
+                fi
+
+                # Try to install OpenMPI via conda if available
+                if command -v conda >/dev/null 2>&1; then
+                    print_step "Trying to install OpenMPI via conda..."
+                    if conda install -c conda-forge openmpi -y; then
+                        print_success "OpenMPI installed via conda"
+                        export PATH="$(conda info --base)/envs/$(conda info --envs | grep '*' | awk '{print $1}')/bin:$PATH" 2>/dev/null || true
+                        return 0
+                    fi
+                fi
+
+                # Try installing mpi4py from conda-forge which might include MPI
+                if command -v conda >/dev/null 2>&1; then
+                    print_step "Trying to install mpi4py via conda (includes MPI)..."
+                    if conda install -c conda-forge mpi4py openmpi -y; then
+                        print_success "mpi4py and OpenMPI installed via conda"
+                        return 0
+                    fi
+                fi
+
                 print_error "Failed to install system MPI packages automatically"
                 print_step "Please install MPI manually:"
                 print_step "On Ubuntu/Debian: sudo apt-get install libopenmpi-dev openmpi-bin"
                 print_step "On CentOS/RHEL/Fedora: sudo dnf install openmpi openmpi-devel"
+                print_step "Or via conda: conda install -c conda-forge openmpi mpi4py"
                 return 1
             fi
         fi

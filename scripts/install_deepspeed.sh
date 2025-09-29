@@ -390,7 +390,13 @@ uv_pip_install() {
             "global")
                 print_step "Installing globally with pip..."
                 python3 -m pip install --break-system-packages $args
-                DEEPSPEED_VENV_PYTHON=""
+                local install_exit_code=$?
+                if [ $install_exit_code -eq 0 ]; then
+                    DEEPSPEED_VENV_PYTHON=""
+                else
+                    print_error "Global installation failed, DeepSpeed requires manual installation"
+                    return 1
+                fi
                 ;;
             "venv")
                 print_step "Creating uv virtual environment..."

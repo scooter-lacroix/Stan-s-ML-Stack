@@ -746,6 +746,9 @@ install_aiter() {
     print_section "Installing AITER"
     print_step "Creating temporary directory..."
 
+    # Store original directory
+    original_dir=$(pwd)
+
     temp_dir=$(mktemp -d)
     # Add to our tracking array for cleanup
     TEMP_DIRS+=("$temp_dir")
@@ -1319,6 +1322,15 @@ EOF
                 python3 -m pip install --break-system-packages -e . --no-deps
                 install_result=$?
             fi
+
+            if [ $install_result -ne 0 ]; then
+                print_error "All installation attempts failed"
+                set -e
+                trap - SIGPIPE SIGINT SIGTERM
+                cd "$original_dir"
+                return 1
+            fi
+
             set -e  # Return to normal error handling
             trap - SIGPIPE SIGINT SIGTERM  # Reset trap
             ;;
@@ -1343,6 +1355,15 @@ EOF
                 uv pip install -e . --no-deps
                 install_result=$?
             fi
+
+            if [ $install_result -ne 0 ]; then
+                print_error "All installation attempts failed"
+                set -e
+                trap - SIGPIPE SIGINT SIGTERM
+                cd "$original_dir"
+                return 1
+            fi
+
             set -e  # Return to normal error handling
             trap - SIGPIPE SIGINT SIGTERM  # Reset trap
             ;;
@@ -1367,6 +1388,15 @@ EOF
                 uv_pip_install -e . --no-deps
                 install_result=$?
             fi
+
+            if [ $install_result -ne 0 ]; then
+                print_error "All installation attempts failed"
+                set -e
+                trap - SIGPIPE SIGINT SIGTERM
+                cd "$original_dir"
+                return 1
+            fi
+
             set -e  # Return to normal error handling
             trap - SIGPIPE SIGINT SIGTERM  # Reset trap
             ;;

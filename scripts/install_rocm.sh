@@ -10,13 +10,16 @@
 # "Code is like humor. When you have to explain it, it's bad!" - Cory House
 #
 # =============================================================================
-# ROCm Installation Script
+# ROCm Installation Script - Updated with GPG Fix for Debian 13
 # =============================================================================
 # This script installs AMD's ROCm platform for GPU computing.
+# Fixed GPG signature verification issues on Debian Trixie (13).
+# Supports ROCm 7.0.0 with updated frameworks from manylinux repositories.
 # =============================================================================
 
-# ASCII Art Banner
-cat << "EOF"
+# ASCII Art Banner (skip if --show-env is used)
+if [[ "$*" != *"--show-env"* ]]; then
+    cat << "EOF"
   ██████╗  ██████╗  ██████╗███╗   ███╗    ██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗     
   ██╔══██╗██╔═══██╗██╔════╝████╗ ████║    ██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║     
   ██████╔╝██║   ██║██║     ██╔████╔██║    ██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║     
@@ -24,7 +27,8 @@ cat << "EOF"
   ██║  ██║╚██████╔╝╚██████╗██║ ╚═╝ ██║    ██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗
   ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚═╝     ╚═╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝
 EOF
-echo
+    echo
+fi
 
 # Check if terminal supports colors
 if [ -t 1 ]; then
@@ -162,19 +166,33 @@ detect_package_manager() {
 get_rocm_version() {
     local rocm_version=""
 
-    # Try rocminfo first
-    if command_exists rocminfo; then
+    # Method 1: Check version file first (most reliable for ROCm 7.0+)
+    if [ -f "/opt/rocm/.info/version" ]; then
+        rocm_version=$(cat /opt/rocm/.info/version 2>/dev/null | grep -o '^[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    fi
+
+    # Method 2: Try rocminfo if version file fails
+    if [ -z "$rocm_version" ] && command_exists rocminfo; then
         rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | sed -n 's/.*ROCm Version\s*:\s*\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' | head -n 1)
     fi
 
-    # Fallback to directory listing with regex
-    if [ -z "$rocm_version" ]; then
-        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    # Method 3: Check ROCm 7.0.0 directory specifically
+    if [ -z "$rocm_version" ] && [ -d "/opt/rocm-7.0.0" ]; then
+        if [ -f "/opt/rocm-7.0.0/.info/version" ]; then
+            rocm_version=$(cat /opt/rocm-7.0.0/.info/version 2>/dev/null | grep -o '^[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+        else
+            rocm_version="7.0.0"  # Assume if directory exists
+        fi
     fi
 
-    # Fallback to version file
-    if [ -z "$rocm_version" ] && [ -f "/opt/rocm/.info/version" ]; then
-        rocm_version=$(cat /opt/rocm/.info/version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    # Method 4: Check apt package version
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(dpkg -l | grep "^ii.*rocm-dev" | awk '{print $3}' | grep -o '^[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    fi
+
+    # Method 5: Directory listing fallback
+    if [ -z "$rocm_version" ]; then
+        rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | sort -V | tail -n 1)
     fi
 
     echo "$rocm_version"
@@ -238,8 +256,74 @@ detect_rocm_path() {
     echo "$rocm_path"
 }
 
-# Function to show environment variables
+# Function to verify ROCm installation
+verify_rocm_installation() {
+    local expected_version="$1"
+    
+    print_step "Verifying ROCm installation..."
+    
+    local detected_version=$(get_rocm_version)
+    local system_version=""
+    local package_version=""
+    
+    # Get system version
+    if [ -f "/opt/rocm/.info/version" ]; then
+        system_version=$(cat /opt/rocm/.info/version 2>/dev/null)
+        print_success "System ROCm version: $system_version"
+    fi
+    
+    # Get package version
+    package_version=$(dpkg -l | grep "^ii.*rocm-dev" | awk '{print $3}' | grep -o '^[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+    if [ -n "$package_version" ]; then
+        print_success "Package ROCm version: $package_version"
+    fi
+    
+    # Check PyTorch ROCm version if available
+    if command_exists python3; then
+        local pytorch_rocm=$(python3 -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'N/A')" 2>/dev/null)
+        if [ "$pytorch_rocm" != "N/A" ]; then
+            print_step "PyTorch built against ROCm: $pytorch_rocm"
+            if [[ "$pytorch_rocm" != "$system_version"* ]]; then
+                print_warning "PyTorch ROCm version ($pytorch_rocm) differs from system ROCm ($system_version)"
+                print_step "This is normal - PyTorch can run on newer ROCm versions than it was built for"
+            fi
+        fi
+    fi
+    
+    # Verify GPU detection
+    if command_exists rocminfo; then
+        local gpu_count=$(rocminfo 2>/dev/null | grep "Device Type:.*GPU" | wc -l)
+        if [ "$gpu_count" -gt 0 ]; then
+            print_success "ROCm detected $gpu_count AMD GPU(s)"
+            
+            # Show GPU architectures
+            rocminfo 2>/dev/null | grep -A 10 "Device Type:.*GPU" | grep "gfx" | while read -r line; do
+                local gfx_arch=$(echo "$line" | grep -o 'gfx[0-9]\+')
+                print_step "Detected GPU architecture: $gfx_arch"
+            done
+        else
+            print_warning "ROCm installed but no GPUs detected"
+        fi
+    fi
+    
+    return 0
+}
+
+# Function to show environment variables with ASCII art banner
 show_env() {
+    # Show ASCII art banner first
+    cat << "EOF"
+  ██████╗  ██████╗  ██████╗███╗   ███╗    ██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗     
+  ██╔══██╗██╔═══██╗██╔════╝████╗ ████║    ██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║     
+  ██████╔╝██║   ██║██║     ██╔████╔██║    ██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║     
+  ██╔══██╗██║   ██║██║     ██║╚██╔╝██║    ██║██║╚██╗██║╚════██║   ██║   ██╔══██║██║     ██║     
+  ██║  ██║╚██████╔╝╚██████╗██║ ╚═╝ ██║    ██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗
+  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝╚═╝     ╚═╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝
+EOF
+    echo
+    echo "ROCm Environment Variables:"
+    echo "=========================="
+    
     # Set up minimal ROCm environment for showing variables
     HSA_TOOLS_LIB=0
     HSA_OVERRIDE_GFX_VERSION=11.0.0
@@ -267,6 +351,107 @@ show_env() {
     echo "export ROCM_PATH=\"$ROCM_PATH\""
     echo "export PATH=\"$PATH\""
     echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Function to show environment variables without ASCII art (for eval usage)
+show_env_clean() {
+    # Set up minimal ROCm environment for showing variables
+    HSA_TOOLS_LIB=0
+    HSA_OVERRIDE_GFX_VERSION=11.0.0
+    PYTORCH_ROCM_ARCH="gfx1100"
+    ROCM_PATH="/opt/rocm"
+    PATH="/opt/rocm/bin:$PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+
+    # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    fi
+
+    # Handle PYTORCH_CUDA_ALLOC_CONF conversion
+    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    fi
+
+    echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
+    echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
+    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
+    fi
+    echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
+    echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export PATH=\"$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+# Function to setup GPG fix for Debian Trixie
+setup_gpg_fix() {
+    print_step "Setting up GPG fix for Debian Trixie..."
+
+    # Remove existing broken setup
+    execute_command "sudo rm -f /etc/apt/sources.list.d/rocm.list" "Removing existing broken ROCm repository"
+    execute_command "sudo rm -f /etc/apt/preferences.d/rocm-pin-600" "Removing existing ROCm preferences"
+    execute_command "sudo rm -f /etc/apt/keyrings/rocm.gpg" "Removing existing ROCm GPG key"
+
+    # Create apt configuration to use gpgv instead of sqv for ROCm repos
+    execute_command "sudo mkdir -p /etc/apt/apt.conf.d" "Creating apt configuration directory"
+
+    execute_command "sudo tee /etc/apt/apt.conf.d/99rocm-gpg-fix << 'EOF'
+APT::Key::gpgvcommand \"/usr/bin/gpgv\";
+EOF" "Creating GPG verification override for ROCm repositories"
+
+    # Create keyrings directory
+    execute_command "sudo mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
+
+    # Download and install ROCm GPG key
+    execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
+
+    # Set proper permissions on the key
+    execute_command "sudo chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
+
+    if [ $? -eq 0 ] && [ "$DRY_RUN" != true ]; then
+        print_success "GPG fix applied for Debian Trixie"
+    fi
+}
+
+# Function to validate system compatibility
+validate_system() {
+    local distributor="$1"
+    local ubuntu_version="$2"
+
+    print_step "Validating system compatibility..."
+
+    # Check for known problematic configurations
+    if [ "$distributor" = "Debian" ]; then
+        if [ "$ubuntu_version" = "13" ] || [ "$ubuntu_version" = "unstable" ]; then
+            print_warning "Debian Trixie (13) detected - GPG verification fix will be applied"
+            print_step "This script includes fixes for Debian Trixie GPG signature issues"
+        fi
+    fi
+
+    # Check for required tools
+    local missing_tools=""
+    for tool in wget gpg curl; do
+        if ! command_exists "$tool"; then
+            missing_tools="$missing_tools $tool"
+        fi
+    done
+
+    if [ -n "$missing_tools" ]; then
+        print_warning "Missing required tools:$missing_tools"
+        print_step "Installing missing tools..."
+        if [ "$package_manager" = "apt" ]; then
+            execute_command "sudo apt update && sudo apt install -y wget gnupg curl" "Installing required tools"
+        fi
+    fi
+
+    # Check if running as root (not recommended)
+    if [ "$EUID" -eq 0 ]; then
+        print_warning "Running as root is not recommended"
+        print_step "Consider running as a regular user with sudo privileges"
+    fi
+
+    print_success "System validation completed"
 }
 
 # Function to show usage information
@@ -457,10 +642,16 @@ install_rocm() {
         ubuntu_codename=$(lsb_release -cs 2>/dev/null || echo "Unknown")
         print_step "System: $distributor $ubuntu_version ($ubuntu_codename)"
 
+    # Validate system compatibility
+    validate_system "$distributor" "$ubuntu_version"
+
+
         if [ "$distributor" = "Ubuntu" ]; then
             repo="ubuntu"
         elif [ "$distributor" = "Debian" ]; then
-            repo="debian"
+            repo="ubuntu"
+            # Apply GPG fix for Debian Trixie (13)
+            setup_gpg_fix
         else
             repo="ubuntu"  # Default fallback
             print_warning "Unknown distributor, using Ubuntu repository"
@@ -558,32 +749,40 @@ install_rocm() {
         # Choose ROCm version (only if not additional components)
         echo
         echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
-        echo "1) ROCm 7.0.0 (Latest - Recommended for new installations)"
-        echo "2) ROCm 6.4.x (Stable - Default for compatibility)"
+
+        echo "1) ROCm 6.4.3 (Stable)"
+        echo "2) ROCm 7.0.0 (Latest)"
         echo
-        read -p "Choose ROCm version (1-2) [1]: " ROCM_CHOICE
-        ROCM_CHOICE=${ROCM_CHOICE:-1}
+        read -p "Choose ROCm version (1-2) [2]: " ROCM_CHOICE
+        ROCM_CHOICE=${ROCM_CHOICE:-2}
 
         case $ROCM_CHOICE in
             1)
-                ROCM_VERSION="7.0"
-                ROCM_INSTALL_VERSION="7.0.70000-1"
-                print_step "Using ROCm 7.0.0"
+                ROCM_VERSION="6.4.3"
+                ROCM_INSTALL_VERSION="6.4.60403-1"
+                repo="ubuntu"
+                ubuntu_codename="noble"
+                print_step "Using ROCm 6.4.3 (recommended)"
                 ;;
             2)
-                ROCM_VERSION="6.4"
-                ROCM_INSTALL_VERSION="6.4.60400-1"
-                print_step "Using ROCm 6.4.x"
+                ROCM_VERSION="7.0.0"
+                ROCM_INSTALL_VERSION="7.0.70000-1"
+                # Use Ubuntu noble for ROCm 7.0.0
+                repo="ubuntu"
+                ubuntu_codename="noble"
+                print_step "Using ROCm 7.0.0"
                 ;;
             *)
-                ROCM_VERSION="7.0"
-                ROCM_INSTALL_VERSION="7.0.70000-1"
-                print_step "Using default ROCm 7.0.0"
+                ROCM_VERSION="6.4.3"
+                ROCM_INSTALL_VERSION="6.4.60403-1"
+                repo="ubuntu"
+                ubuntu_codename="noble"
+                print_step "Using default ROCm 6.4.3"
                 ;;
         esac
 
         # For ROCm 7.0, offer to install updated framework components
-        if [ "$ROCM_CHOICE" = "1" ]; then
+        if [ "$ROCM_CHOICE" = "2" ]; then
             echo
             echo -e "${CYAN}${BOLD}ROCm 7.0.0 Additional Components:${RESET}"
             echo -e "${YELLOW}ROCm 7.0.0 includes many updated frameworks. Would you like to install them?${RESET}"
@@ -602,80 +801,22 @@ install_rocm() {
             fi
         fi
 
+        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.0.0)
+        if [ "$ROCM_VERSION" = "7.0.0" ]; then
+            ROCM_DIR_PATH="7.0"
+        else
+            ROCM_DIR_PATH="$ROCM_VERSION"
+        fi
 
-        # Download amdgpu-install package based on selected version
         if [ "$DRY_RUN" != true ]; then
-            # Check if ROCm 7.0 packages are available for this distribution
-            if [ "$ROCM_VERSION" = "7.0" ] && [ "$repo" = "debian" ]; then
-                print_warning "ROCm 7.0.0 packages are not yet available for Debian"
-                print_step "Using Ubuntu noble packages (compatible with Debian trixie)"
-                print_step "Ubuntu noble (24.04) is the best fit for Debian trixie"
-                repo="ubuntu"
-                ubuntu_codename="noble"
-                print_success "Will use Ubuntu noble packages for ROCm 7.0.0 installation"
-            fi
-
-            retry_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_VERSION/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" 3 2
+            retry_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" 3 2
             if [ $? -ne 0 ]; then
                 print_error "Failed to download amdgpu-install package after retries"
-                print_warning "This might be because ROCm $ROCM_VERSION packages are not yet available for $repo $ubuntu_codename"
-
-                # Offer to compile from source as last resort
-                if [ "$ROCM_VERSION" = "7.0" ]; then
-                    echo
-                    echo -e "${CYAN}${BOLD}Alternative Installation Options:${RESET}"
-                    echo "1) Try compiling ROCm 7.0.0 from source (advanced)"
-                    echo "2) Fall back to ROCm 6.4.x (recommended)"
-                    echo
-                    read -p "Choose alternative method (1-2) [2]: " ALT_METHOD
-                    ALT_METHOD=${ALT_METHOD:-2}
-
-                    case $ALT_METHOD in
-                        1)
-                            print_step "Attempting to compile ROCm 7.0.0 from source..."
-                            print_step "This may take a significant amount of time and requires development tools"
-
-                            # Clone and build ROCm from source
-                            if [ ! -d "/tmp/rocm-source" ]; then
-                                git clone --depth 1 --branch rocm-7.0.0 https://github.com/ROCm/ROCm.git /tmp/rocm-source
-                            fi
-                            cd /tmp/rocm-source
-
-                            # Basic build instructions (simplified)
-                            print_warning "Source compilation is complex and may require manual intervention"
-                            print_step "Please refer to: https://github.com/ROCm/ROCm#building-rocm-from-source"
-                            print_step "Consider using TheRock build system mentioned in the README"
-
-                            return 1
-                            ;;
-                        2)
-                            print_step "Falling back to ROCm 6.4.x"
-                            ROCM_VERSION="6.4"
-                            ROCM_INSTALL_VERSION="6.4.60400-1"
-                            repo="ubuntu"
-                            ubuntu_codename="jammy"
-                            ;;
-                        *)
-                            print_step "Falling back to ROCm 6.4.x"
-                            ROCM_VERSION="6.4"
-                            ROCM_INSTALL_VERSION="6.4.60400-1"
-                            repo="ubuntu"
-                            ubuntu_codename="jammy"
-                            ;;
-                    esac
-                else
-                    print_step "Try selecting ROCm 6.4.x for better compatibility"
-                    return 1
-                fi
+                return 1
             fi
             print_success "Downloaded amdgpu-install package"
         else
-            # Handle dry-run mode for Debian ROCm 7.0 detection
-            if [ "$ROCM_VERSION" = "7.0" ] && [ "$repo" = "debian" ]; then
-                print_step "[DRY RUN] Would detect ROCm 7.0.0 packages not available for Debian"
-                print_step "[DRY RUN] Would use Ubuntu noble packages for Debian trixie"
-            fi
-            execute_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_VERSION/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Downloading amdgpu-install package..."
+            execute_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Downloading amdgpu-install package..."
         fi
 
         # Install the package
@@ -686,6 +827,54 @@ install_rocm() {
             return 1
         elif [ "$DRY_RUN" != true ]; then
             print_success "Installed amdgpu-install package"
+        fi
+
+        # Setup ROCm repositories - handle ROCm 7.0 with proper GPG verification
+        if [ "$ROCM_VERSION" = "7.0.0" ]; then
+            print_step "Setting up ROCm 7.0 repositories..."
+
+            # Clean up existing repository files
+            execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
+
+            # Ensure GPG key is properly installed
+            execute_command "sudo mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
+            execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
+            execute_command "sudo chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
+
+            # Use noble (Ubuntu 24.04) repositories for better compatibility
+            execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << 'EOF'
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.0 noble main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.0/ubuntu noble main
+EOF" "Adding ROCm 7.0 repositories with Ubuntu Noble compatibility"
+
+            # Set proper repository priorities
+            execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+EOF" "Setting ROCm repository priorities"
+
+            print_success "ROCm 7.0 repositories configured for Ubuntu Noble compatibility"
+        else
+            # For ROCm 6.4.3, use Ubuntu Noble repositories
+            print_step "Setting up ROCm $ROCM_VERSION repositories..."
+
+            # Clean up existing repository files
+            execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
+
+            # Use Ubuntu Noble repositories for ROCm 6.4.3
+            execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << EOF
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4/ubuntu noble main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/6.4/ubuntu noble main
+EOF" "Adding ROCm 6.4.3 repositories for Ubuntu Noble"
+
+            execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << EOF
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+EOF" "Setting ROCm repository priorities"
+
+            print_success "ROCm $ROCM_VERSION repositories configured"
         fi
 
         # Update package lists
@@ -719,131 +908,180 @@ install_rocm() {
         fi
     fi
     
-    # Install ROCm based on selected method
+    # For Debian, install any missing dependencies from Ubuntu Noble
+    if [ "$distributor" = "Debian" ]; then
+        print_step "Installing any missing dependencies from Ubuntu Noble..."
+
+        # Temporarily add Ubuntu noble for missing dependencies
+        execute_command "sudo tee /etc/apt/sources.list.d/ubuntu-deps.list << EOF
+deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+EOF" "Adding Ubuntu noble repositories for missing dependencies"
+
+        execute_command "sudo apt update" "Updating package lists with Ubuntu repos"
+
+        # Try to install the missing libstdc++ dependencies
+        execute_command "sudo apt install -y libstdc++-11-dev libgcc-11-dev" "Installing missing GCC libraries from Ubuntu"
+
+        # Remove the temporary Ubuntu repos
+        execute_command "sudo rm -f /etc/apt/sources.list.d/ubuntu-deps.list" "Removing temporary Ubuntu repositories"
+        execute_command "sudo apt update" "Updating package lists after removing Ubuntu repos"
+    fi
+
+    # Install ROCm based on selected method using amdgpu-install for usecases
     print_step "Installing ROCm ($INSTALL_TYPE)..."
 
     case $INSTALL_TYPE in
-        "minimal")
-            # Install only ROCm runtime
-            sudo apt install -y rocm-core
-            ;;
-        "standard")
-            # Install ROCm runtime + basic tools
-            sudo apt install -y rocm
-            ;;
-        "full")
-            # Install ROCm + development tools + libraries
-            sudo apt install -y rocm rocm-dev rocm-libs
-            ;;
-        "custom")
-            # Custom installation - let user choose components
-            echo
-            echo -e "${CYAN}${BOLD}Available ROCm Components:${RESET}"
-            echo "1) rocm-core (minimal runtime)"
-            echo "2) rocm (standard runtime + tools)"
-            echo "3) rocm-dev (development tools)"
-            echo "4) rocm-libs (additional libraries)"
-            echo "5) rocm-opencl (OpenCL support)"
-            echo "6) rocm-hip (HIP runtime)"
-            echo "7) rccl (ROCm Communication Collectives Library)"
-            echo
-            read -p "Enter component numbers to install (space-separated) [2]: " COMPONENTS
-            COMPONENTS=${COMPONENTS:-2}
+    "minimal")
+        # Install minimal ROCm runtime
+        execute_command "sudo amdgpu-install --usecase=lrt --accept-eula --no-32 -y" "Installing minimal ROCm runtime"
+        ;;
+    "standard")
+        # Install standard ROCm runtime + basic tools
+        execute_command "sudo amdgpu-install --usecase=rocm --accept-eula --no-32 -y" "Installing standard ROCm runtime"
+        ;;
+    "full")
+        # Install full ROCm + development tools
+        execute_command "sudo amdgpu-install --usecase=rocm,rocmdev --accept-eula --no-32 -y" "Installing full ROCm with development tools"
+        ;;
+    "custom")
+        # Custom installation - let user choose components
+        echo
+        echo -e "${CYAN}${BOLD}Available ROCm Use Cases:${RESET}"
+        echo "1) lrt (ROCm runtime - minimal)"
+        echo "2) rocm (full ROCm stack)"
+        echo "3) rocmdev (ROCm + development tools)"
+        echo "4) rocmdevtools (profiling/debugging tools)"
+        echo "5) hip (HIP runtime only)"
+        echo "6) opencl (OpenCL support)"
+        echo "7) mllib (machine learning libraries)"
+        echo
+        read -p "Enter component numbers to install (space-separated) [2]: " COMPONENTS
+        COMPONENTS=${COMPONENTS:-2}
 
-            for comp in $COMPONENTS; do
-                case $comp in
-                    1) sudo apt install -y rocm-core ;;
-                    2) sudo apt install -y rocm ;;
-                    3) sudo apt install -y rocm-dev ;;
-                    4) sudo apt install -y rocm-libs ;;
-                    5) sudo apt install -y rocm-opencl ;;
-                    6) sudo apt install -y rocm-hip ;;
-                    7) sudo apt install -y librccl-dev librccl1 ;;
-                esac
-            done
-            ;;
-        "additional")
-            # Install additional components only
-            echo
-            echo -e "${CYAN}${BOLD}Available Additional Components:${RESET}"
-            echo "1) rocm-dev (development tools)"
-            echo "2) rocm-libs (additional libraries)"
-            echo "3) rocm-opencl (OpenCL support)"
-            echo "4) rocm-hip (HIP runtime)"
-            echo "5) rccl (ROCm Communication Collectives Library)"
-            echo "6) rocm-smi (ROCm System Management Interface)"
-            echo
-            read -p "Enter component numbers to install (space-separated) [5]: " COMPONENTS
-            COMPONENTS=${COMPONENTS:-5}
+        # Build usecase string from selected components
+        USECASE=""
+        for comp in $COMPONENTS; do
+            case $comp in
+                1) USECASE="${USECASE}lrt," ;;
+                2) USECASE="${USECASE}rocm," ;;
+                3) USECASE="${USECASE}rocmdev," ;;
+                4) USECASE="${USECASE}rocmdevtools," ;;
+                5) USECASE="${USECASE}hip," ;;
+                6) USECASE="${USECASE}opencl," ;;
+                7) USECASE="${USECASE}mllib," ;;
+            esac
+        done
+        # Remove trailing comma
+        USECASE=${USECASE%,}
 
-            for comp in $COMPONENTS; do
-                case $comp in
-                    1) sudo apt install -y rocm-dev ;;
-                    2) sudo apt install -y rocm-libs ;;
-                    3) sudo apt install -y rocm-opencl ;;
-                    4) sudo apt install -y rocm-hip ;;
-                    5)
-                        # Install RCCL directly
-                        print_step "Installing RCCL..."
-                        sudo apt update && sudo apt install -y librccl-dev librccl1
-                        ;;
-                    6) sudo apt install -y rocm-smi ;;
-                esac
-            done
-            ;;
-    esac
+        if [ -n "$USECASE" ]; then
+            execute_command "sudo amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing custom ROCm components"
+        fi
+        ;;
+    "additional")
+        # Install additional components only
+        echo
+        echo -e "${CYAN}${BOLD}Available Additional Components:${RESET}"
+        echo "1) rocmdev (ROCm development tools)"
+        echo "2) rocmdevtools (profiling/debugging tools)"
+        echo "3) opencl (OpenCL support)"
+        echo "4) hip (HIP runtime)"
+        echo "5) mllib (machine learning libraries)"
+        echo "6) rccl (ROCm Communication Collectives Library)"
+        echo
+        read -p "Enter component numbers to install (space-separated) [1]: " COMPONENTS
+        COMPONENTS=${COMPONENTS:-1}
+
+        # Build usecase string from selected components
+        USECASE=""
+        for comp in $COMPONENTS; do
+            case $comp in
+                1) USECASE="${USECASE}rocmdev," ;;
+                2) USECASE="${USECASE}rocmdevtools," ;;
+                3) USECASE="${USECASE}opencl," ;;
+                4) USECASE="${USECASE}hip," ;;
+                5) USECASE="${USECASE}mllib," ;;
+                6)
+                    USECASE="${USECASE}rccl," ;;
+            esac
+        done
+        # Remove trailing comma
+        USECASE=${USECASE%,}
+
+        if [ -n "$USECASE" ]; then
+            execute_command "sudo amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing additional ROCm components"
+        else
+            # Fallback for RCCL if usecase not available
+            execute_command "sudo apt update && sudo apt install -y librccl-dev librccl1" "Installing RCCL libraries directly"
+        fi
+        ;;
+esac
 
     if [ $? -ne 0 ]; then
         print_error "Failed to install ROCm"
+
+        print_step "Installation failed. Check the error messages above for details."
+        print_step "You can try: sudo apt install -f  # to fix broken dependencies"
+        print_step "Or check: sudo apt update && sudo apt upgrade  # to update packages"
+
         return 1
     fi
 
     print_success "Installed ROCm ($INSTALL_TYPE)"
 
-    # Install ROCm 7.0.0 specific frameworks if selected
-    if [ "$INSTALL_ROCM7_FRAMEWORKS" = true ]; then
+    # Install ROCm 7.0.0 specific frameworks if selected and ROCm 7.0 was installed
+    if [ "$INSTALL_ROCM7_FRAMEWORKS" = true ] && [ "$ROCM_VERSION" = "7.0.0" ]; then
         print_section "Installing ROCm 7.0.0 Updated Frameworks"
 
-        # Install PyTorch 2.7 with ROCm 7.0 support
-        print_step "Installing PyTorch 2.7 for ROCm 7.0..."
+        # Install PyTorch 2.8.0 with ROCm 7.0 support from manylinux repo
+        print_step "Installing PyTorch 2.8.0 for ROCm 7.0..."
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm7.0 || \
-            python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ torch torchvision torchaudio
             deactivate
         else
-            python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm7.0 || \
-            python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ torch torchvision torchaudio
         fi
 
-        # Install other ROCm 7.0 frameworks
+        # Install other ROCm 7.0 frameworks from manylinux repo
         print_step "Installing additional ROCm 7.0.0 frameworks..."
 
         # Install JAX 0.6.0
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install jax jaxlib --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ || true
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ jax jaxlib
             deactivate
         else
-            python3 -m pip install jax jaxlib --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ || true
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ jax jaxlib
         fi
 
-        # Install ONNX Runtime 1.22.0
+        # Install ONNX Runtime 1.22.1
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install onnxruntime --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ || true
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ onnxruntime
             deactivate
         else
-            python3 -m pip install onnxruntime --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ || true
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ onnxruntime
         fi
 
-        # Install TensorFlow 2.19.1
+        # Install TensorFlow 2.17.1
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install tensorflow --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ || true
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ tensorflow
             deactivate
         else
-            python3 -m pip install tensorflow --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ || true
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ tensorflow
+        fi
+
+        # Install PyTorch Triton for ROCm 7.0
+        print_step "Installing PyTorch Triton for ROCm 7.0..."
+        if [ "$CREATE_VENV" = true ]; then
+            source "$VENV_PATH/bin/activate"
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ pytorch-triton-rocm
+            deactivate
+        else
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ pytorch-triton-rocm
         fi
 
         print_success "Installed ROCm 7.0.0 updated frameworks"
@@ -903,6 +1141,7 @@ install_rocm() {
 
     # Verify installation
     print_section "Verifying Installation"
+    verify_rocm_installation "$ROCM_VERSION"
 
     if command_exists rocminfo; then
         rocm_version=$(get_rocm_version)
@@ -980,6 +1219,9 @@ EOF
     echo
     echo -e "${CYAN}${BOLD}To apply these settings to your current shell, run:${RESET}"
     echo -e "${GREEN}eval \"\$(./install_rocm.sh --show-env)\"${RESET}"
+    echo
+    echo -e "${CYAN}${BOLD}To display environment variables with banner, run:${RESET}"
+    echo -e "${GREEN}./install_rocm.sh --show-env-with-banner${RESET}"
 
     # Show virtual environment information if created
     if [ "$CREATE_VENV" = true ] && [ -d "$VENV_PATH" ]; then
@@ -1008,6 +1250,10 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --show-env)
+            show_env_clean
+            exit 0
+            ;;
+        --show-env-with-banner)
             show_env
             exit 0
             ;;

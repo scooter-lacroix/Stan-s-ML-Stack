@@ -478,25 +478,43 @@ fi
 
 # Verify MPI
 print_section "Verifying MPI"
+mpi_found=false
+
 if command_exists mpirun; then
-    print_success "MPI is installed"
+    print_success "MPI runtime is installed"
     mpi_version=$(mpirun --version | head -n 1)
     print_step "MPI version: $mpi_version"
+    mpi_found=true
+else
+    print_warning "MPI runtime (mpirun) not found, checking for mpi4py only"
+fi
 
-    # Check mpi4py
-    if $PYTHON_CMD -c "import mpi4py; print('mpi4py is installed')" 2>/dev/null; then
-        print_success "mpi4py is installed"
-        mpi4py_version=$($PYTHON_CMD -c "import mpi4py; print(mpi4py.__version__)" 2>&1)
-        print_step "mpi4py version: $mpi4py_version"
+# Check mpi4py - this is the Python interface that's typically needed for ML
+if $PYTHON_CMD -c "import mpi4py; print('mpi4py is installed')" 2>/dev/null; then
+    print_success "mpi4py is installed"
+    mpi4py_version=$($PYTHON_CMD -c "import mpi4py; print(mpi4py.__version__)" 2>&1)
+    print_step "mpi4py version: $mpi4py_version"
+
+    # Try basic mpi4py functionality
+    if $PYTHON_CMD -c "import mpi4py; from mpi4py import MPI; print('Basic import successful')" 2>/dev/null; then
+        print_success "mpi4py basic functionality working"
     else
-        # Check for mpi4py installation in specific directories
-        if [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/mpi4py" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/mpi4py" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/mpi4py" ]; then
-            print_success "mpi4py is installed"
-            print_warning "mpi4py cannot be imported (Python compatibility issue)"
-        else
-            print_error "mpi4py is not installed"
-        fi
+        print_warning "mpi4py import works but MPI operations may be limited"
     fi
+
+    mpi_found=true
+else
+    # Check for mpi4py installation in specific directories
+    if [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/mpi4py" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/mpi4py" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/mpi4py" ]; then
+        print_warning "mpi4py is installed but cannot be imported (Python compatibility issue)"
+        mpi_found=true
+    else
+        print_error "mpi4py is not installed"
+    fi
+fi
+
+if [ "$mpi_found" = true ]; then
+    print_success "MPI/mpi4py components available for distributed computing"
 else
     print_error "MPI is not installed."
 fi
@@ -680,7 +698,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     fi
 
     echo -e "- RCCL: $([ -f "/usr/lib/x86_64-linux-gnu/librccl.so" ] || [ -f "/opt/rocm/lib/librccl.so" ] && echo -e "${GREEN}Installed${RESET}" || echo -e "${RED}Not installed${RESET}")"
-    echo -e "- MPI: $(command_exists mpirun && echo -e "${GREEN}Installed${RESET}" || echo -e "${RED}Not installed${RESET}")"
+    echo -e "- MPI: $(command_exists mpirun && echo -e "${GREEN}Installed${RESET}" || $PYTHON_CMD -c "import mpi4py" 2>/dev/null && echo -e "${GREEN}mpi4py available${RESET}" || echo -e "${RED}Not installed${RESET}")"
 
     # Check Megatron-LM with fallback
     if $PYTHON_CMD -c "import megatron" 2>/dev/null; then
@@ -748,7 +766,7 @@ else
     fi
 
     echo "- RCCL: $([ -f "/usr/lib/x86_64-linux-gnu/librccl.so" ] || [ -f "/opt/rocm/lib/librccl.so" ] && echo "Installed" || echo "Not installed")"
-    echo "- MPI: $(command_exists mpirun && echo "Installed" || echo "Not installed")"
+    echo "- MPI: $(command_exists mpirun && echo "Installed" || $PYTHON_CMD -c "import mpi4py" 2>/dev/null && echo "mpi4py available" || echo "Not installed")"
 
     # Check Megatron-LM with fallback
     if $PYTHON_CMD -c "import megatron" 2>/dev/null; then

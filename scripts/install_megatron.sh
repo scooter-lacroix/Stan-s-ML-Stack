@@ -960,7 +960,13 @@ except ImportError:
                 "global")
                     print_step "Installing globally with pip..."
                     python3 -m pip install --break-system-packages $args
-                    MEGATRON_VENV_PYTHON=""
+                    local install_exit_code=$?
+                    if [ $install_exit_code -eq 0 ]; then
+                        MEGATRON_VENV_PYTHON=""
+                    else
+                        print_error "Global installation failed, Megatron-LM requires manual installation"
+                        return 1
+                    fi
                     ;;
                 "venv")
                     print_step "Creating uv virtual environment..."
