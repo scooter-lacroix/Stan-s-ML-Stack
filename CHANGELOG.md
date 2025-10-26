@@ -2,6 +2,24 @@
 
 All notable changes to Stan's ML Stack will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- ROCm 7.0.2 support in install_rocm.sh as option 3 (new recommended default)
+- ROCm 7.9.0 preview support in install_rocm.sh as option 4 (experimental via TheRock)
+- ROCM_VERSION, ROCM_CHANNEL, and GPU_ARCH environment variable exports
+- Detection for /opt/rocm-7.0.2 installation path
+- docs/MULTI_CHANNEL_GUIDE.md with complete multi-version workflow
+
+### Changed
+- Default ROCm selection changed from 7.0.0 to 7.0.2 (option 3)
+- ROCm version prompt expanded from 2 options to 4 options
+- Framework installation prompt extended to cover all ROCm 7.x versions
+
+### Note
+- All existing install_rocm.sh functionality preserved (1296 lines + 62 new lines = 1358 total)
+- NO content removed or simplified
+
 ## [0.1.5] - 2025-09-16 (Anagami)
 
 ### Added

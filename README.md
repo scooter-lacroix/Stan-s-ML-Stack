@@ -81,6 +81,13 @@ The ML Stack consists of the following core components:
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
 ## Installation
 
+Stan's ML Stack now supports multiple ROCm versions directly from `scripts/install_rocm.sh`. When prompted, you can select:
+
+1. **Legacy** (ROCm 6.4.3) – best for long-term stability
+2. **Stable** (ROCm 7.0.0) – production ready for RDNA 3 GPUs
+3. **Latest** (ROCm 7.0.2) – recommended default with RDNA 4 support
+4. **Preview** (ROCm 7.9.0) – technology preview via TheRock (experimental)
+
 The ML Stack provides several installation options to suit your needs.
 
 ### Current Status
