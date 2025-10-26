@@ -241,7 +241,7 @@ detect_rocm_path() {
     local rocm_path=""
 
     # Check common ROCm installation paths
-    for path in "/opt/rocm" "/usr/lib/rocm" "/opt/rocm-7.0" "/opt/rocm-6.4" "/opt/rocm-6.3" "/opt/rocm-6.2" "/opt/rocm-6.1" "/opt/rocm-6.0" "/opt/rocm-5.7"; do
+    for path in "/opt/rocm" "/usr/lib/rocm" "/opt/rocm-7.0.2" "/opt/rocm-7.0" "/opt/rocm-6.4" "/opt/rocm-6.3" "/opt/rocm-6.2" "/opt/rocm-6.1" "/opt/rocm-6.0" "/opt/rocm-5.7"; do
         if [ -d "$path" ] && [ -f "$path/bin/rocminfo" ]; then
             rocm_path="$path"
             break
@@ -349,6 +349,15 @@ EOF
     fi
     echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
     echo "export ROCM_PATH=\"$ROCM_PATH\""
+    if [ -n "$ROCM_VERSION" ]; then
+        echo "export ROCM_VERSION=\"$ROCM_VERSION\""
+    fi
+    if [ -n "$ROCM_CHANNEL" ]; then
+        echo "export ROCM_CHANNEL=\"$ROCM_CHANNEL\""
+    fi
+    if [ -n "$GPU_ARCHITECTURE" ]; then
+        echo "export GPU_ARCH=\"$GPU_ARCHITECTURE\""
+    fi
     echo "export PATH=\"$PATH\""
     echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
 }
@@ -360,6 +369,9 @@ show_env_clean() {
     HSA_OVERRIDE_GFX_VERSION=11.0.0
     PYTORCH_ROCM_ARCH="gfx1100"
     ROCM_PATH="/opt/rocm"
+    ROCM_VERSION="${ROCM_VERSION:-7.0.0}"
+    ROCM_CHANNEL="${ROCM_CHANNEL:-stable}"
+    GPU_ARCHITECTURE="${GPU_ARCHITECTURE:-gfx1100}"
     PATH="/opt/rocm/bin:$PATH"
     LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
 
@@ -530,6 +542,22 @@ install_rocm_python_packages() {
         execute_command "python3 -m pip install --upgrade pip" "Upgrading pip"
         execute_command "python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.4" "Installing PyTorch with ROCm support"
     fi
+}
+
+# Function to install ROCm preview (7.9.0) via TheRock tarball
+install_rocm_preview_tarball() {
+    print_warning "ROCm 7.9.0 Preview Installation via TheRock"
+    print_warning "This is an experimental feature and not fully supported yet"
+    print_step "For now, preview installation must be done manually"
+    print_step "Please refer to docs/MULTI_CHANNEL_GUIDE.md for instructions"
+    
+    echo
+    echo -e "${YELLOW}To install ROCm 7.9.0 Preview manually:${RESET}"
+    echo -e "${CYAN}1. Visit: https://repo.amd.com/rocm/tarball/${RESET}"
+    echo -e "${CYAN}2. Download the appropriate TheRock tarball for your GPU architecture${RESET}"
+    echo -e "${CYAN}3. Extract and follow TheRock installation instructions${RESET}"
+    echo
+    return 0
 }
 
 # Main installation function
@@ -750,11 +778,13 @@ install_rocm() {
         echo
         echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
 
-        echo "1) ROCm 6.4.3 (Stable)"
-        echo "2) ROCm 7.0.0 (Latest)"
+        echo "1) ROCm 6.4.3 (Legacy - Stable)"
+        echo "2) ROCm 7.0.0 (Stable)"
+        echo "3) ROCm 7.0.2 (Latest - Recommended)"
+        echo "4) ROCm 7.9.0 (Preview - Experimental, NOT for production)"
         echo
-        read -p "Choose ROCm version (1-2) [2]: " ROCM_CHOICE
-        ROCM_CHOICE=${ROCM_CHOICE:-2}
+        read -p "Choose ROCm version (1-4) [3]: " ROCM_CHOICE
+        ROCM_CHOICE=${ROCM_CHOICE:-3}
 
         case $ROCM_CHOICE in
             1)
@@ -762,7 +792,9 @@ install_rocm() {
                 ROCM_INSTALL_VERSION="6.4.60403-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
-                print_step "Using ROCm 6.4.3 (recommended)"
+                ROCM_CHANNEL="legacy"
+                INSTALL_ROCM_PREVIEW=false
+                print_step "Using ROCm 6.4.3 (legacy)"
                 ;;
             2)
                 ROCM_VERSION="7.0.0"
@@ -770,22 +802,43 @@ install_rocm() {
                 # Use Ubuntu noble for ROCm 7.0.0
                 repo="ubuntu"
                 ubuntu_codename="noble"
-                print_step "Using ROCm 7.0.0"
+                ROCM_CHANNEL="stable"
+                INSTALL_ROCM_PREVIEW=false
+                print_step "Using ROCm 7.0.0 (stable)"
                 ;;
-            *)
-                ROCM_VERSION="6.4.3"
-                ROCM_INSTALL_VERSION="6.4.60403-1"
+            3)
+                ROCM_VERSION="7.0.2"
+                ROCM_INSTALL_VERSION="7.0.70002-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
-                print_step "Using default ROCm 6.4.3"
+                ROCM_CHANNEL="latest"
+                INSTALL_ROCM_PREVIEW=false
+                print_step "Using ROCm 7.0.2 (latest - recommended)"
+                ;;
+            4)
+                ROCM_VERSION="7.9.0"
+                ROCM_INSTALL_VERSION="preview"
+                ROCM_CHANNEL="preview"
+                INSTALL_ROCM_PREVIEW=true
+                print_warning "ROCm 7.9.0 is a technology preview - NOT for production use"
+                print_step "Using ROCm 7.9.0 (preview)"
+                ;;
+            *)
+                ROCM_VERSION="7.0.2"
+                ROCM_INSTALL_VERSION="7.0.70002-1"
+                repo="ubuntu"
+                ubuntu_codename="noble"
+                ROCM_CHANNEL="latest"
+                INSTALL_ROCM_PREVIEW=false
+                print_step "Using default ROCm 7.0.2"
                 ;;
         esac
 
-        # For ROCm 7.0, offer to install updated framework components
-        if [ "$ROCM_CHOICE" = "2" ]; then
+        # For ROCm 7.x, offer to install updated framework components
+        if [ "$ROCM_CHOICE" = "2" ] || [ "$ROCM_CHOICE" = "3" ]; then
             echo
-            echo -e "${CYAN}${BOLD}ROCm 7.0.0 Additional Components:${RESET}"
-            echo -e "${YELLOW}ROCm 7.0.0 includes many updated frameworks. Would you like to install them?${RESET}"
+            echo -e "${CYAN}${BOLD}ROCm 7.x Additional Components:${RESET}"
+            echo -e "${YELLOW}ROCm 7.x includes many updated frameworks. Would you like to install them?${RESET}"
             echo "1) Yes - Install updated frameworks (PyTorch 2.7, JAX 0.6.0, ONNX Runtime 1.22.0, etc.)"
             echo "2) No - Install ROCm core only"
             echo
@@ -794,43 +847,52 @@ install_rocm() {
 
             if [ "$INSTALL_FRAMEWORKS" = "1" ]; then
                 INSTALL_ROCM7_FRAMEWORKS=true
-                print_step "Will install ROCm 7.0.0 with updated frameworks"
+                print_step "Will install ROCm 7.x with updated frameworks"
             else
                 INSTALL_ROCM7_FRAMEWORKS=false
-                print_step "Will install ROCm 7.0.0 core only"
+                print_step "Will install ROCm 7.x core only"
             fi
         fi
 
-        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.0.0)
+        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.0.x)
         if [ "$ROCM_VERSION" = "7.0.0" ]; then
             ROCM_DIR_PATH="7.0"
+        elif [ "$ROCM_VERSION" = "7.0.2" ]; then
+            ROCM_DIR_PATH="7.0.2"
         else
             ROCM_DIR_PATH="$ROCM_VERSION"
         fi
 
-        if [ "$DRY_RUN" != true ]; then
-            retry_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" 3 2
-            if [ $? -ne 0 ]; then
-                print_error "Failed to download amdgpu-install package after retries"
-                return 1
+        # Skip amdgpu-install download for preview version (TheRock)
+        if [ "$INSTALL_ROCM_PREVIEW" != "true" ]; then
+            if [ "$DRY_RUN" != true ]; then
+                retry_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" 3 2
+                if [ $? -ne 0 ]; then
+                    print_error "Failed to download amdgpu-install package after retries"
+                    return 1
+                fi
+                print_success "Downloaded amdgpu-install package"
+            else
+                execute_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Downloading amdgpu-install package..."
             fi
-            print_success "Downloaded amdgpu-install package"
+
+            # Install the package
+            execute_command "sudo apt install -y ./amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Installing amdgpu-install package..."
+
+            if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
+                print_error "Failed to install amdgpu-install package"
+                return 1
+            elif [ "$DRY_RUN" != true ]; then
+                print_success "Installed amdgpu-install package"
+            fi
         else
-            execute_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Downloading amdgpu-install package..."
-        fi
-
-        # Install the package
-        execute_command "sudo apt install -y ./amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Installing amdgpu-install package..."
-
-        if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
-            print_error "Failed to install amdgpu-install package"
-            return 1
-        elif [ "$DRY_RUN" != true ]; then
-            print_success "Installed amdgpu-install package"
+            install_rocm_preview_tarball
         fi
 
         # Setup ROCm repositories - handle ROCm 7.0 with proper GPG verification
-        if [ "$ROCM_VERSION" = "7.0.0" ]; then
+        if [ "$INSTALL_ROCM_PREVIEW" = "true" ]; then
+            print_warning "Skipping repository configuration for preview channel"
+        elif [ "$ROCM_VERSION" = "7.0.0" ]; then
             print_step "Setting up ROCm 7.0 repositories..."
 
             # Clean up existing repository files
@@ -1104,6 +1166,7 @@ esac
     fi
 
     PYTORCH_ROCM_ARCH="$gpu_arch"
+    GPU_ARCHITECTURE="$gpu_arch"
     ROCM_PATH="/opt/rocm"
     PATH="/opt/rocm/bin:$PATH"
     LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
