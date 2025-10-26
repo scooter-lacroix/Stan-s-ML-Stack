@@ -380,6 +380,10 @@ show_env_clean() {
     fi
     echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
     echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export ROCM_VERSION=\"$ROCM_VERSION\""
+    if [ -n "$ROCM_CHANNEL" ]; then
+        echo "export ROCM_CHANNEL=\"$ROCM_CHANNEL\""
+    fi
     echo "export PATH=\"$PATH\""
     echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
 }
@@ -750,11 +754,13 @@ install_rocm() {
         echo
         echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
 
-        echo "1) ROCm 6.4.3 (Stable)"
-        echo "2) ROCm 7.0.0 (Latest)"
+        echo "1) ROCm 6.4.3 (Legacy - Stable)"
+        echo "2) ROCm 7.0.0 (Stable)"
+        echo "3) ROCm 7.0.2 (Latest - Recommended)"
+        echo "4) ROCm 7.9.0 (Preview - Experimental)"
         echo
-        read -p "Choose ROCm version (1-2) [2]: " ROCM_CHOICE
-        ROCM_CHOICE=${ROCM_CHOICE:-2}
+        read -p "Choose ROCm version (1-4) [3]: " ROCM_CHOICE
+        ROCM_CHOICE=${ROCM_CHOICE:-3}
 
         case $ROCM_CHOICE in
             1)
@@ -762,30 +768,47 @@ install_rocm() {
                 ROCM_INSTALL_VERSION="6.4.60403-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
-                print_step "Using ROCm 6.4.3 (recommended)"
+                ROCM_CHANNEL="legacy"
+                print_step "Using ROCm 6.4.3 (legacy)"
                 ;;
             2)
                 ROCM_VERSION="7.0.0"
                 ROCM_INSTALL_VERSION="7.0.70000-1"
-                # Use Ubuntu noble for ROCm 7.0.0
                 repo="ubuntu"
                 ubuntu_codename="noble"
-                print_step "Using ROCm 7.0.0"
+                ROCM_CHANNEL="stable"
+                print_step "Using ROCm 7.0.0 (stable)"
+                ;;
+            3)
+                ROCM_VERSION="7.0.2"
+                ROCM_INSTALL_VERSION="7.0.70002-1"
+                repo="ubuntu"
+                ubuntu_codename="noble"
+                ROCM_CHANNEL="latest"
+                print_step "Using ROCm 7.0.2 (latest - recommended)"
+                ;;
+            4)
+                ROCM_VERSION="7.9.0"
+                ROCM_INSTALL_VERSION="preview"
+                ROCM_CHANNEL="preview"
+                print_warning "ROCm 7.9.0 is an experimental technology preview"
+                print_step "Using ROCm 7.9.0 (preview)"
                 ;;
             *)
-                ROCM_VERSION="6.4.3"
-                ROCM_INSTALL_VERSION="6.4.60403-1"
+                ROCM_VERSION="7.0.2"
+                ROCM_INSTALL_VERSION="7.0.70002-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
-                print_step "Using default ROCm 6.4.3"
+                ROCM_CHANNEL="latest"
+                print_step "Using default ROCm 7.0.2"
                 ;;
         esac
 
-        # For ROCm 7.0, offer to install updated framework components
-        if [ "$ROCM_CHOICE" = "2" ]; then
+        # For ROCm 7.x, offer to install updated framework components
+        if [ "$ROCM_CHOICE" = "2" ] || [ "$ROCM_CHOICE" = "3" ]; then
             echo
-            echo -e "${CYAN}${BOLD}ROCm 7.0.0 Additional Components:${RESET}"
-            echo -e "${YELLOW}ROCm 7.0.0 includes many updated frameworks. Would you like to install them?${RESET}"
+            echo -e "${CYAN}${BOLD}ROCm 7.x Additional Components:${RESET}"
+            echo -e "${YELLOW}ROCm 7.x includes many updated frameworks. Would you like to install them?${RESET}"
             echo "1) Yes - Install updated frameworks (PyTorch 2.7, JAX 0.6.0, ONNX Runtime 1.22.0, etc.)"
             echo "2) No - Install ROCm core only"
             echo
@@ -794,16 +817,18 @@ install_rocm() {
 
             if [ "$INSTALL_FRAMEWORKS" = "1" ]; then
                 INSTALL_ROCM7_FRAMEWORKS=true
-                print_step "Will install ROCm 7.0.0 with updated frameworks"
+                print_step "Will install ROCm 7.x with updated frameworks"
             else
                 INSTALL_ROCM7_FRAMEWORKS=false
-                print_step "Will install ROCm 7.0.0 core only"
+                print_step "Will install ROCm 7.x core only"
             fi
         fi
 
-        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.0.0)
+        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.0.x)
         if [ "$ROCM_VERSION" = "7.0.0" ]; then
             ROCM_DIR_PATH="7.0"
+        elif [ "$ROCM_VERSION" = "7.0.2" ]; then
+            ROCM_DIR_PATH="7.0.2"
         else
             ROCM_DIR_PATH="$ROCM_VERSION"
         fi
