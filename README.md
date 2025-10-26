@@ -88,7 +88,7 @@ Stan's ML Stack installer now offers four ROCm channels so you can balance stabi
 3. **Latest (ROCm 7.0.2)** – default choice with expanded RDNA 4 support
 4. **Preview (ROCm 7.9.0)** – technology preview for early adopters (experimental)
 
-You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-4).
+You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-4). See [docs/MULTI_CHANNEL_GUIDE.md](docs/MULTI_CHANNEL_GUIDE.md) for helper scripts covering PyTorch, Triton, Flash Attention, vLLM, ONNX Runtime, MIGraphX, bitsandbytes, and RCCL.
 
 The ML Stack provides several installation options to suit your needs.
 
