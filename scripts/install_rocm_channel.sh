@@ -13,9 +13,9 @@ Usage: $0 [CHANNEL]
 
 Channels:
   legacy  - ROCm 6.4.3
-  stable  - ROCm 7.0.0
-  latest  - ROCm 7.0.2 (default)
-  preview - ROCm 7.9.0 (technology preview)
+  stable  - ROCm 7.1
+  latest  - ROCm 7.2 (default)
+  preview - ROCm 7.10.0 (technology preview)
 
 You can also set the ROCM_CHANNEL environment variable. If neither
 is provided, the script defaults to the "latest" channel.

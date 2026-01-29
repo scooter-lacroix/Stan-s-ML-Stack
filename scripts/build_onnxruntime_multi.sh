@@ -7,8 +7,8 @@ if [ -f "$HOME/.mlstack_env" ]; then
     source "$HOME/.mlstack_env"
 fi
 
-ROCM_VERSION=${ROCM_VERSION:-7.0.2}
-ROCM_PATH=${ROCM_PATH:-/opt/rocm-7.0.2}
+ROCM_VERSION=${ROCM_VERSION:-7.2}
+ROCM_PATH=${ROCM_PATH:-/opt/rocm}
 GPU_ARCH=${GPU_ARCH:-$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1 || echo gfx1100)}
 
 sudo apt-get update

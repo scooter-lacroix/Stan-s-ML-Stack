@@ -5,9 +5,9 @@ Stan's ML Stack supports four ROCm channels:
 | Channel | ROCm Version | Recommended For |
 |---------|--------------|-----------------|
 | Legacy  | 6.4.3        | Maximum stability (RDNA 1/2) |
-| Stable  | 7.0.0        | Production RDNA 3 environments |
-| Latest  | 7.0.2        | Default choice, RDNA 3/4 |
-| Preview | 7.9.0        | Experimental testing via TheRock |
+| Stable  | 7.1          | Production RDNA 3 environments |
+| Latest  | 7.2          | Default choice, RDNA 3/4 |
+| Preview | 7.10.0       | Experimental testing via TheRock |
 
 ## Installing ROCm
 

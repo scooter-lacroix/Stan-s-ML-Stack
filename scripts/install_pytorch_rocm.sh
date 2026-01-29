@@ -377,8 +377,8 @@ install_pytorch_rocm() {
     fi
 
         if [ -z "$rocm_version" ]; then
-            print_warning "Could not detect ROCm version, using default version 7.0.0"
-            rocm_version="7.0.0"
+            print_warning "Could not detect ROCm version, using default version 7.2"
+            rocm_version="7.2"
         else
             print_success "Detected ROCm version: $rocm_version"
         fi

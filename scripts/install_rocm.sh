@@ -755,9 +755,9 @@ install_rocm() {
         echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
 
         echo "1) ROCm 6.4.3 (Legacy - Stable)"
-        echo "2) ROCm 7.0.0 (Stable)"
-        echo "3) ROCm 7.0.2 (Latest - Recommended)"
-        echo "4) ROCm 7.9.0 (Preview - Experimental)"
+        echo "2) ROCm 7.1 (Stable)"
+        echo "3) ROCm 7.2 (Latest - Recommended)"
+        echo "4) ROCm 7.10.0 (Preview - Experimental)"
         echo
         read -p "Choose ROCm version (1-4) [3]: " ROCM_CHOICE
         ROCM_CHOICE=${ROCM_CHOICE:-3}
@@ -772,35 +772,35 @@ install_rocm() {
                 print_step "Using ROCm 6.4.3 (legacy)"
                 ;;
             2)
-                ROCM_VERSION="7.0.0"
-                ROCM_INSTALL_VERSION="7.0.70000-1"
+                ROCM_VERSION="7.1"
+                ROCM_INSTALL_VERSION="7.1.70100-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
                 ROCM_CHANNEL="stable"
-                print_step "Using ROCm 7.0.0 (stable)"
+                print_step "Using ROCm 7.1 (stable)"
                 ;;
             3)
-                ROCM_VERSION="7.0.2"
-                ROCM_INSTALL_VERSION="7.0.70002-1"
+                ROCM_VERSION="7.2"
+                ROCM_INSTALL_VERSION="7.2.70200-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
                 ROCM_CHANNEL="latest"
-                print_step "Using ROCm 7.0.2 (latest - recommended)"
+                print_step "Using ROCm 7.2 (latest - recommended)"
                 ;;
             4)
-                ROCM_VERSION="7.9.0"
+                ROCM_VERSION="7.10.0"
                 ROCM_INSTALL_VERSION="preview"
                 ROCM_CHANNEL="preview"
-                print_warning "ROCm 7.9.0 is an experimental technology preview"
-                print_step "Using ROCm 7.9.0 (preview)"
+                print_warning "ROCm 7.10.0 is an experimental technology preview"
+                print_step "Using ROCm 7.10.0 (preview)"
                 ;;
             *)
-                ROCM_VERSION="7.0.2"
-                ROCM_INSTALL_VERSION="7.0.70002-1"
+                ROCM_VERSION="7.2"
+                ROCM_INSTALL_VERSION="7.2.70200-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
                 ROCM_CHANNEL="latest"
-                print_step "Using default ROCm 7.0.2"
+                print_step "Using default ROCm 7.2"
                 ;;
         esac
 
@@ -824,11 +824,11 @@ install_rocm() {
             fi
         fi
 
-        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.0.x)
-        if [ "$ROCM_VERSION" = "7.0.0" ]; then
-            ROCM_DIR_PATH="7.0"
-        elif [ "$ROCM_VERSION" = "7.0.2" ]; then
-            ROCM_DIR_PATH="7.0.2"
+        # Use the selected ROCm_INSTALL_VERSION (fix directory path for ROCm 7.x)
+        if [ "$ROCM_VERSION" = "7.1" ]; then
+            ROCM_DIR_PATH="7.1"
+        elif [ "$ROCM_VERSION" = "7.2" ]; then
+            ROCM_DIR_PATH="7.2"
         else
             ROCM_DIR_PATH="$ROCM_VERSION"
         fi
@@ -854,9 +854,9 @@ install_rocm() {
             print_success "Installed amdgpu-install package"
         fi
 
-        # Setup ROCm repositories - handle ROCm 7.0 with proper GPG verification
-        if [ "$ROCM_VERSION" = "7.0.0" ]; then
-            print_step "Setting up ROCm 7.0 repositories..."
+        # Setup ROCm repositories - handle ROCm 7.x with proper GPG verification
+        if [ "$ROCM_VERSION" = "7.1" ]; then
+            print_step "Setting up ROCm 7.1 repositories..."
 
             # Clean up existing repository files
             execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
@@ -868,9 +868,9 @@ install_rocm() {
 
             # Use noble (Ubuntu 24.04) repositories for better compatibility
             execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << 'EOF'
-deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.0 noble main
-deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.0/ubuntu noble main
-EOF" "Adding ROCm 7.0 repositories with Ubuntu Noble compatibility"
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1 noble main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.1/ubuntu noble main
+EOF" "Adding ROCm 7.1 repositories with Ubuntu Noble compatibility"
 
             # Set proper repository priorities
             execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
@@ -879,7 +879,32 @@ Pin: release o=repo.radeon.com
 Pin-Priority: 600
 EOF" "Setting ROCm repository priorities"
 
-            print_success "ROCm 7.0 repositories configured for Ubuntu Noble compatibility"
+            print_success "ROCm 7.1 repositories configured for Ubuntu Noble compatibility"
+        elif [ "$ROCM_VERSION" = "7.2" ]; then
+            print_step "Setting up ROCm 7.2 repositories..."
+
+            # Clean up existing repository files
+            execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
+
+            # Ensure GPG key is properly installed
+            execute_command "sudo mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
+            execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
+            execute_command "sudo chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
+
+            # Use noble (Ubuntu 24.04) repositories for better compatibility
+            execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << 'EOF'
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2 noble main
+deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.2/ubuntu noble main
+EOF" "Adding ROCm 7.2 repositories with Ubuntu Noble compatibility"
+
+            # Set proper repository priorities
+            execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+EOF" "Setting ROCm repository priorities"
+
+            print_success "ROCm 7.2 repositories configured for Ubuntu Noble compatibility"
         else
             # For ROCm 6.4.3, use Ubuntu Noble repositories
             print_step "Setting up ROCm $ROCM_VERSION repositories..."
@@ -1055,61 +1080,61 @@ esac
 
     print_success "Installed ROCm ($INSTALL_TYPE)"
 
-    # Install ROCm 7.0.0 specific frameworks if selected and ROCm 7.0 was installed
-    if [ "$INSTALL_ROCM7_FRAMEWORKS" = true ] && [ "$ROCM_VERSION" = "7.0.0" ]; then
-        print_section "Installing ROCm 7.0.0 Updated Frameworks"
+    # Install ROCm 7.1 specific frameworks if selected and ROCm 7.1 was installed
+    if [ "$INSTALL_ROCM7_FRAMEWORKS" = true ] && [ "$ROCM_VERSION" = "7.1" ]; then
+        print_section "Installing ROCm 7.1 Updated Frameworks"
 
-        # Install PyTorch 2.8.0 with ROCm 7.0 support from manylinux repo
-        print_step "Installing PyTorch 2.8.0 for ROCm 7.0..."
+        # Install PyTorch 2.8.0 with ROCm 7.1 support from manylinux repo
+        print_step "Installing PyTorch 2.8.0 for ROCm 7.1..."
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ torch torchvision torchaudio
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ torch torchvision torchaudio
             deactivate
         else
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ torch torchvision torchaudio
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ torch torchvision torchaudio
         fi
 
-        # Install other ROCm 7.0 frameworks from manylinux repo
-        print_step "Installing additional ROCm 7.0.0 frameworks..."
+        # Install other ROCm 7.1 frameworks from manylinux repo
+        print_step "Installing additional ROCm 7.1 frameworks..."
 
         # Install JAX 0.6.0
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ jax jaxlib
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ jax jaxlib
             deactivate
         else
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ jax jaxlib
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ jax jaxlib
         fi
 
         # Install ONNX Runtime 1.22.1
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ onnxruntime
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ onnxruntime
             deactivate
         else
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ onnxruntime
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ onnxruntime
         fi
 
         # Install TensorFlow 2.17.1
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ tensorflow
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ tensorflow
             deactivate
         else
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ tensorflow
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ tensorflow
         fi
 
-        # Install PyTorch Triton for ROCm 7.0
-        print_step "Installing PyTorch Triton for ROCm 7.0..."
+        # Install PyTorch Triton for ROCm 7.1
+        print_step "Installing PyTorch Triton for ROCm 7.1..."
         if [ "$CREATE_VENV" = true ]; then
             source "$VENV_PATH/bin/activate"
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ pytorch-triton-rocm
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ pytorch-triton-rocm
             deactivate
         else
-            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ pytorch-triton-rocm
+            python3 -m pip install --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/ pytorch-triton-rocm
         fi
 
-        print_success "Installed ROCm 7.0.0 updated frameworks"
+        print_success "Installed ROCm 7.1 updated frameworks"
     fi
 
     # Set up ROCm environment variables
