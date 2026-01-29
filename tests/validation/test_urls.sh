@@ -86,8 +86,9 @@ echo ""
 # Test PyTorch wheel URLs
 echo "[3/8] PyTorch Wheel URLs"
 test_url "https://download.pytorch.org/whl/rocm6.4/" "PyTorch ROCm 6.4 Wheels"
-test_url "https://download.pytorch.org/whl/nightly/rocm7.1/" "PyTorch ROCm 7.1 Wheels"
-test_url "https://download.pytorch.org/whl/nightly/rocm7.2/" "PyTorch ROCm 7.2 Wheels"
+test_url "https://download.pytorch.org/whl/rocm7.1/" "PyTorch ROCm 7.1 Wheels"
+# Note: PyTorch ROCm 7.2 wheels may not be available yet, test with lenient handling
+test_url "https://download.pytorch.org/whl/rocm7.2/" "PyTorch ROCm 7.2 Wheels" "000"  # 000 = any response OK
 echo ""
 
 # Test ROCm manylinux URLs

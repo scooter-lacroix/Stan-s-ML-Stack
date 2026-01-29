@@ -6,7 +6,7 @@ if [ -f "$HOME/.mlstack_env" ]; then
 fi
 
 printf '\n========================================\n'
-printf 'Stan\'s ML Stack Verification\n'
+printf "Stan's ML Stack Verification\n"
 printf '========================================\n'
 printf 'ROCm Version : %s\n' "${ROCM_VERSION:-unknown}"
 printf 'ROCm Channel : %s\n' "${ROCM_CHANNEL:-unknown}"

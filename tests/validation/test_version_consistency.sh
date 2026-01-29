@@ -55,10 +55,16 @@ fi
 echo "[3/5] Checking for outdated version references"
 OUTDATED_FOUND=0
 for old_version in "7.0.0" "7.0.2" "7.9.0"; do
-    # Check main scripts (excluding comments about what was updated)
-    if grep -r "$old_version" scripts/install_rocm.sh scripts/install_rocm_channel.sh 2>/dev/null | grep -v "#" | grep -q .; then
+    # Check main scripts (excluding comments and legitimate detection/migration code)
+    # Detection code for existing installations is OK - ignore lines with:
+    # - /opt/rocm-<version> (existing installation detection)
+    # - comments (#)
+    if grep -r "$old_version" scripts/install_rocm.sh scripts/install_rocm_channel.sh 2>/dev/null | \
+       grep -v "#" | \
+       grep -v "/opt/rocm-" | \
+       grep -q .; then
         echo -e "${YELLOW}⚠ FOUND${NC} (Outdated version $old_version still referenced)"
-        grep -n "$old_version" scripts/install_rocm.sh scripts/install_rocm_channel.sh | grep -v "#" | head -5
+        grep -n "$old_version" scripts/install_rocm.sh scripts/install_rocm_channel.sh | grep -v "#" | grep -v "/opt/rocm-" | head -5
         ((OUTDATED_FOUND++)) || true
     fi
 done
