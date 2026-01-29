@@ -37,6 +37,30 @@ fi
 # Change to the installer directory
 cd "$GO_INSTALLER_DIR" || exit 1
 
+# Check if running as root
+if [ "$EUID" -eq 0 ]; then
+    # Already running as root
+    echo -e "${GREEN}${BOLD}Running with root privileges${RESET}"
+    echo ""
+else
+    # Not running as root - check if we should use sudo
+    echo -e "${YELLOW}${BOLD}This installer requires root privileges for full functionality.${RESET}"
+    echo ""
+
+    # Check if sudo is available
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo -e "${RED}${BOLD}Error: sudo not found. Please run as root.${RESET}"
+        exit 1
+    fi
+
+    # Check if we can sudo without password or prompt once
+    echo -e "${CYAN}The installer will now restart with sudo...${RESET}"
+    echo ""
+
+    # Re-run this script with sudo, preserving environment
+    exec sudo -E "$0" "$@"
+fi
+
 # Try to find a working executable
 # Priority: mlstack-installer-fixed > mlstack-installer-rebuilt > mlstack-installer > build/mlstack-installer
 EXECUTABLE=""
@@ -91,15 +115,39 @@ fi
 echo -e "${GREEN}${BOLD}Found Go installer: $EXECUTABLE${RESET}"
 echo ""
 
-# Check if running as root or if we should prompt for sudo
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}${BOLD}Note: The Go installer requires root privileges for full functionality.${RESET}"
-    echo -e "${CYAN}The installer will run in demo mode without root access.${RESET}"
+# Display terminal diagnostics
+echo -e "${CYAN}Terminal Diagnostics:${RESET}"
+echo "  TERM: $TERM"
+echo "  TTY available: $(test -t 0 && echo 'Yes' || echo 'No')"
+echo "  stdin is TTY: $(test -t 0 && echo 'Yes' || echo 'No')"
+echo "  stdout is TTY: $(test -t 1 && echo 'Yes' || echo 'No')"
+echo ""
+
+# Check for required terminal capabilities
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+    echo -e "${RED}${BOLD}Error: This installer requires an interactive terminal (TTY).${RESET}"
     echo ""
+    echo "Please run this directly in a terminal, not through:"
+    echo "  • Pipes or redirects"
+    echo "  • Background jobs"
+    echo "  • Cron jobs"
+    echo "  • Non-interactive shells"
+    echo ""
+    echo "Try running in a real terminal with:"
+    echo "  sudo ./scripts/run_go_ui.sh"
+    exit 1
+fi
+
+# Ensure proper TERM setting
+if [ -z "$TERM" ] || [ "$TERM" = "dumb" ]; then
+    export TERM=xterm-256color
+    echo -e "${YELLOW}Setting TERM to xterm-256color for better compatibility${RESET}"
 fi
 
 # Launch the installer
 echo -e "${CYAN}${BOLD}Launching Stan's ML Stack Installer...${RESET}"
+echo ""
+echo -e "${YELLOW}Tip: Press Ctrl+C to exit the installer at any time${RESET}"
 echo ""
 
 # Run the executable
