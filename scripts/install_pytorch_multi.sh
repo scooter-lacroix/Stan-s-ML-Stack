@@ -3,13 +3,38 @@
 
 set -euo pipefail
 
+# Source GPU detection utilities if available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/gpu_detection_utils.sh" ]; then
+    source "$SCRIPT_DIR/gpu_detection_utils.sh"
+fi
+
 if [ -f "$HOME/.mlstack_env" ]; then
     source "$HOME/.mlstack_env"
 fi
 
 ROCM_VERSION=${ROCM_VERSION:-7.2}
 ROCM_CHANNEL=${ROCM_CHANNEL:-latest}
-GPU_ARCH=${GPU_ARCH:-$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1 || echo gfx1100)}
+
+# Detect GPU architecture with validation
+if [ -z "$GPU_ARCH" ]; then
+    if type detect_gpu_architecture >/dev/null 2>&1; then
+        GPU_ARCH=$(detect_gpu_architecture) || exit 1
+    else
+        # Fallback to old method if utils not available
+        GPU_ARCH=$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1)
+        if [ -z "$GPU_ARCH" ]; then
+            echo "ERROR: Unable to detect GPU architecture" >&2
+            echo "Please ensure ROCm is installed and GPU is properly configured." >&2
+            exit 1
+        fi
+    fi
+fi
+
+# Validate GPU detection
+if type validate_gpu_detection >/dev/null 2>&1; then
+    validate_gpu_detection "$GPU_ARCH" "$(basename "$0")" || exit 1
+fi
 
 case "$GPU_ARCH" in
     gfx1030|gfx1031|gfx1032|gfx1034|gfx1035|gfx1036)
