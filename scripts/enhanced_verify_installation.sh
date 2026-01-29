@@ -28,15 +28,17 @@ PY
 
 echo "[3/4] Components"
 for module in flash_attn vllm triton onnxruntime migraphx bitsandbytes; do
-    python3 - <<PY
+    python3 -c "
 import importlib
-mod = "${module}"
+import sys
+mod = '${module}'
 try:
     importlib.import_module(mod)
-    print(f"  ✓ {mod}")
+    print(f'  ✓ {mod}')
 except Exception as exc:
-    print(f"  ✗ {mod}: {exc}")
-PY
+    print(f'  ✗ {mod}: {exc}')
+    sys.exit(1)
+"
 done
 
 echo "[4/4] Environment"
