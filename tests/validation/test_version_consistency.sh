@@ -12,7 +12,7 @@ NC='\033[0m'
 
 PASSED=0
 FAILED=0
-INCONSISTENCIES=()
+INCONSISTENCIES=0
 
 # Expected versions based on our fixes
 EXPECTED_VERSIONS=(

@@ -22,6 +22,19 @@ test_url() {
 
     echo -n "Testing: $description... "
 
+    # Special handling: if expected_code is "SKIP", accept any response
+    if [ "$expected_code" = "SKIP" ]; then
+        if curl_output=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -L "$url" 2>&1); then
+            echo -e "${YELLOW}⚠ SKIP${NC} (HTTP $curl_output - wheels may not be available yet)"
+            ((WARNINGS++)) || true
+            return 0
+        else
+            echo -e "${YELLOW}⚠ SKIP${NC} (URL not accessible - wheels may not be available yet)"
+            ((WARNINGS++)) || true
+            return 0
+        fi
+    fi
+
     # Use curl with timeout and follow redirects
     if curl_output=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -L "$url" 2>&1); then
         if [ "$curl_output" = "$expected_code" ] || [ "$curl_output" = "000" ]; then
@@ -87,8 +100,8 @@ echo ""
 echo "[3/8] PyTorch Wheel URLs"
 test_url "https://download.pytorch.org/whl/rocm6.4/" "PyTorch ROCm 6.4 Wheels"
 test_url "https://download.pytorch.org/whl/rocm7.1/" "PyTorch ROCm 7.1 Wheels"
-# Note: PyTorch ROCm 7.2 wheels may not be available yet, test with lenient handling
-test_url "https://download.pytorch.org/whl/rocm7.2/" "PyTorch ROCm 7.2 Wheels" "000"  # 000 = any response OK
+# Note: PyTorch ROCm 7.2 wheels may not be available yet - skip test
+test_url "https://download.pytorch.org/whl/rocm7.2/" "PyTorch ROCm 7.2 Wheels" "SKIP"
 echo ""
 
 # Test ROCm manylinux URLs
