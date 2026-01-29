@@ -11,7 +11,7 @@ ROCM_CHANNEL=${ROCM_CHANNEL:-latest}
 GPU_ARCH=${GPU_ARCH:-$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1 || echo gfx1100)}
 
 # Define stable tags for reproducibility
-VLLM_STABLE_TAG="v0.6.6.post1"
+VLLM_STABLE_TAG="v0.15.0"
 VLLM_PREVIEW_BRANCH="main"
 
 TMP_DIR=${TMPDIR:-/tmp}/vllm-rocm

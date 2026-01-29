@@ -120,20 +120,20 @@ echo ""
 
 # Test Flash Attention tags
 echo "[1/3] Flash Attention Tags"
-test_git_tag "https://github.com/ROCm/flash-attention.git" "v2.7.3" "Flash Attention stable tag"
+test_git_tag "https://github.com/ROCm/flash-attention.git" "v2.8.0-cktile" "Flash Attention stable tag"
 test_git_branch "https://github.com/ROCm/flash-attention.git" "main_perf" "Flash Attention preview branch"
 echo ""
 
 # Test Triton tags
 echo "[2/3] Triton Tags"
-test_git_tag "https://github.com/ROCm/triton.git" "v2.3.0" "Triton stable tag"
+test_git_branch "https://github.com/ROCm/triton.git" "3.2.0" "Triton stable branch"
 test_git_branch "https://github.com/ROCm/triton.git" "triton-mlir" "Triton MLIR branch"
 test_git_branch "https://github.com/ROCm/triton.git" "main" "Triton main branch"
 echo ""
 
 # Test vLLM tags
 echo "[3/3] vLLM Tags"
-test_git_tag "https://github.com/vllm-project/vllm.git" "v0.6.6.post1" "vLLM stable tag"
+test_git_tag "https://github.com/vllm-project/vllm.git" "v0.15.0" "vLLM stable tag"
 test_git_branch "https://github.com/vllm-project/vllm.git" "main" "vLLM main branch"
 echo ""
 

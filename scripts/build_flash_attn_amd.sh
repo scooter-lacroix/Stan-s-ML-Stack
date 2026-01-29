@@ -11,7 +11,8 @@ ROCM_CHANNEL=${ROCM_CHANNEL:-latest}
 GPU_ARCH=${GPU_ARCH:-$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1 || echo gfx1100)}
 
 # Define stable tags for reproducibility
-FLASH_ATTENTION_STABLE_TAG="v2.7.3"
+# ROCm flash-attention uses -cktile suffix tags
+FLASH_ATTENTION_STABLE_TAG="v2.8.0-cktile"
 FLASH_ATTENTION_PREVIEW_BRANCH="main_perf"
 
 TMP_DIR=${TMPDIR:-/tmp}/flash-attention-rocm
