@@ -751,19 +751,40 @@ install_rocm() {
         print_section "Installing ROCm"
 
         # Choose ROCm version (only if not additional components)
-        echo
-        echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
+        # Check for non-interactive mode (pre-seeded choice)
+        if [ -n "$INSTALL_ROCM_PRESEEDED_CHOICE" ]; then
+            # Non-interactive mode: use pre-seeded choice
+            ROCM_CHOICE="$INSTALL_ROCM_PRESEEDED_CHOICE"
 
-        echo "1) ROCm 6.4.3 (Legacy - Stable)"
-        echo "2) ROCm 7.1 (Stable)"
-        echo "3) ROCm 7.2 (Latest - Recommended)"
-        echo
-        echo -e "${YELLOW}NOTE: ROCm 7.10.0 Preview is not available through this installer.${RESET}"
-        echo -e "${YELLOW}      ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only).${RESET}"
-        echo -e "${YELLOW}      See: https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html${RESET}"
-        echo
-        read -p "Choose ROCm version (1-3) [3]: " ROCM_CHOICE
-        ROCM_CHOICE=${ROCM_CHOICE:-3}
+            # Validate the choice is in valid range
+            if [[ ! "$ROCM_CHOICE" =~ ^[1-3]$ ]]; then
+                print_error "Invalid INSTALL_ROCM_PRESEEDED_CHOICE value: $ROCM_CHOICE"
+                echo
+                echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2)${RESET}"
+                echo
+                echo -e "${CYAN}For ROCm 7.10.0 Preview (TheRock distribution):${RESET}"
+                echo "  https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html"
+                return 1
+            fi
+
+            # Set default if choice is empty
+            ROCM_CHOICE=${ROCM_CHOICE:-3}
+        else
+            # Interactive mode: prompt user
+            echo
+            echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
+
+            echo "1) ROCm 6.4.3 (Legacy - Stable)"
+            echo "2) ROCm 7.1 (Stable)"
+            echo "3) ROCm 7.2 (Latest - Recommended)"
+            echo
+            echo -e "${YELLOW}NOTE: ROCm 7.10.0 Preview is not available through this installer.${RESET}"
+            echo -e "${YELLOW}      ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only).${RESET}"
+            echo -e "${YELLOW}      See: https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html${RESET}"
+            echo
+            read -p "Choose ROCm version (1-3) [3]: " ROCM_CHOICE
+            ROCM_CHOICE=${ROCM_CHOICE:-3}
+        fi
 
         case $ROCM_CHOICE in
             1)
@@ -800,6 +821,11 @@ install_rocm() {
                 return 1
                 ;;
         esac
+
+        # Log mode information for debugging
+        if [ -n "$INSTALL_ROCM_PRESEEDED_CHOICE" ]; then
+            print_step "Non-interactive mode: Using pre-seeded choice $ROCM_CHOICE ($ROCM_CHANNEL channel)"
+        fi
 
         # For ROCm 7.x, offer to install updated framework components
         if [ "$ROCM_CHOICE" = "2" ] || [ "$ROCM_CHOICE" = "3" ]; then
