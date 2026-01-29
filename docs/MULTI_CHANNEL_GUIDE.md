@@ -1,13 +1,14 @@
 # Stan's ML Stack - Multi-Channel ROCm Guide
 
-Stan's ML Stack supports four ROCm channels:
+Stan's ML Stack supports three ROCm channels:
 
 | Channel | ROCm Version | Recommended For |
 |---------|--------------|-----------------|
 | Legacy  | 6.4.3        | Maximum stability (RDNA 1/2) |
 | Stable  | 7.1          | Production RDNA 3 environments |
 | Latest  | 7.2          | Default choice, RDNA 3/4 |
-| Preview | 7.10.0       | Experimental testing via TheRock |
+
+**Note:** ROCm 7.10.0 Preview is not available through this installer. ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only). See: https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html
 
 ## Installing ROCm
 
@@ -20,7 +21,7 @@ Interactive mode:
 Non-interactive mode:
 
 ```bash
-./scripts/install_rocm_channel.sh latest   # legacy|stable|latest|preview
+./scripts/install_rocm_channel.sh latest   # legacy|stable|latest
 ```
 
 ## Component Installers

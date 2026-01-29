@@ -15,7 +15,10 @@ Channels:
   legacy  - ROCm 6.4.3
   stable  - ROCm 7.1
   latest  - ROCm 7.2 (default)
-  preview - ROCm 7.10.0 (technology preview)
+
+Note: ROCm 7.10.0 Preview is not available through this installer.
+      ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only).
+      See: https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html
 
 You can also set the ROCM_CHANNEL environment variable. If neither
 is provided, the script defaults to the "latest" channel.
@@ -26,7 +29,14 @@ case "$CHANNEL" in
     "" )
         CHANNEL="${ROCM_CHANNEL:-latest}"
         ;;
-    legacy|stable|latest|preview)
+    legacy|stable|latest)
+        ;;
+    preview)
+        echo "ERROR: ROCm 7.10.0 Preview is not available through this installer." >&2
+        echo "" >&2
+        echo "ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only)." >&2
+        echo "See: https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html" >&2
+        exit 1
         ;;
     -h|--help)
         usage
@@ -54,9 +64,6 @@ case "$CHANNEL" in
         ;;
     latest)
         export INSTALL_ROCM_PRESEEDED_CHOICE=3
-        ;;
-    preview)
-        export INSTALL_ROCM_PRESEEDED_CHOICE=4
         ;;
 esac
 
