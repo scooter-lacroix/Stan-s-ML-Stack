@@ -24,6 +24,8 @@ if [ "$ROCM_CHANNEL" = "preview" ]; then
     INDEX_URL="https://rocm.nightlies.amd.com/v2/${GPU_ARCH}/"
     EXTRA_FLAGS=(--pre --index-url "$INDEX_URL")
 else
+    # Pattern matching order is critical: more specific patterns must come before
+    # general patterns. For example, 7.1* must come before 7* to match correctly.
     case "${ROCM_VERSION%%.*}.${ROCM_VERSION#*.}" in
         6.4*) INDEX_URL="https://download.pytorch.org/whl/rocm6.4" ; EXTRA_FLAGS=(--index-url "$INDEX_URL") ;;
         7.1*) INDEX_URL="https://download.pytorch.org/whl/nightly/rocm7.1" ; EXTRA_FLAGS=(--pre --index-url "$INDEX_URL") ;;
