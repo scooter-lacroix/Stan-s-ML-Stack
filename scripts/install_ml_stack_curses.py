@@ -2601,17 +2601,17 @@ def draw_dependencies(stdscr, dependencies, selected_deps, selected_idx=None):
     for i, (dep, installed) in enumerate(deps_list):
         # Determine status symbol and color
         if installed:
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         else:
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
 
         # Add selection marker if this dependency is selected
         if dep in selected_deps:
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Highlight the currently focused item
         if i == selected_idx:
@@ -2643,13 +2643,13 @@ def draw_environment_scripts(stdscr, environment_scripts, selected_idx=None, sel
     for i, script in enumerate(environment_scripts):
         # Determine status symbol and color
         if script["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif script["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif script["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2665,10 +2665,10 @@ def draw_environment_scripts(stdscr, environment_scripts, selected_idx=None, sel
 
         # Use a filled circle for selected items, empty circle for unselected
         if is_selected:
-            selection = "◉"  # Filled circle for selected
+            selection = ">>>"  # Filled circle for selected
             log_message(f"Drawing script {script['name']} as selected")
         else:
-            selection = "○"  # Empty circle for unselected
+            selection = "   "  # Empty circle for unselected
             log_message(f"Drawing script {script['name']} as not selected")
 
         # Highlight the currently focused item
@@ -2733,13 +2733,13 @@ def draw_components(stdscr, foundation_components=None, core_components=None, ex
     for i, comp in enumerate(foundation_components):
         # Determine status symbol and color
         if comp["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif comp["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif comp["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2747,9 +2747,9 @@ def draw_components(stdscr, foundation_components=None, core_components=None, ex
 
         # Add selection marker
         if comp.get("selected", False):
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Create component text with proper truncation if needed
         component_text = f"{comp['name']} - {comp['description']}"
@@ -2771,13 +2771,13 @@ def draw_components(stdscr, foundation_components=None, core_components=None, ex
     for i, comp in enumerate(core_components):
         # Determine status symbol and color
         if comp["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif comp["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif comp["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2785,9 +2785,9 @@ def draw_components(stdscr, foundation_components=None, core_components=None, ex
 
         # Add selection marker
         if comp.get("selected", False):
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Create component text with proper truncation if needed
         component_text = f"{comp['name']} - {comp['description']}"
@@ -2809,13 +2809,13 @@ def draw_components(stdscr, foundation_components=None, core_components=None, ex
     for i, comp in enumerate(extension_components):
         # Determine status symbol and color
         if comp["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif comp["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif comp["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2823,9 +2823,9 @@ def draw_components(stdscr, foundation_components=None, core_components=None, ex
 
         # Add selection marker
         if comp.get("selected", False):
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Create component text with proper truncation if needed
         component_text = f"{comp['name']} - {comp['description']}"
@@ -2865,13 +2865,13 @@ def draw_installation_screen(stdscr, foundation_components=None, core_components
     for i, comp in enumerate(foundation_components):
         # Determine status symbol and color
         if comp["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif comp["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif comp["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2879,9 +2879,9 @@ def draw_installation_screen(stdscr, foundation_components=None, core_components
 
         # Add selection marker
         if comp.get("selected", False):
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Create component text with proper truncation if needed
         component_text = f"{comp['name']} - {comp['description']}"
@@ -2903,13 +2903,13 @@ def draw_installation_screen(stdscr, foundation_components=None, core_components
     for i, comp in enumerate(core_components):
         # Determine status symbol and color
         if comp["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif comp["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif comp["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2917,9 +2917,9 @@ def draw_installation_screen(stdscr, foundation_components=None, core_components
 
         # Add selection marker
         if comp.get("selected", False):
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Create component text with proper truncation if needed
         component_text = f"{comp['name']} - {comp['description']}"
@@ -2941,13 +2941,13 @@ def draw_installation_screen(stdscr, foundation_components=None, core_components
     for i, comp in enumerate(extension_components):
         # Determine status symbol and color
         if comp["status"] == "installed":
-            status = "✓"
+            status = "[OK]"
             color = COLOR_SUCCESS
         elif comp["status"] == "installing":
-            status = "⟳"
+            status = "[..]"
             color = COLOR_INFO
         elif comp["status"] == "failed":
-            status = "✗"
+            status = "[!!]"
             color = COLOR_ERROR
         else:
             status = " "
@@ -2955,9 +2955,9 @@ def draw_installation_screen(stdscr, foundation_components=None, core_components
 
         # Add selection marker
         if comp.get("selected", False):
-            selection = "◉"
+            selection = ">>>"
         else:
-            selection = "○"
+            selection = "   "
 
         # Create component text with proper truncation if needed
         component_text = f"{comp['name']} - {comp['description']}"
@@ -4057,13 +4057,13 @@ def main(stdscr):
 
                     for i, comp in enumerate(FOUNDATION_COMPONENTS):
                         if comp["status"] == "installed":
-                            status = "✓"
+                            status = "[OK]"
                             color = COLOR_SUCCESS
                         elif comp["status"] == "installing":
-                            status = "⟳"
+                            status = "[..]"
                             color = COLOR_INFO
                         elif comp["status"] == "failed":
-                            status = "✗"
+                            status = "[!!]"
                             color = COLOR_ERROR
                         else:
                             status = " "
@@ -4071,9 +4071,9 @@ def main(stdscr):
 
                         # Add selection marker
                         if comp.get("selected", False):
-                            selection = "◉"
+                            selection = ">>>"
                         else:
-                            selection = "○"
+                            selection = "   "
 
                         # Highlight the currently selected component
                         if inst_selected_section == 0 and i == inst_selected_idx:
@@ -4090,13 +4090,13 @@ def main(stdscr):
 
                     for i, comp in enumerate(CORE_COMPONENTS):
                         if comp["status"] == "installed":
-                            status = "✓"
+                            status = "[OK]"
                             color = COLOR_SUCCESS
                         elif comp["status"] == "installing":
-                            status = "⟳"
+                            status = "[..]"
                             color = COLOR_INFO
                         elif comp["status"] == "failed":
-                            status = "✗"
+                            status = "[!!]"
                             color = COLOR_ERROR
                         else:
                             status = " "
@@ -4104,9 +4104,9 @@ def main(stdscr):
 
                         # Add selection marker
                         if comp.get("selected", False):
-                            selection = "◉"
+                            selection = ">>>"
                         else:
-                            selection = "○"
+                            selection = "   "
 
                         # Highlight the currently selected component
                         if inst_selected_section == 1 and i == inst_selected_idx:
@@ -4123,13 +4123,13 @@ def main(stdscr):
 
                     for i, comp in enumerate(EXTENSION_COMPONENTS):
                         if comp["status"] == "installed":
-                            status = "✓"
+                            status = "[OK]"
                             color = COLOR_SUCCESS
                         elif comp["status"] == "installing":
-                            status = "⟳"
+                            status = "[..]"
                             color = COLOR_INFO
                         elif comp["status"] == "failed":
-                            status = "✗"
+                            status = "[!!]"
                             color = COLOR_ERROR
                         else:
                             status = " "
@@ -4137,9 +4137,9 @@ def main(stdscr):
 
                         # Add selection marker
                         if comp.get("selected", False):
-                            selection = "◉"
+                            selection = ">>>"
                         else:
-                            selection = "○"
+                            selection = "   "
 
                         # Highlight the currently selected component
                         if inst_selected_section == 2 and i == inst_selected_idx:
