@@ -6,8 +6,8 @@ set -euo pipefail
 
 # Color output
 RED='\033[0;31m'
-GREEN='\033[0;32M'
-YELLOW='\033[1;33M'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 PASSED=0
@@ -33,10 +33,10 @@ if grep -q "ROCm 6.4.3" scripts/install_rocm.sh && \
    grep -q "ROCm 7.1" scripts/install_rocm.sh && \
    grep -q "ROCm 7.2" scripts/install_rocm.sh; then
     echo -e "${GREEN}✓ PASS${NC} (Menu options correct)"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo -e "${RED}✗ FAIL${NC} (Menu options incorrect)"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 2: Check install_rocm.sh version variables
@@ -45,10 +45,10 @@ if grep -q 'ROCM_VERSION="7.1"' scripts/install_rocm.sh && \
    grep -q 'ROCM_VERSION="7.2"' scripts/install_rocm.sh && \
    grep -q 'ROCM_VERSION="6.4.3"' scripts/install_rocm.sh; then
     echo -e "${GREEN}✓ PASS${NC} (Version variables correct)"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo -e "${RED}✗ FAIL${NC} (Version variables incorrect)"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 3: Check for outdated version references
@@ -59,16 +59,16 @@ for old_version in "7.0.0" "7.0.2" "7.9.0"; do
     if grep -r "$old_version" scripts/install_rocm.sh scripts/install_rocm_channel.sh 2>/dev/null | grep -v "#" | grep -q .; then
         echo -e "${YELLOW}⚠ FOUND${NC} (Outdated version $old_version still referenced)"
         grep -n "$old_version" scripts/install_rocm.sh scripts/install_rocm_channel.sh | grep -v "#" | head -5
-        ((OUTDATED_FOUND++))
+        ((OUTDATED_FOUND++)) || true
     fi
 done
 
 if [ $OUTDATED_FOUND -eq 0 ]; then
     echo -e "${GREEN}✓ PASS${NC} (No outdated versions found)"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo -e "${YELLOW}⚠ WARNING${NC} (Found $OUTDATED_FOUND outdated version references)"
-    ((INCONSISTENCIES++))
+    ((INCONSISTENCIES++)) || true
 fi
 
 # Test 4: Check MULTI_CHANNEL_GUIDE.md consistency
@@ -77,10 +77,10 @@ if grep -q "6.4.3" docs/MULTI_CHANNEL_GUIDE.md && \
    grep -q "7.1" docs/MULTI_CHANNEL_GUIDE.md && \
    grep -q "7.2" docs/MULTI_CHANNEL_GUIDE.md; then
     echo -e "${GREEN}✓ PASS${NC} (Guide versions correct)"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo -e "${RED}✗ FAIL${NC} (Guide versions incorrect)"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 5: Check preview channel removal
@@ -88,10 +88,10 @@ echo "[5/5] Checking preview channel properly removed"
 if ! grep -q "ROCm 7.10.0.*Preview.*Experimental" scripts/install_rocm.sh && \
    ! grep -q "^.*preview.*-.*ROCm 7.10.0" docs/MULTI_CHANNEL_GUIDE.md; then
     echo -e "${GREEN}✓ PASS${NC} (Preview option properly removed)"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo -e "${YELLOW}⚠ WARNING${NC} (Preview option still present in some form)"
-    ((INCONSISTENCIES++))
+    ((INCONSISTENCIES++)) || true
 fi
 
 # Test 6: Check channel wrapper consistency
@@ -100,10 +100,10 @@ if grep -q "legacy.*6.4.3" scripts/install_rocm_channel.sh && \
    grep -q "stable.*7.1" scripts/install_rocm_channel.sh && \
    grep -q "latest.*7.2" scripts/install_rocm_channel.sh; then
     echo -e "${GREEN}✓ PASS${NC} (Channel wrapper consistent)"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo -e "${RED}✗ FAIL${NC} (Channel wrapper inconsistent)"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 echo ""

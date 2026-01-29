@@ -6,8 +6,8 @@ set -euo pipefail
 
 # Color output
 RED='\033[0;31m'
-GREEN='\033[0;32M'
-YELLOW='\033[1;33M'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 PASSED=0
@@ -29,21 +29,21 @@ test_git_tag() {
     # Clone shallow (just the tag we need)
     if git clone --depth 1 --branch "$tag" --single-branch "$repo" "$tmpdir" >/dev/null 2>&1; then
         echo -e "${GREEN}✓ PASS${NC} (Tag exists)"
-        ((PASSED++))
+        ((PASSED++)) || true
         return 0
     else
         # Tag might not exist, try to fetch and check
         cd "$tmpdir"
         if git fetch --tags origin "$tag" >/dev/null 2>&1; then
             echo -e "${GREEN}✓ PASS${NC} (Tag exists via fetch)"
-            ((PASSED++))
+            ((PASSED++)) || true
             cd -
             return 0
         else
             echo -e "${RED}✗ FAIL${NC} (Tag not found)"
             echo "  Repo: $repo"
             echo "  Tag: $tag"
-            ((FAILED++))
+            ((FAILED++)) || true
             cd -
             return 1
         fi
@@ -67,21 +67,21 @@ test_git_branch() {
         cd "$tmpdir"
         if git checkout "$branch" >/dev/null 2>&1; then
             echo -e "${GREEN}✓ PASS${NC} (Branch exists)"
-            ((PASSED++))
+            ((PASSED++)) || true
             cd -
             return 0
         else
             echo -e "${RED}✗ FAIL${NC} (Branch not found)"
             echo "  Repo: $repo"
             echo "  Branch: $branch"
-            ((FAILED++))
+            ((FAILED++)) || true
             cd -
             return 1
         fi
     else
         echo -e "${YELLOW}⚠ SKIP${NC} (Could not clone repo)"
         echo "  Repo: $repo"
-        ((SKIPPED++))
+        ((SKIPPED++)) || true
         return 2
     fi
 }
@@ -95,12 +95,12 @@ test_repo_accessible() {
 
     if git ls-remote --heads "$repo" >/dev/null 2>&1; then
         echo -e "${GREEN}✓ PASS${NC}"
-        ((PASSED++))
+        ((PASSED++)) || true
         return 0
     else
         echo -e "${RED}✗ FAIL${NC} (Repository not accessible)"
         echo "  Repo: $repo"
-        ((FAILED++))
+        ((FAILED++)) || true
         return 1
     fi
 }

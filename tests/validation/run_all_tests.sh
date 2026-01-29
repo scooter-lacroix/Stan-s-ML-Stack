@@ -6,9 +6,9 @@ set -euo pipefail
 
 # Color output
 RED='\033[0;31m'
-GREEN='\033[0;32M'
-YELLOW='\033[1;33M'
-CYAN='\033[0;36M'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -30,11 +30,11 @@ run_test() {
     if "$test_script"; then
         local result="✓ PASSED"
         local exit_code=0
-        ((TOTAL_PASSED++))
+        ((TOTAL_PASSED++)) || true
     else
         local result="✗ FAILED"
         local exit_code=1
-        ((TOTAL_FAILED++))
+        ((TOTAL_FAILED++)) || true
     fi
 
     TEST_RESULTS+=("$test_name: $result")
@@ -63,7 +63,7 @@ run_test "URL Validation" "$SCRIPT_DIR/test_urls.sh"
 run_test "Git Tag Validation" "$SCRIPT_DIR/test_git_tags.sh"
 run_test "Script Syntax Validation" "$SCRIPT_DIR/test_script_syntax.sh"
 run_test "Version Consistency Check" "$SCRIPT_DIR/test_version_consistency.sh"
-run_test "Environment Validation Test" "$SCRIPT_DIR/test_env_validation.sh"
+run_test "Environment Validation Test" "$SCRIPT_DIR/test_env_validation_simple.sh"
 
 # Print final summary
 echo ""

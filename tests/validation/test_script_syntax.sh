@@ -6,12 +6,13 @@ set -euo pipefail
 
 # Color output
 RED='\033[0;31m'
-GREEN='\033[0;32M'
-YELLOW='\033[1;33M'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 PASSED=0
 FAILED=0
+SKIPPED=0
 
 # List of modified scripts to validate
 SCRIPTS=(
@@ -42,19 +43,19 @@ for script in "${SCRIPTS[@]}"; do
 
     if [ ! -f "$script" ]; then
         echo -e "${YELLOW}⚠ SKIP${NC} (File not found)"
-        ((SKIPPED++))
+        ((SKIPPED++)) || true
         continue
     fi
 
     # Test syntax with bash -n
     if bash -n "$script" 2>&1; then
         echo -e "${GREEN}✓ PASS${NC} (Syntax valid)"
-        ((PASSED++))
+        ((PASSED++)) || true
     else
         echo -e "${RED}✗ FAIL${NC} (Syntax error)"
         echo "  Error output:"
         bash -n "$script" 2>&1 | sed 's/^/    /'
-        ((FAILED++))
+        ((FAILED++)) || true
     fi
 done
 

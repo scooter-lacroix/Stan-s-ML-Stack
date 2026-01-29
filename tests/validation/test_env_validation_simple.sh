@@ -20,10 +20,10 @@ echo "Test 1: Missing .mlstack_env"
 TEST_HOME=$(mktemp -d)
 if ! HOME="$TEST_HOME" validate_mlstack_env "test" >/dev/null 2>&1; then
     echo "  PASS: Correctly detects missing file"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo "  FAIL: Does not detect missing file"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 2: Invalid version should fail
@@ -33,10 +33,10 @@ export ROCM_CHANNEL="stable"
 export GPU_ARCH="gfx1100"
 if ! validate_mlstack_env "test" >/dev/null 2>&1; then
     echo "  PASS: Correctly detects invalid version"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo "  FAIL: Does not detect invalid version"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 3: Invalid channel should fail
@@ -46,10 +46,10 @@ export ROCM_CHANNEL="bad"
 export GPU_ARCH="gfx1100"
 if ! validate_mlstack_env "test" >/dev/null 2>&1; then
     echo "  PASS: Correctly detects invalid channel"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo "  FAIL: Does not detect invalid channel"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 4: Invalid GPU arch should fail
@@ -59,10 +59,10 @@ export ROCM_CHANNEL="latest"
 export GPU_ARCH="bad"
 if ! validate_mlstack_env "test" >/dev/null 2>&1; then
     echo "  PASS: Correctly detects invalid GPU arch"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo "  FAIL: Does not detect invalid GPU arch"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 # Test 5: Valid config should pass
@@ -72,10 +72,10 @@ export ROCM_CHANNEL="latest"
 export GPU_ARCH="gfx1100"
 if validate_mlstack_env "test" >/dev/null 2>&1; then
     echo "  PASS: Correctly accepts valid environment"
-    ((PASSED++))
+    ((PASSED++)) || true
 else
     echo "  FAIL: Does not accept valid environment"
-    ((FAILED++))
+    ((FAILED++)) || true
 fi
 
 echo ""

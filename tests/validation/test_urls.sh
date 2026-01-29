@@ -26,18 +26,18 @@ test_url() {
     if curl_output=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -L "$url" 2>&1); then
         if [ "$curl_output" = "$expected_code" ] || [ "$curl_output" = "000" ]; then
             echo -e "${GREEN}✓ PASS${NC} (HTTP $curl_output)"
-            ((PASSED++))
+            ((PASSED++)) || true
             return 0
         else
             echo -e "${RED}✗ FAIL${NC} (HTTP $curl_output, expected $expected_code)"
             echo "  URL: $url"
-            ((FAILED++))
+            ((FAILED++)) || true
             return 1
         fi
     else
         echo -e "${YELLOW}⚠ WARNING${NC} (curl failed: $curl_output)"
         echo "  URL: $url"
-        ((WARNINGS++))
+        ((WARNINGS++)) || true
         return 2
     fi
 }
@@ -53,12 +53,12 @@ test_apt_repo() {
     # Some repos return 404 for directory listing but packages exist, so we're lenient
     if curl -s --head --max-time 10 "$url" | head -n 1 | grep -q "HTTP\|200\|404\|403"; then
         echo -e "${GREEN}✓ PASS${NC} (Repository accessible)"
-        ((PASSED++))
+        ((PASSED++)) || true
         return 0
     else
         echo -e "${RED}✗ FAIL${NC} (Repository not accessible)"
         echo "  URL: $url"
-        ((FAILED++))
+        ((FAILED++)) || true
         return 1
     fi
 }
