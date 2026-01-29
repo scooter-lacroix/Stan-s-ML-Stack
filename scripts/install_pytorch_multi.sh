@@ -3,13 +3,26 @@
 
 set -euo pipefail
 
-# Source GPU detection utilities if available
+# Source utility scripts if available
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/env_validation_utils.sh" ]; then
+    source "$SCRIPT_DIR/env_validation_utils.sh"
+fi
 if [ -f "$SCRIPT_DIR/gpu_detection_utils.sh" ]; then
     source "$SCRIPT_DIR/gpu_detection_utils.sh"
 fi
 
-if [ -f "$HOME/.mlstack_env" ]; then
+# Require and validate .mlstack_env
+if type require_mlstack_env >/dev/null 2>&1; then
+    require_mlstack_env "$(basename "$0")"
+else
+    # Fallback validation if utils not available
+    if [ ! -f "$HOME/.mlstack_env" ]; then
+        echo "ERROR: Required environment file not found: $HOME/.mlstack_env" >&2
+        echo "Please run ./scripts/install_rocm.sh to create this file." >&2
+        exit 1
+    fi
+    # shellcheck source=/dev/null
     source "$HOME/.mlstack_env"
 fi
 
