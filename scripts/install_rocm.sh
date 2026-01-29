@@ -867,12 +867,27 @@ install_rocm() {
             execute_command "wget -q https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/$repo/$ubuntu_codename/amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Downloading amdgpu-install package..."
         fi
 
+        # Fix: Pre-create the file that causes postinst script failures
+        # The amdgpu-install postinst script tries to create this file and fails
+        print_step "Applying permission fix for amdgpu-install..."
+        execute_command "sudo touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
+        execute_command "sudo chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
+
         # Install the package
         execute_command "sudo apt install -y ./amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Installing amdgpu-install package..."
 
+        # Handle postinst script failures gracefully
         if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
-            print_error "Failed to install amdgpu-install package"
-            return 1
+            print_warning "amdgpu-install installation had post-install script issues, attempting recovery..."
+            # Try to reconfigure the package
+            execute_command "sudo dpkg --configure -a" "Reconfiguring packages"
+            # Check if the package is actually installed despite the error
+            if dpkg -l | grep -q "^ii.*amdgpu-install"; then
+                print_success "amdgpu-install package is installed (post-install warnings can be ignored)"
+            else
+                print_error "Failed to install amdgpu-install package"
+                return 1
+            fi
         elif [ "$DRY_RUN" != true ]; then
             print_success "Installed amdgpu-install package"
         fi
