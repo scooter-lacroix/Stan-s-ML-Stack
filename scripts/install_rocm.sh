@@ -14,7 +14,7 @@
 # =============================================================================
 # This script installs AMD's ROCm platform for GPU computing.
 # Fixed GPG signature verification issues on Debian Trixie (13).
-# Supports ROCm 7.0.0 with updated frameworks from manylinux repositories.
+# Supports ROCm 7.1 and 7.2 with updated frameworks from manylinux repositories.
 # =============================================================================
 
 # ASCII Art Banner (skip if --show-env is used)
@@ -393,25 +393,25 @@ setup_gpg_fix() {
     print_step "Setting up GPG fix for Debian Trixie..."
 
     # Remove existing broken setup
-    execute_command "sudo rm -f /etc/apt/sources.list.d/rocm.list" "Removing existing broken ROCm repository"
-    execute_command "sudo rm -f /etc/apt/preferences.d/rocm-pin-600" "Removing existing ROCm preferences"
-    execute_command "sudo rm -f /etc/apt/keyrings/rocm.gpg" "Removing existing ROCm GPG key"
+    execute_command "sudo_with_pass rm -f /etc/apt/sources.list.d/rocm.list" "Removing existing broken ROCm repository"
+    execute_command "sudo_with_pass rm -f /etc/apt/preferences.d/rocm-pin-600" "Removing existing ROCm preferences"
+    execute_command "sudo_with_pass rm -f /etc/apt/keyrings/rocm.gpg" "Removing existing ROCm GPG key"
 
     # Create apt configuration to use gpgv instead of sqv for ROCm repos
-    execute_command "sudo mkdir -p /etc/apt/apt.conf.d" "Creating apt configuration directory"
+    execute_command "sudo_with_pass mkdir -p /etc/apt/apt.conf.d" "Creating apt configuration directory"
 
-    execute_command "sudo tee /etc/apt/apt.conf.d/99rocm-gpg-fix << 'EOF'
+    execute_command "sudo_with_pass tee /etc/apt/apt.conf.d/99rocm-gpg-fix << 'EOF'
 APT::Key::gpgvcommand \"/usr/bin/gpgv\";
 EOF" "Creating GPG verification override for ROCm repositories"
 
     # Create keyrings directory
-    execute_command "sudo mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
+    execute_command "sudo_with_pass mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
 
     # Download and install ROCm GPG key
-    execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
+    execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo_with_pass tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
 
     # Set proper permissions on the key
-    execute_command "sudo chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
+    execute_command "sudo_with_pass chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
 
     if [ $? -eq 0 ] && [ "$DRY_RUN" != true ]; then
         print_success "GPG fix applied for Debian Trixie"
@@ -445,14 +445,14 @@ validate_system() {
         print_warning "Missing required tools:$missing_tools"
         print_step "Installing missing tools..."
         if [ "$package_manager" = "apt" ]; then
-            execute_command "sudo apt update && sudo apt install -y wget gnupg curl" "Installing required tools"
+            execute_command "sudo_with_pass apt update && sudo_with_pass apt install -y wget gnupg curl" "Installing required tools"
         fi
     fi
 
     # Check if running as root (not recommended)
     if [ "$EUID" -eq 0 ]; then
         print_warning "Running as root is not recommended"
-        print_step "Consider running as a regular user with sudo privileges"
+        print_step "Consider running as a regular user with sudo_with_pass privileges"
     fi
 
     print_success "System validation completed"
@@ -590,19 +590,19 @@ install_rocm() {
             package_manager=$(detect_package_manager)
             case $package_manager in
                 apt)
-                    sudo apt update && sudo apt install -y rocminfo
+                    sudo_with_pass apt update && sudo_with_pass apt install -y rocminfo
                     ;;
                 dnf)
-                    sudo dnf install -y rocminfo
+                    sudo_with_pass dnf install -y rocminfo
                     ;;
                 yum)
-                    sudo yum install -y rocminfo
+                    sudo_with_pass yum install -y rocminfo
                     ;;
                 pacman)
-                    sudo pacman -S rocminfo
+                    sudo_with_pass pacman -S rocminfo
                     ;;
                 zypper)
-                    sudo zypper install -y rocminfo
+                    sudo_with_pass zypper install -y rocminfo
                     ;;
                 *)
                     print_error "Unsupported package manager: $package_manager"
@@ -870,17 +870,17 @@ install_rocm() {
         # Fix: Pre-create the file that causes postinst script failures
         # The amdgpu-install postinst script tries to create this file and fails
         print_step "Applying permission fix for amdgpu-install..."
-        execute_command "sudo touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
-        execute_command "sudo chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
+        execute_command "sudo_with_pass touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
+        execute_command "sudo_with_pass chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
 
         # Install the package
-        execute_command "sudo apt install -y ./amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Installing amdgpu-install package..."
+        execute_command "sudo_with_pass apt install -y ./amdgpu-install_${ROCM_INSTALL_VERSION}_all.deb" "Installing amdgpu-install package..."
 
         # Handle postinst script failures gracefully
         if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
             print_warning "amdgpu-install installation had post-install script issues, attempting recovery..."
             # Try to reconfigure the package
-            execute_command "sudo dpkg --configure -a" "Reconfiguring packages"
+            execute_command "sudo_with_pass dpkg --configure -a" "Reconfiguring packages"
             # Check if the package is actually installed despite the error
             if dpkg -l | grep -q "^ii.*amdgpu-install"; then
                 print_success "amdgpu-install package is installed (post-install warnings can be ignored)"
@@ -897,21 +897,21 @@ install_rocm() {
             print_step "Setting up ROCm 7.1 repositories..."
 
             # Clean up existing repository files
-            execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
+            execute_command "sudo_with_pass rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
 
             # Ensure GPG key is properly installed
-            execute_command "sudo mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
-            execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
-            execute_command "sudo chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
+            execute_command "sudo_with_pass mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
+            execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo_with_pass tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
+            execute_command "sudo_with_pass chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
 
             # Use noble (Ubuntu 24.04) repositories for better compatibility
-            execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << 'EOF'
+            execute_command "sudo_with_pass tee /etc/apt/sources.list.d/rocm.list << 'EOF'
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1 noble main
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.1/ubuntu noble main
 EOF" "Adding ROCm 7.1 repositories with Ubuntu Noble compatibility"
 
             # Set proper repository priorities
-            execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
+            execute_command "sudo_with_pass tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
 Package: *
 Pin: release o=repo.radeon.com
 Pin-Priority: 600
@@ -922,21 +922,21 @@ EOF" "Setting ROCm repository priorities"
             print_step "Setting up ROCm 7.2 repositories..."
 
             # Clean up existing repository files
-            execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
+            execute_command "sudo_with_pass rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
 
             # Ensure GPG key is properly installed
-            execute_command "sudo mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
-            execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
-            execute_command "sudo chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
+            execute_command "sudo_with_pass mkdir --parents --mode=0755 /etc/apt/keyrings" "Creating keyrings directory"
+            execute_command "wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | sudo_with_pass tee /etc/apt/keyrings/rocm.gpg > /dev/null" "Installing ROCm GPG key"
+            execute_command "sudo_with_pass chmod 644 /etc/apt/keyrings/rocm.gpg" "Setting GPG key permissions"
 
             # Use noble (Ubuntu 24.04) repositories for better compatibility
-            execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << 'EOF'
+            execute_command "sudo_with_pass tee /etc/apt/sources.list.d/rocm.list << 'EOF'
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2 noble main
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.2/ubuntu noble main
 EOF" "Adding ROCm 7.2 repositories with Ubuntu Noble compatibility"
 
             # Set proper repository priorities
-            execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
+            execute_command "sudo_with_pass tee /etc/apt/preferences.d/rocm-pin-600 << 'EOF'
 Package: *
 Pin: release o=repo.radeon.com
 Pin-Priority: 600
@@ -948,15 +948,15 @@ EOF" "Setting ROCm repository priorities"
             print_step "Setting up ROCm $ROCM_VERSION repositories..."
 
             # Clean up existing repository files
-            execute_command "sudo rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
+            execute_command "sudo_with_pass rm -f /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/rocm.list" "Cleaning up existing repository files"
 
             # Use Ubuntu Noble repositories for ROCm 6.4.3
-            execute_command "sudo tee /etc/apt/sources.list.d/rocm.list << EOF
+            execute_command "sudo_with_pass tee /etc/apt/sources.list.d/rocm.list << EOF
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4/ubuntu noble main
 deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/6.4/ubuntu noble main
 EOF" "Adding ROCm 6.4.3 repositories for Ubuntu Noble"
 
-            execute_command "sudo tee /etc/apt/preferences.d/rocm-pin-600 << EOF
+            execute_command "sudo_with_pass tee /etc/apt/preferences.d/rocm-pin-600 << EOF
 Package: *
 Pin: release o=repo.radeon.com
 Pin-Priority: 600
@@ -967,7 +967,7 @@ EOF" "Setting ROCm repository priorities"
 
         # Update package lists
         print_step "Updating package lists..."
-        sudo apt update
+        sudo_with_pass apt update
 
         if [ $? -ne 0 ]; then
             print_warning "Failed to update package lists, continuing anyway"
@@ -977,7 +977,7 @@ EOF" "Setting ROCm repository priorities"
 
         # Install prerequisites
         print_step "Installing prerequisites..."
-        sudo apt install -y python3-setuptools python3-wheel
+        sudo_with_pass apt install -y python3-setuptools python3-wheel
 
         if [ $? -ne 0 ]; then
             print_warning "Failed to install some prerequisites, continuing anyway"
@@ -987,7 +987,7 @@ EOF" "Setting ROCm repository priorities"
 
         # Add user to render and video groups
         print_step "Adding user to render and video groups..."
-        sudo usermod -a -G render,video $LOGNAME
+        sudo_with_pass usermod -a -G render,video $LOGNAME
 
         if [ $? -ne 0 ]; then
             print_warning "Failed to add user to groups, continuing anyway"
@@ -1001,19 +1001,19 @@ EOF" "Setting ROCm repository priorities"
         print_step "Installing any missing dependencies from Ubuntu Noble..."
 
         # Temporarily add Ubuntu noble for missing dependencies
-        execute_command "sudo tee /etc/apt/sources.list.d/ubuntu-deps.list << EOF
+        execute_command "sudo_with_pass tee /etc/apt/sources.list.d/ubuntu-deps.list << EOF
 deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
 deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
 EOF" "Adding Ubuntu noble repositories for missing dependencies"
 
-        execute_command "sudo apt update" "Updating package lists with Ubuntu repos"
+        execute_command "sudo_with_pass apt update" "Updating package lists with Ubuntu repos"
 
         # Try to install the missing libstdc++ dependencies
-        execute_command "sudo apt install -y libstdc++-11-dev libgcc-11-dev" "Installing missing GCC libraries from Ubuntu"
+        execute_command "sudo_with_pass apt install -y libstdc++-11-dev libgcc-11-dev" "Installing missing GCC libraries from Ubuntu"
 
         # Remove the temporary Ubuntu repos
-        execute_command "sudo rm -f /etc/apt/sources.list.d/ubuntu-deps.list" "Removing temporary Ubuntu repositories"
-        execute_command "sudo apt update" "Updating package lists after removing Ubuntu repos"
+        execute_command "sudo_with_pass rm -f /etc/apt/sources.list.d/ubuntu-deps.list" "Removing temporary Ubuntu repositories"
+        execute_command "sudo_with_pass apt update" "Updating package lists after removing Ubuntu repos"
     fi
 
     # Install ROCm based on selected method using amdgpu-install for usecases
@@ -1022,15 +1022,15 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
     case $INSTALL_TYPE in
     "minimal")
         # Install minimal ROCm runtime
-        execute_command "sudo amdgpu-install --usecase=lrt --accept-eula --no-32 -y" "Installing minimal ROCm runtime"
+        execute_command "sudo_with_pass amdgpu-install --usecase=lrt --accept-eula --no-32 -y" "Installing minimal ROCm runtime"
         ;;
     "standard")
         # Install standard ROCm runtime + basic tools
-        execute_command "sudo amdgpu-install --usecase=rocm --accept-eula --no-32 -y" "Installing standard ROCm runtime"
+        execute_command "sudo_with_pass amdgpu-install --usecase=rocm --accept-eula --no-32 -y" "Installing standard ROCm runtime"
         ;;
     "full")
         # Install full ROCm + development tools
-        execute_command "sudo amdgpu-install --usecase=rocm,rocmdev --accept-eula --no-32 -y" "Installing full ROCm with development tools"
+        execute_command "sudo_with_pass amdgpu-install --usecase=rocm,rocmdev --accept-eula --no-32 -y" "Installing full ROCm with development tools"
         ;;
     "custom")
         # Custom installation - let user choose components
@@ -1064,7 +1064,7 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
         USECASE=${USECASE%,}
 
         if [ -n "$USECASE" ]; then
-            execute_command "sudo amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing custom ROCm components"
+            execute_command "sudo_with_pass amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing custom ROCm components"
         fi
         ;;
     "additional")
@@ -1098,10 +1098,10 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
         USECASE=${USECASE%,}
 
         if [ -n "$USECASE" ]; then
-            execute_command "sudo amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing additional ROCm components"
+            execute_command "sudo_with_pass amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing additional ROCm components"
         else
             # Fallback for RCCL if usecase not available
-            execute_command "sudo apt update && sudo apt install -y librccl-dev librccl1" "Installing RCCL libraries directly"
+            execute_command "sudo_with_pass apt update && sudo_with_pass apt install -y librccl-dev librccl1" "Installing RCCL libraries directly"
         fi
         ;;
 esac
@@ -1110,8 +1110,8 @@ esac
         print_error "Failed to install ROCm"
 
         print_step "Installation failed. Check the error messages above for details."
-        print_step "You can try: sudo apt install -f  # to fix broken dependencies"
-        print_step "Or check: sudo apt update && sudo apt upgrade  # to update packages"
+        print_step "You can try: sudo_with_pass apt install -f  # to fix broken dependencies"
+        print_step "Or check: sudo_with_pass apt update && sudo_with_pass apt upgrade  # to update packages"
 
         return 1
     fi

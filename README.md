@@ -81,14 +81,13 @@ The ML Stack consists of the following core components:
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
 ## Installation
 
-Stan's ML Stack installer now offers four ROCm channels so you can balance stability against cutting-edge features:
+Stan's ML Stack installer now offers three ROCm channels so you can balance stability against cutting-edge features:
 
 1. **Legacy (ROCm 6.4.3)** – production-proven for maximum stability
-2. **Stable (ROCm 7.0.0)** – production-ready for RDNA 3 GPUs
-3. **Latest (ROCm 7.0.2)** – default choice with expanded RDNA 4 support
-4. **Preview (ROCm 7.9.0)** – technology preview for early adopters (experimental)
+2. **Stable (ROCm 7.1)** – production-ready for RDNA 3 GPUs
+3. **Latest (ROCm 7.2)** – default choice with expanded RDNA 4 support
 
-You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-4). See [docs/MULTI_CHANNEL_GUIDE.md](docs/MULTI_CHANNEL_GUIDE.md) for helper scripts covering PyTorch, Triton, Flash Attention, vLLM, ONNX Runtime, MIGraphX, bitsandbytes, and RCCL.
+You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-3). See [docs/MULTI_CHANNEL_GUIDE.md](docs/MULTI_CHANNEL_GUIDE.md) for helper scripts covering PyTorch, Triton, Flash Attention, vLLM, ONNX Runtime, MIGraphX, bitsandbytes, and RCCL.
 
 The ML Stack provides several installation options to suit your needs.
 
@@ -112,8 +111,8 @@ Another way to install the ML Stack is to use the automatic installation script 
 
 ```bash
 # Clone the repository
-git clone https://github.com/scooter-lacroix/Stans_MLStack.git
-cd Stans_MLStack
+git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
+cd Stan-s-ML-Stack
 
 # Run the installation script
 chmod +x scripts/install_ml_stack_curses.py #Take ownership of the script in order to grant it permission to run
@@ -135,8 +134,8 @@ If you prefer to install components manually, follow these steps:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/scooter-lacroix/Stans_MLStack.git
-   cd Stans_MLStack
+   git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
+   cd Stan-s-ML-Stack
    ```
 
 2. **Set up the environment**:
@@ -214,7 +213,7 @@ docker run --device=/dev/kfd --device=/dev/dri --group-add video -it bartholemew
 # To verify the installation, run the following command inside the container
 /workspace/verify_ml_stack.sh
 
-The pre-built image includes the core components of Stan's ML Stack. After starting the container, you'll need to install PyTorch with ROCm support and MIGraphX using the provided scripts in /workspace/Stans_MLStack/scripts/.
+The pre-built image includes the core components of Stan's ML Stack. After starting the container, you'll need to install PyTorch with ROCm support and MIGraphX using the provided scripts in /workspace/Stan-s-ML-Stack/scripts/.
 
 Option 2: Build from Dockerfile
 
