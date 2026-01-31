@@ -2050,6 +2050,7 @@ You can also use the provided helper script to run vLLM with the correct environ
 $ /home/stan/Prod/Stan-s-ML-Stack/scripts/run_vllm.sh python3 your_script.py
 EOF
 log "Created usage notes at $INSTALL_DIR/VLLM_USAGE_NOTES.txt"
+}
 
 # Parse command line arguments
 DRY_RUN=false

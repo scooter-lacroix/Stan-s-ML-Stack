@@ -2,6 +2,17 @@
 
 All notable changes to Stan's ML Stack will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- ROCm 7.2 (Latest) as installation option with expanded RDNA 4 GPU support
+- ROCM_VERSION and ROCM_CHANNEL environment variable exports
+
+### Changed
+- Default ROCm version updated from 7.0.0 to 7.2
+- ROCm version selector now offers 3 channels: Legacy (6.4.3), Stable (7.1), Latest (7.2)
+- Framework installation prompt extended to cover all ROCm 7.x versions
+
 ## [0.1.5] - 2025-09-16 (Anagami)
 
 ### Added
