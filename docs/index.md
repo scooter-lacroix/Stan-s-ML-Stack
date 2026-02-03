@@ -1,4 +1,4 @@
-# Stan's ML Stack Documentation
+# Rusty Stack Documentation
 
 <p align="center">
   <img src="../assets/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
@@ -6,7 +6,9 @@
 
 ## Overview
 
-Stan's ML Stack is a comprehensive machine learning environment optimized for AMD GPUs. It provides a complete set of tools and libraries for training and deploying machine learning models, with a focus on large language models (LLMs) and deep learning.
+**Rusty Stack** is a comprehensive machine learning environment optimized for AMD GPUs. It provides a complete set of tools and libraries for training and deploying machine learning models, with a focus on large language models (LLMs) and deep learning.
+
+Formerly known as "Stan's ML Stack", this project is undergoing a gradual rebranding to "Rusty Stack" to reflect its modern Rust-based TUI installer. The Python package (`stans-ml-stack`) remains available for backward compatibility.
 
 This stack is designed to work with AMD's ROCm platform, providing CUDA compatibility through HIP, allowing you to run most CUDA-based machine learning code on AMD GPUs with minimal modifications.
 
@@ -27,6 +29,9 @@ This stack is designed to work with AMD's ROCm platform, providing CUDA compatib
 ## Documentation Structure
 
 This documentation is organized into the following sections:
+
+### Installer
+- [Rusty-Stack TUI](rusty_stack_guide.md)
 
 ### Core Components
 - [ROCm Installation](core/rocm_installation_guide.md)
@@ -116,6 +121,7 @@ The ML Stack consists of the following core components:
 | **Triton** | Compiler for parallel programming | 3.2.0 |
 | **BITSANDBYTES** | Efficient quantization for deep learning models | 0.45.5 |
 | **vLLM** | High-throughput inference engine for LLMs | 0.8.5 |
+| **vLLM Studio** | Web UI for vLLM model management and deployment | [Latest](https://github.com/0xSero/vllm-studio) |
 | **ROCm SMI** | System monitoring and management for AMD GPUs | Latest |
 | **PyTorch Profiler** | Performance analysis for PyTorch models | Latest |
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
@@ -123,17 +129,24 @@ The ML Stack consists of the following core components:
 
 The ML Stack provides several installation options to suit your needs.
 
-### Automatic Installation (Recommended)
-
-The easiest way to install the ML Stack is to use the automatic installation script with the curses-based UI:
+### Quick Install (One-Line)
 
 ```bash
-# Clone the repository
-git clone https://github.com/scooter-lacroix/Stans_MLStack.git
-cd Stans_MLStack
+curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
+```
 
-# Run the installation script
-./scripts/install_ml_stack_curses.py
+### Rusty-Stack TUI (Primary Installer)
+
+The recommended way to install Rusty Stack is using the Rust-based **Rusty-Stack** TUI:
+
+```bash
+# Build + run Rusty-Stack
+./scripts/run_rusty_stack.sh
+
+# Or build manually
+cd rusty-stack
+cargo build --release
+./target/release/Rusty-Stack
 ```
 
 This script will:
@@ -143,7 +156,35 @@ This script will:
 4. Install all selected components
 5. Verify the installation
 
-The curses-based UI provides a responsive, interactive experience with real-time feedback during the installation process.
+The TUI provides a responsive, interactive experience with real-time feedback during the installation process.
+
+### PyPI Installation
+
+Install via PyPI (Python package, maintained for backward compatibility):
+
+```bash
+pip install stans-ml-stack
+```
+
+### Legacy Installers (Deprecated)
+
+<details>
+<summary>Python Curses Installer (Deprecated)</summary>
+
+The Python curses-based installer is deprecated but maintained for backward compatibility:
+
+```bash
+# Clone the repository
+git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
+cd Stan-s-ML-Stack
+
+# Run the installation script
+./scripts/install_ml_stack_curses.py
+```
+
+**Note**: This installer is deprecated. Please use the Rusty-Stack TUI instead.
+
+</details>
 
 ### Manual Installation
 
@@ -151,8 +192,8 @@ If you prefer to install components manually, follow these steps:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/scooter-lacroix/Stans_MLStack.git
-   cd Stans_MLStack
+   git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
+   cd Stan-s-ML-Stack
    ```
 
 2. **Set up the environment**:
@@ -207,6 +248,9 @@ If you prefer to install components manually, follow these steps:
 
    # Install Weights & Biases
    ./scripts/install_wandb.sh
+
+   # Install vLLM Studio
+   ./scripts/install_vllm_studio.sh
    ```
 
 5. **Verify the installation**:
@@ -565,7 +609,7 @@ print(y)
 
 ## Contributing
 
-Contributions to Stan's ML Stack are welcome! Please follow these steps:
+Contributions to Rusty Stack are welcome! Please follow these steps:
 
 1. Fork the repository
 2. Create a feature branch
@@ -581,11 +625,11 @@ Contributions to Stan's ML Stack are welcome! Please follow these steps:
 
 ## License
 
-Stan's ML Stack is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Rusty Stack (formerly Stan's ML Stack) is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Version Information
 
-This documentation is for Stan's ML Stack v0.1.2 (Nirvana), released on May 15, 2025.
+This documentation is for Rusty Stack (formerly Stan's ML Stack) v0.1.2 (Nirvana), released on May 15, 2025.
 
 - ROCm: 6.4.43482
 - PyTorch: 2.6.0+rocm6.4.43482

@@ -1,0 +1,18 @@
+[package]
+name = "rusty-stack"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "Rusty-Stack"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+crossterm = "0.27"
+libc = "0.2"
+ratatui = "0.26"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.30"

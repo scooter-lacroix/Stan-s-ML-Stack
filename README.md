@@ -1,4 +1,4 @@
-# Stan's ML Stack
+# Rusty Stack
 
 <p align="center">
   <img src="assets/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
@@ -6,7 +6,9 @@
 
 ## Overview
 
-Stan's ML Stack is a comprehensive machine learning environment optimized for AMD GPUs. It provides a complete set of tools and libraries for training and deploying machine learning models, with a focus on large language models (LLMs) and deep learning.
+**Rusty Stack** is a comprehensive machine learning environment optimized for AMD GPUs. It provides a complete set of tools and libraries for training and deploying machine learning models, with a focus on large language models (LLMs) and deep learning.
+
+Formerly known as "Stan's ML Stack", this project is undergoing a gradual rebranding to "Rusty Stack" to reflect its modern Rust-based TUI installer. The Python package (`stans-ml-stack`) remains available for backward compatibility.
 
 This stack is designed to work with AMD's ROCm platform, providing CUDA compatibility through HIP, allowing you to run most CUDA-based machine learning code on AMD GPUs with minimal modifications.
 
@@ -48,9 +50,33 @@ For a detailed guide to help you get started from the ground up, head over to [B
 
 This stack has been tested and optimized for the following hardware:
 
+**RDNA 4**
+
+- **AMD Radeon RX 9070 XT**
+- **AMD Radeon RX 9070 GRE**
+- **AMD Radeon RX 9070**
+- **AMD Radeon RX 9060 XT**
+- **AMD Radeon RX 9060**
+
+**RDNA 3**
+ 
 - **AMD Radeon RX 7900 XTX**
+- **AMD Radeon RX 7900 XT**
+- **AMD Radeon RX 7900 GRE**
 - **AMD Radeon RX 7800 XT**
+- **AMD Radeon RX 7700 XT**  
 - **AMD Radeon RX 7700 XT**
+
+**RDNA 2**
+  
+- **AMD Radeon RX 6950 XT**
+- **AMD Radeon RX 6900 XT**
+- **AMD Radeon RX 6800 XT**
+- **AMD Radeon RX 6800**
+- **AMD Radeon RX 6750 XT**
+- **AMD Radeon RX 6700 XT**
+- **AMD Radeon RX 6700**
+- **AMD Radeon RX 6650 XT**
 
 ## Components
 
@@ -76,12 +102,13 @@ The ML Stack consists of the following core components:
 | **Triton** | Compiler for parallel programming | 3.2.0 |
 | **BITSANDBYTES** | Efficient quantization for deep learning models | 0.45.5 |
 | **vLLM** | High-throughput inference engine for LLMs | 0.8.5 |
+| **vLLM Studio** | Web UI for vLLM model management and deployment | [Latest](https://github.com/0xSero/vllm-studio) |
 | **ROCm SMI** | System monitoring and management for AMD GPUs | Latest |
 | **PyTorch Profiler** | Performance analysis for PyTorch models | Latest |
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
 ## Installation
 
-Stan's ML Stack installer now offers three ROCm channels so you can balance stability against cutting-edge features:
+Rusty Stack installer now offers three ROCm channels so you can balance stability against cutting-edge features:
 
 1. **Legacy (ROCm 6.4.3)** – production-proven for maximum stability
 2. **Stable (ROCm 7.1)** – production-ready for RDNA 3 GPUs
@@ -95,28 +122,24 @@ The ML Stack provides several installation options to suit your needs.
 
 - 🔄 **Flash Attention CK**: Flash Attention CK is in pre-release testing and debugging
 
-### PyPI Installation
-
-Install the ML Stack via PyPI:
+### Quick Install (One-Line)
 
 ```bash
-pip install stans-ml-stack
+curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
 ```
 
-This will install the core package with all necessary dependencies.
+### Rusty-Stack TUI (Primary Installer)
 
-### Automatic Installation from Source
-
-Another way to install the ML Stack is to use the automatic installation script with the curses-based UI:
+The recommended way to install Rusty Stack is using the Rust-based **Rusty-Stack** TUI:
 
 ```bash
-# Clone the repository
-git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
-cd Stan-s-ML-Stack
+# Build + run Rusty-Stack
+./scripts/run_rusty_stack.sh
 
-# Run the installation script
-chmod +x scripts/install_ml_stack_curses.py #Take ownership of the script in order to grant it permission to run
-./scripts/install_ml_stack_curses.py
+# Or build manually
+cd rusty-stack
+cargo build --release
+./target/release/Rusty-Stack
 ```
 
 This script will:
@@ -126,7 +149,45 @@ This script will:
 4. Install all selected components
 5. Verify the installation
 
-The curses-based UI provides a responsive, interactive experience with real-time feedback during the installation process.
+The TUI provides a responsive, interactive experience with real-time feedback during the installation process.
+
+### PyPI Installation
+
+Install via PyPI (Python package, maintained for backward compatibility):
+
+```bash
+pip install stans-ml-stack
+```
+
+This will install the core package with all necessary dependencies.
+
+### Legacy Installers (Deprecated)
+
+<details>
+<summary>Python Curses Installer (Deprecated)</summary>
+
+The Python curses-based installer is deprecated but maintained for backward compatibility:
+
+```bash
+# Clone the repository
+git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
+cd Stan-s-ML-Stack
+
+# Run the installation script
+chmod +x scripts/install_ml_stack_curses.py
+./scripts/install_ml_stack_curses.py
+```
+
+**Note**: This installer is deprecated. Please use the Rusty-Stack TUI instead.
+
+</details>
+
+<details>
+<summary>Go Installer (Deprecated)</summary>
+
+The Go-based installer in `mlstack-installer/` is deprecated and no longer maintained.
+
+</details>
 
 ### Manual Installation
 
@@ -190,6 +251,9 @@ If you prefer to install components manually, follow these steps:
 
    # Install Weights & Biases
    ./scripts/install_wandb.sh
+
+   # Install vLLM Studio
+   ./scripts/install_vllm_studio.sh
    ```
 
 5. **Verify the installation**:
@@ -560,7 +624,7 @@ print(y)
 
 ## Contributing
 
-Contributions to Stan's ML Stack are welcome! Please follow these steps:
+Contributions to Rusty Stack are welcome! Please follow these steps:
 
 1. Fork the repository
 2. Create a feature branch
@@ -576,7 +640,7 @@ Contributions to Stan's ML Stack are welcome! Please follow these steps:
 
 ## License
 
-Stan's ML Stack is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Rusty Stack (formerly Stan's ML Stack) is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgements
 
