@@ -626,32 +626,13 @@ install_pytorch_profiler() {
     }
 
     # Install PyTorch Profiler dependencies
-- Custom events
-
-## Memory Profiling Example
-
-```bash
-python memory_profiling_example.py
-```
-
-This example demonstrates:
-- Memory usage analysis
-- Identifying memory-intensive operations
-- Visualizing memory usage
-- Memory optimization tips
-
-## Viewing Traces
-
-To view Chrome traces:
-1. Open Chrome and navigate to `chrome://tracing`
-2. Click "Load" and select the generated trace file
-
-To view TensorBoard traces:
-```bash
-tensorboard --logdir=tb_logs
-```
-EOF
-
+    print_step "Installing PyTorch Profiler dependencies..."
+    install_python_package "torch-tb-profiler" "tensorboard" || true
+    
+    # Final verification
+    if $PYTHON_CMD -c "from torch.profiler import profile; print('✓ Profiler module found')" 2>/dev/null; then
+        print_success "PyTorch Profiler is functional"
+    fi
 }
 
 # Set script options
@@ -689,3 +670,5 @@ fi
 
 # Run the installation function with all script arguments
 install_pytorch_profiler "$@"
+
+exit 0

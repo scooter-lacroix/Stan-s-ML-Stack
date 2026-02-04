@@ -20,8 +20,18 @@ pub struct BenchmarkResults {
     pub pytorch: Option<PyTorchData>,
     pub flash_attention: Option<FlashAttentionData>,
     pub vllm: Option<VllmData>,
+    pub deepspeed: Option<DeepspeedData>,
     pub errors: Vec<String>,
     pub baseline: Option<Box<BenchmarkResults>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeepspeedData {
+    pub throughput_samples_per_sec: f64,
+    pub avg_latency_ms: f64,
+    pub stage: u32,
+    pub accelerator: String,
+    pub samples: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -52,7 +62,6 @@ pub struct MemoryBandwidthData {
 pub struct TensorCoreData {
     pub fp16_tflops: f64,
     pub bf16_tflops: f64,
-    pub tf32_tflops: f64,
     pub fp32_tflops: f64,
     pub fp16_samples: Vec<f64>,
 }
@@ -103,6 +112,7 @@ pub fn load_benchmark_results() -> BenchmarkResults {
         "pytorch_performance",
         "mlperf_inference",
         "vllm_benchmarks",
+        "deepspeed_benchmarks",
         "full_benchmarks",
     ] {
         if let Some(log_path) = find_latest_log(&log_dir, pattern) {
@@ -143,7 +153,7 @@ fn load_baseline(log_dir: &PathBuf) -> Option<Box<BenchmarkResults>> {
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
-            name.contains("rocm_benchmarks") || name.contains("vllm_benchmarks") || name.contains("full_benchmarks")
+            name.contains("rocm_benchmarks") || name.contains("vllm_benchmarks") || name.contains("deepspeed_benchmarks") || name.contains("full_benchmarks")
         })
         .collect();
 
@@ -163,6 +173,7 @@ fn load_baseline(log_dir: &PathBuf) -> Option<Box<BenchmarkResults>> {
                 pytorch: None,
                 flash_attention: None,
                 vllm: None,
+                deepspeed: None,
                 errors: Vec::new(),
                 baseline: None,
             };
@@ -218,6 +229,7 @@ fn apply_metrics(val: &serde_json::Value, results: &mut BenchmarkResults) {
             || obj.contains_key("gemm_gflops")
             || obj.contains_key("flash_attention_speed")
             || obj.contains_key("throughput_tokens_per_sec")
+            || obj.contains_key("throughput_samples_per_sec")
         {
             apply_metrics_internal(val, results);
         } else {
@@ -313,7 +325,6 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
             results.tensor_core = Some(TensorCoreData {
                 fp16_tflops: obj.get("fp16_tflops").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 bf16_tflops: obj.get("bf16_tflops").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                tf32_tflops: obj.get("tf32_tflops").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 fp32_tflops: obj.get("fp32_tflops").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 fp16_samples: obj
                     .get("fp16_samples_tflops")
@@ -389,6 +400,26 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
                     .unwrap_or_default(),
             });
         }
+
+        if obj.contains_key("throughput_samples_per_sec") {
+            results.deepspeed = Some(DeepspeedData {
+                throughput_samples_per_sec: obj
+                    .get("throughput_samples_per_sec")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                avg_latency_ms: obj.get("avg_latency_ms").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                stage: obj.get("stage").and_then(|v| v.as_u64()).unwrap_or(1) as u32,
+                accelerator: obj
+                    .get("accelerator")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("rocm")
+                    .to_string(),
+                samples: obj
+                    .get("samples")
+                    .map(to_f64_vec)
+                    .unwrap_or_default(),
+            });
+        }
     }
 }
 
@@ -447,6 +478,7 @@ impl BenchmarkResults {
             pytorch: None,
             flash_attention: None,
             vllm: None,
+            deepspeed: None,
             errors: Vec::new(),
             baseline: None,
         }
@@ -467,6 +499,7 @@ pub fn render_benchmark_page(
         Line::from("PyTorch"),
         Line::from("Flash Attn"),
         Line::from("vLLM"),
+        Line::from("DeepSpeed"),
     ])
     .select(tab_index)
     .style(Style::default().fg(Color::Cyan))
@@ -490,6 +523,7 @@ pub fn render_benchmark_page(
         3 => render_pytorch_tab(frame, chunks[1], results),
         4 => render_flash_attention_tab(frame, chunks[1], results),
         5 => render_vllm_tab(frame, chunks[1], results),
+        6 => render_deepspeed_tab(frame, chunks[1], results),
         _ => {}
     }
 }
@@ -560,6 +594,12 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
             } else if !results.errors.iter().any(|e| e.contains("vLLM")) {
                  // If no explicit error but throughput is 0, it's likely just not run or missing model
                  content.push_str("  • vLLM: Detected (Run vLLM Performance benchmark)\n");
+            }
+        }
+        if let Some(ds) = &results.deepspeed {
+            if ds.throughput_samples_per_sec > 0.0 {
+                content.push_str(&format!("  • DeepSpeed Throughput: {:.1} samples/s\n", ds.throughput_samples_per_sec));
+                has_perf = true;
             }
         }
 
@@ -674,8 +714,8 @@ fn render_tensor_core_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResu
             .split(area);
 
         let summary = format!(
-            "FP16:{:.1} | BF16:{:.1} | TF32:{:.1} | FP32:{:.1} TFLOPS",
-            tc.fp16_tflops, tc.bf16_tflops, tc.tf32_tflops, tc.fp32_tflops
+            "FP16: {:.1} | BF16: {:.1} | FP32: {:.1} TFLOPS",
+            tc.fp16_tflops, tc.bf16_tflops, tc.fp32_tflops
         );
         frame.render_widget(
             Paragraph::new(summary)
@@ -959,6 +999,78 @@ fn render_vllm_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
             Paragraph::new("No vLLM data available\n\nInstall vLLM and rerun benchmarks")
                 .alignment(Alignment::Left)
                 .block(Block::default().title("vLLM Performance").borders(Borders::ALL)),
+            area,
+        );
+    }
+}
+
+fn render_deepspeed_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
+    if let Some(ds) = &results.deepspeed {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(4), Constraint::Min(7)])
+            .split(area);
+
+        let mut summary = format!(
+            "Accelerator: {} | ZeRO Stage: {} | Throughput: {:.1} samples/s | Latency: {:.1} ms",
+            ds.accelerator, ds.stage, ds.throughput_samples_per_sec, ds.avg_latency_ms
+        );
+
+        if let Some(baseline) = &results.baseline {
+            if let Some(b_ds) = &baseline.deepspeed {
+                if b_ds.throughput_samples_per_sec > 0.0 {
+                    let diff = ((ds.throughput_samples_per_sec - b_ds.throughput_samples_per_sec) / b_ds.throughput_samples_per_sec) * 100.0;
+                    summary.push_str(&format!(" (Baseline: {:.1} | {:+.1}%)", b_ds.throughput_samples_per_sec, diff));
+                }
+            }
+        }
+
+        frame.render_widget(
+            Paragraph::new(summary)
+                .block(Block::default().borders(Borders::ALL).title("Summary & Comparison")),
+            chunks[0],
+        );
+
+        let ds_data = prepare_data(&ds.samples);
+        let mut datasets = Vec::new();
+        if !ds_data.is_empty() {
+            datasets.push(series_dataset("DeepSpeed", &ds_data, Color::White));
+        }
+        let (y0, y1) = y_bounds(&ds.samples);
+        let x_bounds = [0.0, (ds.samples.len().max(1) - 1) as f64];
+        
+        frame.render_widget(
+            Chart::new(datasets)
+                .block(Block::default().borders(Borders::ALL).title("DeepSpeed Throughput Performance"))
+                .x_axis(
+                    Axis::default()
+                        .title("Benchmark Trial")
+                        .style(Style::default().fg(Color::Gray))
+                        .bounds(x_bounds)
+                        .labels(vec![
+                            "T1".into(),
+                            format!("T{}", ds.samples.len() / 2 + 1).into(),
+                            format!("T{}", ds.samples.len()).into(),
+                        ]),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title("Samples/s")
+                        .style(Style::default().fg(Color::Gray))
+                        .bounds([y0, y1])
+                        .labels(vec![
+                            format!("{:.0}", y0).into(),
+                            format!("{:.0}", (y0 + y1) / 2.0).into(),
+                            format!("{:.0}", y1).into(),
+                        ]),
+                ),
+            chunks[1],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("No DeepSpeed data available\n\nRun DeepSpeed Performance benchmark")
+                .alignment(Alignment::Left)
+                .block(Block::default().title("DeepSpeed Performance").borders(Borders::ALL)),
             area,
         );
     }

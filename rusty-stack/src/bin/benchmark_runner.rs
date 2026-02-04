@@ -47,6 +47,7 @@ fn run_benchmark(name: &str) -> BenchmarkOutput {
         "pytorch" => assign(&mut output, benchmarks::run_pytorch_benchmark()),
         "flash-attention" => assign(&mut output, benchmarks::run_flash_attention_benchmark()),
         "vllm" => assign(&mut output, benchmarks::run_vllm_benchmark()),
+        "deepspeed" => assign(&mut output, benchmarks::run_deepspeed_benchmark()),
         "all-pre" => {
             let mut all_results = Value::Object(serde_json::Map::new());
             assign_value(
@@ -92,6 +93,7 @@ fn run_benchmark(name: &str) -> BenchmarkOutput {
                 benchmarks::run_flash_attention_benchmark(),
             );
             assign_value(&mut all_results, "vllm", benchmarks::run_vllm_benchmark());
+            assign_value(&mut all_results, "deepspeed", benchmarks::run_deepspeed_benchmark());
             output.success = true;
             output.results = all_results;
         }
@@ -120,6 +122,7 @@ fn print_help() {
     println!("  pytorch              - PyTorch performance tests");
     println!("  flash-attention      - Flash Attention vs standard");
     println!("  vllm                 - vLLM throughput benchmark");
+    println!("  deepspeed            - DeepSpeed ZeRO performance");
     println!();
     println!("Combined Benchmarks:");
     println!("  all-pre              - All pre-installation benchmarks");

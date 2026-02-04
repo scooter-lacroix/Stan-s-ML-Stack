@@ -140,6 +140,9 @@ pub fn run_flash_attention_benchmark() -> BenchmarkResult {
 pub fn run_vllm_benchmark() -> BenchmarkResult {
     run_python_benchmark("vllm")
 }
+pub fn run_deepspeed_benchmark() -> BenchmarkResult {
+    run_python_benchmark("deepspeed")
+}
 
 // ---------------------------------------------------------------------------
 // Embedded Python helper
@@ -289,23 +292,52 @@ def _tensor_core():
 
     device = torch.device("cuda:0")
     sizes = [512, 1024, 2048]
+    
+    results = {}
+    
+    # FP16
     fp16_samples = []
     for n in sizes:
         a = torch.randn((n, n), device=device, dtype=torch.float16)
         b = torch.randn((n, n), device=device, dtype=torch.float16)
-        def matmul():
-            return torch.matmul(a, b)
-        t = _time_fn(matmul, warmup=2, repeat=3)
+        t = _time_fn(lambda: torch.matmul(a, b), warmup=2, repeat=3)
         flops = 2 * n * n * n
         fp16_samples.append(flops / t / 1e12)
+    results["fp16_tflops"] = round(max(fp16_samples), 2)
+    results["fp16_samples"] = [round(x, 2) for x in fp16_samples]
 
-    peak = max(fp16_samples) if fp16_samples else 0
+    # BF16
+    bf16_samples = []
+    try:
+        for n in sizes:
+            a = torch.randn((n, n), device=device, dtype=torch.bfloat16)
+            b = torch.randn((n, n), device=device, dtype=torch.bfloat16)
+            t = _time_fn(lambda: torch.matmul(a, b), warmup=2, repeat=3)
+            flops = 2 * n * n * n
+            bf16_samples.append(flops / t / 1e12)
+        results["bf16_tflops"] = round(max(bf16_samples), 2)
+    except Exception:
+        results["bf16_tflops"] = 0.0
+
+    # FP32
+    fp32_samples = []
+    for n in sizes:
+        a = torch.randn((n, n), device=device, dtype=torch.float32)
+        b = torch.randn((n, n), device=device, dtype=torch.float32)
+        t = _time_fn(lambda: torch.matmul(a, b), warmup=2, repeat=3)
+        flops = 2 * n * n * n
+        fp32_samples.append(flops / t / 1e12)
+    results["fp32_tflops"] = round(max(fp32_samples), 2)
+    
+    # TF32 is NVIDIA specific, on AMD we'll report 0 or skip
+    results["tf32_tflops"] = 0.0
+
     return True, {
-        "fp16_tflops": round(peak, 2),
-        "bf16_tflops": round(peak * 0.98, 2),
-        "tf32_tflops": round(peak * 0.9, 2),
-        "fp32_tflops": round(peak * 0.25, 2),
-        "fp16_samples_tflops": [round(x, 2) for x in fp16_samples],
+        "fp16_tflops": results["fp16_tflops"],
+        "bf16_tflops": results["bf16_tflops"],
+        "tf32_tflops": results["tf32_tflops"],
+        "fp32_tflops": results["fp32_tflops"],
+        "fp16_samples_tflops": results["fp16_samples"],
     }, []
 
 
@@ -479,6 +511,14 @@ def _vllm():
         outputs = llm.generate(prompts, sampling_params)
         elapsed = time.perf_counter() - start
         
+        throughput_samples = []
+        for p in prompts:
+            s = time.perf_counter()
+            res = llm.generate([p], sampling_params)
+            e = time.perf_counter() - s
+            toks = len(res[0].outputs[0].token_ids)
+            throughput_samples.append(toks / e if e > 0 else 0)
+
         total_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
         throughput = total_tokens / elapsed
         
@@ -486,7 +526,7 @@ def _vllm():
             "model": model_name,
             "throughput_tokens_per_sec": round(throughput, 2),
             "latency_ms": round((elapsed / len(prompts)) * 1000, 2),
-            "throughput_samples": [round(throughput * 0.95, 2), round(throughput, 2), round(throughput * 1.05, 2)]
+            "throughput_samples": [round(x, 2) for x in throughput_samples]
         }, []
     except Exception as exc:
         err_msg = str(exc)
@@ -503,6 +543,91 @@ def _vllm():
         }, [f"vLLM detected but benchmark failed: {err_msg}"]
 
 
+def _deepspeed():
+    try:
+        import deepspeed
+        import torch
+        import os
+    except Exception as exc:
+        return False, {}, [f"DeepSpeed or Torch not available: {exc}"]
+
+    # Ensure ROCm environment
+    os.environ["DS_ACCELERATOR"] = "rocm"
+    
+    try:
+        from deepspeed.ops.op_builder import CPUAdamBuilder
+        from deepspeed.accelerator import get_accelerator
+        
+        accelerator = get_accelerator()
+        device = accelerator.device_name(0)
+        
+        # Simple test: Initialize a small model and wrap it with DeepSpeed
+        # We'll measure the time for a forward/backward pass with ZeRO-1
+        class SimpleModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.net = torch.nn.Sequential(
+                    torch.nn.Linear(1024, 1024),
+                    torch.nn.ReLU(),
+                    torch.nn.Linear(1024, 1024)
+                )
+            def forward(self, x):
+                return self.net(x)
+
+        model = SimpleModel().to(accelerator.device_name())
+        ds_config = {
+            "train_batch_size": 4,
+            "zero_optimization": {
+                "stage": 1
+            },
+            "optimizer": {
+                "type": "Adam",
+                "params": {
+                    "lr": 0.001
+                }
+            }
+        }
+
+        # Use dummy data
+        model_engine, optimizer, _, _ = deepspeed.initialize(
+            config=ds_config,
+            model=model,
+            model_parameters=model.parameters()
+        )
+
+        input_data = torch.randn(4, 1024).to(accelerator.device_name())
+        
+        # Warmup
+        for _ in range(2):
+            output = model_engine(input_data)
+            model_engine.backward(output.sum())
+            model_engine.step()
+
+        # Benchmark
+        times = []
+        for _ in range(5):
+            accelerator.synchronize()
+            start = time.perf_counter()
+            output = model_engine(input_data)
+            model_engine.backward(output.sum())
+            model_engine.step()
+            accelerator.synchronize()
+            times.append(time.perf_counter() - start)
+
+        avg_time = sum(times) / len(times)
+        throughput = 4 / avg_time # samples per second
+
+        return True, {
+            "throughput_samples_per_sec": round(throughput, 2),
+            "avg_latency_ms": round(avg_time * 1000, 2),
+            "stage": 1,
+            "accelerator": "rocm",
+            "samples": [round(4/t, 2) for t in times]
+        }, []
+    except Exception as exc:
+        return False, {}, [f"DeepSpeed benchmark failed: {exc}"]
+
+
 BENCHES = {
     "gpu-info": _gpu_info,
     "memory-bandwidth": _memory_bandwidth,
@@ -511,6 +636,7 @@ BENCHES = {
     "pytorch": _pytorch,
     "flash-attention": _flash_attention,
     "vllm": _vllm,
+    "deepspeed": _deepspeed,
 }
 
 

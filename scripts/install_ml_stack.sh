@@ -22,13 +22,20 @@
 trap 'echo "Forced exit"; kill -9 $$' EXIT
 
 # Set Python interpreter - prefer virtual environment if available
-PYTHON_INTERPRETER="python3"
+PYTHON_INTERPRETER="${MLSTACK_PYTHON_BIN:-python3}"
+
+# Wrapper for python3 to ensure we use the correct interpreter
+python3() {
+    "$PYTHON_INTERPRETER" "$@"
+}
 
 # Check for virtual environment
-if [ -f "$HOME/Prod/Stan-s-ML-Stack/venv/bin/python" ]; then
-    PYTHON_INTERPRETER="$HOME/Prod/Stan-s-ML-Stack/venv/bin/python"
-elif [ -f "./venv/bin/python" ]; then
-    PYTHON_INTERPRETER="./venv/bin/python"
+if [ -z "${MLSTACK_PYTHON_BIN:-}" ]; then
+    if [ -f "$HOME/Prod/Stan-s-ML-Stack/venv/bin/python" ]; then
+        PYTHON_INTERPRETER="$HOME/Prod/Stan-s-ML-Stack/venv/bin/python"
+    elif [ -f "./venv/bin/python" ]; then
+        PYTHON_INTERPRETER="./venv/bin/python"
+    fi
 fi
 
 # ASCII Art Banner
@@ -155,7 +162,7 @@ detect_package_manager() {
     fi
 }
 
-# Function to use uv or pip for Python packages
+# Function to use uv or pip for Python packages with progress
 install_python_package() {
     local package="$1"
     shift
@@ -163,9 +170,19 @@ install_python_package() {
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        # Use --progress bar for uv
+        uv pip install --python $(which python3) $extra_args "$package" 2>&1 | while read -r line; do
+            if [[ "$line" == *"["*"]"* ]]; then
+                # Extract progress and send as transient log
+                echo -ne "$line\r"
+            else
+                echo "$line"
+            fi
+        done
     else
         print_step "Installing $package with pip..."
+        # pip doesn't have a great machine-readable progress bar for scripts without a TTY, 
+        # but we can at least show what it's doing
         python3 -m pip install $extra_args "$package"
     fi
 }
@@ -263,7 +280,7 @@ retry_command() {
     while [ $attempt -le $max_attempts ]; do
         print_step "Attempt $attempt/$max_attempts: $cmd"
 
-        if eval "$cmd"; then
+        if eval "$cmd" 2>&1; then
             return 0
         else
             if [ $attempt -eq $max_attempts ]; then
@@ -405,6 +422,25 @@ dry_run_command() {
     else
         eval "$cmd"
         return $?
+    fi
+}
+
+# Function to handle prompts with batch mode support
+ask_user() {
+    local prompt="$1"
+    local default_choice="$2"
+    
+    if [ "${MLSTACK_BATCH_MODE:-0}" = "1" ]; then
+        echo "$default_choice"
+        return 0
+    fi
+    
+    read -p "$prompt " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        return 0
+    else
+        return 1
     fi
 }
 
@@ -773,251 +809,19 @@ EOF
 }
 
 install_pytorch() {
-    print_section "Installing PyTorch with ROCm support"
-
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
-
-    if $PYTHON_CMD -c "import torch" &>/dev/null; then
-        pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
-
-        # Check if PyTorch has ROCm/HIP support
-        if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
-            hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
-
-            # Test if GPU acceleration works
-            if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
-                print_success "PyTorch with ROCm support is already installed and working (PyTorch $pytorch_version, ROCm $hip_version)"
-
-                # Check if --force flag is provided
-                if [[ "$*" == *"--force"* ]] || [[ "$PYTORCH_REINSTALL" == "true" ]]; then
-                    print_warning "Force reinstall requested - proceeding with reinstallation"
-                    print_step "Will reinstall PyTorch despite working installation"
-                else
-                    print_step "PyTorch installation is complete and working. Use --force to reinstall anyway."
-                    return 0
-                fi
-            else
-                print_warning "PyTorch with ROCm support is installed (PyTorch $pytorch_version, ROCm $hip_version) but GPU acceleration is not working"
-                print_step "Will reinstall to fix GPU acceleration issues"
-            fi
-        else
-            print_warning "PyTorch is installed (version $pytorch_version) but without ROCm support"
-            print_step "Will reinstall with ROCm support"
-        fi
-    fi
-
-    # Check if uv is installed
     print_section "Installing PyTorch with ROCm Support"
-
-    if ! command_exists uv; then
-        print_step "Installing uv package manager..."
-        python3 -m pip install uv
-
-        # Add uv to PATH if it was installed in a user directory
-        if [ -f "$HOME/.local/bin/uv" ]; then
-            export PATH="$HOME/.local/bin:$PATH"
-        fi
-
-        # Add uv to PATH if it was installed via cargo
-        if [ -f "$HOME/.cargo/bin/uv" ]; then
-            export PATH="$HOME/.cargo/bin:$PATH"
-        fi
-
-        if ! command_exists uv; then
-            print_error "Failed to install uv package manager"
-            print_step "Falling back to pip"
-        else
-            print_success "Installed uv package manager"
-        fi
-    else
-        print_success "uv package manager is already installed"
-    fi
-
-    # Extract ROCm major and minor version
-    rocm_major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
-    rocm_minor_version=$(echo "$rocm_version" | cut -d '.' -f 2)
-
-    # Ask user for installation preference
-    echo
-    echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
-    echo "1) Global installation (recommended for system-wide use)"
-    echo "2) Virtual environment (isolated installation)"
-    echo "3) Auto-detect (try global, fallback to venv if needed)"
-    echo
-    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
-    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
-
-    case $INSTALL_CHOICE in
-        1)
-            INSTALL_METHOD="global"
-            print_step "Using global installation method"
-            ;;
-        2)
-            INSTALL_METHOD="venv"
-            print_step "Using virtual environment method"
-            ;;
-        3|*)
-            INSTALL_METHOD="auto"
-            print_step "Using auto-detect method"
-            ;;
-    esac
-
-    # Create a function to handle uv commands properly with venv fallback
-    uv_pip_install() {
-        local args="$@"
-
-        # Check if uv is available as a command
-        if command_exists uv; then
-            case $INSTALL_METHOD in
-                "global")
-                    print_step "Installing globally with pip..."
-                    python3 -m pip install --break-system-packages $args
-                    PYTORCH_VENV_PYTHON=""
-                    ;;
-                "venv")
-                    print_step "Creating uv virtual environment..."
-                    VENV_DIR="./pytorch_rocm_venv"
-                    if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
-                    fi
-                    source "$VENV_DIR/bin/activate"
-                    print_step "Installing in virtual environment..."
-                    uv pip install $args
-                    PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                    print_success "Installed in virtual environment: $VENV_DIR"
-                    ;;
-                "auto")
-                    # Try global install first
-                    print_step "Attempting global installation with uv..."
-                    local install_output
-                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                    local install_exit_code=$?
-
-                    if echo "$install_output" | grep -q "externally managed"; then
-                        print_warning "Global installation failed due to externally managed environment"
-                        print_step "Creating uv virtual environment for installation..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./pytorch_rocm_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    elif [ $install_exit_code -eq 0 ]; then
-                        print_success "Global installation successful"
-                        PYTORCH_VENV_PYTHON=""
-                    else
-                        print_error "Global installation failed with unknown error:"
-                        echo "$install_output"
-                        print_step "Falling back to virtual environment..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./pytorch_rocm_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    fi
-                    ;;
-            esac
-        else
-            # Fall back to pip
-            print_step "Installing with pip..."
-            python3 -m pip install $args
-            PYTORCH_VENV_PYTHON=""
-        fi
-    }
-
-    # Use the appropriate PyTorch version based on ROCm version
-    if [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
-        # For ROCm 6.4+, use nightly builds
-        print_step "Using PyTorch nightly build for ROCm 6.4..."
-        uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
-    elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 3 ]; then
-        # For ROCm 6.3, use stable builds
-        print_step "Using PyTorch stable build for ROCm 6.3..."
-        uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
-    elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 0 ]; then
-        # For ROCm 6.0-6.2, use stable builds for 6.2
-        print_step "Using PyTorch stable build for ROCm 6.2..."
-        uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
-    elif [ "$rocm_major_version" -eq 5 ]; then
-        # For ROCm 5.x, use stable builds for 5.7
-        print_step "Using PyTorch stable build for ROCm 5.7..."
-        uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.7
-    else
-        # Fallback to the latest stable ROCm version
-        print_step "Using PyTorch stable build for ROCm 6.3 (fallback)..."
-        uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
-    fi
-
-    # Verify installation
-    print_section "Verifying PyTorch Installation"
-
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
-
-    if $PYTHON_CMD -c "import torch" &>/dev/null; then
-        pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
-        print_success "PyTorch is installed (version: $pytorch_version)"
-
-        # Check if PyTorch has ROCm/HIP support
-        if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
-            hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
-            print_success "PyTorch has ROCm/HIP support (version: $hip_version)"
-
-            # Test GPU availability
-            if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
-                print_success "GPU acceleration is available"
-
-                # Get GPU count
-                gpu_count=$($PYTHON_CMD -c "import torch; print(torch.cuda.device_count())" 2>/dev/null)
-                print_step "PyTorch detected $gpu_count GPU(s)"
-
-                # List GPUs
-                for i in $(seq 0 $((gpu_count-1))); do
-                    gpu_name=$($PYTHON_CMD -c "import torch; print(torch.cuda.get_device_name($i))" 2>/dev/null)
-                    echo "  - GPU $i: $gpu_name"
-                done
-
-                # Test a simple tensor operation
-                print_step "Testing GPU tensor operations..."
-                if $PYTHON_CMD -c "import torch; x = torch.ones(10, device='cuda'); y = x + 1; print('Success' if torch.all(y == 2) else 'Failed')" 2>/dev/null | grep -q "Success"; then
-                    print_success "GPU tensor operations working correctly"
-                else
-                    print_warning "GPU tensor operations may not be working correctly"
-                fi
-            else
-                print_warning "GPU acceleration is not available"
-                print_warning "Check your ROCm installation and environment variables"
-            fi
-        else
-            print_warning "PyTorch does not have explicit ROCm/HIP support"
-            print_warning "This might cause issues with AMD GPUs"
-        fi
-    else
-        print_error "PyTorch installation failed"
+    
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local standalone_script="$script_dir/install_pytorch_rocm.sh"
+    
+    if [ ! -f "$standalone_script" ]; then
+        print_error "Standalone PyTorch installation script not found: $standalone_script"
         return 1
     fi
-
-    return 0
+    
+    # Run the standalone script
+    bash "$standalone_script" ${FORCE:+"--force"}
+    return $?
 }
 
 install_onnx_runtime() {
@@ -1055,7 +859,7 @@ install_onnx_runtime() {
     print_step "Building ONNX Runtime with ROCm support..."
 
     # Run the build script with retry mechanism
-    if ! retry_command "$HOME/Prod/Stan-s-ML-Stack/scripts/build_onnxruntime.sh" 2; then
+    if ! retry_command "$(dirname "$0")/build_onnxruntime_multi.sh" 2; then
         print_error "ONNX Runtime installation failed after retries."
         # Rollback if installation failed
         if [ -n "$backup_dir" ]; then

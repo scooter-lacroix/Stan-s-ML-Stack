@@ -94,7 +94,7 @@ fi
 
 # Set up comprehensive PYTHONPATH to find all components
 ORIGINAL_PYTHONPATH=$PYTHONPATH
-export PYTHONPATH="$PYTHONPATH:$HOME/pytorch:$HOME/ml_stack/flash_attn_amd_direct:$HOME/ml_stack/flash_attn_amd:$HOME/.local/lib/python3.13/site-packages:$HOME/.local/lib/python3.12/site-packages:$HOME/megatron/Megatron-LM:$HOME/onnxruntime_build:$HOME/migraphx_build:$HOME/vllm_build:$HOME/vllm_py313:$HOME/ml_stack/bitsandbytes/bitsandbytes"
+export PYTHONPATH="$PYTHONPATH:$HOME/pytorch:$HOME/ml_stack/flash_attn_amd_direct:$HOME/ml_stack/flash_attn_amd:$HOME/.local/lib/python3.12/site-packages:$HOME/megatron/Megatron-LM:$HOME/onnxruntime_build:$HOME/migraphx_build:$HOME/vllm_build:$HOME/ml_stack/bitsandbytes/bitsandbytes"
 print_step "Enhanced PYTHONPATH to find all components"
 
 # Define search paths for components
@@ -102,17 +102,13 @@ COMPONENT_SEARCH_PATHS=(
     "$HOME/pytorch"
     "$HOME/ml_stack/flash_attn_amd_direct"
     "$HOME/ml_stack/flash_attn_amd"
-    "$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313"
     "$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-312"
-    "$HOME/.local/lib/python3.13/site-packages"
     "$HOME/.local/lib/python3.12/site-packages"
-    "$HOME/rocm_venv/lib/python3.13/site-packages"
     "$HOME/rocm_venv/lib/python3.12/site-packages"
     "$HOME/megatron/Megatron-LM"
     "$HOME/onnxruntime_build"
     "$HOME/migraphx_build"
     "$HOME/vllm_build"
-    "$HOME/vllm_py313"
     "$HOME/ml_stack/bitsandbytes/bitsandbytes"
 )
 
@@ -306,7 +302,7 @@ detect_amd_gpus() {
 check_pytorch() {
     print_section "Checking PyTorch"
 
-    if check_component_dir "torch" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/pytorch" ]; then
+    if check_component_dir "torch" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/pytorch" ]; then
         print_success "PyTorch is installed"
 
         # Try to get version if possible
@@ -345,7 +341,7 @@ check_pytorch() {
 check_onnxruntime() {
     print_section "Checking ONNX Runtime"
 
-    if check_component_dir "onnxruntime" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/onnxruntime_build" ]; then
+    if check_component_dir "onnxruntime" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/onnxruntime_build" ]; then
         print_success "ONNX Runtime is installed"
 
         # Try to get version if possible
@@ -378,7 +374,7 @@ check_onnxruntime() {
 check_migraphx() {
     print_section "Checking MIGraphX"
 
-    if check_component_dir "migraphx" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/migraphx_build" ]; then
+    if check_component_dir "migraphx" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/migraphx_build" ]; then
         print_success "MIGraphX is installed"
         return 0
     else
@@ -391,7 +387,7 @@ check_migraphx() {
 check_flash_attention() {
     print_section "Checking Flash Attention"
 
-    if check_component_dir "flash_attention_amd" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/ml_stack/flash_attn_amd" ] || [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ]; then
+    if check_component_dir "flash_attention_amd" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/ml_stack/flash_attn_amd" ] || [ -d "$HOME/ml_stack/flash_attn_amd_direct" ]; then
         print_success "Flash Attention is installed"
         return 0
     else
@@ -442,7 +438,7 @@ check_mpi() {
 check_megatron() {
     print_section "Checking Megatron-LM"
 
-    if check_component_dir "megatron" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/megatron/Megatron-LM" ]; then
+    if check_component_dir "megatron" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/megatron/Megatron-LM" ]; then
         print_success "Megatron-LM is installed"
         return 0
     else
@@ -468,7 +464,7 @@ check_triton() {
 check_bitsandbytes() {
     print_section "Checking BITSANDBYTES"
 
-    if check_component_dir "bitsandbytes" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/ml_stack/bitsandbytes" ]; then
+    if check_component_dir "bitsandbytes" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/ml_stack/bitsandbytes" ]; then
         print_success "BITSANDBYTES is installed"
         return 0
     else
@@ -481,7 +477,7 @@ check_bitsandbytes() {
 check_vllm() {
     print_section "Checking vLLM"
 
-    if check_component_dir "vllm" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "/home/stan/vllm_build" ] || [ -d "/home/stan/vllm_py313" ]; then
+    if check_component_dir "vllm" "${COMPONENT_SEARCH_PATHS[@]}" || [ -d "$HOME/vllm_build" ] || [ -d "$HOME/vllm_py313" ]; then
         print_success "vLLM is installed"
         return 0
     else

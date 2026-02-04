@@ -518,6 +518,18 @@ verify_component() {
                 return 0
             fi
             ;;
+        "aiter")
+            if $python_cmd -c "import aiter" &>/dev/null; then
+                print_success "AITER verification passed"
+                return 0
+            fi
+            ;;
+        "vllm_studio")
+            if command_exists vllm-studio || $python_cmd -c "import vllm_studio" &>/dev/null; then
+                print_success "vLLM Studio verification passed"
+                return 0
+            fi
+            ;;
         "rocm_smi")
             if command_exists rocm-smi; then
                 print_success "ROCm SMI verification passed"
@@ -570,6 +582,8 @@ COMPONENTS:
     triton                  Triton compiler for parallel programming
     bitsandbytes            Efficient quantization library
     vllm                    High-throughput inference engine
+    aiter                   AMD AITER optimization tooling
+    vllm_studio             vLLM Studio controller + frontend
     rocm_smi                ROCm system monitoring interface
     pytorch_profiler        PyTorch performance profiling tools
     wandb                   Weights & Biases experiment tracking
@@ -652,7 +666,7 @@ main() {
 
     # Handle 'all' component
     if [[ " ${components[@]} " =~ " all " ]]; then
-        components=("triton" "bitsandbytes" "vllm" "rocm_smi" "pytorch_profiler" "wandb" "flash_attention_ck")
+        components=("triton" "bitsandbytes" "vllm" "aiter" "vllm_studio" "rocm_smi" "pytorch_profiler" "wandb" "flash_attention_ck")
     fi
 
     # Detect ROCm

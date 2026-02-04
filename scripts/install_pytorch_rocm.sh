@@ -115,6 +115,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Prefer explicit Python binary when provided
+PYTHON_BIN=${MLSTACK_PYTHON_BIN:-python3}
+python3() {
+    command "$PYTHON_BIN" "$@"
+}
+
 # Function to check if Python package is installed
 package_installed() {
     python3 -c "import $1" &>/dev/null
@@ -145,7 +151,7 @@ install_python_package() {
     
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --python $(command -v "$PYTHON_BIN") $extra_args "$package"
     else
         print_step "Installing $package with pip..."
         python3 -m pip install $extra_args "$package"
@@ -265,17 +271,30 @@ install_pytorch_rocm() {
         # Check if PyTorch has ROCm/HIP support
         if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
             hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
-
+            
+            # Detect system ROCm version
+            system_rocm=$(cat /opt/rocm/.info/version 2>/dev/null | cut -d- -f1 || rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs || ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1 || echo "7.2.0")
+            
             # Test if GPU acceleration works
             if $PYTHON_CMD -c "import torch; print(torch.cuda.is_available())" 2>/dev/null | grep -q "True"; then
                 print_success "PyTorch with ROCm support is already installed and working (PyTorch $pytorch_version, ROCm $hip_version)"
+                
+                # Check for ROCm version mismatch
+                # Extract major.minor
+                system_mm=$(echo "$system_rocm" | cut -d. -f1,2)
+                hip_mm=$(echo "$hip_version" | cut -d. -f1,2)
+                
+                if [ "$system_mm" != "$hip_mm" ]; then
+                    print_warning "ROCm version mismatch! System: $system_mm, PyTorch: $hip_mm"
+                    print_step "Forcing reinstallation to match system ROCm version..."
+                    FORCE=true
+                fi
 
                 # Check if --force flag is provided
-                if [[ "$*" == *"--force"* ]] || [[ "$PYTORCH_REINSTALL" == "true" ]]; then
-                    print_warning "Force reinstall requested - proceeding with reinstallation"
-                    print_step "Will reinstall PyTorch despite working installation"
+                if [[ "$*" == *"--force"* ]] || [[ "$PYTORCH_REINSTALL" == "true" ]] || [[ "$FORCE" == "true" ]]; then
+                    print_warning "Reinstallation requested or required - proceeding"
                 else
-                    print_step "PyTorch installation is complete and working. Use --force to reinstall anyway."
+                    print_step "PyTorch installation is up-to-date and matching ROCm version. Use --force to reinstall anyway."
                     return 0
                 fi
             else
@@ -414,40 +433,64 @@ install_pytorch_rocm() {
     rocm_major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
     rocm_minor_version=$(echo "$rocm_version" | cut -d '.' -f 2)
 
-    # Uninstall existing PyTorch if it exists
-    if package_installed "torch"; then
-        print_step "Uninstalling existing PyTorch..."
+    # Uninstall existing PyTorch if it exists - be VERY aggressive to clear CUDA versions
+    print_step "Purging all existing PyTorch installations..."
+    
+    # List of environments to check and purge
+    local py_envs=("$PYTHON_BIN")
+    if [ -x "$HOME/anaconda3/bin/python" ]; then py_envs+=("$HOME/anaconda3/bin/python"); fi
+    if [ -x "$HOME/miniconda3/bin/python" ]; then py_envs+=("$HOME/miniconda3/bin/python"); fi
+    if [ -x "/usr/bin/python3" ]; then py_envs+=("/usr/bin/python3"); fi
+    if [ -x "/usr/bin/python" ]; then py_envs+=("/usr/bin/python"); fi
 
-        # Create a function to handle uv commands properly
-        uv_pip_uninstall() {
-            # Check if uv is available as a command
-            if command -v uv &> /dev/null; then
-                # Use uv directly as a command with proper Python
-                if [ -n "$PYTORCH_VENV_PYTHON" ]; then
-                    uv pip uninstall "$@"
-                else
-                    uv pip uninstall --python $(which python3) "$@"
-                fi
-            else
-                # Fall back to pip
-                if [ -n "$PYTORCH_VENV_PYTHON" ]; then
-                    $PYTORCH_VENV_PYTHON -m pip uninstall "$@"
-                else
-                    python3 -m pip uninstall "$@"
-                fi
+    for py_cmd in "${py_envs[@]}"; do
+        if ! command -v "$py_cmd" &>/dev/null; then continue; fi
+        print_step "Purging PyTorch and NVIDIA/CUDA packages from $py_cmd..."
+        # Loop multiple times because sometimes multiple versions are installed
+        for i in {1..3}; do
+            # Uninstall everything related to torch, nvidia, or cuda
+            local pkgs=$("$py_cmd" -m pip list --format=freeze 2>/dev/null | grep -iE "torch|nvidia|cuda|triton" | cut -d= -f1 | xargs)
+            if [ -n "$pkgs" ]; then
+                print_step "Uninstalling: $pkgs"
+                "$py_cmd" -m pip uninstall -y $pkgs 2>/dev/null || true
             fi
+            
+            # Specifically target variants
+            "$py_cmd" -m pip uninstall -y torch-cuda torchvision-cuda torchaudio-cuda torch-rocm torchvision-rocm torchaudio-rocm 2>/dev/null || true
+            
+            # Clean up potentially leftover 'orch' or 'nvidia' directories (corrupted uninstalls)
+            local sp_dirs=$("$py_cmd" -c "import site; print(':'.join(set(site.getsitepackages() + [site.getusersitepackages()])))" 2>/dev/null || echo "")
+            IFS=':' read -ra ADDR <<< "$sp_dirs"
+            for sp_dir in "${ADDR[@]}"; do
+                if [ -d "$sp_dir" ]; then
+                    find "$sp_dir" -maxdepth 1 -name "~orch*" -exec rm -rf {} + 2>/dev/null || true
+                    find "$sp_dir" -maxdepth 1 -name "torch*" -exec rm -rf {} + 2>/dev/null || true
+                    find "$sp_dir" -maxdepth 1 -name "*nvidia*" -exec rm -rf {} + 2>/dev/null || true
+                    find "$sp_dir" -maxdepth 1 -name "*cuda*" -exec rm -rf {} + 2>/dev/null || true
+                    find "$sp_dir" -maxdepth 1 -name "*triton*" -exec rm -rf {} + 2>/dev/null || true
+                fi
+            done
+        done
+    done
+    
+    # Clean uv cache if present (with timeout to prevent hanging)
+    if command -v uv &>/dev/null; then
+        print_step "Cleaning uv cache (with 10s timeout)..."
+        # Run cache clean in background with timeout to prevent hanging
+        timeout 10s uv cache clean 2>/dev/null || {
+            print_warning "uv cache clean timed out or failed, continuing anyway..."
+            # Kill any hanging uv process
+            pkill -f "uv cache clean" 2>/dev/null || true
         }
-
-        # Uninstall using the wrapper function
-        uv_pip_uninstall -y torch torchvision torchaudio
-
-        if $PYTHON_CMD -c "import torch" &>/dev/null; then
-            print_warning "Failed to uninstall PyTorch, continuing anyway"
-        else
-            print_success "Uninstalled existing PyTorch"
-        fi
     fi
 
+    # Clean up any potential egg-info or broken links in common locations
+    print_step "Cleaning up residual files..."
+    find "$HOME/.local/lib" -maxdepth 4 -name "*torch*" -exec rm -rf {} + 2>/dev/null || true
+    if [ -d "$HOME/anaconda3/lib/python3.13/site-packages" ]; then
+        find "$HOME/anaconda3/lib/python3.13/site-packages" -maxdepth 1 -name "*torch*" -exec rm -rf {} + 2>/dev/null || true
+    fi
+    
     # Install PyTorch with ROCm support
     print_step "Installing PyTorch with ROCm support..."
 
@@ -479,70 +522,48 @@ install_pytorch_rocm() {
     # Create a function to handle uv commands properly with venv fallback
     uv_pip_install() {
         local args="$@"
+        local current_py=$(command -v "$PYTHON_BIN")
 
         # Check if uv is available as a command
         if command -v uv &> /dev/null; then
             case $INSTALL_METHOD in
                 "global")
-                    print_step "Installing globally with pip..."
-                    python3 -m pip install --break-system-packages $args
+                    print_step "Installing globally with uv..."
+                    # We explicitly set UV_PYTHON to the interpreter we want to target
+                    # And use explicit index to prioritize ROCm
+                    UV_PYTHON="$current_py" uv pip install --system --break-system-packages --no-cache --index-url https://download.pytorch.org/whl/rocm7.2 $args
                     PYTORCH_VENV_PYTHON=""
                     ;;
                 "venv")
                     print_step "Creating uv virtual environment..."
-                    VENV_DIR="./pytorch_rocm_venv"
+                    VENV_DIR="$HOME/Documents/Stan-s-ML-Stack/pytorch_rocm_venv"
                     if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
+                        uv venv --python "$current_py" "$VENV_DIR"
                     fi
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install --no-cache --index-url https://download.pytorch.org/whl/rocm7.2 $args
                     PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
                     print_success "Installed in virtual environment: $VENV_DIR"
                     ;;
                 "auto")
-                    # Try global install first
+                    # Try global install first with --break-system-packages
                     print_step "Attempting global installation with uv..."
-                    local install_output
-                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                    local install_exit_code=$?
-
-                    if echo "$install_output" | grep -q "externally managed"; then
-                        print_warning "Global installation failed due to externally managed environment"
-                        print_step "Creating uv virtual environment for installation..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./pytorch_rocm_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    elif [ $install_exit_code -eq 0 ]; then
+                    if UV_PYTHON="$current_py" uv pip install --system --break-system-packages --no-cache --index-url https://download.pytorch.org/whl/rocm7.2 $args; then
                         print_success "Global installation successful"
                         PYTORCH_VENV_PYTHON=""
                     else
-                        print_error "Global installation failed with unknown error:"
-                        echo "$install_output"
-                        print_step "Falling back to virtual environment..."
-
+                        print_warning "Global installation failed, attempting virtual environment fallback..."
                         # Create uv venv in project directory
-                        VENV_DIR="./pytorch_rocm_venv"
+                        VENV_DIR="$HOME/Documents/Stan-s-ML-Stack/pytorch_rocm_venv"
                         if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
+                            uv venv --python "$current_py" "$VENV_DIR"
                         fi
 
                         # Activate venv and install
                         source "$VENV_DIR/bin/activate"
                         print_step "Installing in virtual environment..."
-                        uv pip install $args
+                        uv pip install --no-cache --index-url https://download.pytorch.org/whl/rocm7.2 $args
 
                         # Store venv path for verification
                         PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -553,7 +574,7 @@ install_pytorch_rocm() {
         else
             # Fall back to pip
             print_step "Installing with pip..."
-            python3 -m pip install $args
+            "$current_py" -m pip install --break-system-packages --no-cache-dir $args
             PYTORCH_VENV_PYTHON=""
         fi
     }
@@ -561,23 +582,33 @@ install_pytorch_rocm() {
     # Use the appropriate PyTorch version based on ROCm version
     if [ "$rocm_major_version" -eq 7 ]; then
         # For ROCm 7.0+, try different sources
-        print_step "Installing PyTorch for ROCm 7.0..."
+        # We detect the python version from the target interpreter
+        local py_ver=$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        print_step "Installing PyTorch for ROCm 7.x (Python $py_ver detected)..."
 
-        # Try PyTorch's official nightly builds first
-        if uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0 2>/dev/null; then
+        # Best Option: ROCm 7.2.0 specific wheels (most stable for system)
+        print_step "Trying ROCm 7.2.0 specific wheels (Recommended)..."
+        local base_url="https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2"
+        local wheel_py_tag=$(echo "$py_ver" | tr -d .)
+        local torch_whl="torch-2.9.1+rocm7.2.0.lw.git7e1940d4-cp${wheel_py_tag}-cp${wheel_py_tag}-linux_x86_64.whl"
+        local vision_whl="torchvision-0.24.0+rocm7.2.0.gitb919bd0c-cp${wheel_py_tag}-cp${wheel_py_tag}-linux_x86_64.whl"
+        local audio_whl="torchaudio-2.9.0+rocm7.2.0.gite3c6ee2b-cp${wheel_py_tag}-cp${wheel_py_tag}-linux_x86_64.whl"
+        local triton_whl="triton-3.5.1+rocm7.2.0.gita272dfa8-cp${wheel_py_tag}-cp${wheel_py_tag}-linux_x86_64.whl"
+
+        if uv_pip_install "$base_url/$torch_whl" "$base_url/$vision_whl" "$base_url/$audio_whl" "$base_url/$triton_whl" 2>/dev/null; then
+             print_success "Successfully installed PyTorch 2.9.1+rocm7.2.0"
+        # Option 2: ROCm 7.2 manylinux index
+        elif uv_pip_install torch torchvision torchaudio --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/ 2>/dev/null; then
+             print_success "Successfully installed PyTorch from ROCm 7.2 manylinux repository"
+        # Option 3: PyTorch's official nightly builds for 7.1
+        elif uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.1 2>/dev/null; then
+            print_success "Successfully installed PyTorch nightly build for ROCm 7.1"
+        # Option 4: PyTorch's official nightly builds for 7.0
+        elif uv_pip_install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0 2>/dev/null; then
             print_success "Successfully installed PyTorch nightly build for ROCm 7.0"
-        # Try ROCm's manylinux repository
-        elif uv_pip_install torch torchvision torchaudio --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/ 2>/dev/null; then
-            print_success "Successfully installed PyTorch from ROCm manylinux repository"
-        # Try compiling from source as last resort
-        elif [ "$INSTALL_METHOD" != "auto" ] && [ "$FORCE" = true ]; then
-            print_warning "ROCm 7.0 PyTorch builds not available, attempting to compile from source..."
-            print_step "This may take considerable time and requires development tools"
-            # Try to install build dependencies and compile
-            uv_pip_install torch torchvision torchaudio --no-binary torch --no-binary torchvision --no-binary torchaudio
-        # Fallback to ROCm 6.4 builds if 7.0 not available
+        # Fallback to ROCm 6.4 builds if 7.x not available
         else
-            print_warning "ROCm 7.0 PyTorch builds not available, falling back to ROCm 6.4..."
+            print_warning "ROCm 7.x PyTorch builds not available, falling back to ROCm 6.4..."
             uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.4
         fi
     elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
@@ -608,12 +639,12 @@ install_pytorch_rocm() {
     # Use venv Python if available, otherwise system python3
     PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
 
-    if $PYTHON_CMD -c "import torch" &>/dev/null; then
+    if $PYTHON_CMD -c "import torch" 2>&1 | tee /tmp/torch_verify_err; then
         pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
         print_success "PyTorch is installed (version: $pytorch_version)"
 
         # Check if PyTorch has ROCm/HIP support
-        if $PYTHON_CMD -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
+        if $PYTHON_CMD -c "import torch; import sys; sys.exit(0 if hasattr(torch.version, 'hip') and torch.version.hip is not None else 1)" 2>/dev/null; then
             hip_version=$($PYTHON_CMD -c "import torch; print(torch.version.hip if hasattr(torch.version, 'hip') else 'None')" 2>/dev/null)
             print_success "PyTorch has ROCm/HIP support (version: $hip_version)"
 

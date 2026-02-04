@@ -68,7 +68,7 @@ fi
 
 # Detect existing customizations
 detect_existing_setup() {
-    local bashrc_path="/home/stan/.bashrc"
+    local bashrc_path="$HOME/.bashrc"
     local has_custom_prompt=false
     local has_ml_stack_env=false
     local has_enhanced_functions=false
@@ -435,8 +435,30 @@ setup_rocm_paths_only() {
 if [ -d "/opt/rocm" ]; then
     # ROCm paths
     export ROCM_PATH=/opt/rocm
-    export PATH=$PATH:$ROCM_PATH/bin:$ROCM_PATH/hip/bin
-    export LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib:$LD_LIBRARY_PATH
+    
+    # Safe path addition function
+    safe_add_path() {
+        if [ -d "$1" ] && [[ ":$PATH:" != *":$1:"* ]]; then
+            export PATH="$1:$PATH"
+        fi
+    }
+
+    safe_add_path "/opt/rocm/bin"
+    safe_add_path "/opt/rocm/hip/bin"
+    safe_add_path "/usr/local/bin"
+    safe_add_path "/usr/bin"
+    safe_add_path "/bin"
+
+    # Safe LD_LIBRARY_PATH addition
+    safe_add_ld_path() {
+        if [ -d "$1" ] && [[ ":$LD_LIBRARY_PATH:" != *":$1:"* ]]; then
+            export LD_LIBRARY_PATH="$1:$LD_LIBRARY_PATH"
+        fi
+    }
+
+    safe_add_ld_path "/opt/rocm/lib"
+    safe_add_ld_path "/opt/rocm/hip/lib"
+    safe_add_ld_path "/opt/rocm/opencl/lib"
 
     # CUDA compatibility
     export ROCM_HOME=$ROCM_PATH
@@ -458,7 +480,12 @@ if [ -d "/opt/rocm" ]; then
     export HSA_ENABLE_SDMA=0
     export GPU_MAX_HEAP_SIZE=100
     export GPU_MAX_ALLOC_PERCENT=100
-    export HSA_TOOLS_LIB=1
+    # HSA_TOOLS_LIB must be a library path or 0, not 1
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    else
+        export HSA_TOOLS_LIB=0
+    fi
 
     # MIOpen settings
     export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
@@ -471,18 +498,18 @@ if [ -d "/opt/rocm" ]; then
     export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"
 
     # ONNX Runtime
-    if [ -d "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release" ]; then
-        export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
+    if [ -d "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release" ]; then
+        export PYTHONPATH=$HOME/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
     fi
 
     # Flash Attention
-    if [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ]; then
-        export PYTHONPATH=/home/stan/ml_stack/flash_attn_amd_direct:$PYTHONPATH
+    if [ -d "$HOME/ml_stack/flash_attn_amd_direct" ]; then
+        export PYTHONPATH=$HOME/ml_stack/flash_attn_amd_direct:$PYTHONPATH
     fi
 
     # Megatron-LM
-    if [ -d "/home/stan/megatron/Megatron-LM" ]; then
-        export PYTHONPATH=/home/stan/megatron/Megatron-LM:$PYTHONPATH
+    if [ -d "$HOME/megatron/Megatron-LM" ]; then
+        export PYTHONPATH=$HOME/megatron/Megatron-LM:$PYTHONPATH
     fi
 fi
 EOF
@@ -495,7 +522,7 @@ EOF
     create_symlinks
 
     # Create user environment file if it doesn't exist
-    if [ ! -f "/home/stan/.mlstack_env" ]; then
+    if [ ! -f "$HOME/.mlstack_env" ]; then
         create_user_env_file
     fi
 }
@@ -504,22 +531,22 @@ integrate_ml_stack_branding() {
     print_section "Integrating ML Stack Branding"
 
     # Backup existing .bashrc
-    cp /home/stan/.bashrc /home/stan/.bashrc.backup.$(date +%Y%m%d_%H%M%S)
+    cp $HOME/.bashrc $HOME/.bashrc.backup.$(date +%Y%m%d_%H%M%S)
     print_success "Backed up existing .bashrc"
 
     # Add ML Stack branding to existing welcome message
-    if grep -q "show_welcome" /home/stan/.bashrc; then
+    if grep -q "show_welcome" $HOME/.bashrc; then
         # Replace existing welcome function to include ML Stack branding
-        sed -i 's/WELCOME BACK/WELCOME TO ML STACK/g' /home/stan/.bashrc
+        sed -i 's/WELCOME BACK/WELCOME TO ML STACK/g' $HOME/.bashrc
     fi
 
     # Update the figlet welcome message
-    sed -i 's/"WELCOME TO ML STACK"/"WELCOME TO YOUR ML STACK"/g' /home/stan/.bashrc
+    sed -i 's/"WELCOME TO ML STACK"/"WELCOME TO YOUR ML STACK"/g' $HOME/.bashrc
 
     # Update fastfetch config if it exists
-    if [ -f "/home/stan/.config/fastfetch/config.jsonc" ]; then
-        sed -i 's/" 🚀 ",/" 🎯 ML Stack ",' /home/stan/.config/fastfetch/config.jsonc
-        sed -i 's/" 🚀 CPU",/" 🎯 ML Stack CPU",/g' /home/stan/.config/fastfetch/config.jsonc
+    if [ -f "$HOME/.config/fastfetch/config.jsonc" ]; then
+        sed -i 's/" 🚀 ",/" 🎯 ML Stack ",' $HOME/.config/fastfetch/config.jsonc
+        sed -i 's/" 🚀 CPU",/" 🎯 ML Stack CPU",/g' $HOME/.config/fastfetch/config.jsonc
         print_success "Updated Fastfetch config with ML Stack branding"
     fi
 
@@ -531,12 +558,12 @@ setup_complete_customization() {
     print_section "Setting up Complete ML Stack Terminal Customization"
 
     # Backup existing .bashrc
-    cp /home/stan/.bashrc /home/stan/.bashrc.backup.$(date +%Y%m%d_%H%M%S)
+    cp $HOME/.bashrc $HOME/.bashrc.backup.$(date +%Y%m%d_%H%M%S)
     print_success "Backed up existing .bashrc"
 
     # Create enhanced fastfetch config with ML Stack branding
-    mkdir -p /home/stan/.config/fastfetch/
-    cat > /home/stan/.config/fastfetch/config.jsonc << 'EOF'
+    mkdir -p $HOME/.config/fastfetch/
+    cat > $HOME/.config/fastfetch/config.jsonc << 'EOF'
 {
     "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
     "logo": {
@@ -673,21 +700,21 @@ create_symlinks() {
     PYTHON_SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
 
     # Flash Attention symlink
-    if [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ] && [ ! -d "$PYTHON_SITE_PACKAGES/flash_attention_amd" ]; then
-        ln -sf /home/stan/ml_stack/flash_attn_amd_direct "$PYTHON_SITE_PACKAGES/flash_attention_amd"
-        echo "✓ Created symlink: $PYTHON_SITE_PACKAGES/flash_attention_amd -> /home/stan/ml_stack/flash_attn_amd_direct"
+    if [ -d "$HOME/ml_stack/flash_attn_amd_direct" ] && [ ! -d "$PYTHON_SITE_PACKAGES/flash_attention_amd" ]; then
+        ln -sf $HOME/ml_stack/flash_attn_amd_direct "$PYTHON_SITE_PACKAGES/flash_attention_amd"
+        echo "✓ Created symlink: $PYTHON_SITE_PACKAGES/flash_attention_amd -> $HOME/ml_stack/flash_attn_amd_direct"
     fi
 
     # Megatron-LM symlink
-    if [ -d "/home/stan/megatron/Megatron-LM" ] && [ ! -d "$PYTHON_SITE_PACKAGES/megatron" ]; then
-        ln -sf /home/stan/megatron/Megatron-LM "$PYTHON_SITE_PACKAGES/megatron"
-        echo "✓ Created symlink: $PYTHON_SITE_PACKAGES/megatron -> /home/stan/megatron/Megatron-LM"
+    if [ -d "$HOME/megatron/Megatron-LM" ] && [ ! -d "$PYTHON_SITE_PACKAGES/megatron" ]; then
+        ln -sf $HOME/megatron/Megatron-LM "$PYTHON_SITE_PACKAGES/megatron"
+        echo "✓ Created symlink: $PYTHON_SITE_PACKAGES/megatron -> $HOME/megatron/Megatron-LM"
     fi
 
     # ONNX Runtime symlink
-    if [ -d "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release" ] && [ ! -d "$PYTHON_SITE_PACKAGES/onnxruntime" ]; then
-        ln -sf /home/stan/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime "$PYTHON_SITE_PACKAGES/onnxruntime"
-        echo "✓ Created symlink: $PYTHON_SITE_PACKAGES/onnxruntime -> /home/stan/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime"
+    if [ -d "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release" ] && [ ! -d "$PYTHON_SITE_PACKAGES/onnxruntime" ]; then
+        ln -sf $HOME/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime "$PYTHON_SITE_PACKAGES/onnxruntime"
+        echo "✓ Created symlink: $PYTHON_SITE_PACKAGES/onnxruntime -> $HOME/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime"
     fi
 
     print_success "Symlinks created"
@@ -696,7 +723,7 @@ create_symlinks() {
 create_user_env_file() {
     print_section "Creating User Environment File"
 
-    cat > /home/stan/.mlstack_env << 'EOF'
+    cat > $HOME/.mlstack_env << 'EOF'
 # ML Stack User Environment
 # Source this file in your .bashrc or .zshrc
 
@@ -709,13 +736,13 @@ fi
 EOF
 
     # Change ownership of the user file
-    chown stan:stan /home/stan/.mlstack_env
-    print_success "Created user-specific environment file: /home/stan/.mlstack_env"
+    chown stan:stan $HOME/.mlstack_env
+    print_success "Created user-specific environment file: $HOME/.mlstack_env"
 
     # Add to .bashrc if not already there
-    if ! grep -q "source ~/.mlstack_env" /home/stan/.bashrc; then
-        echo -e "\n# Source ML Stack environment" >> /home/stan/.bashrc
-        echo "source ~/.mlstack_env" >> /home/stan/.bashrc
+    if ! grep -q "source ~/.mlstack_env" $HOME/.bashrc; then
+        echo -e "\n# Source ML Stack environment" >> $HOME/.bashrc
+        echo "source ~/.mlstack_env" >> $HOME/.bashrc
         print_success "Added environment sourcing to .bashrc"
     else
         print_info "Environment sourcing already in .bashrc"
@@ -774,21 +801,21 @@ fi
 PYTHON_SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
 
 # Flash Attention symlink
-if [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ] && [ ! -d "$PYTHON_SITE_PACKAGES/flash_attention_amd" ]; then
-    ln -sf /home/stan/ml_stack/flash_attn_amd_direct "$PYTHON_SITE_PACKAGES/flash_attention_amd"
-    echo "Created symlink: $PYTHON_SITE_PACKAGES/flash_attention_amd -> /home/stan/ml_stack/flash_attn_amd_direct"
+if [ -d "$HOME/ml_stack/flash_attn_amd_direct" ] && [ ! -d "$PYTHON_SITE_PACKAGES/flash_attention_amd" ]; then
+    ln -sf $HOME/ml_stack/flash_attn_amd_direct "$PYTHON_SITE_PACKAGES/flash_attention_amd"
+    echo "Created symlink: $PYTHON_SITE_PACKAGES/flash_attention_amd -> $HOME/ml_stack/flash_attn_amd_direct"
 fi
 
 # Megatron-LM symlink
-if [ -d "/home/stan/megatron/Megatron-LM" ] && [ ! -d "$PYTHON_SITE_PACKAGES/megatron" ]; then
-    ln -sf /home/stan/megatron/Megatron-LM "$PYTHON_SITE_PACKAGES/megatron"
-    echo "Created symlink: $PYTHON_SITE_PACKAGES/megatron -> /home/stan/megatron/Megatron-LM"
+if [ -d "$HOME/megatron/Megatron-LM" ] && [ ! -d "$PYTHON_SITE_PACKAGES/megatron" ]; then
+    ln -sf $HOME/megatron/Megatron-LM "$PYTHON_SITE_PACKAGES/megatron"
+    echo "Created symlink: $PYTHON_SITE_PACKAGES/megatron -> $HOME/megatron/Megatron-LM"
 fi
 
 # ONNX Runtime symlink
-if [ -d "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release" ] && [ ! -d "$PYTHON_SITE_PACKAGES/onnxruntime" ]; then
-    ln -sf /home/stan/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime "$PYTHON_SITE_PACKAGES/onnxruntime"
-    echo "Created symlink: $PYTHON_SITE_PACKAGES/onnxruntime -> /home/stan/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime"
+if [ -d "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release" ] && [ ! -d "$PYTHON_SITE_PACKAGES/onnxruntime" ]; then
+    ln -sf $HOME/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime "$PYTHON_SITE_PACKAGES/onnxruntime"
+    echo "Created symlink: $PYTHON_SITE_PACKAGES/onnxruntime -> $HOME/onnxruntime_build/onnxruntime/build/Linux/Release/onnxruntime"
 fi
 EOF
 

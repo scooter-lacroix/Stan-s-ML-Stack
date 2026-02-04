@@ -70,6 +70,13 @@ else
     RESET=''
 fi
 
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+# Wrapper for python3 to ensure we use the correct interpreter
+python3() {
+    "$PYTHON_BIN" "$@"
+}
+
 # Function definitions
 print_header() {
     echo
@@ -144,10 +151,10 @@ install_python_package() {
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --break-system-packages $extra_args "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        python3 -m pip install --break-system-packages $extra_args "$package"
     fi
 }
 
@@ -256,8 +263,8 @@ install_flash_attention_ck() {
     # Check if Flash Attention CK is already installed
     ((current_step++))
     show_progress $current_step $total_steps "Checking existing installation..."
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${FLASH_ATTENTION_VENV_PYTHON:-python3}
+    # Use venv Python if available, otherwise installer-selected python
+    PYTHON_CMD=${FLASH_ATTENTION_VENV_PYTHON:-$PYTHON_BIN}
 
     if $PYTHON_CMD -c "import flash_attention_amd" &>/dev/null; then
         flash_attention_version=$($PYTHON_CMD -c "import flash_attention_amd; print(getattr(flash_attention_amd, '__version__', 'Unknown'))" 2>/dev/null)
@@ -1099,8 +1106,8 @@ fi
     show_progress $current_step $total_steps "Verifying installation..."
     print_section "Verifying Installation"
 
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${FLASH_ATTENTION_VENV_PYTHON:-python3}
+    # Use venv Python if available, otherwise installer-selected python
+    PYTHON_CMD=${FLASH_ATTENTION_VENV_PYTHON:-$PYTHON_BIN}
 
     print_step "Testing Flash Attention CK import..."
     if $PYTHON_CMD -c "

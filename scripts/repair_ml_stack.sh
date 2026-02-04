@@ -686,7 +686,12 @@ export HSA_OVERRIDE_GFX_VERSION=11.0.0
 export HSA_ENABLE_SDMA=0
 export GPU_MAX_HEAP_SIZE=100
 export GPU_MAX_ALLOC_PERCENT=100
-export HSA_TOOLS_LIB=1
+# HSA_TOOLS_LIB must be a library path or 0, not 1
+if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+else
+    export HSA_TOOLS_LIB=0
+fi
 
 # MIOpen Settings
 export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1

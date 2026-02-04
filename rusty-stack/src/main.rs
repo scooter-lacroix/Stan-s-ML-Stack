@@ -18,6 +18,7 @@ mod config;
 mod hardware;
 mod installer;
 mod state;
+mod widgets;
 
 fn main() -> Result<()> {
     std::panic::set_hook(Box::new(|info| {
@@ -74,7 +75,9 @@ fn run_app<B: ratatui::backend::Backend>(
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         return Ok(());
                     }
                     if key.code == KeyCode::Char('q') && app.stage == Stage::Recovery {

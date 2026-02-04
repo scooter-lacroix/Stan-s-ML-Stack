@@ -23,18 +23,18 @@ Last Updated: 2026-02-03
 
 | Task | Status | Owner | Notes |
 |------|--------|-------|-------|
-| Implement GPU Capability detection | ✅ | Simulated | Returns mock GPU data |
-| Implement Memory Bandwidth benchmark | ✅ | Simulated | Returns mock bandwidth data |
-| Implement Tensor Core test | ✅ | Simulated | Returns mock TFLOPS data |
+| Implement GPU Capability detection | ✅ | ROCm-SMI | Real hardware telemetry |
+| Implement Memory Bandwidth benchmark | ✅ | PyTorch | HBM + PCIe real transfer |
+| Implement Tensor Core test | ✅ | PyTorch | real FP16/BF16/FP32 matmuls |
 
 ## Phase 3: Component Benchmarks
 
 | Task | Status | Owner | Notes |
 |------|--------|-------|-------|
 | Implement PyTorch GEMM benchmark | ✅ | Simulated | Returns mock PyTorch metrics |
-| Implement Flash Attention benchmark | ✅ | Simulated | Returns mock FA metrics |
-| Implement vLLM throughput benchmark | ✅ | Simulated | Returns mock vLLM metrics |
-| Implement DeepSpeed benchmark | ⬜ | Python | Needs DeepSpeed |
+| Implement Flash Attention benchmark | ✅ | Triton | Real kernels |
+| Implement vLLM throughput benchmark | ✅ | vLLM | Real model inference |
+| Implement DeepSpeed benchmark | ✅ | DeepSpeed | ZeRO-1 real training |
 
 ## Phase 4: Comparison & Analysis
 

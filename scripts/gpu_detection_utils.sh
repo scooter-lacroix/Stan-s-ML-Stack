@@ -47,7 +47,7 @@ validate_gpu_detection() {
     fi
 
     # Log successful detection
-    echo "✓ GPU detection successful: $gpu_arch"
+    echo "✓ GPU detection successful: $gpu_arch" >&2
 
     return 0
 }

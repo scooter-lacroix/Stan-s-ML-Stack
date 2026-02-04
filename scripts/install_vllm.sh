@@ -191,12 +191,14 @@ show_env() {
 
 set -e  # Exit on error
 
-# Trap to ensure we exit properly
-trap 'echo "Forced exit"; kill -9 $$' EXIT
-
 # Get script directory for relative paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ML_STACK_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Prefer the consolidated multi-installer unless explicitly disabled
+if [ "${VLLM_INSTALLER_MODE:-multi}" != "legacy" ] && [ -x "$SCRIPT_DIR/install_vllm_multi.sh" ]; then
+    exec "$SCRIPT_DIR/install_vllm_multi.sh" "$@"
+fi
 
 # Create log directory
 LOG_DIR="$ML_STACK_DIR/logs/extensions"
@@ -646,28 +648,42 @@ uv_pip_install() {
 }
 
 # Check if PyTorch is already installed
-if package_installed "torch"; then
-    PYTORCH_VERSION=$(get_package_version "torch")
-    log "PyTorch is already installed (version: $PYTORCH_VERSION)"
-
-    # Check if PyTorch has ROCm support
-    if python3 -c "import torch; print('ROCm version:', torch.version.hip if hasattr(torch.version, 'hip') else 'Not available')" 2>/dev/null | grep -q "ROCm version: Not available"; then
-        log "WARNING: PyTorch is installed but does not have ROCm support"
-        log "This may cause issues with vLLM installation"
-    else
-        log "PyTorch has ROCm support"
-    fi
+if [ "${MLSTACK_SKIP_TORCH_INSTALL:-0}" = "1" ]; then
+    log "Skipping PyTorch installation (MLSTACK_SKIP_TORCH_INSTALL=1)"
 else
-    log "PyTorch is not installed, installing with ROCm support..."
-    # Install PyTorch with ROCm support
-    "$SCRIPT_DIR/install_pytorch_rocm.sh"
+    if package_installed "torch"; then
+        PYTORCH_VERSION=$(get_package_version "torch")
+        log "PyTorch is already installed (version: $PYTORCH_VERSION)"
+
+        # Check if PyTorch has ROCm support
+        if python3 -c "import torch; print('ROCm version:', torch.version.hip if hasattr(torch.version, 'hip') else 'Not available')" 2>/dev/null | grep -q "ROCm version: Not available"; then
+            log "WARNING: PyTorch is installed but does not have ROCm support"
+            log "This may cause issues with vLLM installation"
+        else
+            log "PyTorch has ROCm support"
+        fi
+    else
+        log "PyTorch is not installed, installing with ROCm support..."
+        # Install PyTorch with ROCm support
+        "$SCRIPT_DIR/install_pytorch_rocm.sh"
+    fi
 fi
 
 # Install Python dependencies
 print_section "Installing Python Dependencies"
-uv_pip_install --upgrade pip setuptools wheel ninja pybind11 cmake packaging
+uv_pip_install --upgrade pip setuptools wheel ninja pybind11 cmake packaging setuptools_scm
 print_step "Installing additional required dependencies..."
 uv_pip_install aioprometheus ray psutil huggingface_hub tokenizers
+
+if [ "${MLSTACK_SKIP_TORCH_INSTALL:-0}" = "1" ]; then
+    print_step "Removing torch from requirements to avoid CUDA override"
+    sed -i '/^torch/d' requirements.txt 2>/dev/null || true
+    sed -i '/^outlines/d' requirements.txt 2>/dev/null || true
+    sed -i '/^torch/d' requirements-rocm.txt 2>/dev/null || true
+    sed -i '/^outlines/d' requirements-rocm.txt 2>/dev/null || true
+    sed -i '/^torch/d' requirements-common.txt 2>/dev/null || true
+    sed -i '/^outlines/d' requirements-common.txt 2>/dev/null || true
+fi
 
 # Create CUDA compatibility layer for AMD GPUs
 log "Creating CUDA compatibility layer for AMD GPUs..."
@@ -689,7 +705,13 @@ export CUDA_PATH="/tmp/fake-cuda"
 log "Checking for required dependencies..."
 MISSING_DEPS=()
 
-for dep in "torch" "transformers" "aioprometheus" "ray" "psutil" "huggingface_hub" "tokenizers"; do
+if [ "${MLSTACK_SKIP_TORCH_INSTALL:-0}" = "1" ]; then
+    DEPENDENCIES=("transformers" "aioprometheus" "ray" "psutil" "huggingface_hub" "tokenizers")
+else
+    DEPENDENCIES=("torch" "transformers" "aioprometheus" "ray" "psutil" "huggingface_hub" "tokenizers")
+fi
+
+for dep in "${DEPENDENCIES[@]}"; do
     if ! package_installed "$dep"; then
         MISSING_DEPS+=("$dep")
     fi
@@ -728,8 +750,28 @@ log "Detected Python version: $PYTHON_VERSION"
 
 # Set environment variables for AMD GPUs
 export ROCM_PATH=/opt/rocm
+export ROCM_HOME="$ROCM_PATH"
+export HIP_PATH="$ROCM_PATH"
+export HIP_ROOT_DIR="$ROCM_PATH"
+export ROCM_ROOT="$ROCM_PATH"
+export CMAKE_ROCM_PATH="$ROCM_PATH"
+export CUDA_HOME="$ROCM_PATH"
+
+# Workaround for tools expecting /opt/rocm/hip structure
+if [ ! -d "/opt/rocm/hip/bin" ] && [ -d "/opt/rocm/bin" ]; then
+    print_step "Creating ROCm compatibility symlinks..."
+    sudo mkdir -p /opt/rocm/hip || true
+    sudo ln -sf /opt/rocm/bin /opt/rocm/hip/bin || true
+    sudo ln -sf /opt/rocm/lib /opt/rocm/hip/lib || true
+    sudo ln -sf /opt/rocm/include /opt/rocm/hip/include || true
+    sudo ln -sf /opt/rocm/share /opt/rocm/hip/share || true
+fi
+
 export HIP_VISIBLE_DEVICES=0,1
 export PYTORCH_ROCM_ARCH=$(python3 -c "import torch; print(','.join(torch.cuda.get_arch_list()))" 2>/dev/null || echo "gfx90a")
+export VLLM_TARGET_DEVICE=rocm
+export VLLM_USE_ROCM=1
+export USE_ROCM=1
 export SKIP_CUDA_BUILD=1
 export FORCE_CMAKE=1
 export AMD_LOG_LEVEL=0
@@ -2047,7 +2089,7 @@ For more information, see the Ray documentation on GPU support:
 https://docs.ray.io/en/latest/ray-core/gpu-support.html
 
 You can also use the provided helper script to run vLLM with the correct environment variables:
-$ /home/stan/Prod/Stan-s-ML-Stack/scripts/run_vllm.sh python3 your_script.py
+$ $HOME/Prod/Stan-s-ML-Stack/scripts/run_vllm.sh python3 your_script.py
 EOF
 log "Created usage notes at $INSTALL_DIR/VLLM_USAGE_NOTES.txt"
 }

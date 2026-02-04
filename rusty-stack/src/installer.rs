@@ -1,8 +1,8 @@
-use crate::config::InstallerConfig;
 use crate::component_status::{
     component_verification_commands, is_component_installed_by_id, modules_available,
     python_interpreters, python_search_paths, verification_commands, VerificationCommand,
 };
+use crate::config::InstallerConfig;
 use crate::state::{Category, Component};
 use anyhow::{bail, Context, Result};
 use chrono::Local;
@@ -294,7 +294,8 @@ fn ensure_mlstack_env(user_home: &str) -> Result<EnvUpdate> {
             ("PYTORCH_ROCM_DEVICE", primary_gpu.as_str()),
             ("PYTHONPATH", rocm_lib),
         ];
-        let (updated, changed) = sanitize_mlstack_env(&contents, &defaults, gpu_list.as_str(), rocm_home);
+        let (updated, changed) =
+            sanitize_mlstack_env(&contents, &defaults, gpu_list.as_str(), rocm_home);
         if changed {
             fs::write(&env_path, updated).context("Failed to update .mlstack_env")?;
             return Ok(EnvUpdate::Updated);
@@ -372,20 +373,41 @@ fn sanitize_mlstack_env(
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
         let (line, changed_cuda_vis) =
             normalize_visible_devices(&line, "CUDA_VISIBLE_DEVICES", gpu_list);
-        
+
         // Enforce safe PATH and LD_LIBRARY_PATH
         let (line, changed_path) = if line.starts_with("export PATH=") {
             let desired = format!("export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{}/bin:{}/hip/bin:$PATH\"", rocm_home, rocm_home);
-            if line.trim() != desired { (desired, true) } else { (line, false) }
-        } else { (line, false) };
-        
-        let (line, changed_ld) = if line.starts_with("export LD_LIBRARY_PATH=") {
-            let desired = format!("export LD_LIBRARY_PATH=\"{}/lib:{}/hip/lib:{}/opencl/lib:${{LD_LIBRARY_PATH:-}}\"", rocm_home, rocm_home, rocm_home);
-            if line.trim() != desired { (desired, true) } else { (line, false) }
-        } else { (line, false) };
+            if line.trim() != desired {
+                (desired, true)
+            } else {
+                (line, false)
+            }
+        } else {
+            (line, false)
+        };
 
-        changed |=
-            changed_arch || changed_alloc || changed_hip || changed_rocm || changed_hip_vis || changed_cuda_vis || changed_path || changed_ld;
+        let (line, changed_ld) = if line.starts_with("export LD_LIBRARY_PATH=") {
+            let desired = format!(
+                "export LD_LIBRARY_PATH=\"{}/lib:{}/hip/lib:{}/opencl/lib:${{LD_LIBRARY_PATH:-}}\"",
+                rocm_home, rocm_home, rocm_home
+            );
+            if line.trim() != desired {
+                (desired, true)
+            } else {
+                (line, false)
+            }
+        } else {
+            (line, false)
+        };
+
+        changed |= changed_arch
+            || changed_alloc
+            || changed_hip
+            || changed_rocm
+            || changed_hip_vis
+            || changed_cuda_vis
+            || changed_path
+            || changed_ld;
         lines.push(line);
     }
 
@@ -683,6 +705,13 @@ fn build_component_report(
         lines.push(format!("  {}: {}", key, value));
     }
 
+    // Add benchmark results for benchmark components
+    if let Some(benchmark_lines) = extract_benchmark_results(&component.id) {
+        lines.push("".to_string());
+        lines.push("Benchmark Results:".to_string());
+        lines.extend(benchmark_lines);
+    }
+
     lines.push("".to_string());
     lines.push("Verification Checks:".to_string());
 
@@ -698,6 +727,142 @@ fn build_component_report(
     }
 
     lines
+}
+
+fn extract_benchmark_results(component_id: &str) -> Option<Vec<String>> {
+    use std::path::PathBuf;
+
+    let log_dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".rusty-stack")
+        .join("logs");
+
+    if !log_dir.exists() {
+        return None;
+    }
+
+    // Map component IDs to log file patterns
+    let pattern = match component_id {
+        "mlperf-inference" => "mlperf_inference",
+        "rocm-benchmarks" => "rocm_benchmarks",
+        "gpu-memory-bandwidth" => "gpu_memory_bandwidth",
+        "rocm-smi-bench" => "rocm_smi_benchmarks",
+        "pytorch-performance" => "pytorch_performance",
+        _ => return None,
+    };
+
+    // Find the most recent log file
+    let mut log_files: Vec<_> = std::fs::read_dir(&log_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| name.contains(pattern))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    log_files.sort_by(|a, b| {
+        let a_time = a.metadata().ok().and_then(|m| m.modified().ok());
+        let b_time = b.metadata().ok().and_then(|m| m.modified().ok());
+        a_time.cmp(&b_time)
+    });
+
+    let log_file = log_files.last()?;
+    let contents = std::fs::read_to_string(log_file.path()).ok()?;
+
+    // Initialize result_lines at the beginning
+    let mut result_lines: Vec<String> = Vec::new();
+
+    // Find the complete JSON object (may span multiple lines)
+    // Look for "name": "all" or similar marker and extract the full JSON by counting braces
+    let mut json_str = String::new();
+    let mut found_json = false;
+    let mut depth = 0;
+    let mut in_json = false;
+
+    for (i, c) in contents.char_indices() {
+        if c == '{' {
+            if !in_json {
+                // Start of potential JSON object
+                if let Some(slice) = contents.get(i..) {
+                    if slice.starts_with("{\"name\"") || slice.starts_with("{\"success\"") {
+                        in_json = true;
+                        depth = 1;
+                        json_str.clear();
+                    }
+                }
+            }
+            if in_json {
+                json_str.push(c);
+                if depth == 1 && c == '{' {
+                    // This is the opening brace of the main object
+                }
+            }
+        } else if c == '}' && in_json {
+            json_str.push(c);
+            depth -= 1;
+            if depth == 0 {
+                // Found complete JSON
+                found_json = true;
+                break;
+            }
+        } else if in_json {
+            json_str.push(c);
+        }
+    }
+
+    if !found_json || json_str.is_empty() {
+        result_lines.push("  No metrics found in log".to_string());
+        return Some(result_lines);
+    }
+
+    // Parse the extracted JSON
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+        // Handle nested results object (for "all" benchmarks)
+        if let Some(results) = json.get("results").and_then(|r| r.as_object()) {
+            for (bench_name, bench_data) in results {
+                if bench_data.is_object() {
+                    result_lines.push(format!(
+                        "  === {} ===",
+                        bench_name.replace("_", " ").to_uppercase()
+                    ));
+                    if let Some(metrics) = bench_data.get("metrics").and_then(|m| m.as_object()) {
+                        for (key, value) in metrics {
+                            let value_str = match value {
+                                serde_json::Value::Number(n) => n.to_string(),
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                _ => continue,
+                            };
+                            let formatted_key = key.replace("_", " ").to_uppercase();
+                            result_lines.push(format!("    {}: {}", formatted_key, value_str));
+                        }
+                    }
+                    result_lines.push(String::new());
+                }
+            }
+        } else if let Some(metrics) = json.get("metrics").and_then(|m| m.as_object()) {
+            // Handle single benchmark results
+            for (key, value) in metrics {
+                let value_str = match value {
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    _ => continue,
+                };
+                let formatted_key = key.replace("_", " ").to_uppercase();
+                result_lines.push(format!("  {}: {}", formatted_key, value_str));
+            }
+        }
+    }
+
+    if result_lines.is_empty() {
+        result_lines.push("  No metrics found in log".to_string());
+    }
+
+    Some(result_lines)
 }
 
 fn collect_env_info(user_home: &str) -> Vec<(String, String)> {
@@ -793,11 +958,12 @@ fn run_verification_command(
     }
 
     // Clean PYTHONPATH of any /tmp paths to avoid importing from build dirs
-    pythonpath = pythonpath.split(':')
+    pythonpath = pythonpath
+        .split(':')
         .filter(|part| !part.starts_with("/tmp/"))
         .collect::<Vec<_>>()
         .join(":");
-    
+
     if !pythonpath.is_empty() {
         command.env("PYTHONPATH", pythonpath);
     }
@@ -928,7 +1094,8 @@ fn run_script(
     }
 
     // Clean PYTHONPATH of any /tmp paths to avoid importing from build dirs
-    pythonpath = pythonpath.split(':')
+    pythonpath = pythonpath
+        .split(':')
         .filter(|part| !part.starts_with("/tmp/"))
         .collect::<Vec<_>>()
         .join(":");
@@ -1069,8 +1236,8 @@ fn run_script(
                         let line = String::from_utf8_lossy(&buffer).to_string();
                         let clean_line = strip_ansi_codes(&line);
                         if !clean_line.trim().is_empty() {
-                            let _ = sender_stderr
-                                .send(InstallerEvent::Log(clean_line, is_transient));
+                            let _ =
+                                sender_stderr.send(InstallerEvent::Log(clean_line, is_transient));
                         }
                         buffer.clear();
                     }
@@ -1093,7 +1260,12 @@ fn run_script(
     if !status.success() {
         let code = status.code().unwrap_or(-1);
         let _ = sender.send(InstallerEvent::Log(
-            format!("{} exited with code {} at {}", component.name, code, Local::now().format("%H:%M:%S")),
+            format!(
+                "{} exited with code {} at {}",
+                component.name,
+                code,
+                Local::now().format("%H:%M:%S")
+            ),
             false,
         ));
         bail!("{} failed with exit code {}", component.name, code);
@@ -1108,7 +1280,7 @@ fn star_repo(config: &InstallerConfig, sender: &Sender<InstallerEvent>) -> Resul
     }
 
     let repo_url = "https://github.com/scooter-lacroix/Stan-s-ML-Stack";
-    
+
     // Check if gh cli is available and authenticated
     let gh_check = Command::new("gh")
         .arg("auth")
@@ -1119,7 +1291,10 @@ fn star_repo(config: &InstallerConfig, sender: &Sender<InstallerEvent>) -> Resul
 
     if let Ok(status) = gh_check {
         if status.success() {
-            let _ = sender.send(InstallerEvent::Log("Starring ML Stack repository on GitHub...".into(), false));
+            let _ = sender.send(InstallerEvent::Log(
+                "Starring ML Stack repository on GitHub...".into(),
+                false,
+            ));
             let star_status = Command::new("gh")
                 .arg("repo")
                 .arg("star")
@@ -1127,15 +1302,18 @@ fn star_repo(config: &InstallerConfig, sender: &Sender<InstallerEvent>) -> Resul
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
-            
+
             if let Ok(s) = star_status {
                 if s.success() {
-                    let _ = sender.send(InstallerEvent::Log("Thank you for starring the repo! ✦".into(), false));
+                    let _ = sender.send(InstallerEvent::Log(
+                        "Thank you for starring the repo! ✦".into(),
+                        false,
+                    ));
                 }
             }
         }
     }
-    
+
     Ok(())
 }
 

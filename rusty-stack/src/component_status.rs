@@ -135,6 +135,7 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "basic-env" => path_exists(home_path(&home, &[".mlstack_env"])),
         "enhanced-env" => env_file_has_enhanced(&home_path(&home, &[".mlstack_env"])),
         "vllm-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
+        "deepspeed-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
         "all-benchmarks" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
         _ => false,
     }
@@ -348,6 +349,15 @@ pub fn component_verification_commands(
             &[
                 "-c",
                 "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"vllm_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "deepspeed-performance" => vec![shell_command(
+            "DeepSpeed benchmark logs",
+            "deepspeed-performance",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"deepspeed_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
             ],
         )],
         "all-benchmarks" => vec![shell_command(

@@ -457,6 +457,18 @@ pub fn default_components() -> Vec<Component> {
             estimate: "15-25 min".into(),
         },
         Component {
+            id: "deepspeed-performance".into(),
+            name: "DeepSpeed Performance".into(),
+            description: "DeepSpeed ZeRO optimization throughput benchmark".into(),
+            script: "run_deepspeed_benchmarks.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-20 min".into(),
+        },
+        Component {
             id: "all-benchmarks".into(),
             name: "Full Suite Benchmark".into(),
             description: "Run all post-installation performance tests".into(),

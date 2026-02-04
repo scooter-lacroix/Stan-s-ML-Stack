@@ -705,7 +705,18 @@ fn detect_gpu() -> GPUInfo {
                     }
                 }
                 if line.contains("gfx") && info.architecture.is_empty() {
-                    info.architecture = line.trim().to_string();
+                    // Extract only the gfx architecture identifier (e.g., gfx1100, gfx906)
+                    let trimmed = line.trim();
+                    if let Some(gfx_start) = trimmed.find("gfx") {
+                        let after_gfx = &trimmed[gfx_start + 3..];
+                        let gfx_num: String = after_gfx
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        if !gfx_num.is_empty() {
+                            info.architecture = format!("gfx{}", gfx_num);
+                        }
+                    }
                 }
             }
             if gpu_count > 0 {

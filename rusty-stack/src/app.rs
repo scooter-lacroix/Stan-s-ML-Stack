@@ -5,6 +5,7 @@ use crate::installer::{run_installation, InstallerEvent};
 use crate::state::{
     default_components, Category, Component, HardwareState, InstallStatus, PreflightResult, Stage,
 };
+use crate::widgets::benchmarks_page::{load_benchmark_results, render_benchmark_page};
 use chrono::Local;
 use crossterm::event::KeyModifiers;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -101,6 +102,7 @@ pub struct App {
     pub install_input_mode: InputMode,
     pub last_line_transient: bool,
     pub summary_scroll: u16,
+    pub benchmark_tab_index: usize,
     install_input_sender: Option<Sender<String>>,
     install_receiver: Option<Receiver<InstallerEvent>>,
     hardware_receiver: Option<Receiver<anyhow::Result<HardwareState>>>,
@@ -143,6 +145,7 @@ impl App {
             install_input_mode: InputMode::Line,
             last_line_transient: false,
             summary_scroll: 0,
+            benchmark_tab_index: 0,
             install_input_sender: None,
             install_receiver: None,
             hardware_receiver: None,
@@ -285,6 +288,10 @@ impl App {
             },
             Stage::Complete => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.stage = Stage::Recovery,
+                KeyCode::Char('b') | KeyCode::Char('B') => {
+                    self.stage = Stage::Benchmarks;
+                    self.benchmark_tab_index = 0;
+                }
                 KeyCode::Up => {
                     self.summary_scroll = self.summary_scroll.saturating_sub(1);
                 }
@@ -297,6 +304,20 @@ impl App {
                 KeyCode::PageDown => {
                     self.summary_scroll = self.summary_scroll.saturating_add(10);
                 }
+                _ => {}
+            },
+            Stage::Benchmarks => match key.code {
+                KeyCode::Left => {
+                    if self.benchmark_tab_index > 0 {
+                        self.benchmark_tab_index -= 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if self.benchmark_tab_index < 6 {
+                        self.benchmark_tab_index += 1;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => self.stage = Stage::Complete,
                 _ => {}
             },
             Stage::Recovery => match key.code {
@@ -360,6 +381,7 @@ impl App {
             Stage::Confirm => self.draw_confirm(frame, chunks[1]),
             Stage::Installing => self.draw_installing(frame, chunks[1]),
             Stage::Complete => self.draw_complete(frame, chunks[1]),
+            Stage::Benchmarks => self.draw_benchmarks(frame, chunks[1]),
             Stage::Recovery => self.draw_recovery(frame, chunks[1]),
         }
 
@@ -385,7 +407,8 @@ impl App {
             Stage::Configuration => "↑/↓ select • Enter toggle • S save • N next • Esc back",
             Stage::Confirm => "Enter install • Esc back • Q recovery",
             Stage::Installing => "Q recovery",
-            Stage::Complete => "Esc recovery",
+            Stage::Complete => "Esc recovery • B benchmarks",
+            Stage::Benchmarks => "←/→ tabs • Esc/B back • Q quit",
             Stage::Recovery => "↑/↓ select • Enter apply • Q quit",
         }
     }
@@ -435,65 +458,190 @@ impl App {
         } else {
             Color::Green
         };
-        let lines = vec![
-            Line::from(vec![Span::styled(
-                format!("{} {}", self.spinner(), self.hardware.status),
+
+        // Create a more visually appealing layout with color coding and symbols
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(area);
+
+        // Header with status
+        let header = Paragraph::new(Text::from(vec![Line::from(vec![
+            Span::styled(
+                "🌐 Hardware Detection",
                 Style::default()
-                    .fg(status_color)
+                    .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            )]),
+            ),
+            Span::raw("  "),
+            Span::styled(self.spinner(), Style::default().fg(status_color)),
+            Span::raw(" "),
+            Span::styled(
+                self.hardware.status.clone(),
+                Style::default().fg(status_color),
+            ),
+        ])]))
+        .block(Block::default().borders(Borders::ALL))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(header, chunks[0]);
+
+        // Hardware information
+        let info_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(chunks[1]);
+
+        // Left side: System info
+        let system_lines = vec![
             Line::from(""),
-            Line::from(format!("OS: {}", self.hardware.system.distribution)),
-            Line::from(format!("Kernel: {}", self.hardware.system.kernel)),
-            Line::from(format!("CPU: {}", self.hardware.system.cpu_model)),
-            Line::from(format!("Memory: {:.1} GB", self.hardware.system.memory_gb)),
-            Line::from(format!(
-                "Storage: {:.1} GB (free {:.1} GB)",
-                self.hardware.system.storage_gb, self.hardware.system.storage_available_gb
-            )),
-            Line::from(""),
-            Line::from(format!("GPU: {}", self.hardware.gpu.model)),
-            Line::from(format!(
-                "GPU Architecture: {}",
-                self.hardware.gpu.architecture
-            )),
-            Line::from(format!(
-                "ROCm Version: {}",
-                if self.hardware.gpu.rocm_version.is_empty() {
-                    "unknown"
-                } else {
-                    &self.hardware.gpu.rocm_version
-                }
-            )),
-            Line::from(format!("GPU Count: {}", self.hardware.gpu.gpu_count)),
-            Line::from(format!("GPU Memory: {:.1} GB", self.hardware.gpu.memory_gb)),
-            Line::from(format!(
-                "GPU Temp: {}",
-                self.hardware
-                    .gpu
-                    .temperature_c
-                    .map(|v| format!("{:.1} C", v))
-                    .unwrap_or_else(|| "n/a".into())
-            )),
-            Line::from(format!(
-                "GPU Power: {}",
-                self.hardware
-                    .gpu
-                    .power_watts
-                    .map(|v| format!("{:.1} W", v))
-                    .unwrap_or_else(|| "n/a".into())
-            )),
-            Line::from(""),
-            Line::from("Press Enter to run preflight checks"),
+            Line::from(vec![
+                Span::styled("🖥️  System", Style::default().fg(Color::Blue)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware.system.distribution.clone(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("🧠  Kernel", Style::default().fg(Color::Blue)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware.system.kernel.clone(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("💻  CPU", Style::default().fg(Color::Blue)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware.system.cpu_model.clone(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("💾  Memory", Style::default().fg(Color::Blue)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:.1} GB", self.hardware.system.memory_gb),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("💾  Storage", Style::default().fg(Color::Blue)),
+                Span::raw(" "),
+                Span::styled(
+                    format!(
+                        "{:.1} GB (free {:.1} GB)",
+                        self.hardware.system.storage_gb, self.hardware.system.storage_available_gb
+                    ),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
         ];
-        let paragraph = Paragraph::new(Text::from(lines))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Hardware Detection"),
-            )
+
+        // Right side: GPU info
+        let gpu_lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("🖥️  GPU", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware.gpu.model.clone(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("🏗️  Architecture", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware.gpu.architecture.clone(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("🔧  ROCm", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    if self.hardware.gpu.rocm_version.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        self.hardware.gpu.rocm_version.clone()
+                    },
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("💰  GPU Count", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware.gpu.gpu_count.to_string(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("💾  GPU Memory", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:.1} GB", self.hardware.gpu.memory_gb),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("🌡️  GPU Temp", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware
+                        .gpu
+                        .temperature_c
+                        .map(|v| format!("{:.1} C", v))
+                        .unwrap_or_else(|| "n/a".into()),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("⚡  GPU Power", Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    self.hardware
+                        .gpu
+                        .power_watts
+                        .map(|v| format!("{:.1} W", v))
+                        .unwrap_or_else(|| "n/a".into()),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]),
+        ];
+
+        let system_panel = Paragraph::new(Text::from(system_lines))
+            .block(Block::default().borders(Borders::ALL).title("System"))
             .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        frame.render_widget(system_panel, info_chunks[0]);
+
+        let gpu_panel = Paragraph::new(Text::from(gpu_lines))
+            .block(Block::default().borders(Borders::ALL).title("GPU"))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(gpu_panel, info_chunks[1]);
+
+        // Footer with instructions
+        let footer_lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "← Press Enter to run preflight checks",
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(Span::styled(
+                "← Press Q to quit",
+                Style::default().fg(Color::Red),
+            )),
+        ];
+        let footer = Paragraph::new(Text::from(footer_lines))
+            .block(Block::default().borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(footer, chunks[2]);
     }
 
     fn draw_preflight(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -630,16 +778,17 @@ impl App {
             .split(area);
 
         let categories = [
-            Category::Foundation,
-            Category::Core,
-            Category::Extension,
-            Category::Environment,
-            Category::Verification,
+            (Category::Environment, "🌍", "Environment"),
+            (Category::Foundation, "🔧", "Foundation"),
+            (Category::Core, "⚙️", "Core"),
+            (Category::Extension, "📦", "Extensions"),
+            (Category::Verification, "✅", "Verification"),
+            (Category::Performance, "📊", "Performance"),
         ];
         let category_items: Vec<ListItem> = categories
             .iter()
             .enumerate()
-            .map(|(idx, cat)| {
+            .map(|(idx, (_, icon, label))| {
                 let style = if idx == self.selected_category {
                     Style::default()
                         .fg(Color::Yellow)
@@ -647,7 +796,10 @@ impl App {
                 } else {
                     Style::default()
                 };
-                ListItem::new(Line::from(Span::styled(cat.label(), style)))
+                ListItem::new(Line::from(Span::styled(
+                    format!("{} {}", icon, label),
+                    style,
+                )))
             })
             .collect();
 
@@ -655,7 +807,7 @@ impl App {
             .block(Block::default().borders(Borders::ALL).title("Categories"));
         frame.render_widget(category_list, chunks[0]);
 
-        let current_category = categories[self.selected_category];
+        let current_category = categories[self.selected_category].0;
         let filtered: Vec<(usize, &Component)> = self
             .components
             .iter()
@@ -668,14 +820,35 @@ impl App {
             .enumerate()
             .map(|(idx, (_, comp))| {
                 let selected = idx == self.selected_component;
-                let indicator = if comp.selected { "[x]" } else { "[ ]" };
-                let line = format!("{} {} - {}", indicator, comp.name, comp.estimate);
+
+                // Category-specific icon
+                let icon = match comp.category {
+                    Category::Environment => "🌍",
+                    Category::Foundation => "🔧",
+                    Category::Core => "⚙️",
+                    Category::Extension => "📦",
+                    Category::Verification => "✅",
+                    Category::Performance => "📊",
+                };
+
+                let indicator = if comp.selected { "☑" } else { "☐" };
+                let status_indicator = if comp.installed { "✓" } else { "○" };
+
+                let line = format!(
+                    "{} {} {} {} [{}]",
+                    indicator, icon, comp.name, status_indicator, comp.estimate
+                );
+
                 let style = if selected {
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default()
+                    if comp.installed {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default()
+                    }
                 };
                 ListItem::new(Line::from(Span::styled(line, style)))
             })
@@ -685,50 +858,120 @@ impl App {
             .block(Block::default().borders(Borders::ALL).title("Components"));
         frame.render_widget(component_list, chunks[1]);
 
-        let mut detail_lines = vec![Line::from("Component Details")];
+        let mut detail_lines = vec![Line::from(Span::styled(
+            "Component Details",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))];
         if let Some((_, comp)) = filtered.get(self.selected_component) {
             detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(format!("Name: {}", comp.name)));
-            detail_lines.push(Line::from(format!("Required: {}", on_off(comp.required))));
-            detail_lines.push(Line::from(format!("Selected: {}", on_off(comp.selected))));
-            let (status_label, status_color) = if comp.category == Category::Verification {
-                if comp.installed {
-                    ("Verified", Color::Green)
-                } else {
-                    ("Unverified", Color::Yellow)
+            detail_lines.push(Line::from(vec![
+                Span::styled("Name: ", Style::default().fg(Color::Gray)),
+                Span::styled(comp.name.clone(), Style::default().fg(Color::White)),
+            ]));
+            detail_lines.push(Line::from(vec![
+                Span::styled("Required: ", Style::default().fg(Color::Gray)),
+                Span::styled(on_off(comp.required), Style::default().fg(Color::Yellow)),
+            ]));
+            detail_lines.push(Line::from(vec![
+                Span::styled("Selected: ", Style::default().fg(Color::Gray)),
+                Span::styled(on_off(comp.selected), Style::default().fg(Color::Cyan)),
+            ]));
+
+            // Category-specific status display
+            let (status_label, status_color, status_icon) = match comp.category {
+                Category::Environment => {
+                    if comp.installed {
+                        ("Configured", Color::Green, "✓")
+                    } else {
+                        ("Not configured", Color::Yellow, "○")
+                    }
                 }
-            } else if comp.installed {
-                ("Installed", Color::Green)
-            } else {
-                ("Not installed", Color::Yellow)
+                Category::Core => {
+                    // Core components show their status based on installation
+                    if comp.installed {
+                        ("Installed", Color::Green, "✓")
+                    } else {
+                        ("Not installed", Color::Yellow, "○")
+                    }
+                }
+                Category::Verification => {
+                    if comp.installed {
+                        ("Verified", Color::Green, "✓")
+                    } else {
+                        ("Unverified", Color::Yellow, "○")
+                    }
+                }
+                Category::Performance => {
+                    if comp.installed {
+                        ("Benchmarked", Color::Green, "✓")
+                    } else {
+                        ("Pending benchmark", Color::Yellow, "○")
+                    }
+                }
+                _ => {
+                    if comp.installed {
+                        ("Installed", Color::Green, "✓")
+                    } else {
+                        ("Not installed", Color::Yellow, "○")
+                    }
+                }
             };
+
             let status_line = Line::from(vec![
-                Span::raw("Status: "),
+                Span::styled("Status: ", Style::default().fg(Color::Gray)),
                 Span::styled(
-                    status_label,
+                    format!("{} {}", status_icon, status_label),
                     Style::default()
                         .fg(status_color)
                         .add_modifier(Modifier::BOLD),
                 ),
             ]);
             detail_lines.push(status_line);
-            detail_lines.push(Line::from(format!("Estimate: {}", comp.estimate)));
+            detail_lines.push(Line::from(vec![
+                Span::styled("Estimate: ", Style::default().fg(Color::Gray)),
+                Span::styled(comp.estimate.clone(), Style::default().fg(Color::Magenta)),
+            ]));
             detail_lines.push(Line::from(""));
             detail_lines.push(Line::from(comp.description.clone()));
 
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(Span::styled(
-                "Verification Summary",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            if let Some(report) = self.verification_reports.get(&comp.id) {
-                for line in report {
-                    detail_lines.push(Line::from(line.clone()));
+            // Show category-specific info
+            if comp.category == Category::Environment {
+                detail_lines.push(Line::from(""));
+                detail_lines.push(Line::from(Span::styled(
+                    "Environment Configuration",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                detail_lines.push(Line::from("Sets up persistent ROCm environment variables"));
+                detail_lines.push(Line::from("for Python 3.12 across sessions."));
+            } else if comp.category == Category::Verification {
+                detail_lines.push(Line::from(""));
+                detail_lines.push(Line::from(Span::styled(
+                    "Verification Summary",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                if let Some(report) = self.verification_reports.get(&comp.id) {
+                    for line in report {
+                        detail_lines.push(Line::from(line.clone()));
+                    }
+                } else {
+                    detail_lines.push(Line::from("No verification report yet."));
                 }
-            } else {
-                detail_lines.push(Line::from("No verification report yet."));
+            } else if comp.category == Category::Performance {
+                detail_lines.push(Line::from(""));
+                detail_lines.push(Line::from(Span::styled(
+                    "Performance Benchmarks",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                detail_lines.push(Line::from("Run performance tests and benchmarks"));
+                detail_lines.push(Line::from("to measure GPU throughput and efficiency."));
             }
         }
         detail_lines.push(Line::from(""));
@@ -871,13 +1114,27 @@ impl App {
             .split(area);
 
         let clean_msg = self.install_status.message.trim_start_matches(|c: char| {
-            c == '[' || c == ']' || c == '⠋' || c == '⠙' || c == '⠹' || c == '⠸' || c == '⠼' || c == '⠴' || c == '⠦' || c == '⠧' || c == '⠇' || c == '⠏' || c.is_whitespace()
+            c == '['
+                || c == ']'
+                || c == '⠋'
+                || c == '⠙'
+                || c == '⠹'
+                || c == '⠸'
+                || c == '⠼'
+                || c == '⠴'
+                || c == '⠦'
+                || c == '⠧'
+                || c == '⠇'
+                || c == '⠏'
+                || c.is_whitespace()
         });
 
         let percent = (self.install_status.progress * 100.0).round() as i32;
         let label = Span::styled(
             format!("{} {}% {}", self.spinner(), percent, clean_msg),
-            Style::default().fg(Color::Black).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
         );
 
         let gauge = Gauge::default()
@@ -952,8 +1209,8 @@ impl App {
         ];
 
         let available_lines = body[1].height.saturating_sub(2) as usize;
-        let checklist_budget = available_lines
-            .saturating_sub(base_lines.len() + tail_lines.len() + 1);
+        let checklist_budget =
+            available_lines.saturating_sub(base_lines.len() + tail_lines.len() + 1);
         let checklist_lines = self.checklist_lines(checklist_budget);
 
         let mut status_lines = base_lines;
@@ -1181,17 +1438,18 @@ impl App {
         let max_scroll = total_lines.saturating_sub(visible_height);
 
         let paragraph = Paragraph::new(Text::from(lines))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(
-                        "Complete (↑↓ to scroll, Esc to recovery) [{}/{}]",
-                        self.summary_scroll, max_scroll
-                    )),
-            )
+            .block(Block::default().borders(Borders::ALL).title(format!(
+                "Complete (↑↓ to scroll, Esc to recovery) [{}/{}]",
+                self.summary_scroll, max_scroll
+            )))
             .wrap(Wrap { trim: true })
             .scroll((self.summary_scroll, 0));
         frame.render_widget(paragraph, area);
+    }
+
+    fn draw_benchmarks(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let results = load_benchmark_results();
+        render_benchmark_page(frame, area, &results, self.benchmark_tab_index);
     }
 
     fn draw_recovery(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -1274,7 +1532,7 @@ impl App {
     }
 
     fn change_category(&mut self, delta: i32) {
-        let categories_len = 5i32;
+        let categories_len = 6i32; // Environment, Foundation, Core, Extension, Verification, Performance
         let mut idx = self.selected_category as i32 + delta;
         if idx < 0 {
             idx = categories_len - 1;
@@ -1320,7 +1578,10 @@ impl App {
             format!("Batch Mode: {}", on_off(self.config.batch_mode)),
             format!("Auto Confirm: {}", on_off(self.config.auto_confirm)),
             format!("Star ML Stack Repo: {}", on_off(self.config.star_repos)),
-            format!("Force Reinstall All: {}", on_off(self.config.force_reinstall)),
+            format!(
+                "Force Reinstall All: {}",
+                on_off(self.config.force_reinstall)
+            ),
             format!("Theme: {}", self.config.theme),
             format!("Performance Profile: {}", self.config.performance_profile),
             "Save Configuration".into(),
@@ -1526,13 +1787,7 @@ impl App {
         self.install_input_sender = Some(input_tx);
         self.install_input_buffer.clear();
         thread::spawn(move || {
-            run_installation(
-                selected,
-                config,
-                sudo_password,
-                tx,
-                input_rx,
-            );
+            run_installation(selected, config, sudo_password, tx, input_rx);
         });
         self.install_receiver = Some(rx);
     }
@@ -1600,7 +1855,7 @@ impl App {
                     self.install_input_buffer.clear();
                     self.recalculate_overall_progress();
                     self.install_status.progress = 1.0;
-                    self.stage = Stage::Complete;
+                    self.stage = Stage::Benchmarks;
                 }
             }
         }
@@ -1677,7 +1932,9 @@ impl App {
 
         lines.push(Line::from(Span::styled(
             "Checklist",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )));
         remaining = remaining.saturating_sub(1);
 
@@ -1689,7 +1946,9 @@ impl App {
             }
             lines.push(Line::from(Span::styled(
                 format!("• {}", comp.name),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )));
             remaining = remaining.saturating_sub(1);
 
@@ -1805,11 +2064,12 @@ impl App {
 
     fn current_category(&self) -> Category {
         match self.selected_category {
-            0 => Category::Foundation,
-            1 => Category::Core,
-            2 => Category::Extension,
-            3 => Category::Environment,
-            _ => Category::Verification,
+            0 => Category::Environment,
+            1 => Category::Foundation,
+            2 => Category::Core,
+            3 => Category::Extension,
+            4 => Category::Verification,
+            _ => Category::Performance,
         }
     }
 
@@ -1897,11 +2157,14 @@ impl App {
 
     fn env_summary(&self) -> Vec<(String, String)> {
         let mut entries = Vec::new();
-        let env_path = std::path::Path::new(&self.config.install_path)
-            .join(".mlstack_env");
-        let fallback = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
-            .join(".mlstack_env");
-        let path = if env_path.exists() { env_path } else { fallback };
+        let env_path = std::path::Path::new(&self.config.install_path).join(".mlstack_env");
+        let fallback =
+            std::path::Path::new(&std::env::var("HOME").unwrap_or_default()).join(".mlstack_env");
+        let path = if env_path.exists() {
+            env_path
+        } else {
+            fallback
+        };
 
         if let Ok(contents) = std::fs::read_to_string(&path) {
             for line in contents.lines() {
