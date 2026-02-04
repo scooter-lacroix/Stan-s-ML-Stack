@@ -1,9 +1,0 @@
-# import config
-packagefile bufio=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b092/_pkg_.a
-packagefile errors=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b003/_pkg_.a
-packagefile image/color=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b072/_pkg_.a
-packagefile io=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b043/_pkg_.a
-packagefile math/bits=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b035/_pkg_.a
-packagefile strconv=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b036/_pkg_.a
-packagefile sync=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b038/_pkg_.a
-packagefile sync/atomic=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b040/_pkg_.a
