@@ -25,7 +25,7 @@ setup(
     description="A comprehensive machine learning environment optimized for AMD GPUs",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/scooter-lacroix/Stans_MLStack",
+    url="https://github.com/scooter-lacroix/Stan-s-ML-Stack",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -53,7 +53,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "ml-stack-install=scripts.install_ml_stack_curses:main",
+            "ml-stack-install=scripts.run_rusty_stack:main",
             "ml-stack-verify=scripts.enhanced_verify_installation_wrapper:main",
             "ml-stack-repair=scripts.repair_ml_stack_wrapper:main",
         ],
@@ -75,7 +75,10 @@ setup(
         "scripts/install_megatron.sh",
         "scripts/install_triton.sh",
         "scripts/install_bitsandbytes.sh",
+        "scripts/install_bitsandbytes_multi.sh",
         "scripts/install_vllm.sh",
+        "scripts/install_vllm_multi.sh",
+        "scripts/install_vllm_studio.sh",
         "scripts/install_rocm_smi.sh",
         "scripts/install_pytorch_profiler.sh",
         "scripts/install_wandb.sh",
@@ -85,5 +88,7 @@ setup(
         "scripts/verify_installation.sh",
         "scripts/verify_and_build.sh",
         "scripts/create_persistent_env.sh",
+        "scripts/run_rusty_stack.sh",
+        "scripts/run_rusty_stack.py",
     ],
 )

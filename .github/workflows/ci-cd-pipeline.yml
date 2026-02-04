@@ -1,0 +1,619 @@
+name: Stan's ML Stack - Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: stans-ml-stack
+
+jobs:
+  # Code Quality and Security Analysis
+  code-quality:
+    name: Code Quality & Security Analysis
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black isort flake8 mypy pylint
+          pip install bandit safety semgrep
+          pip install pytest pytest-cov pytest-xdist
+
+      - name: Generate Cache Key
+        id: cache-key
+        run: echo "key=${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}" >> $GITHUB_OUTPUT
+
+      - name: Cache Dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Code Formatting Check (Black)
+        run: black --check --diff stans_ml_stack/
+
+      - name: Import Sorting Check (isort)
+        run: isort --check-only --diff stans_ml_stack/
+
+      - name: Linting (flake8)
+        run: |
+          flake8 stans_ml_stack/ --max-line-length=88 --extend-ignore=E203,W503
+          flake8 tests/ --max-line-length=88 --extend-ignore=E203,W503
+
+      - name: Type Checking (mypy)
+        run: mypy stans_ml_stack/ --ignore-missing-imports --no-strict-optional
+
+      - name: Code Quality (pylint)
+        run: pylint stans_ml_stack/ --disable=C0114,C0115,C0116 --fail-under=8.0
+
+      - name: Security Scanning (bandit)
+        run: bandit -r stans_ml_stack/ -f json -o bandit-report.json
+
+      - name: Dependency Security Check (safety)
+        run: safety check --json --output safety-report.json
+
+      - name: Static Analysis (semgrep)
+        run: semgrep --config=auto --json --output=semgrep-report.json stans_ml_stack/
+
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+            semgrep-report.json
+
+  # Multi-platform Testing
+  testing:
+    name: Multi-Platform Testing
+    runs-on: ${{ matrix.os }}
+    needs: code-quality
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10', '3.11', '3.12']
+        exclude:
+          # Exclude some combinations to reduce matrix size
+          - os: windows-latest
+            python-version: '3.10'
+          - os: macos-latest
+            python-version: '3.10'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache Dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ needs.code-quality.outputs.cache-key }}-${{ matrix.os }}-${{ matrix.python-version }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,test]
+
+      - name: Run Unit Tests
+        run: |
+          pytest tests/unit/ -v --cov=stans_ml_stack --cov-report=xml --cov-report=html
+
+      - name: Run Integration Tests
+        run: |
+          pytest tests/integration/ -v --maxfail=1
+
+      - name: Run Performance Tests
+        run: |
+          pytest tests/performance/ -v --benchmark-only
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
+          path: |
+            htmlcov/
+            .coverage
+            test-results/
+
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v3
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+  # Container Security and Build
+  container-build:
+    name: Container Build & Security
+    runs-on: ubuntu-latest
+    needs: code-quality
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build Container Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container Security Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ matrix.platform }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Push Container Image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Multi-Architecture Manifest
+  multi-arch:
+    name: Create Multi-Arch Manifest
+    runs-on: ubuntu-latest
+    needs: [container-build, testing]
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Create and Push Manifest
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # Helm Chart Security and Validation
+  helm-validation:
+    name: Helm Chart Validation
+    runs-on: ubuntu-latest
+    needs: code-quality
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      - name: Setup Kubernetes Tools
+        uses: yokawasa/action-setup-kube-tools@v0.9.3
+        with:
+          setup-tools: |
+            kubectl
+            kubeval
+            helm-docs
+
+      - name: Helm Lint
+        run: |
+          helm lint deploy/kubernetes/helm-chart/stans-ml-stack/
+
+      - name: Helm Template Validation
+        run: |
+          helm template test-release deploy/kubernetes/helm-chart/stans-ml-stack/ --values deploy/kubernetes/helm-chart/stans-ml-stack/values.yaml
+
+      - name: Kubernetes YAML Validation
+        run: |
+          helm template test-release deploy/kubernetes/helm-chart/stans-ml-stack/ --values deploy/kubernetes/helm-chart/stans-ml-stack/values.yaml | kubeval
+
+      - name: Helm Security Scan (kube-score)
+        run: |
+          helm template test-release deploy/kubernetes/helm-chart/stans-ml-stack/ --values deploy/kubernetes/helm-chart/stans-ml-stack/values.yaml | kube-score score -
+
+      - name: Generate Helm Documentation
+        run: |
+          cd deploy/kubernetes/helm-chart/stans-ml-stack/
+          helm-docs
+
+      - name: Commit Helm Documentation
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add deploy/kubernetes/helm-chart/stans-ml-stack/README.md
+          git diff --staged --quiet || git commit -m "docs: update helm chart documentation [skip ci]"
+          git push
+
+  # Integration Testing in Kubernetes
+  k8s-integration:
+    name: Kubernetes Integration Testing
+    runs-on: ubuntu-latest
+    needs: [multi-arch, helm-validation]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Kubernetes Kind Cluster
+        uses: helm/kind-action@v1.8.0
+        with:
+          cluster_name: ml-stack-test
+          config: deploy/kubernetes/kind-config.yaml
+          wait: 30s
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      - name: Deploy to Kubernetes
+        run: |
+          helm upgrade --install ml-stack-test deploy/kubernetes/helm-chart/stans-ml-stack/ \
+            --values deploy/kubernetes/helm-chart/stans-ml-stack/values.yaml \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout=10m
+
+      - name: Run Integration Tests
+        run: |
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=stans-ml-stack --timeout=300s
+          kubectl exec deployment/ml-stack-test -- curl -f http://localhost:8080/health
+
+      - name: Collect Logs
+        if: always()
+        run: |
+          kubectl logs deployment/ml-stack-test > k8s-integration-logs.txt
+
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: k8s-integration-logs
+          path: k8s-integration-logs.txt
+
+      - name: Cleanup
+        if: always()
+        run: |
+          helm uninstall ml-stack-test
+          kind delete cluster --name ml-stack-test
+
+  # Performance Benchmarking
+  benchmarking:
+    name: Performance Benchmarking
+    runs-on: ubuntu-latest
+    needs: [container-build, testing]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,test,benchmark]
+
+      - name: Run Performance Benchmarks
+        run: |
+          pytest benchmarks/ --benchmark-json=benchmark-results.json --benchmark-only
+
+      - name: Compare with Previous Results
+        run: |
+          pytest benchmarks/ --benchmark-compare --benchmark-compare-fail=min:5% --benchmark-json=benchmark-comparison.json
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results
+          path: |
+            benchmark-results.json
+            benchmark-comparison.json
+
+  # Release and Distribution
+  release:
+    name: Release and Distribution
+    runs-on: ubuntu-latest
+    needs: [k8s-integration, benchmarking, testing]
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Build Python Package
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          twine upload dist/*
+
+      - name: Generate Release Notes
+        run: |
+          # Generate comprehensive release notes
+          cat > RELEASE_NOTES.md << EOF
+          # Stan's ML Stack Release ${{ github.ref_name }}
+
+          ## Changes in this Release
+
+          ### Features
+          - Feature descriptions here
+
+          ### Bug Fixes
+          - Bug fixes here
+
+          ### Performance Improvements
+          - Performance improvements here
+
+          ### Security Updates
+          - Security updates here
+
+          ## Installation
+
+          ### PyPI Installation
+          \`\`\`bash
+          pip install stans-ml-stack==${{ github.ref_name }}
+          \`\`\`
+
+          ### Docker Installation
+          \`\`\`bash
+          docker pull bartholemewii/stans-ml-stack:${{ github.ref_name }}
+          \`\`\`
+
+          ### Helm Installation
+          \`\`\`bash
+          helm repo add stans-ml-stack https://stans-ml-stack.github.io/helm-charts
+          helm install stans-ml-stack stans-ml-stack/stans-ml-stack --version ${{ github.ref_name }}
+          \`\`\`
+
+          ## Verification
+
+          \`\`\`bash
+          ml-stack-verify
+          \`\`\`
+          EOF
+
+      - name: Update Release with Notes
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*
+            RELEASE_NOTES.md
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+
+  # Deployment to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [release]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Kubernetes Tools
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'v3.12.0'
+
+      - name: Deploy to Production
+        run: |
+          export KUBECONFIG=kubeconfig
+          helm upgrade --install stans-ml-stack deploy/kubernetes/helm-chart/stans-ml-stack/ \
+            --values deploy/kubernetes/helm-chart/stans-ml-stack/values.yaml \
+            --values deploy/kubernetes/helm-chart/stans-ml-stack/values-production.yaml \
+            --set image.tag=${{ github.sha }} \
+            --wait --timeout=15m
+
+      - name: Verify Deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          kubectl wait --for=condition=available deployment/stans-ml-stack --timeout=600s
+          kubectl get pods -l app.kubernetes.io/name=stans-ml-stack
+
+      - name: Notify Deployment Success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        if: always()
+
+  # Security Compliance Check
+  security-compliance:
+    name: Security Compliance Check
+    runs-on: ubuntu-latest
+    needs: [code-quality, container-build]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'stans-ml-stack'
+          path: '.'
+          format: 'HTML'
+          out: 'dependency-check-report'
+
+      - name: Upload OWASP Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: owasp-dependency-check
+          path: dependency-check-report/
+
+      - name: Run Snyk Security Scan
+        uses: snyk/actions/golang@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  # Post-Maintenance Tasks
+  post-maintenance:
+    name: Post-Maintenance Tasks
+    runs-on: ubuntu-latest
+    needs: [deploy-production, security-compliance]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Cleanup Old Artifacts
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+
+            // Keep only the latest 50 artifacts
+            const toDelete = artifacts.data.artifacts.slice(50);
+            for (const artifact of toDelete) {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+            }
+
+      - name: Update Documentation Website
+        run: |
+          # Trigger documentation website rebuild
+          curl -X POST "${{ secrets.DOC_WEBSITE_WEBHOOK }}"
+
+      - name: Performance Metrics Collection
+        run: |
+          # Collect and report performance metrics
+          echo "Collecting performance metrics..."

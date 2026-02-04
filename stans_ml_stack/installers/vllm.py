@@ -13,7 +13,7 @@ class VLLMInstaller:
     """VLLM installation and management class."""
 
     def __init__(self):
-        self.install_script = Path(__file__).parent.parent.parent / 'scripts' / 'install_vllm.sh'
+        self.install_script = Path(__file__).parent.parent.parent / 'scripts' / 'install_vllm_multi.sh'
 
     def is_installed(self) -> bool:
         """Check if VLLM is installed."""
