@@ -1,0 +1,15 @@
+# import config
+packagefile context=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b059/_pkg_.a
+packagefile github.com/charmbracelet/bubbles/help=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b106/_pkg_.a
+packagefile github.com/charmbracelet/bubbles/key=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b107/_pkg_.a
+packagefile github.com/charmbracelet/bubbles/spinner=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b108/_pkg_.a
+packagefile github.com/charmbracelet/bubbles/viewport=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b109/_pkg_.a
+packagefile github.com/charmbracelet/bubbletea=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b057/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/installer=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b110/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/components=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b111/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/integration=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b121/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/performance=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b123/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/security=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b124/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/state=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b125/_pkg_.a
+packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/types=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b122/_pkg_.a
+packagefile time=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b049/_pkg_.a

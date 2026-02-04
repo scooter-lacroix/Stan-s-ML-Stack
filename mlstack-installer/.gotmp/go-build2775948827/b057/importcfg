@@ -1,0 +1,27 @@
+# import config
+packagefile bytes=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b058/_pkg_.a
+packagefile context=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b059/_pkg_.a
+packagefile errors=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b003/_pkg_.a
+packagefile fmt=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b002/_pkg_.a
+packagefile github.com/charmbracelet/lipgloss=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b060/_pkg_.a
+packagefile github.com/charmbracelet/x/ansi=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b061/_pkg_.a
+packagefile github.com/charmbracelet/x/term=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b083/_pkg_.a
+packagefile github.com/muesli/ansi/compressor=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b098/_pkg_.a
+packagefile github.com/muesli/cancelreader=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b100/_pkg_.a
+packagefile io=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b043/_pkg_.a
+packagefile log=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b101/_pkg_.a
+packagefile os=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b044/_pkg_.a
+packagefile os/exec=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b089/_pkg_.a
+packagefile os/signal=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b103/_pkg_.a
+packagefile regexp=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b076/_pkg_.a
+packagefile runtime=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b009/_pkg_.a
+packagefile runtime/debug=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b104/_pkg_.a
+packagefile sort=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b078/_pkg_.a
+packagefile strconv=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b036/_pkg_.a
+packagefile strings=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b065/_pkg_.a
+packagefile sync=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b038/_pkg_.a
+packagefile sync/atomic=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b040/_pkg_.a
+packagefile syscall=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b052/_pkg_.a
+packagefile time=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b049/_pkg_.a
+packagefile unicode=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b041/_pkg_.a
+packagefile unicode/utf8=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b037/_pkg_.a

@@ -1,0 +1,8 @@
+# import config
+packagefile internal/abi=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b005/_pkg_.a
+packagefile internal/asan=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b022/_pkg_.a
+packagefile internal/goarch=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b006/_pkg_.a
+packagefile internal/msan=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b023/_pkg_.a
+packagefile internal/race=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b024/_pkg_.a
+packagefile internal/runtime/math=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b025/_pkg_.a
+packagefile internal/runtime/sys=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b026/_pkg_.a

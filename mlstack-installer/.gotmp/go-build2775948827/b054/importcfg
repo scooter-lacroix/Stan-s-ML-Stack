@@ -1,0 +1,4 @@
+# import config
+packagefile runtime=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b009/_pkg_.a
+packagefile sync/atomic=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b040/_pkg_.a
+packagefile syscall=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b052/_pkg_.a

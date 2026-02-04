@@ -1,0 +1,7 @@
+# import config
+packagefile github.com/charmbracelet/bubbles/key=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b107/_pkg_.a
+packagefile github.com/charmbracelet/bubbletea=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b057/_pkg_.a
+packagefile github.com/charmbracelet/lipgloss=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b060/_pkg_.a
+packagefile github.com/charmbracelet/x/ansi=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b061/_pkg_.a
+packagefile math=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b034/_pkg_.a
+packagefile strings=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b065/_pkg_.a

@@ -1,0 +1,7 @@
+./component_select.go
+./configuration.go
+./constants.go
+./hardware.go
+./progress.go
+./recovery.go
+./welcome.go

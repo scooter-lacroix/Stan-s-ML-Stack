@@ -1,0 +1,19 @@
+# import config
+packagefile internal/abi=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b005/_pkg_.a
+packagefile internal/bytealg=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b010/_pkg_.a
+packagefile internal/byteorder=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b012/_pkg_.a
+packagefile internal/chacha8rand=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b013/_pkg_.a
+packagefile internal/coverage/rtcov=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b014/_pkg_.a
+packagefile internal/cpu=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b011/_pkg_.a
+packagefile internal/goarch=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b006/_pkg_.a
+packagefile internal/godebugs=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b015/_pkg_.a
+packagefile internal/goexperiment=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b016/_pkg_.a
+packagefile internal/goos=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b017/_pkg_.a
+packagefile internal/profilerecord=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b018/_pkg_.a
+packagefile internal/runtime/atomic=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b019/_pkg_.a
+packagefile internal/runtime/exithook=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b020/_pkg_.a
+packagefile internal/runtime/maps=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b021/_pkg_.a
+packagefile internal/runtime/math=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b025/_pkg_.a
+packagefile internal/runtime/sys=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b026/_pkg_.a
+packagefile internal/runtime/syscall=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b027/_pkg_.a
+packagefile internal/stringslite=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b028/_pkg_.a
