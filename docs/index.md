@@ -19,6 +19,7 @@ This stack is designed to work with AMD's ROCm platform, providing CUDA compatib
 - **PyTorch Support**: PyTorch with ROCm support for deep learning
 - **ONNX Runtime**: Optimized inference with ROCm support
 - **LLM Tools**: Support for training and deploying large language models
+- **Hardware Performance Comparison**: Integrated TUI dashboard to track performance deltas (Before vs. After) across software updates
 - **Automatic Hardware Detection**: Scripts automatically detect and configure for your hardware
 - **Comprehensive Documentation**: Detailed guides and troubleshooting information
 - **DeepSpeed Integration**: Optimized training for large models with AMD GPU support
@@ -107,7 +108,8 @@ The ML Stack consists of the following core components:
 | **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.4.43482 |
 | **ONNX Runtime** | Cross-platform inference accelerator | 1.16.0 |
 | **MIGraphX** | AMD's graph optimization library | 2.12.0 |
-| **Flash Attention CK** | Efficient attention computation with Composable Kernel | 2.3.0 |
+| **Flash Attention (Triton)** | High-performance Triton-based kernels | 2.5.6 |
+| **Flash Attention CK** | Composable Kernel variant (Pre-release) | 2.3.0 |
 | **RCCL** | ROCm Collective Communication Library | Latest |
 | **MPI** | Message Passing Interface for distributed computing | Open MPI 5.0.7 |
 | **Megatron-LM** | Framework for training large language models | Latest |

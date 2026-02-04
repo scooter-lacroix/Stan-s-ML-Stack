@@ -48,6 +48,17 @@ Common pitfalls
 ## Build, Test, and Development Commands
 Create a development environment with `pip install -e .` (use `uv pip install -e .` when uv is available); this wires console entry points like `ml-stack-install`. For the primary installer, use `./scripts/run_rusty_stack.sh` to build and launch the Rusty-Stack TUI. Build distributable wheels via `python -m build`. Run focused Python tests with `pytest tests/`, or execute `./tests/run_all_tests.sh` for the full GPU, integration, and performance sweep. For faster feedback in CI, prefer `./tests/run_integration_tests.sh`. Use `ml-stack-verify` after system changes to confirm ROCm dependencies.
 
+### Performance Benchmarking for Agents
+Agents should use the `rusty-stack-bench` binary to validate system performance and detect regressions:
+```bash
+# Run full benchmark suite and export JSON
+./target/debug/rusty-stack-bench all --json
+
+# Verify specific component performance
+./target/debug/rusty-stack-bench vllm --json
+```
+The TUI automatically tracks a **Baseline** (first run). Compare `metrics` in the JSON output against previous logs in `~/.rusty-stack/logs` to ensure no performance degradation occurred after a change.
+
 ## Coding Style & Naming Conventions
 Python code follows PEP 8 with four-space indents, descriptive module names (`verify_installation.py`), and module-level docstrings. Leverage type hints and dataclasses where they clarify installer state. Before committing, run `black .` and `isort .`, then lint with `pylint stans_ml_stack` and `mypy stans_ml_stack`. Rust code in `rusty-stack/` follows standard Rust conventions (`cargo fmt`, `cargo clippy`). Shell scripts should remain POSIX-compatible Bash, start with `set -euo pipefail`, and use uppercase environment variables plus kebab-case filenames (`install_flash_attention_ck.sh`).
 

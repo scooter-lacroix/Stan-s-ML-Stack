@@ -10,6 +10,7 @@ pub enum Stage {
     Confirm,
     Installing,
     Complete,
+    Benchmarks,
     Recovery,
 }
 
@@ -20,18 +21,7 @@ pub enum Category {
     Extension,
     Environment,
     Verification,
-}
-
-impl Category {
-    pub fn label(self) -> &'static str {
-        match self {
-            Category::Foundation => "Foundation",
-            Category::Core => "Core",
-            Category::Extension => "Extensions",
-            Category::Environment => "Environment",
-            Category::Verification => "Verification",
-        }
-    }
+    Performance,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +126,20 @@ pub fn default_components() -> Vec<Component> {
     use Category::*;
 
     vec![
+        // Environment first
+        Component {
+            id: "permanent-env".into(),
+            name: "Permanent ROCm Env".into(),
+            description: "Unified permanent environment for Python 3.12".into(),
+            script: "setup_permanent_rocm_env.sh".into(),
+            category: Environment,
+            required: false,
+            selected: true,
+            installed: false,
+            progress: 0.0,
+            estimate: "1-2 min".into(),
+        },
+        // Foundation components
         Component {
             id: "rocm".into(),
             name: "ROCm Platform".into(),
@@ -196,6 +200,7 @@ pub fn default_components() -> Vec<Component> {
             progress: 0.0,
             estimate: "8-12 min".into(),
         },
+        // Core components
         Component {
             id: "ml-stack-core".into(),
             name: "ML Stack Core".into(),
@@ -232,6 +237,7 @@ pub fn default_components() -> Vec<Component> {
             progress: 0.0,
             estimate: "5-10 min".into(),
         },
+        // Extension components
         Component {
             id: "megatron".into(),
             name: "Megatron-LM".into(),
@@ -352,18 +358,7 @@ pub fn default_components() -> Vec<Component> {
             progress: 0.0,
             estimate: "5-8 min".into(),
         },
-        Component {
-            id: "permanent-env".into(),
-            name: "Permanent ROCm Env".into(),
-            description: "Unified permanent environment for Python 3.12".into(),
-            script: "setup_permanent_rocm_env.sh".into(),
-            category: Environment,
-            required: false,
-            selected: true,
-            installed: false,
-            progress: 0.0,
-            estimate: "1-2 min".into(),
-        },
+        // Verification components
         Component {
             id: "verify-basic".into(),
             name: "Verify Installation".into(),
@@ -399,6 +394,79 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
+        },
+        // Performance components
+        Component {
+            id: "mlperf-inference".into(),
+            name: "MLPerf Inference".into(),
+            description: "MLPerf benchmark suite for inference performance".into(),
+            script: "run_mlperf_inference.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "30-60 min".into(),
+        },
+        Component {
+            id: "rocm-benchmarks".into(),
+            name: "ROCm Benchmarks".into(),
+            description: "ROCm-specific performance benchmarks".into(),
+            script: "run_rocm_benchmarks.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "20-40 min".into(),
+        },
+        Component {
+            id: "gpu-memory-bandwidth".into(),
+            name: "GPU Memory Bandwidth".into(),
+            description: "Memory bandwidth performance testing".into(),
+            script: "test_gpu_memory_bandwidth.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-15 min".into(),
+        },
+        Component {
+            id: "rocm-smi-bench".into(),
+            name: "ROCm SMI Benchmarks".into(),
+            description: "ROCm SMI performance monitoring".into(),
+            script: "run_rocm_smi_benchmarks.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "15-25 min".into(),
+        },
+        Component {
+            id: "vllm-performance".into(),
+            name: "vLLM Performance".into(),
+            description: "High-throughput vLLM inference benchmark".into(),
+            script: "run_vllm_benchmarks.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "15-25 min".into(),
+        },
+        Component {
+            id: "all-benchmarks".into(),
+            name: "Full Suite Benchmark".into(),
+            description: "Run all post-installation performance tests".into(),
+            script: "run_all_benchmarks_suite.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "45-90 min".into(),
         },
     ]
 }

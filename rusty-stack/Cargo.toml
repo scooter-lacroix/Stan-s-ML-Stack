@@ -7,6 +7,10 @@ edition = "2021"
 name = "Rusty-Stack"
 path = "src/main.rs"
 
+[[bin]]
+name = "rusty-stack-bench"
+path = "src/bin/benchmark_runner.rs"
+
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
@@ -16,3 +20,4 @@ ratatui = "0.26"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.30"
+dirs = "5"

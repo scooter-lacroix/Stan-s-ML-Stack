@@ -32,13 +32,19 @@ pub fn python_interpreters() -> Vec<String> {
     if venv.exists() {
         candidates.push(venv.to_string_lossy().to_string());
     }
-    
+
     // Anaconda/Miniconda candidates
-    let conda_path = Path::new(&home).join("anaconda3").join("bin").join("python");
+    let conda_path = Path::new(&home)
+        .join("anaconda3")
+        .join("bin")
+        .join("python");
     if conda_path.exists() {
         candidates.push(conda_path.to_string_lossy().to_string());
     }
-    let miniconda_path = Path::new(&home).join("miniconda3").join("bin").join("python");
+    let miniconda_path = Path::new(&home)
+        .join("miniconda3")
+        .join("bin")
+        .join("python");
     if miniconda_path.exists() {
         candidates.push(miniconda_path.to_string_lossy().to_string());
     }
@@ -128,6 +134,8 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "permanent-env" => env_file_has_permanent(&home_path(&home, &[".mlstack_env"])),
         "basic-env" => path_exists(home_path(&home, &[".mlstack_env"])),
         "enhanced-env" => env_file_has_enhanced(&home_path(&home, &[".mlstack_env"])),
+        "vllm-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
+        "all-benchmarks" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
         _ => false,
     }
 }
@@ -285,6 +293,70 @@ pub fn component_verification_commands(
             &[
                 "-c",
                 "grep -qiE \"Permanent ROCm Environment|Permanent ROCm Env|MLSTACK_PYTHON_BIN\" \"$HOME/.mlstack_env\" && echo OK || exit 1",
+            ],
+        )],
+        // Benchmark components - verify by checking log files exist
+        "mlperf-inference" => vec![shell_command(
+            "MLPerf benchmark logs",
+            "mlperf-inference",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"mlperf_inference\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "rocm-benchmarks" => vec![shell_command(
+            "ROCm benchmark logs",
+            "rocm-benchmarks",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"rocm_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "gpu-memory-bandwidth" => vec![shell_command(
+            "Memory bandwidth logs",
+            "gpu-memory-bandwidth",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"gpu_memory_bandwidth\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "rocm-smi-bench" => vec![shell_command(
+            "ROCm SMI logs",
+            "rocm-smi-bench",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"rocm_smi_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "pytorch-performance" => vec![shell_command(
+            "PyTorch benchmark logs",
+            "pytorch-performance",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"pytorch_performance\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "vllm-performance" => vec![shell_command(
+            "vLLM benchmark logs",
+            "vllm-performance",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"vllm_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
+            ],
+        )],
+        "all-benchmarks" => vec![shell_command(
+            "Full suite logs",
+            "all-benchmarks",
+            "bash",
+            &[
+                "-c",
+                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"full_benchmarks\" && echo \"Suite logs found\" || echo \"No suite logs yet\"",
             ],
         )],
         _ => Vec::new(),
@@ -594,9 +666,10 @@ fn env_file_has_enhanced(path: &Path) -> bool {
 
 fn env_file_has_permanent(path: &Path) -> bool {
     if let Ok(contents) = fs::read_to_string(path) {
-        return contents.contains("Permanent ROCm Environment") 
+        return contents.contains("Permanent ROCm Environment")
             || contents.contains("Permanent ROCm Env")
-            || (contents.contains("ML Stack Environment File") && contents.contains("MLSTACK_PYTHON_BIN"));
+            || (contents.contains("ML Stack Environment File")
+                && contents.contains("MLSTACK_PYTHON_BIN"));
     }
     false
 }

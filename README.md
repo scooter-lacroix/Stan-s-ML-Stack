@@ -1,7 +1,7 @@
 # Rusty Stack
 
 <p align="center">
-  <img src="assets/ml_stack_logo.png" alt="ML Stack Logo" width="200"/>
+  <img src="assets/ml_stack_logo.png" alt="ML Stack Logo" width="100%"/>
 </p>
 
 ## Overview
@@ -21,6 +21,7 @@ For a detailed guide to help you get started from the ground up, head over to [B
 - **PyTorch Support**: PyTorch with ROCm support for deep learning
 - **ONNX Runtime**: Optimized inference with ROCm support
 - **LLM Tools**: Support for training and deploying large language models
+- **Hardware Performance Comparison**: Integrated TUI dashboard to track performance deltas (Before vs. After) across software updates
 - **Automatic Hardware Detection**: Scripts automatically detect and configure for your hardware
 - **Comprehensive Documentation**: Detailed guides and troubleshooting information
 - **DeepSpeed Integration**: Optimized training for large models with AMD GPU support
@@ -78,6 +79,14 @@ This stack has been tested and optimized for the following hardware:
 - **AMD Radeon RX 6700**
 - **AMD Radeon RX 6650 XT**
 
+## Sponsor
+
+<p align="center">
+  <img src="assets/a_wide_github_repository_banner_ (Edited).png" alt="Kilo OSS Sponsor" width="100%"/>
+</p>
+
+Rusty Stack (Stan's ML Stack) is now part of the **Kilo OSS Sponsorship Program**. Your support helps maintain and optimize this stack for the AMD GPU community!
+
 ## Components
 
 The ML Stack consists of the following core components:
@@ -90,7 +99,8 @@ The ML Stack consists of the following core components:
 | **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.4.43482 |
 | **ONNX Runtime** | Cross-platform inference accelerator | 1.22.0 |
 | **MIGraphX** | AMD's graph optimization library | 2.12.0 |
-| **Flash Attention** | Efficient attention computation | 2.5.6 |
+| **Flash Attention (Triton)** | High-performance Triton-based kernels | 2.5.6 |
+| **Flash Attention CK** | Composable Kernel variant (Pre-release) | Latest |
 | **RCCL** | ROCm Collective Communication Library | Latest |
 | **MPI** | Message Passing Interface for distributed computing | Open MPI 5.0.7 |
 | **Megatron-LM** | Framework for training large language models | Latest |
@@ -120,7 +130,8 @@ The ML Stack provides several installation options to suit your needs.
 
 ### Current Status
 
-- 🔄 **Flash Attention CK**: Flash Attention CK is in pre-release testing and debugging
+- ✅ **Flash Attention (Triton)**: Fully supported and optimized for RDNA 3/4
+- 🔄 **Flash Attention CK**: Pre-release testing and debugging in progress
 
 ### Quick Install (One-Line)
 
