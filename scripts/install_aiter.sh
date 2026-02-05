@@ -16,6 +16,13 @@
 # tensor operations on AMD GPUs.
 # =============================================================================
 
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+# Wrapper for python3 to ensure we use the correct interpreter
+python3() {
+    "$PYTHON_BIN" "$@"
+}
+
 # ASCII Art Banner
 cat << "EOF"
    █████╗ ██╗████████╗███████╗██████╗
@@ -271,10 +278,10 @@ install_python_package() {
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --break-system-packages $extra_args "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        python3 -m pip install --break-system-packages $extra_args "$package"
     fi
 }
 
@@ -416,9 +423,13 @@ cleanup() {
         fi
     done
 
-    # Reset terminal
-    tput cnorm  # Show cursor
-    stty echo   # Enable echo
+    # Reset terminal (only if we have a TTY)
+    if [ -t 1 ] && command_exists tput; then
+        tput cnorm  # Show cursor
+    fi
+    if [ -t 0 ]; then
+        stty echo   # Enable echo
+    fi
 
     echo -e "${GREEN}Cleanup completed.${RESET}"
 }
@@ -542,9 +553,15 @@ install_aiter() {
 
     # Check if AITER is already installed
     if package_installed "aiter"; then
-        if [ "$FORCE_INSTALL" = true ]; then
-            print_warning "AITER is already installed but --force flag was provided"
-            print_step "Will reinstall AITER"
+        # Check if it's the correct AITER (ROCm version usually has aiter.torch)
+        if ! $PYTHON_BIN -c "import aiter.torch" &>/dev/null; then
+            print_warning "AITER is installed but appears to be the wrong version (missing ROCm submodules)"
+            print_step "Will force reinstallation of ROCm AITER"
+            FORCE_INSTALL=true
+        fi
+
+        if [ "$FORCE_INSTALL" = true ] || [ "${MLSTACK_BATCH_MODE:-0}" = "1" ] || [ -n "${RUSTY_STACK:-}" ] || [ ! -t 0 ]; then
+            print_warning "AITER is already installed, proceeding with reinstallation (non-interactive or forced)"
         else
             print_warning "AITER is already installed"
             read -p "Do you want to reinstall? (y/n) " -n 1 -r
@@ -657,25 +674,50 @@ install_aiter() {
     draw_progress_bar "Checking PyTorch installation..."
     print_section "Checking PyTorch Installation"
 
-    if ! package_installed "torch"; then
-        print_error "PyTorch is not installed. Please install PyTorch with ROCm support first."
-        complete_progress_bar
-        return 1
+    if [ "${MLSTACK_SKIP_TORCH_INSTALL:-0}" != "1" ]; then
+        if ! package_installed "torch"; then
+            # Check if torch package exists but can't be imported (broken install)
+            if python3 -c "import importlib.util; spec = importlib.util.find_spec('torch'); exit(0 if spec else 1)" 2>/dev/null; then
+                print_warning "PyTorch is installed but cannot be imported!"
+                print_step "This usually means missing system libraries (e.g., libmpi_cxx.so.40)"
+                print_step "Attempting to reinstall ROCm PyTorch..."
+
+                # Uninstall broken torch and reinstall from AMD repo
+                $PYTHON_BIN -m pip uninstall -y torch torchvision torchaudio triton 2>/dev/null || true
+                $PYTHON_BIN -m pip install \
+                    torch torchvision torchaudio triton \
+                    --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/ \
+                    --break-system-packages --no-cache-dir
+
+                if ! package_installed "torch"; then
+                    print_error "Failed to fix PyTorch. Please run: ./scripts/install_pytorch_multi.sh"
+                    complete_progress_bar
+                    return 1
+                fi
+                print_success "ROCm PyTorch reinstalled successfully"
+            else
+                print_error "PyTorch is not installed. Please install PyTorch with ROCm support first."
+                complete_progress_bar
+                return 1
+            fi
+        fi
     fi
 
     update_progress_bar 10
     draw_progress_bar "Checking PyTorch ROCm support..."
 
     # Check if PyTorch has ROCm/HIP support
-    if ! python3 -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
-        print_warning "PyTorch does not have explicit ROCm/HIP support"
-        print_warning "AITER may not work correctly without ROCm support in PyTorch"
-        read -p "Do you want to continue anyway? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_step "Skipping AITER installation"
-            complete_progress_bar
-            return 0
+    if [ "${MLSTACK_SKIP_TORCH_INSTALL:-0}" != "1" ]; then
+        if ! python3 -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
+            print_warning "PyTorch does not have explicit ROCm/HIP support"
+            print_warning "AITER may not work correctly without ROCm support in PyTorch"
+            read -p "Do you want to continue anyway? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_step "Skipping AITER installation"
+                complete_progress_bar
+                return 0
+            fi
         fi
     fi
 
@@ -765,6 +807,11 @@ install_aiter() {
     update_progress_bar 10
     draw_progress_bar "Cloning AITER repository..."
     print_step "Cloning AITER repository..."
+    
+    # Uninstall any existing aiter package (could be the wrong one from PyPI)
+    print_step "Ensuring clean environment (uninstalling existing aiter)..."
+    $PYTHON_BIN -m pip uninstall -y aiter || true
+    
     git clone --recursive https://github.com/ROCm/aiter.git
 
     if [ $? -ne 0 ]; then
@@ -797,6 +844,10 @@ setup(
         "wheel>=0.37.0",
         "typing-extensions>=4.0.0",
     ],
+    include_package_data=True,
+    package_data={
+        "aiter": ["jit/*.json", "jit/**/*.json", "configs/*.json", "configs/**/*.json"],
+    },
 )
 EOF
 
@@ -1145,6 +1196,102 @@ EOF
         print_success "Successfully patched aiter/__init__.py for RDNA 3 support"
     fi
 
+    print_step "Normalizing aiter/__init__.py imports and GPU visibility..."
+    python3 - <<'PY'
+from pathlib import Path
+path = Path("aiter/__init__.py")
+text = path.read_text()
+old_block = "os.environ[\"HIP_VISIBLE_DEVICES\"] = os.environ.get(\"HIP_VISIBLE_DEVICES\", \"0\")\nos.environ[\"CUDA_VISIBLE_DEVICES\"] = os.environ.get(\"CUDA_VISIBLE_DEVICES\", \"0\")"
+if old_block in text:
+    new_block = (
+        "if \"HIP_VISIBLE_DEVICES\" not in os.environ and \"CUDA_VISIBLE_DEVICES\" not in os.environ:\n"
+        "    pass\n"
+        "else:\n"
+        "    os.environ[\"HIP_VISIBLE_DEVICES\"] = os.environ.get(\"HIP_VISIBLE_DEVICES\", os.environ.get(\"CUDA_VISIBLE_DEVICES\", \"\"))\n"
+        "    os.environ[\"CUDA_VISIBLE_DEVICES\"] = os.environ.get(\"CUDA_VISIBLE_DEVICES\", os.environ.get(\"HIP_VISIBLE_DEVICES\", \"\"))"
+    )
+    text = text.replace(old_block, new_block)
+if "from .utility import dtypes as dtypes" in text:
+    text = text.replace(
+        "from .utility import dtypes as dtypes  # noqa: E402",
+        "try:\n    from .utility import dtypes as dtypes  # noqa: E402\nexcept Exception:\n    dtypes = None  # noqa: E402",
+    )
+path.write_text(text)
+PY
+
+    print_step "Creating aiter.utility compatibility shim..."
+    mkdir -p aiter/utility
+    cat > aiter/utility/__init__.py << 'PY'
+"""Compatibility shim for aiter.utility."""
+from .dtypes import *  # noqa: F401,F403
+PY
+    cat > aiter/utility/dtypes.py << 'PY'
+"""Fallback dtypes map for AITER."""
+import torch
+
+
+def _torch_dtype(name: str, fallback):
+    return getattr(torch, name, fallback)
+
+
+# Core floating types
+fp16 = torch.float16
+bf16 = torch.bfloat16
+fp32 = torch.float32
+
+# FP8 variants (fallback to fp16 when unavailable)
+fp8 = _torch_dtype("float8_e4m3fn", fp16)
+fp8_e4m3fn = _torch_dtype("float8_e4m3fn", fp16)
+fp8_e5m2 = _torch_dtype("float8_e5m2", fp16)
+
+# FP8 metadata/scale placeholders (no native dtype -> use uint8)
+fp8_e8m0 = getattr(torch, "uint8", fp16)
+
+# Integer types
+i8 = torch.int8
+u8 = getattr(torch, "uint8", torch.int8)
+i16 = torch.int16
+i32 = torch.int32
+
+# Packed/quantized placeholders
+i4x2 = u8
+fp4x2 = u8
+
+
+def str2bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+DTYPE_MAP = {
+    "float16": fp16,
+    "fp16": fp16,
+    "bf16": bf16,
+    "bfloat16": bf16,
+    "float32": fp32,
+    "fp32": fp32,
+    "int8": i8,
+    "i8": i8,
+    "int16": i16,
+    "i16": i16,
+    "int32": i32,
+    "i32": i32,
+    "fp8": fp8,
+    "fp8_e4m3fn": fp8_e4m3fn,
+    "fp8_e5m2": fp8_e5m2,
+    "fp8_e8m0": fp8_e8m0,
+    "fp4x2": fp4x2,
+    "i4x2": i4x2,
+}
+
+
+def get_dtype(name: str):
+    return DTYPE_MAP.get(name, fp16)
+PY
+
     # Create a setup.py file with proper RDNA 3 support
     print_step "Creating setup.py with proper RDNA 3 support..."
     cat > setup.py << 'EOF'
@@ -1170,6 +1317,10 @@ setup(
         "typing-extensions>=4.0.0",
         "torch>=1.13.0",
     ],
+    include_package_data=True,
+    package_data={
+        "aiter": ["jit/*.json", "jit/**/*.json", "configs/*.json", "configs/**/*.json"],
+    },
     python_requires=">=3.8",
     author="AMD",
     author_email="aiter@amd.com",
@@ -1205,86 +1356,43 @@ EOF
         print_warning "Failed to initialize some submodules, continuing anyway"
     fi
 
-    # Create a function to handle uv commands properly with venv fallback
+    # Create a function to handle installation properly
+    # FIXED: Always install globally with --break-system-packages for ML stack consistency
     uv_pip_install() {
         local args="$@"
 
-        # Check if uv is available as a command
-        if command_exists uv; then
-            case $INSTALL_METHOD in
-                "global")
-                    print_step "Installing globally with pip..."
-                    python3 -m pip install --break-system-packages $args
+        case $INSTALL_METHOD in
+            "global"|"auto")
+                # Use pip with --break-system-packages for global installation
+                # This ensures packages are available system-wide and torch is preserved
+                print_step "Installing globally with pip..."
+                if $PYTHON_BIN -m pip install --break-system-packages $args 2>&1; then
+                    print_success "Global installation successful"
                     AITER_VENV_PYTHON=""
-                    ;;
-                "venv")
-                    print_step "Creating uv virtual environment..."
-                    VENV_DIR="./aiter_rocm_venv"
-                    if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
+                else
+                    print_warning "pip install failed, trying with uv..."
+                    if command_exists uv; then
+                        uv pip install --python "$PYTHON_BIN" --break-system-packages $args || true
                     fi
-                    source "$VENV_DIR/bin/activate"
-                    print_step "Installing in virtual environment..."
-                    uv pip install $args
-                    AITER_VENV_PYTHON="$VENV_DIR/bin/python"
-                    print_success "Installed in virtual environment: $VENV_DIR"
-                    ;;
-                "auto")
-                    # Try global install first
-                    print_step "Attempting global installation with uv..."
-                    local install_output
-                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                    local install_exit_code=$?
-
-                    if echo "$install_output" | grep -q "externally managed"; then
-                        print_warning "Global installation failed due to externally managed environment"
-                        print_step "Creating uv virtual environment for installation..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./aiter_rocm_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        AITER_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    elif [ $install_exit_code -eq 0 ]; then
-                        print_success "Global installation successful"
-                        AITER_VENV_PYTHON=""
-                    else
-                        print_error "Global installation failed with unknown error:"
-                        echo "$install_output"
-                        print_step "Falling back to virtual environment..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./aiter_rocm_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        AITER_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    fi
-                    ;;
-            esac
-        else
-            # Fall back to pip
-            print_step "Installing with pip..."
-            python3 -m pip install $args
-            AITER_VENV_PYTHON=""
-        fi
+                    AITER_VENV_PYTHON=""
+                fi
+                ;;
+            "venv")
+                print_step "Creating virtual environment..."
+                VENV_DIR="${HOME}/.mlstack/aiter_venv"
+                mkdir -p "${HOME}/.mlstack"
+                # Use python3 -m venv instead of uv venv to avoid externally managed issues
+                if [ ! -d "$VENV_DIR" ]; then
+                    $PYTHON_BIN -m venv "$VENV_DIR"
+                fi
+                # Install into the venv using its pip directly
+                print_step "Installing in virtual environment..."
+                "$VENV_DIR/bin/pip" install --upgrade pip
+                "$VENV_DIR/bin/pip" install $args
+                AITER_VENV_PYTHON="$VENV_DIR/bin/python"
+                print_success "Installed in virtual environment: $VENV_DIR"
+                ;;
+        esac
     }
 
     # Install required dependencies first
@@ -1308,18 +1416,18 @@ EOF
 
             # Try different installation methods
             set +e  # Don't exit on error
-            python3 -m pip install --break-system-packages -e . --no-build-isolation
+            python3 -m pip install --break-system-packages . --no-build-isolation
             install_result=$?
 
             if [ $install_result -ne 0 ]; then
                 print_warning "First installation attempt failed, trying without build isolation..."
-                python3 -m pip install --break-system-packages -e .
+                python3 -m pip install --break-system-packages .
                 install_result=$?
             fi
 
             if [ $install_result -ne 0 ]; then
                 print_warning "Second installation attempt failed, trying with --no-deps..."
-                python3 -m pip install --break-system-packages -e . --no-deps
+                python3 -m pip install --break-system-packages . --no-deps
                 install_result=$?
             fi
 
@@ -1341,18 +1449,18 @@ EOF
 
             # Try different installation methods
             set +e  # Don't exit on error
-            uv pip install -e . --no-build-isolation
+            $PYTHON_BIN -m pip install . --no-build-isolation --break-system-packages
             install_result=$?
 
             if [ $install_result -ne 0 ]; then
                 print_warning "First installation attempt failed, trying without build isolation..."
-                uv pip install -e .
+                $PYTHON_BIN -m pip install . --break-system-packages
                 install_result=$?
             fi
 
             if [ $install_result -ne 0 ]; then
                 print_warning "Second installation attempt failed, trying with --no-deps..."
-                uv pip install -e . --no-deps
+                $PYTHON_BIN -m pip install . --no-deps --break-system-packages
                 install_result=$?
             fi
 
@@ -1374,18 +1482,18 @@ EOF
 
             # Try different installation methods
             set +e  # Don't exit on error
-            uv_pip_install -e . --no-build-isolation
+            uv_pip_install . --no-build-isolation
             install_result=$?
 
             if [ $install_result -ne 0 ]; then
                 print_warning "First installation attempt failed, trying without build isolation..."
-                uv_pip_install -e .
+                uv_pip_install .
                 install_result=$?
             fi
 
             if [ $install_result -ne 0 ]; then
                 print_warning "Second installation attempt failed, trying with --no-deps..."
-                uv_pip_install -e . --no-deps
+                uv_pip_install . --no-deps
                 install_result=$?
             fi
 
@@ -1409,6 +1517,38 @@ EOF
         return 1
     fi
 
+    # Use venv Python if available, otherwise the installer-selected python
+    PYTHON_CMD=${AITER_VENV_PYTHON:-$PYTHON_BIN}
+
+    print_step "Ensuring AITER config assets are installed..."
+    site_packages=$($PYTHON_CMD - <<'PY'
+import sysconfig
+print(sysconfig.get_paths().get("purelib", ""))
+PY
+    )
+    if [ -n "$site_packages" ]; then
+        mkdir -p "$site_packages/aiter/jit"
+        while IFS= read -r file; do
+            if [ -f "$file" ]; then
+                cp "$file" "$site_packages/aiter/jit/" || true
+            fi
+        done < <(find aiter/jit -name "*.json" -print 2>/dev/null)
+
+        print_step "Staging AITER meta sources for JIT compilation..."
+        meta_dir="$site_packages/aiter_meta"
+        mkdir -p "$meta_dir"
+        for dir in csrc hsa 3rdparty gradlib; do
+            if [ -d "$dir" ]; then
+                rm -rf "$meta_dir/$dir" || true
+                cp -R "$dir" "$meta_dir/" || true
+            fi
+        done
+        if [ -d "$meta_dir/csrc" ]; then
+            echo "package" > "$site_packages/aiter/install_mode" || true
+        fi
+        export AITER_META_DIR="$meta_dir"
+    fi
+
     # Verify installation
     update_progress_bar 20
     draw_progress_bar "Verifying installation..."
@@ -1416,9 +1556,6 @@ EOF
 
     # Add a small delay to ensure the installation is complete
     sleep 2
-
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${AITER_VENV_PYTHON:-python3}
 
     # Force Python to reload modules
     $PYTHON_CMD -c "import importlib; import sys; [sys.modules.pop(m, None) for m in list(sys.modules.keys()) if m.startswith('aiter')]" &>/dev/null
@@ -1433,8 +1570,24 @@ import time
 
 # Set environment variables for RDNA 3 GPUs
 os.environ["PYTORCH_ROCM_ARCH"] = os.environ.get("PYTORCH_ROCM_ARCH", "gfx1100;gfx1101;gfx1102")
-os.environ["HIP_VISIBLE_DEVICES"] = os.environ.get("HIP_VISIBLE_DEVICES", "0")
-os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+
+# Avoid pinning to a single GPU unless explicitly requested
+visible_devices = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get("CUDA_VISIBLE_DEVICES")
+if not visible_devices:
+    try:
+        import subprocess
+        rocm_smi = "/opt/rocm/bin/rocm-smi" if os.path.exists("/opt/rocm/bin/rocm-smi") else "rocm-smi"
+        output = subprocess.check_output([rocm_smi, "--showproductname", "--csv"], stderr=subprocess.DEVNULL).decode()
+        lines = [line for line in output.splitlines()[1:] if line.strip()]
+        if lines:
+            visible_devices = ",".join(str(i) for i in range(len(lines)))
+    except Exception:
+        visible_devices = ""
+
+if visible_devices:
+    os.environ["HIP_VISIBLE_DEVICES"] = visible_devices
+    os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+
 os.environ["AMD_LOG_LEVEL"] = "0"  # Suppress HIP warnings
 
 print("=" * 80)
@@ -1723,289 +1876,10 @@ print("=" * 80)
 sys.exit(0 if success else 1)
 EOF
 
-    # Display a visually appealing testing and benchmarking screen
-    clear
-    print_header "AITER Testing & Benchmarking"
-    echo -e "${CYAN}${BOLD}╔═════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${CYAN}${BOLD}║                                                         ║${RESET}"
-    echo -e "${CYAN}${BOLD}║  Running comprehensive tests and benchmarks for AITER   ║${RESET}"
-    echo -e "${CYAN}${BOLD}║  This will verify compatibility with your GPU hardware  ║${RESET}"
-    echo -e "${CYAN}${BOLD}║                                                         ║${RESET}"
-    echo -e "${CYAN}${BOLD}╚═════════════════════════════════════════════════════════╝${RESET}"
-    echo
-
-    # Create a named pipe for capturing output while still displaying it
-    test_pipe=$(mktemp -u)
-    mkfifo "$test_pipe"
-
-    # Start a background process to display animated progress while test runs
-    (
-        echo -e "${MAGENTA}➤ Running comprehensive tests and benchmarks...${RESET}"
-        echo
-        spinner=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-        messages=(
-            "Testing GPU compatibility..."
-            "Verifying tensor operations..."
-            "Checking RDNA3 support..."
-            "Benchmarking matrix operations..."
-            "Testing memory allocation..."
-            "Verifying PyTorch integration..."
-            "Optimizing for your hardware..."
-            "Running performance tests..."
-        )
-        i=0
-        while true; do
-            for s in "${spinner[@]}"; do
-                msg_idx=$((i % ${#messages[@]}))
-                printf "\r${BLUE}%s ${GREEN}%s${RESET}" "$s" "${messages[$msg_idx]}"
-                sleep 0.2
-                i=$((i+1))
-            done
-        done
-    ) &
-    spinner_pid=$!
-
-    # Add to our tracking array for cleanup
-    BACKGROUND_PIDS+=($spinner_pid)
-
-    # Local trap to ensure we kill the spinner process when this function exits
-    trap 'kill $spinner_pid 2>/dev/null; rm -f "$test_pipe" 2>/dev/null' EXIT INT TERM HUP PIPE
-
-    # Run the test with proper signal handling and capture output
-    print_step "Running comprehensive tests and benchmarks..."
-    set +e  # Don't exit on error
-
-    # Create a watchdog timer to ensure we don't hang indefinitely
-    (
-        sleep 60  # Give the test 60 seconds to complete normally
-        # If we're still running after 60 seconds, print a message and force completion
-        if kill -0 $spinner_pid 2>/dev/null; then
-            echo -e "\r\033[K${YELLOW}⚠ Test is taking longer than expected. Will complete in 10 seconds...${RESET}"
-            sleep 10
-            # If still running, force completion
-            if kill -0 $spinner_pid 2>/dev/null; then
-                echo -e "\r\033[K${YELLOW}⚠ Forcing test completion...${RESET}"
-                # Send SIGTERM to the test process group
-                pkill -P $$ python3 2>/dev/null
-                # Set a flag file to indicate we forced completion
-                touch /tmp/aiter_test_forced_completion
-            fi
-        fi
-    ) &
-    watchdog_pid=$!
-    BACKGROUND_PIDS+=($watchdog_pid)
-
-    # Use timeout command if available, but still capture and display output
-    if command_exists timeout; then
-        # Run with timeout but still show output
-        timeout 60s $PYTHON_CMD /tmp/test_aiter.py > "$test_pipe" 2>&1 &
-        test_pid=$!
-
-        # Show a progress indicator while test is running
-        echo -e "${CYAN}Test progress: ${RESET}"
-        progress_chars=("▏" "▎" "▍" "▌" "▋" "▊" "▉" "█")
-        progress_width=50
-        progress_steps=60  # Match our timeout
-        progress_delay=$(echo "scale=2; 60/$progress_steps" | bc)
-
-        # Start the progress bar in the background
-        (
-            for ((i=0; i<=progress_steps; i++)); do
-                if [ -f /tmp/aiter_test_forced_completion ]; then
-                    # If we forced completion, fill the bar
-                    i=$progress_steps
-                fi
-
-                # Calculate progress percentage and bar
-                percent=$((i * 100 / progress_steps))
-                filled=$((i * progress_width / progress_steps))
-                remaining=$((progress_width - filled))
-
-                # Build the progress bar
-                progress_bar=""
-                for ((j=0; j<filled; j++)); do
-                    progress_bar="${progress_bar}█"
-                done
-
-                # Add partial character at the end if not complete
-                if [ $i -lt $progress_steps ] && [ $filled -lt $progress_width ]; then
-                    idx=$((i % ${#progress_chars[@]}))
-                    progress_bar="${progress_bar}${progress_chars[$idx]}"
-                    remaining=$((remaining - 1))
-                fi
-
-                # Add empty space
-                for ((j=0; j<remaining; j++)); do
-                    progress_bar="${progress_bar} "
-                done
-
-                # Print the progress bar
-                echo -ne "\r\033[K[${progress_bar}] ${percent}%"
-
-                # Read from the pipe and display important output
-                if [ -p "$test_pipe" ]; then
-                    if read -t 0.1 -r line < "$test_pipe"; then
-                        if [[ "$line" == *"SUCCESS"* ]] || [[ "$line" == *"FAILURE"* ]] ||
-                           [[ "$line" == *"✓"* ]] || [[ "$line" == *"✗"* ]] ||
-                           [[ "$line" == *"GPU"* ]] || [[ "$line" == *"tensor"* ]] ||
-                           [[ "$line" == *"GEMM"* ]] || [[ "$line" == *"GFLOPS"* ]]; then
-                            echo -e "\r\033[K$line"  # Clear the line and print the output
-                            echo -ne "\r\033[K[${progress_bar}] ${percent}%"  # Redraw progress bar
-                        fi
-                    fi
-                fi
-
-                # Check if the test process is still running
-                if ! kill -0 $test_pid 2>/dev/null; then
-                    # Process has completed, fill the bar
-                    i=$progress_steps
-                    continue
-                fi
-
-                sleep $progress_delay
-            done
-            echo  # New line after progress bar completes
-        ) &
-        progress_pid=$!
-        BACKGROUND_PIDS+=($progress_pid)
-
-        # Wait for the test to complete
-        wait $test_pid
-        test_result=$?
-
-        # Wait for the progress bar to complete
-        wait $progress_pid 2>/dev/null
-
-        # Handle timeout specifically
-        if [ $test_result -eq 124 ]; then
-            echo
-            print_warning "Test took longer than expected, but will continue with installation"
-            test_result=0  # Assume it might work anyway
-        fi
-    else
-        # If timeout command is not available, run with our own timeout mechanism
-        $PYTHON_CMD /tmp/test_aiter.py > "$test_pipe" 2>&1 &
-        test_pid=$!
-
-        # Show a progress indicator while test is running
-        echo -e "${CYAN}Test progress: ${RESET}"
-        progress_chars=("▏" "▎" "▍" "▌" "▋" "▊" "▉" "█")
-        progress_width=50
-        progress_steps=60  # Match our timeout
-        progress_delay=$(echo "scale=2; 60/$progress_steps" | bc)
-
-        # Start the progress bar in the background
-        (
-            for ((i=0; i<=progress_steps; i++)); do
-                if [ -f /tmp/aiter_test_forced_completion ]; then
-                    # If we forced completion, fill the bar
-                    i=$progress_steps
-                fi
-
-                # Calculate progress percentage and bar
-                percent=$((i * 100 / progress_steps))
-                filled=$((i * progress_width / progress_steps))
-                remaining=$((progress_width - filled))
-
-                # Build the progress bar
-                progress_bar=""
-                for ((j=0; j<filled; j++)); do
-                    progress_bar="${progress_bar}█"
-                done
-
-                # Add partial character at the end if not complete
-                if [ $i -lt $progress_steps ] && [ $filled -lt $progress_width ]; then
-                    idx=$((i % ${#progress_chars[@]}))
-                    progress_bar="${progress_bar}${progress_chars[$idx]}"
-                    remaining=$((remaining - 1))
-                fi
-
-                # Add empty space
-                for ((j=0; j<remaining; j++)); do
-                    progress_bar="${progress_bar} "
-                done
-
-                # Print the progress bar
-                echo -ne "\r\033[K[${progress_bar}] ${percent}%"
-
-                # Read from the pipe and display important output
-                if [ -p "$test_pipe" ]; then
-                    if read -t 0.1 -r line < "$test_pipe"; then
-                        if [[ "$line" == *"SUCCESS"* ]] || [[ "$line" == *"FAILURE"* ]] ||
-                           [[ "$line" == *"✓"* ]] || [[ "$line" == *"✗"* ]] ||
-                           [[ "$line" == *"GPU"* ]] || [[ "$line" == *"tensor"* ]] ||
-                           [[ "$line" == *"GEMM"* ]] || [[ "$line" == *"GFLOPS"* ]]; then
-                            echo -e "\r\033[K$line"  # Clear the line and print the output
-                            echo -ne "\r\033[K[${progress_bar}] ${percent}%"  # Redraw progress bar
-                        fi
-                    fi
-                fi
-
-                # Check if the test process is still running
-                if ! kill -0 $test_pid 2>/dev/null; then
-                    # Process has completed, fill the bar
-                    i=$progress_steps
-                    continue
-                fi
-
-                sleep $progress_delay
-            done
-            echo  # New line after progress bar completes
-        ) &
-        progress_pid=$!
-        BACKGROUND_PIDS+=($progress_pid)
-
-        # Wait for the test to complete with a timeout
-        SECONDS=0
-        while kill -0 $test_pid 2>/dev/null && [ $SECONDS -lt 60 ]; do
-            sleep 1
-        done
-
-        # If the process is still running after 60 seconds, kill it
-        if kill -0 $test_pid 2>/dev/null; then
-            kill $test_pid 2>/dev/null
-            wait $test_pid 2>/dev/null
-            test_result=0  # Assume success
-            print_warning "Test took longer than expected, but will continue with installation"
-        else
-            wait $test_pid
-            test_result=$?
-        fi
-
-        # Wait for the progress bar to complete
-        wait $progress_pid 2>/dev/null
-    fi
-
-    # Clean up the forced completion flag if it exists
-    rm -f /tmp/aiter_test_forced_completion 2>/dev/null
-
-    # Kill the watchdog
-    kill $watchdog_pid 2>/dev/null
-    wait $watchdog_pid 2>/dev/null
-
-    # Kill the spinner and clean up
-    kill $spinner_pid 2>/dev/null
-    wait $spinner_pid 2>/dev/null
-    rm -f "$test_pipe" 2>/dev/null
-    trap - EXIT INT TERM HUP PIPE  # Reset trap
-
-    # Clear the line
-    echo -e "\r\033[K"
-
-    # Show clear completion message for the testing phase
-    echo
-    echo -e "${GREEN}${BOLD}╔═════════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${GREEN}${BOLD}║                                                         ║${RESET}"
-    echo -e "${GREEN}${BOLD}║             Testing Phase Completed                     ║${RESET}"
-    echo -e "${GREEN}${BOLD}║                                                         ║${RESET}"
-    echo -e "${GREEN}${BOLD}╚═════════════════════════════════════════════════════════╝${RESET}"
-    echo
-
-    # Add a small delay to ensure the message is seen
-    sleep 1
-
-    set -e  # Return to normal error handling
-
+    # Run the test directly
+    print_step "Running AITER verification test..."
+    $PYTHON_CMD /tmp/test_aiter.py
+    test_result=$?
     if [ $test_result -eq 0 ]; then
         print_success "AITER main package is functional"
 
@@ -2045,27 +1919,11 @@ EOF
             complete_progress_bar
             return 0
         else
-            print_warning "Direct installation verification failed, trying one more approach..."
-
-            # Try installing from PyPI as a last resort
-            if command_exists uv; then
-                uv pip install --force-reinstall aiter
-            else
-                python3 -m pip install --force-reinstall aiter
-            fi
-
-            # Final verification
-            if timeout 10s python3 -c "import aiter; print('Success')" &>/dev/null; then
-                print_success "AITER installed successfully via forced reinstall"
-                rm -rf "$temp_dir"
-                complete_progress_bar
-                return 0
-            else
-                print_error "All installation attempts failed"
-                rm -rf "$temp_dir"
-                complete_progress_bar
-                return 1
-            fi
+            print_warning "Direct installation verification failed."
+            print_error "All installation attempts failed"
+            rm -rf "$temp_dir"
+            complete_progress_bar
+            return 1
         fi
         set -e  # Return to normal error handling
     fi
@@ -2179,9 +2037,9 @@ EOF
     # Kill any remaining background processes
     jobs -p | xargs -r kill -9 2>/dev/null
 
-    # Force exit without waiting for anything else
-    kill -9 $$ 2>/dev/null
+    # Exit cleanly
+    exit 0
 }
 
 # Run the installation function
-install_aiter
+install_aiter "$@"

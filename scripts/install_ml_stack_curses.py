@@ -2,7 +2,11 @@
 """
 ML Stack Installation UI using curses
 
+⚠️  DEPRECATED: This installer is deprecated. Please use the Rusty-Stack TUI instead:
+   ./scripts/run_rusty_stack.sh
+
 A simple, clean UI for installing the ML Stack components.
+This script is maintained for backward compatibility only.
 """
 
 import os
@@ -28,6 +32,22 @@ LOG_FILE = os.path.join(LOGS_DIR, f"ml_stack_install_{datetime.now().strftime('%
 
 # Create logs directory if it doesn't exist
 os.makedirs(LOGS_DIR, exist_ok=True)
+
+# Global UI state to store shared information
+ui_state = {
+    'dry_run': False,
+    'last_selected_idx': -1,
+    'last_env_selected_idx': -1,
+    'last_dep_selected_idx': -1,
+    'last_comp_selected_section': -1,
+    'last_comp_selected_idx': -1,
+    'last_inst_selected_section': -1,
+    'last_inst_selected_idx': -1,
+    'last_refresh_time': 0,
+    'force_redraw': False,
+    'last_key_time': 0,
+    'last_screen_update': 0
+}
 
 # Environment setup and verification scripts
 ENVIRONMENT_SCRIPTS = [
@@ -89,35 +109,35 @@ FOUNDATION_COMPONENTS = [
         "description": "AMD's open software platform for GPU computing",
         "script": "install_rocm.sh",
         "required": True,
-        "status": "installed"
+        "status": "pending"
     },
     {
         "name": "PyTorch with ROCm",
-        "description": "Deep learning framework with AMD GPU support (INSTALLED)",
-        "script": "install_pytorch_rocm.sh",
+        "description": "Deep learning framework with AMD GPU support",
+        "script": "install_pytorch_multi.sh",
         "required": True,
-        "status": "installed"
+        "status": "pending"
     },
     {
         "name": "Triton",
-        "description": "Compiler for parallel programming (INSTALLED)",
-        "script": "install_triton.sh",
+        "description": "Compiler for parallel programming",
+        "script": "install_triton_multi.sh",
         "required": True,
-        "status": "installed"
+        "status": "pending"
     },
     {
         "name": "MPI4Py",
-        "description": "Message Passing Interface for distributed computing (INSTALLED)",
+        "description": "Message Passing Interface for distributed computing",
         "script": "install_mpi4py.sh",
         "required": True,
-        "status": "installed"
+        "status": "pending"
     },
     {
         "name": "DeepSpeed",
-        "description": "Deep learning optimization library for large models (INSTALLED)",
+        "description": "Deep learning optimization library for large models",
         "script": "install_deepspeed.sh",
         "required": True,
-        "status": "installed"
+        "status": "pending"
     }
 ]
 
@@ -148,36 +168,50 @@ CORE_COMPONENTS = [
 EXTENSION_COMPONENTS = [
     {
         "name": "Megatron-LM",
-        "description": "Large-scale training framework for transformer models (INSTALLED)",
+        "description": "Large-scale training framework for transformer models",
         "script": "install_megatron.sh",
         "required": False,
-        "status": "installed"
+        "status": "pending"
     },
     {
         "name": "vLLM",
-        "description": "High-throughput inference engine for LLMs (INSTALLED)",
-        "script": "install_vllm.sh",
+        "description": "High-throughput inference engine for LLMs",
+        "script": "install_vllm_multi.sh",
         "required": False,
-        "status": "installed"
+        "status": "pending"
+    },
+    {
+        "name": "AITER",
+        "description": "AMD AITER optimization tooling",
+        "script": "install_aiter.sh",
+        "required": False,
+        "status": "pending"
+    },
+    {
+        "name": "vLLM Studio",
+        "description": "Model lifecycle manager for vLLM/SGLang",
+        "script": "install_vllm_studio.sh",
+        "required": False,
+        "status": "pending"
     },
     {
         "name": "Flash Attention CK",
-        "description": "Efficient attention computation (IN PROGRESS - Assembly code debugging)",
+        "description": "Efficient attention computation (Composable Kernel)",
         "script": "install_flash_attention_ck.sh",
         "required": False,
-        "status": "building"
+        "status": "pending"
     },
     {
         "name": "ONNX Runtime",
-        "description": "Cross-platform inference accelerator (BUILDS TAKE HOURS)",
-        "script": "build_onnxruntime.sh",
+        "description": "Cross-platform inference accelerator",
+        "script": "build_onnxruntime_multi.sh",
         "required": False,
         "status": "pending"
     },
     {
         "name": "BITSANDBYTES",
         "description": "Efficient quantization for deep learning models",
-        "script": "install_bitsandbytes.sh",
+        "script": "install_bitsandbytes_multi.sh",
         "required": False,
         "status": "pending"
     },
@@ -189,9 +223,9 @@ EXTENSION_COMPONENTS = [
         "status": "pending"
     },
     {
-        "name": "MIGraphX Python Wrapper",
-        "description": "Python wrapper for MIGraphX library",
-        "script": "install_migraphx_python_wrapper.sh",
+        "name": "MIGraphX",
+        "description": "AMD Graph Inference Engine",
+        "script": "install_migraphx_multi.sh",
         "required": False,
         "status": "pending"
     },
@@ -247,8 +281,12 @@ def log_message(message: str, level: str = "INFO") -> None:
         f.flush()  # Ensure the log is written immediately
         os.fsync(f.fileno())  # Force the OS to write to disk
 
-def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] = 300) -> Tuple[int, str, str]:
+def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] = 300, dry_run: bool = False) -> Tuple[int, str, str]:
     """Run a shell command and return the return code, stdout, and stderr with a timeout."""
+    if dry_run:
+        log_message(f"[DRY-RUN] Would run command: {command}")
+        return 0, f"[DRY-RUN] Output for {command}", ""
+        
     log_message(f"Running command: {command}")
 
     try:
@@ -882,7 +920,7 @@ def select_installation_method(stdscr) -> str:
         # Clear screen and draw header
         stdscr.clear()
         draw_header(stdscr, "Installation Method Selection")
-        draw_footer(stdscr, "Use arrow keys to navigate, Enter to select")
+        draw_footer(stdscr, "Use arrow keys to navigate, Enter to select", ui_state.get('dry_run', False))
 
         # Draw menu
         menu_y = 11
@@ -913,11 +951,15 @@ def select_installation_method(stdscr) -> str:
             if idx < len(methods):
                 return methods[idx][0]
 
-def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info: Optional[Dict[str, Any]] = None) -> bool:
+def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info: Optional[Dict[str, Any]] = None, dry_run: bool = False) -> bool:
     """Install a component with enhanced installation methods."""
     name = component["name"]
     script = component["script"]
     script_path = os.path.join(SCRIPTS_DIR, script)
+    
+    # Add dry-run to command if enabled
+    cmd_suffix = " --dry-run" if dry_run else ""
+    full_command = f"{script_path}{cmd_suffix}"
 
     # Add component-specific logging to identify problematic components
     log_message(f"Starting installation of component: {name} using script: {script}", "INFO")
@@ -926,16 +968,16 @@ def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info:
     # Adjust estimated duration based on component complexity
     component_specific_params = {
         "ML Stack Core": {
-            "estimated_duration": 180,  # Longer duration for complex component
-            "validation_duration": 90,
-            "testing_duration": 45,
+            "estimated_duration": 60,   # Reduced from 180
+            "validation_duration": 15,  # Reduced from 90
+            "testing_duration": 10,     # Reduced from 45
             "force_validation": True,   # Force validation phase for this component
             "aggressive_termination": True  # More aggressive process termination
         },
         "MIGraphX Python Wrapper": {
-            "estimated_duration": 180,
-            "validation_duration": 90,
-            "testing_duration": 45,
+            "estimated_duration": 60,   # Reduced from 180
+            "validation_duration": 15,
+            "testing_duration": 10,
             "force_validation": True,
             "aggressive_termination": True
         }
@@ -943,9 +985,9 @@ def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info:
 
     # Get component-specific parameters or use defaults
     component_params = component_specific_params.get(name, {
-        "estimated_duration": 120,
-        "validation_duration": 60,
-        "testing_duration": 30,
+        "estimated_duration": 60,
+        "validation_duration": 15,
+        "testing_duration": 10,
         "force_validation": False,
         "aggressive_termination": False
     })
@@ -966,12 +1008,10 @@ def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info:
     component["status"] = "installing"
     log_win.addstr(f"Installing {name}...\n", curses.color_pair(COLOR_INFO))
 
-    # Add a progress bar
+    # Progress is rendered in the dedicated status window to avoid log clutter
     progress_width = 50
     progress_y, _ = log_win.getyx()
-    log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-    log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-    log_win.addstr("] 0%\n", curses.color_pair(COLOR_INFO))
+    log_win.addstr("Progress updates will appear in the status window below.\n", curses.color_pair(COLOR_INFO))
     log_win.refresh()
 
     # Special handling for PyTorch with ROCm
@@ -1187,6 +1227,12 @@ def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info:
 
     # Create a modified script that provides progress updates
     temp_script_path = os.path.join(SCRIPTS_DIR, f"temp_{script}")
+    
+    # Create a working copy of the original script to avoid modifying it on disk
+    working_script_path = os.path.join(SCRIPTS_DIR, f"working_{script}")
+    import shutil
+    shutil.copy2(script_path, working_script_path)
+    os.chmod(working_script_path, 0o755)
 
     # Special handling for repair_ml_stack.sh or enhanced_setup_environment.sh
     if script == "repair_ml_stack.sh" or script == "enhanced_setup_environment.sh":
@@ -1218,7 +1264,7 @@ sudo_with_pass() {{
 export -f sudo_with_pass
 
 # Replace sudo with our wrapper in the script
-sed -i 's/\\bsudo\\b/sudo_with_pass/g' {script_path}
+sed -i 's/\\bsudo\\b/sudo_with_pass/g' {working_script_path}
 
 # Create a function to handle uv commands properly
 uv_pip_install() {{
@@ -1236,8 +1282,8 @@ uv_pip_install() {{
 export -f uv_pip_install
 
 # Replace python3 -m uv pip install with our wrapper function
-sed -i 's/python3 -m uv pip install/uv_pip_install/g' {script_path}
-sed -i 's/python -m uv pip install/uv_pip_install/g' {script_path}
+sed -i 's/python3 -m uv pip install/uv_pip_install/g' {working_script_path}
+sed -i 's/python -m uv pip install/uv_pip_install/g' {working_script_path}
 
 # Create a progress bar function
 progress_bar() {{
@@ -1275,7 +1321,7 @@ progress_bar() {{
 
 # Run the actual script with NONINTERACTIVE mode to avoid prompts
 # Use stdbuf to ensure unbuffered output
-stdbuf -oL -eL {script_path} 2>&1 | while IFS= read -r line; do
+stdbuf -oL -eL {working_script_path} 2>&1 | while IFS= read -r line; do
     echo "$line"
     # Flush stdout to ensure real-time output
     sleep 0.01
@@ -1284,8 +1330,8 @@ done
 # Capture the exit code
 exit_code=${{PIPESTATUS[0]}}
 
-# Restore the original script (remove our sudo wrapper)
-sed -i 's/\\bsudo_with_pass\\b/sudo/g' {script_path}
+# Clean up working copy
+rm -f {working_script_path}
 
 echo "Script completed with exit code: $exit_code"
 exit $exit_code
@@ -1318,7 +1364,7 @@ sudo_with_pass() {{
 export -f sudo_with_pass
 
 # Replace sudo with our wrapper in the script
-sed -i 's/\\bsudo\\b/sudo_with_pass/g' {script_path}
+sed -i 's/\\bsudo\\b/sudo_with_pass/g' {working_script_path}
 
 # Create a function to handle uv commands properly
 uv_pip_install() {{
@@ -1336,8 +1382,8 @@ uv_pip_install() {{
 export -f uv_pip_install
 
 # Replace python3 -m uv pip install with our wrapper function
-sed -i 's/python3 -m uv pip install/uv_pip_install/g' {script_path}
-sed -i 's/python -m uv pip install/uv_pip_install/g' {script_path}
+sed -i 's/python3 -m uv pip install/uv_pip_install/g' {working_script_path}
+sed -i 's/python -m uv pip install/uv_pip_install/g' {working_script_path}
 
 # Create a progress bar function
 progress_bar() {{
@@ -1384,7 +1430,7 @@ PROGRESS_PID=$!
 
 # Run the actual installation script and capture output in real-time
 # Use stdbuf to ensure unbuffered output
-stdbuf -oL -eL {script_path} 2>&1 | while IFS= read -r line; do
+stdbuf -oL -eL {working_script_path} 2>&1 | while IFS= read -r line; do
     echo "$line"
     # Flush stdout to ensure real-time output
     sleep 0.01
@@ -1396,8 +1442,8 @@ exit_code=${{PIPESTATUS[0]}}
 # Kill the progress bar process
 kill $PROGRESS_PID 2>/dev/null
 
-# Restore the original script (remove our sudo wrapper)
-sed -i 's/\\bsudo_with_pass\\b/sudo/g' {script_path}
+# Clean up working copy
+rm -f {working_script_path}
 
 echo "Installation script completed with exit code: $exit_code"
 exit $exit_code
@@ -1524,27 +1570,25 @@ exit $exit_code
     validation_phase_started = False
     validation_progress_y = 0
     validation_start_time = 0
-    validation_estimated_duration = 60
+    validation_estimated_duration = 15  # Reduced from 60
     testing_phase_started = False
     testing_progress_y = 0
     testing_start_time = 0
-    testing_estimated_duration = 30
+    testing_estimated_duration = 10  # Reduced from 30
 
     # Progress bar state tracking
     last_progress_percent = 0
     last_validation_progress = 0
     last_testing_progress = 0
 
-    # Draw initial progress bar label
-    log_win.addstr(progress_y, 0, "Progress: [", curses.color_pair(COLOR_INFO))
-
     # Store the start time for progress calculation
     start_time = time.time()
-    estimated_duration = component_params["estimated_duration"]  # Use component-specific duration
-    validation_estimated_duration = component_params["validation_duration"]
-    testing_estimated_duration = component_params["testing_duration"]
-    force_validation = component_params["force_validation"]
-    aggressive_termination = component_params["aggressive_termination"]
+    # Use component-specific durations with sensible upper limits for simulated phases
+    estimated_duration = component_params.get("estimated_duration", 120)
+    validation_estimated_duration = min(20, component_params.get("validation_duration", 15))
+    testing_estimated_duration = min(15, component_params.get("testing_duration", 10))
+    force_validation = component_params.get("force_validation", False)
+    aggressive_termination = component_params.get("aggressive_termination", False)
 
     # Log component-specific settings
     log_message(f"Using estimated_duration={estimated_duration}, validation_duration={validation_estimated_duration}, testing_duration={testing_estimated_duration} for {name}", "INFO")
@@ -1558,6 +1602,25 @@ exit $exit_code
     if process.stdout:
         fl = fcntl.fcntl(process.stdout.fileno(), fcntl.F_GETFL)
         fcntl.fcntl(process.stdout.fileno(), fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    # Create a dedicated window for progress bars at the bottom of the screen
+    # Position it above the footer (LINES-1) and below the log window
+    progress_win_height = 4
+    progress_win_y = curses.LINES - 6
+    progress_win_x = 4
+    progress_win_width = curses.COLS - 8
+    
+    try:
+        progress_win = curses.newwin(progress_win_height, progress_win_width, progress_win_y, progress_win_x)
+        # Add a border to the progress window
+        progress_win.attron(curses.color_pair(COLOR_BORDER))
+        progress_win.box()
+        progress_win.addstr(0, 2, f" {name} Status ", curses.color_pair(COLOR_TITLE))
+        progress_win.attroff(curses.color_pair(COLOR_BORDER))
+        progress_win.refresh()
+    except:
+        # Fallback if window creation fails
+        progress_win = None
 
     while process.poll() is None:
         # Check if there's data to read (with a short timeout)
@@ -1601,129 +1664,91 @@ exit $exit_code
                 # No more data to read without blocking
                 pass
 
-        # Update progress bar (do this regardless of new output)
-        elapsed_time = time.time() - start_time
-        progress_percent = min(1.0, elapsed_time / estimated_duration)
-        filled_width = int(progress_width * progress_percent)
+        # Update progress bars in the dedicated window
+        try:
+            if progress_win:
+                # Calculate progress for each potential phase
+                elapsed_time = time.time() - start_time
+                progress_percent = min(1.0, elapsed_time / estimated_duration)
+                
+                # Check for phase transitions
+                if (progress_percent >= 0.99 or force_validation) and not validation_phase_started:
+                    validation_phase_started = True
+                    current_phase = "validation"
+                    validation_start_time = time.time()
+                    log_message(f"Starting validation phase for {name}")
+                
+                # Update current phase logic
+                if validation_phase_started:
+                    validation_elapsed_time = time.time() - validation_start_time
+                    validation_progress = min(1.0, validation_elapsed_time / validation_estimated_duration)
+                    
+                    if validation_progress >= 0.99 and current_phase == "validation":
+                        current_phase = "testing"
+                        testing_phase_started = True
+                        testing_start_time = time.time()
+                        log_message(f"Starting testing phase for {name}")
+                    
+                    if current_phase == "testing":
+                        testing_elapsed_time = time.time() - testing_start_time
+                        testing_progress = min(1.0, testing_elapsed_time / testing_estimated_duration)
+                        
+                        # If testing is complete and aggressive_termination is on, we can finish
+                        if testing_progress >= 0.99 and aggressive_termination:
+                            break
+                
+                # Draw progress bars in progress_win
+                # Clear content lines (1 and 2)
+                progress_win.move(1, 1)
+                progress_win.clrtoeol()
+                progress_win.addstr(1, 1, "│") # Restore border if clrtoeol cleared it
+                progress_win.move(1, progress_win_width - 1)
+                progress_win.addstr("│")
+                
+                progress_win.move(2, 1)
+                progress_win.clrtoeol()
+                progress_win.addstr(2, 1, "│")
+                progress_win.move(2, progress_win_width - 1)
+                progress_win.addstr("│")
+
+                # Main Installation Progress
+                prog_label = "Installing: "
+                prog_width = progress_win_width - len(prog_label) - 15
+                filled = int(prog_width * progress_percent)
+                
+                progress_win.addstr(1, 2, prog_label, curses.color_pair(COLOR_INFO))
+                progress_win.addstr(1, 2 + len(prog_label), "█" * filled, curses.color_pair(COLOR_SUCCESS))
+                progress_win.addstr(1, 2 + len(prog_label) + filled, " " * (prog_width - filled), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                progress_win.addstr(1, 2 + len(prog_label) + prog_width + 1, f"{int(progress_percent * 100)}%", curses.color_pair(COLOR_SUCCESS))
+                
+                # Second bar for Validation/Testing
+                if current_phase == "validation":
+                    val_label = "Validating: "
+                    val_filled = int(prog_width * validation_progress)
+                    progress_win.addstr(2, 2, val_label, curses.color_pair(COLOR_INFO))
+                    progress_win.addstr(2, 2 + len(val_label), "█" * val_filled, curses.color_pair(COLOR_WARNING))
+                    progress_win.addstr(2, 2 + len(val_label) + val_filled, " " * (prog_width - val_filled), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                    progress_win.addstr(2, 2 + len(val_label) + prog_width + 1, f"{progress_chars[progress_position]} {int(validation_progress * 100)}%", curses.color_pair(COLOR_WARNING))
+                elif current_phase == "testing":
+                    test_label = "Testing:    "
+                    test_filled = int(prog_width * testing_progress)
+                    progress_win.addstr(2, 2, test_label, curses.color_pair(COLOR_INFO))
+                    progress_win.addstr(2, 2 + len(test_label), "█" * test_filled, curses.color_pair(COLOR_SUCCESS))
+                    progress_win.addstr(2, 2 + len(test_label) + test_filled, " " * (prog_width - test_filled), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                    progress_win.addstr(2, 2 + len(test_label) + prog_width + 1, f"{progress_chars[progress_position]} {int(testing_progress * 100)}%", curses.color_pair(COLOR_SUCCESS))
+                else:
+                    progress_win.addstr(2, 2, "Waiting for installation to complete...", curses.color_pair(COLOR_NORMAL))
+
+                progress_win.refresh()
+                progress_position = (progress_position + 1) % len(progress_chars)
+
+        except Exception as e:
+            log_message(f"Error updating progress window: {str(e)}", "WARNING")
 
         # Track current phase and update progress bars
         try:
-            # Save cursor position
-            current_y, current_x = log_win.getyx()
-
-            # Check if we've reached 100% or if we should force validation phase
-            if (progress_percent >= 0.99 or force_validation) and not validation_phase_started:
-                # Log the transition to validation phase
-                if force_validation:
-                    log_message(f"Forcing validation phase for component: {name}", "INFO")
-                else:
-                    log_message(f"Transitioning to validation phase for component: {name} at progress {int(progress_percent * 100)}%", "INFO")
-
-                # Mark that we've started the validation phase
-                validation_phase_started = True
-                current_phase = "validation"
-
-                # Clear the entire progress bar line to prevent overlapping
-                log_win.move(progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw a completed progress bar
-                log_win.move(progress_y, 0)
-                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-
-                # Add a message about post-installation validation with clear separation
-                log_win.addstr("\n\n", curses.color_pair(COLOR_INFO))
-                log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                log_win.addstr(f"Running post-installation validation for {name}...\n", curses.color_pair(COLOR_INFO))
-                log_win.addstr("=" * 70 + "\n\n", curses.color_pair(COLOR_TITLE))
-
-                # Create a new progress bar for validation phase
-                validation_progress_y = log_win.getyx()[0]
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"0%", curses.color_pair(COLOR_SUCCESS))
-
-                # Force refresh to show the validation message immediately
-                log_win.refresh()
-
-                # Reset timer for validation phase - use component-specific duration
-                validation_start_time = time.time()
-
-                # For problematic components, check if we need to force completion
-                if name in ["ML Stack Core", "MIGraphX Python Wrapper"]:
-                    log_message(f"Using special handling for component: {name} in validation phase", "INFO")
-                    # Add additional logging for debugging
-                    log_win.addstr(f"\nNote: Using special handling for {name}...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
-
-            # Update the appropriate progress bar based on current phase
-            if validation_phase_started:
-                # Update validation progress bar
-                validation_elapsed_time = time.time() - validation_start_time
-                validation_progress = min(1.0, validation_elapsed_time / validation_estimated_duration)
-                validation_filled_width = int(progress_width * validation_progress)
-
-                # Clear the validation progress bar line to prevent overlapping
-                log_win.move(validation_progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw the validation progress bar
-                log_win.move(validation_progress_y, 0)
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * validation_filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
-                if validation_filled_width < progress_width:
-                    log_win.addstr(" " * (progress_width - validation_filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-
-                # Add a spinner at the end of validation bar
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"{progress_chars[progress_position]} {int(validation_progress * 100)}%",
-                              curses.color_pair(COLOR_SUCCESS))
-
-                # Check if validation is complete (100%)
-                if validation_progress >= 0.99 and current_phase == "validation":
-                    # Mark that we've started the testing phase
-                    current_phase = "testing"
-
-                    # Complete the validation progress bar
-                    log_win.move(validation_progress_y, 0)
-                    log_win.clrtoeol()
-                    log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                    log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                    log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-
-                    # Add a message about testing phase
-                    log_win.addstr("\n\n", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                    log_win.addstr("Running final tests...\n", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                    log_win.refresh()
-            else:
-                # Clear the progress bar line to prevent overlapping
-                log_win.move(progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw the installation progress bar
-                log_win.move(progress_y, 0)
-                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
-                if filled_width < progress_width:
-                    log_win.addstr(" " * (progress_width - filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-
-                # Add a spinner at the end
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"{progress_chars[progress_position]} {int(progress_percent * 100)}%",
-                              curses.color_pair(COLOR_SUCCESS))
-
-            # Update spinner position
-            progress_position = (progress_position + 1) % len(progress_chars)
-
-            # Restore cursor position
-            log_win.move(current_y, current_x)
+            # We already handled progress bars above, so we skip the old overlapping logic
+            pass
 
             # Force refresh more frequently to ensure smooth updates
             if current_time - last_refresh_time >= refresh_interval:
@@ -2027,16 +2052,17 @@ exit $exit_code
                 log_win.refresh()
         else:
             # If validation phase wasn't started (rare case), ensure main progress bar is complete
-            log_win.move(progress_y, 0)
-            log_win.clrtoeol()
+            if progress_win is None:
+                log_win.move(progress_y, 0)
+                log_win.clrtoeol()
 
-            # Draw a completed progress bar
-            log_win.move(progress_y, 0)
-            log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-            log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-            log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-            log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
+                # Draw a completed progress bar
+                log_win.move(progress_y, 0)
+                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
+                log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
+                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
+                log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
+                log_win.refresh()
 
         # Add a clear completion message with visual separation
         log_win.addstr("\n\n")
@@ -2106,7 +2132,12 @@ exit $exit_code
         except:
             pass
 
-    # Delete the password window
+    # Delete the progress and password windows
+    if progress_win:
+        progress_win.clear()
+        progress_win.refresh()
+        del progress_win
+    
     password_win.clear()
     password_win.refresh()
     del password_win
@@ -2515,73 +2546,114 @@ def draw_menu(stdscr, selected_idx, menu_items):
 def draw_header(stdscr, title):
     """Draw a header with the given title and enhanced ASCII art."""
     # Get screen dimensions
-    _, max_x = stdscr.getmaxyx()  # We only need max_x
+    pad_h, pad_w = stdscr.getmaxyx()
+    max_x = min(pad_w, curses.COLS)
 
     # Clear the header area first to prevent artifacts
-    for i in range(0, 8):
-        stdscr.addstr(i, 0, " " * (max_x - 1))
+    for i in range(0, 10):
+        if i < pad_h:
+            try:
+                stdscr.addstr(i, 0, " " * (max_x - 1))
+            except:
+                pass
 
     # Draw enhanced ASCII art banner
+    # Using a more compact and terminal-friendly banner
     banner_lines = [
-        " ██████╗ ████████╗ █████╗ ███╗   ██╗███████╗    ███╗   ███╗██╗         ███████╗████████╗ █████╗  ██████╗██╗  ██╗",
-        "██╔═══██╗╚══██╔══╝██╔══██╗████╗  ██║██╔════╝    ████╗ ████║██║         ██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝",
-        "██║   ██║   ██║   ███████║██╔██╗ ██║███████╗    ██╔████╔██║██║         ███████╗   ██║   ███████║██║     █████╔╝ ",
-        "██║   ██║   ██║   ██╔══██║██║╚██╗██║╚════██║    ██║╚██╔╝██║██║         ╚════██║   ██║   ██╔══██║██║     ██╔═██╗ ",
-        "╚██████╔╝   ██║   ██║  ██║██║ ╚████║███████║    ██║ ╚═╝ ██║███████╗    ███████║   ██║   ██║  ██║╚██████╗██║  ██╗",
-        " ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝    ╚═╝     ╚═╝╚══════╝    ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝"
+        r"  __  __ _      ____  _             _      ",
+        r" |  \/  | |    / ___|| |_ __ _  ___| | __  ",
+        r" | |\/| | |    \___ \| __/ _` |/ __| |/ /  ",
+        r" | |  | | |___  ___) | || (_| | (__|   <   ",
+        r" |_|  |_|_____||____/ \__\__,_|\___|_|\_\  "
     ]
 
     # Calculate center position for banner
     banner_width = len(banner_lines[0])
-    banner_x = (max_x - banner_width) // 2
+    banner_x = max(0, (max_x - banner_width) // 2)
 
     # Draw the banner with colors
     for i, line in enumerate(banner_lines):
-        if i < 6:  # Ensure we don't go beyond screen height
+        if i < pad_h:
             try:
                 # Use different colors for different parts of the banner
-                color = [COLOR_TITLE, COLOR_INFO, COLOR_SUCCESS, COLOR_INFO, COLOR_WARNING, COLOR_TITLE][i % 6]
-                stdscr.addstr(i, banner_x, line, curses.color_pair(color) | curses.A_BOLD)
+                color = [COLOR_TITLE, COLOR_INFO, COLOR_SUCCESS, COLOR_INFO, COLOR_WARNING][i % 5]
+                # Ensure we don't write past max_x
+                display_line = line[:max_x - banner_x - 1]
+                stdscr.addstr(i + 1, banner_x, display_line, curses.color_pair(color) | curses.A_BOLD)
             except:
                 pass
 
     # Draw the title below the banner
     title_text = f"• ✵ {title} ✵ •"
-    title_x = (max_x - len(title_text)) // 2
+    title_x = max(0, (max_x - len(title_text)) // 2)
 
     # Create a fancy border
     border_char = "•"
-    border = border_char * (len(title_text))
+    border = border_char * min(len(title_text), max_x - title_x - 1)
 
     # Draw the fancy title header
-    stdscr.addstr(6, title_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
-    stdscr.addstr(7, title_x, title_text, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+    try:
+        stdscr.addstr(7, title_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+        display_title = title_text[:max_x - title_x - 1]
+        stdscr.addstr(8, title_x, display_title, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+    except:
+        pass
 
     # Draw a separator line
-    stdscr.addstr(8, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    try:
+        stdscr.addstr(9, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    except:
+        pass
     # Don't call refresh here - let the caller handle refreshing
     # This allows the function to work with both regular windows and pads
 
-def draw_footer(stdscr, text):
+def draw_footer(stdscr, text, dry_run=False):
     """Draw a footer with the given text."""
     # Ensure the footer is always at the bottom of the screen
-    max_y, max_x = stdscr.getmaxyx()
+    # Use curses.LINES to ensure it's at the bottom of the visible area
+    # even if stdscr is a pad larger than the screen
+    max_y = curses.LINES
+    max_x = curses.COLS
     footer_y = max_y - 1  # Last line of the screen
+    
+    # Add dry run status if enabled
+    status_text = " [DRY RUN]" if dry_run else ""
+    full_text = f" {text}{status_text} "
 
     # Clear the footer area first to prevent artifacts
+    # We use stdscr.addstr but we must ensure we don't exceed the pad's actual dimensions
+    # if it happens to be smaller than curses.LINES (unlikely here)
+    pad_h, pad_w = stdscr.getmaxyx()
+    
     for i in range(max_y - 3, max_y):
-        stdscr.addstr(i, 0, " " * (max_x - 1))
+        if i < pad_h:
+            try:
+                stdscr.addstr(i, 0, " " * (min(max_x, pad_w) - 1))
+            except:
+                pass
 
     # Draw stars in the footer
     for j in range(2, max_x - 2, 8):
-        stdscr.addstr(max_y - 2, j, "✧", curses.color_pair(COLOR_INFO))
+        if max_y - 2 < pad_h and j < pad_w:
+            try:
+                stdscr.addstr(max_y - 2, j, "✧", curses.color_pair(COLOR_INFO))
+            except:
+                pass
 
     # Draw a separator line
-    stdscr.addstr(max_y - 3, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    if max_y - 3 < pad_h:
+        try:
+            stdscr.addstr(max_y - 3, 2, "=" * (min(max_x, pad_w) - 4), curses.color_pair(COLOR_TITLE))
+        except:
+            pass
 
     # Draw the footer text with decorative elements
     footer_text = f"✦ {text} ✦"
-    stdscr.addstr(footer_y, 2, footer_text.center(max_x - 4), curses.color_pair(COLOR_INFO) | curses.A_BOLD)
+    if footer_y < pad_h:
+        try:
+            stdscr.addstr(footer_y, 2, footer_text.center(min(max_x, pad_w) - 4), curses.color_pair(COLOR_INFO) | curses.A_BOLD)
+        except:
+            pass
     # Don't call refresh here - let the caller handle refreshing
     # This allows the function to work with both regular windows and pads
 
@@ -2975,9 +3047,10 @@ def create_log_window(parent_win):
     """Create a scrollable log window with decorative border."""
     # Adjust dimensions to account for the header and footer
     # Reduce height to ensure it doesn't overlap with the footer
-    height = curses.LINES - 19  # Adjusted for starting at line 11 instead of 16
-    width = curses.COLS - 8
-    y = 11  # Moved 5 lines higher from previous position of 16
+    # Ensure height and width are at least minimum usable values
+    height = max(5, curses.LINES - 17)
+    width = max(20, curses.COLS - 8)
+    y = min(11, curses.LINES - height - 1)
     x = 4
 
     # Create the window
@@ -3032,7 +3105,7 @@ def show_welcome_screen(stdscr):
 
     # Draw header - use ML Stack Installation to avoid adding redundant title
     draw_header(stdscr, "ML Stack Installation")
-    draw_footer(stdscr, "Press Enter to continue, 'q' to quit")
+    draw_footer(stdscr, "Press Enter to continue, 'q' to quit", ui_state.get('dry_run', False))
     # Explicitly refresh the screen after drawing header and footer
     stdscr.refresh()
 
@@ -3619,1126 +3692,6 @@ def show_welcome_screen(stdscr):
             elif ch == ord('q'):  # q key
                 return False
 
-def main(stdscr):
-    """Main function."""
-    # Create log file if it doesn't exist
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [INFO] Starting ML Stack Installation UI\n")
-    except Exception as e:
-        # If we can't create the log file, print an error and continue
-        # We'll handle log file errors gracefully later
-        pass
-
-    # Initialize curses
-    curses.curs_set(0)  # Hide cursor
-    curses.start_color()
-    curses.use_default_colors()
-
-    # Set up non-blocking input with a short timeout for automatic refreshing
-    stdscr.nodelay(True)  # Make getch() non-blocking
-    stdscr.timeout(200)   # Set a 200ms timeout for getch() - this enables automatic refreshing
-
-    # Initialize color pairs with more vibrant colors
-    curses.init_pair(COLOR_NORMAL, curses.COLOR_WHITE, -1)
-    curses.init_pair(COLOR_HIGHLIGHT, curses.COLOR_BLACK, curses.COLOR_GREEN)  # Green selection highlight
-    curses.init_pair(COLOR_TITLE, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(COLOR_SUCCESS, curses.COLOR_GREEN, -1)
-    curses.init_pair(COLOR_ERROR, curses.COLOR_RED, -1)
-    curses.init_pair(COLOR_WARNING, curses.COLOR_YELLOW, -1)
-    curses.init_pair(COLOR_INFO, curses.COLOR_CYAN, -1)
-    curses.init_pair(COLOR_BORDER, curses.COLOR_YELLOW, -1)  # Orange border (using yellow as closest to orange)
-
-    # Show welcome screen and get sudo authentication
-    if not show_welcome_screen(stdscr):
-        return  # Exit if authentication failed or user quit
-
-    # Clear screen
-    stdscr.clear()
-
-    # Set up automatic refresh with timeout in the main loop
-    # This ensures the screen updates regularly without requiring user input
-
-    # Draw initial screen
-    draw_header(stdscr, "ML Stack Installation")
-    draw_footer(stdscr, "Press 'q' to quit, arrow keys to navigate, Enter to select")
-
-    # Main menu
-    menu_items = ["Hardware Detection", "Environment Setup", "Dependencies", "Components", "Installation", "System Benchmarking", "Logs", "Exit"]
-    selected_idx = 0
-    current_screen = "menu"
-
-    # Hardware info
-    hardware_info = None
-
-    # Environment scripts
-    env_selected_idx = 0
-    selected_env_scripts = []
-
-    # Dependencies
-    dependencies = None
-    dep_selected_idx = 0
-    selected_deps = []
-
-    # Components
-    comp_selected_section = 0
-    comp_selected_idx = 0
-    inst_selected_section = 0
-    inst_selected_idx = 0
-
-    # Benchmarking variables
-    benchmark_selected_idx: int = 0
-    benchmark_results: Dict[str, Any] = {}
-    benchmark_options: List[str] = [
-        "Run Pre-Installation Benchmarks",
-        "Run Post-Installation Benchmarks",
-        "Compare Before/After Results",
-        "View Benchmark Results"
-    ]
-
-    # Create log window
-    log_win = create_log_window(stdscr)
-    # Explicitly refresh the screen after creating the log window
-    stdscr.refresh()
-
-    # Implement double-buffering to eliminate screen flashing
-    # Create a virtual screen (pad) for drawing that will be copied to the real screen only when ready
-    virtual_screen = curses.newpad(curses.LINES, curses.COLS)
-
-    # Track the current screen to know when to redraw
-    previous_screen = None
-
-    # Create a state dictionary to store UI state and timing information
-    # This avoids attaching attributes directly to curses window objects
-    ui_state = {
-        # Track the last state to avoid unnecessary redraws
-        'last_selected_idx': -1,
-        'last_env_selected_idx': -1,
-        'last_dep_selected_idx': -1,
-        'last_comp_selected_section': -1,
-        'last_comp_selected_idx': -1,
-        'last_inst_selected_section': -1,
-        'last_inst_selected_idx': -1,
-        # Timing information for controlled refreshes
-        'last_refresh_time': 0,
-        # Flag to force redraw when needed
-        'force_redraw': False,
-        # Last key press time for input responsiveness
-        'last_key_time': 0
-    }
-
-    # Function to copy the virtual screen to the real screen
-    def update_screen():
-        try:
-            # For a pad, we need to specify the region to display
-            max_y, max_x = stdscr.getmaxyx()
-
-            # Ensure we don't try to refresh beyond screen boundaries
-            if max_y > 0 and max_x > 0:
-                # Get current time to throttle updates
-                current_time = time.time()
-
-                # Only update if enough time has passed since last update (prevents excessive refreshes)
-                if current_time - ui_state.get('last_screen_update', 0) > 0.03:  # 30ms minimum between updates
-                    # Copy the entire virtual screen to the real screen
-                    # Parameters: pminrow, pmincol, sminrow, smincol, smaxrow, smaxcol
-                    virtual_screen.noutrefresh(0, 0, 0, 0, max_y-1, max_x-1)
-                    curses.doupdate()
-                    ui_state['last_screen_update'] = current_time
-        except Exception as e:
-            # Handle any errors during screen update
-            log_message(f"Error updating screen: {str(e)}")
-
-    # Main loop with double-buffering to eliminate flashing
-    while True:
-        # Use a shorter timeout to improve responsiveness while still being efficient
-        stdscr.timeout(5)  # 5ms timeout for getch() - more responsive
-
-        # Get user input (with timeout due to nodelay mode)
-        key = stdscr.getch()
-
-        # Handle screen transitions and state changes
-        if key != -1:
-            # Store current time for key press responsiveness
-            current_time = time.time()
-
-            # Only process key if enough time has passed since last key press
-            # This prevents double-processing of keys but ensures we don't miss any
-            if current_time - ui_state.get('last_key_time', 0) > 0.01:  # 10ms debounce
-                ui_state['last_key_time'] = current_time
-                ui_state['force_redraw'] = True  # Force redraw on key press
-
-                # Store the previous screen before potentially changing it
-                previous_screen = current_screen
-
-                # Global 'b' key handling for all screens except menu
-                if key == ord('b') and current_screen != "menu":
-                    current_screen = "menu"
-            else:
-                # If we're debouncing, set the key to -1 to ignore it
-                key = -1
-
-        # Determine if we need to redraw the screen
-        # Only redraw when something has actually changed
-        need_redraw = (current_screen != previous_screen or
-                      (current_screen == "menu" and selected_idx != ui_state['last_selected_idx']) or
-                      ui_state.get('force_redraw', False))
-
-        # Reset force_redraw flag
-        ui_state['force_redraw'] = False
-
-        # Draw current screen to virtual screen if needed
-        if need_redraw or current_screen != previous_screen:  # Redraw when necessary or when screen changes
-            try:
-                virtual_screen.clear()
-
-                if current_screen == "menu":
-                    draw_header(virtual_screen, "ML Stack Installation")
-                    draw_footer(virtual_screen, "Press 'q' to quit, arrow keys to navigate, Enter to select")
-                    draw_menu(virtual_screen, selected_idx, menu_items)
-
-                    # Update tracking variables
-                    ui_state['last_selected_idx'] = selected_idx
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-
-                    # For menu screen, we don't need to redraw on every loop iteration
-                    # This prevents flickering
-                    time.sleep(0.05)  # Small delay to reduce CPU usage and prevent flickering
-            except Exception as e:
-                # Handle any errors during screen drawing
-                log_message(f"Error drawing menu screen: {str(e)}")
-
-        elif current_screen == "hardware":
-            need_redraw = (current_screen != previous_screen or hardware_info is None)
-
-            if need_redraw:
-                try:
-                    virtual_screen.clear()
-                    draw_header(virtual_screen, "Hardware Detection")
-                    draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh")
-
-                    if hardware_info is None:
-                        try:
-                            virtual_screen.addstr(11, 2, "Detecting hardware...".ljust(curses.COLS - 4), curses.color_pair(COLOR_INFO))
-                            update_screen()  # Show "Detecting hardware..." message
-
-                            # Add proper error handling around hardware detection
-                            try:
-                                hardware_info = detect_hardware()
-                            except Exception as e:
-                                log_message(f"Error detecting hardware: {str(e)}")
-                                # Initialize with empty values to prevent crashes
-                                hardware_info = {
-                                    'system': 'Unknown',
-                                    'release': 'Unknown',
-                                    'machine': 'Unknown',
-                                    'processor': 'Unknown',
-                                    'python_version': 'Unknown',
-                                    'rocm_path': None,
-                                    'rocm_version': None,
-                                    'amd_gpus': []
-                                }
-
-                            virtual_screen.clear()  # Clear again to redraw with the new info
-                            draw_header(virtual_screen, "Hardware Detection")
-                            draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh")
-                        except Exception as e:
-                            log_message(f"Error updating hardware detection screen: {str(e)}")
-
-                    # Display hardware information
-                    hw_y = 11  # Moved 5 lines higher from previous position of 16
-                    hw_x = 4
-                    max_width = curses.COLS - hw_x - 4  # Maximum width for text to avoid boundary errors
-
-                    # System information
-                    if hardware_info:
-                        try:
-                            virtual_screen.addstr(hw_y, hw_x, "System Information:", curses.color_pair(COLOR_TITLE))
-                            hw_y += 1
-
-                            # Truncate long strings to prevent boundary errors
-                            system_info = f"System: {hardware_info['system']} {hardware_info['release']}"
-                            if len(system_info) > max_width:
-                                system_info = system_info[:max_width-3] + "..."
-                            virtual_screen.addstr(hw_y, hw_x, system_info, curses.color_pair(COLOR_NORMAL))
-                            hw_y += 1
-
-                            machine_info = f"Machine: {hardware_info['machine']}"
-                            if len(machine_info) > max_width:
-                                machine_info = machine_info[:max_width-3] + "..."
-                            virtual_screen.addstr(hw_y, hw_x, machine_info, curses.color_pair(COLOR_NORMAL))
-                            hw_y += 1
-
-                            processor_info = f"Processor: {hardware_info['processor']}"
-                            if len(processor_info) > max_width:
-                                processor_info = processor_info[:max_width-3] + "..."
-                            virtual_screen.addstr(hw_y, hw_x, processor_info, curses.color_pair(COLOR_NORMAL))
-                            hw_y += 1
-
-                            python_info = f"Python Version: {hardware_info['python_version']}"
-                            if len(python_info) > max_width:
-                                python_info = python_info[:max_width-3] + "..."
-                            virtual_screen.addstr(hw_y, hw_x, python_info, curses.color_pair(COLOR_NORMAL))
-                            hw_y += 2
-                        except Exception as e:
-                            log_message(f"Error displaying system information: {str(e)}")
-                            hw_y += 5  # Skip to next section if there's an error
-
-                        # ROCm information
-                        try:
-                            virtual_screen.addstr(hw_y, hw_x, "ROCm Information:", curses.color_pair(COLOR_TITLE))
-                            hw_y += 1
-                            if hardware_info.get('rocm_path'):
-                                rocm_path = f"ROCm Path: {hardware_info['rocm_path']}"
-                                if len(rocm_path) > max_width:
-                                    rocm_path = rocm_path[:max_width-3] + "..."
-                                virtual_screen.addstr(hw_y, hw_x, rocm_path, curses.color_pair(COLOR_SUCCESS))
-                                hw_y += 1
-                                if hardware_info.get('rocm_version'):
-                                    rocm_version = f"ROCm Version: {hardware_info['rocm_version']}"
-                                    if len(rocm_version) > max_width:
-                                        rocm_version = rocm_version[:max_width-3] + "..."
-                                    virtual_screen.addstr(hw_y, hw_x, rocm_version, curses.color_pair(COLOR_SUCCESS))
-                                else:
-                                    virtual_screen.addstr(hw_y, hw_x, "ROCm Version: Not detected", curses.color_pair(COLOR_WARNING))
-                            else:
-                                virtual_screen.addstr(hw_y, hw_x, "ROCm: Not installed or not in PATH", curses.color_pair(COLOR_ERROR))
-                            hw_y += 2
-                        except Exception as e:
-                            log_message(f"Error displaying ROCm information: {str(e)}")
-                            hw_y += 3  # Skip to next section if there's an error
-
-                        # GPU information
-                        try:
-                            virtual_screen.addstr(hw_y, hw_x, "GPU Information:", curses.color_pair(COLOR_TITLE))
-                            hw_y += 1
-                            if hardware_info.get('amd_gpus'):
-                                gpu_count = f"Found {len(hardware_info['amd_gpus'])} AMD GPU(s):"
-                                virtual_screen.addstr(hw_y, hw_x, gpu_count, curses.color_pair(COLOR_SUCCESS))
-                                hw_y += 1
-
-                                # Get maximum Y coordinate to avoid writing beyond screen boundaries
-                                max_y, _ = virtual_screen.getmaxyx()
-
-                                for i, gpu in enumerate(hardware_info['amd_gpus']):
-                                    # Check if we're still within screen boundaries
-                                    if hw_y >= max_y - 2:  # Leave space for footer
-                                        break
-
-                                    # Truncate GPU name if too long
-                                    gpu_info = f"{i+1}. {gpu}"
-                                    if len(gpu_info) > max_width - 2:  # Account for indentation
-                                        gpu_info = gpu_info[:max_width-5] + "..."
-
-                                    virtual_screen.addstr(hw_y, hw_x + 2, gpu_info, curses.color_pair(COLOR_NORMAL))
-                                    hw_y += 1
-                            else:
-                                virtual_screen.addstr(hw_y, hw_x, "No AMD GPUs detected", curses.color_pair(COLOR_ERROR))
-                                hw_y += 1
-                        except Exception as e:
-                            log_message(f"Error displaying GPU information: {str(e)}")
-                    else:
-                        virtual_screen.addstr(hw_y, hw_x, "Hardware information not available.", curses.color_pair(COLOR_WARNING))
-                        hw_y += 1
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-                except Exception as e:
-                    # Handle any errors during screen drawing
-                    log_message(f"Error drawing hardware screen: {str(e)}")
-
-        elif current_screen == "environment":
-            need_redraw = (current_screen != previous_screen or
-                          env_selected_idx != ui_state['last_env_selected_idx'])
-
-            if need_redraw:
-                try:
-                    virtual_screen.clear()
-                    draw_header(virtual_screen, "Environment Setup")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to run selected scripts")
-                    draw_environment_scripts(virtual_screen, ENVIRONMENT_SCRIPTS, env_selected_idx)
-
-                    # Update tracking variables
-                    ui_state['last_env_selected_idx'] = env_selected_idx
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-                except Exception as e:
-                    # Handle any errors during screen drawing
-                    log_message(f"Error drawing environment screen: {str(e)}")
-
-        elif current_screen == "dependencies":
-            need_redraw = (current_screen != previous_screen or
-                          dep_selected_idx != ui_state['last_dep_selected_idx'] or
-                          dependencies is None)
-
-            if need_redraw:
-                try:
-                    virtual_screen.clear()
-                    draw_header(virtual_screen, "Dependencies")
-                    draw_footer(virtual_screen, "Press 'b' to go back, 'i' to install selected dependencies, 'r' to refresh, Space to select")
-
-                    if dependencies is None:
-                        virtual_screen.addstr(11, 2, "Checking dependencies...".ljust(curses.COLS - 4), curses.color_pair(COLOR_INFO))
-                        update_screen()  # Show "Checking dependencies..." message
-                        dependencies = check_dependencies()
-                        # Initially select all missing dependencies
-                        selected_deps = [dep for dep, installed in dependencies.items() if not installed]
-                        virtual_screen.clear()  # Clear again to redraw with the new info
-                        draw_header(virtual_screen, "Dependencies")
-                        draw_footer(virtual_screen, "Press 'b' to go back, 'i' to install selected dependencies, 'r' to refresh, Space to select")
-
-                    draw_dependencies(virtual_screen, dependencies, selected_deps, dep_selected_idx)
-
-                    # Update tracking variables
-                    ui_state['last_dep_selected_idx'] = dep_selected_idx
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-                except Exception as e:
-                    # Handle any errors during screen drawing
-                    log_message(f"Error drawing dependencies screen: {str(e)}")
-
-        elif current_screen == "components":
-            need_redraw = (current_screen != previous_screen or
-                          comp_selected_section != ui_state['last_comp_selected_section'] or
-                          comp_selected_idx != ui_state['last_comp_selected_idx'])
-
-            if need_redraw:
-                try:
-                    virtual_screen.clear()
-                    draw_header(virtual_screen, "Components")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to install, 'r' to refresh")
-                    draw_components(virtual_screen, FOUNDATION_COMPONENTS, CORE_COMPONENTS, EXTENSION_COMPONENTS, comp_selected_section, comp_selected_idx)
-
-                    # Update tracking variables
-                    ui_state['last_comp_selected_section'] = comp_selected_section
-                    ui_state['last_comp_selected_idx'] = comp_selected_idx
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-                except Exception as e:
-                    # Handle any errors during screen drawing
-                    log_message(f"Error drawing components screen: {str(e)}")
-
-        elif current_screen == "installation":
-            need_redraw = (current_screen != previous_screen or
-                          inst_selected_section != ui_state['last_inst_selected_section'] or
-                          inst_selected_idx != ui_state['last_inst_selected_idx'])
-
-            if need_redraw:
-                try:
-                    virtual_screen.clear()
-                    draw_header(virtual_screen, "Installation")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to install selected components")
-
-                    # Display installation status
-                    inst_y = 11  # Moved 5 lines higher from previous position of 16
-                    inst_x = 2
-
-                    virtual_screen.addstr(inst_y, inst_x, "Installation Status:".ljust(curses.COLS - 4), curses.color_pair(COLOR_TITLE))
-                    inst_y += 2
-
-                    # Count installed components
-                    foundation_installed = sum(1 for comp in FOUNDATION_COMPONENTS if comp["status"] == "installed")
-                    core_installed = sum(1 for comp in CORE_COMPONENTS if comp["status"] == "installed")
-                    ext_installed = sum(1 for comp in EXTENSION_COMPONENTS if comp["status"] == "installed")
-                    total_installed = foundation_installed + core_installed + ext_installed
-                    total_components = len(FOUNDATION_COMPONENTS) + len(CORE_COMPONENTS) + len(EXTENSION_COMPONENTS)
-
-                    virtual_screen.addstr(inst_y, inst_x, f"Progress: {total_installed}/{total_components} components installed".ljust(curses.COLS - 4), curses.color_pair(COLOR_INFO))
-                    inst_y += 2
-
-                    # Display foundation components
-                    virtual_screen.addstr(inst_y, inst_x, "Foundation Components:".ljust(curses.COLS - 4), curses.color_pair(COLOR_TITLE))
-                    inst_y += 1
-
-                    for i, comp in enumerate(FOUNDATION_COMPONENTS):
-                        if comp["status"] == "installed":
-                            status = "[OK]"
-                            color = COLOR_SUCCESS
-                        elif comp["status"] == "installing":
-                            status = "[..]"
-                            color = COLOR_INFO
-                        elif comp["status"] == "failed":
-                            status = "[!!]"
-                            color = COLOR_ERROR
-                        else:
-                            status = " "
-                            color = COLOR_NORMAL
-
-                        # Add selection marker
-                        if comp.get("selected", False):
-                            selection = ">>>"
-                        else:
-                            selection = "   "
-
-                        # Highlight the currently selected component
-                        if inst_selected_section == 0 and i == inst_selected_idx:
-                            virtual_screen.addstr(inst_y, inst_x, f"> [{status}] {selection} {comp['name']}".ljust(curses.COLS - 4), curses.color_pair(COLOR_HIGHLIGHT))
-                        else:
-                            virtual_screen.addstr(inst_y, inst_x, f"  [{status}] {selection} {comp['name']}".ljust(curses.COLS - 4), curses.color_pair(color))
-                        inst_y += 1
-
-                    inst_y += 1
-
-                    # Display core components
-                    virtual_screen.addstr(inst_y, inst_x, "Core Components:".ljust(curses.COLS - 4), curses.color_pair(COLOR_TITLE))
-                    inst_y += 1
-
-                    for i, comp in enumerate(CORE_COMPONENTS):
-                        if comp["status"] == "installed":
-                            status = "[OK]"
-                            color = COLOR_SUCCESS
-                        elif comp["status"] == "installing":
-                            status = "[..]"
-                            color = COLOR_INFO
-                        elif comp["status"] == "failed":
-                            status = "[!!]"
-                            color = COLOR_ERROR
-                        else:
-                            status = " "
-                            color = COLOR_NORMAL
-
-                        # Add selection marker
-                        if comp.get("selected", False):
-                            selection = ">>>"
-                        else:
-                            selection = "   "
-
-                        # Highlight the currently selected component
-                        if inst_selected_section == 1 and i == inst_selected_idx:
-                            virtual_screen.addstr(inst_y, inst_x, f"> [{status}] {selection} {comp['name']}".ljust(curses.COLS - 4), curses.color_pair(COLOR_HIGHLIGHT))
-                        else:
-                            virtual_screen.addstr(inst_y, inst_x, f"  [{status}] {selection} {comp['name']}".ljust(curses.COLS - 4), curses.color_pair(color))
-                        inst_y += 1
-
-                    inst_y += 1
-
-                    # Display extension components
-                    virtual_screen.addstr(inst_y, inst_x, "Extension Components:".ljust(curses.COLS - 4), curses.color_pair(COLOR_TITLE))
-                    inst_y += 1
-
-                    for i, comp in enumerate(EXTENSION_COMPONENTS):
-                        if comp["status"] == "installed":
-                            status = "[OK]"
-                            color = COLOR_SUCCESS
-                        elif comp["status"] == "installing":
-                            status = "[..]"
-                            color = COLOR_INFO
-                        elif comp["status"] == "failed":
-                            status = "[!!]"
-                            color = COLOR_ERROR
-                        else:
-                            status = " "
-                            color = COLOR_NORMAL
-
-                        # Add selection marker
-                        if comp.get("selected", False):
-                            selection = ">>>"
-                        else:
-                            selection = "   "
-
-                        # Highlight the currently selected component
-                        if inst_selected_section == 2 and i == inst_selected_idx:
-                            virtual_screen.addstr(inst_y, inst_x, f"> [{status}] {selection} {comp['name']}".ljust(curses.COLS - 4), curses.color_pair(COLOR_HIGHLIGHT))
-                        else:
-                            virtual_screen.addstr(inst_y, inst_x, f"  [{status}] {selection} {comp['name']}".ljust(curses.COLS - 4), curses.color_pair(color))
-                        inst_y += 1
-
-                    # Update tracking variables in the ui_state dictionary
-                    ui_state['last_inst_selected_section'] = inst_selected_section
-                    ui_state['last_inst_selected_idx'] = inst_selected_idx
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-                except Exception as e:
-                    # Handle any errors during screen drawing
-                    log_message(f"Error drawing installation screen: {str(e)}")
-
-        elif current_screen == "logs":
-            need_redraw = (current_screen != previous_screen)
-
-            if need_redraw:
-                try:
-                    virtual_screen.clear()
-                    draw_header(virtual_screen, "Logs")
-                    draw_footer(virtual_screen, "Press 'b' to go back")
-
-                    # Copy virtual screen to real screen
-                    update_screen()
-
-                    # Initialize log display time to ensure first update
-                    ui_state['last_log_update'] = 0
-                except Exception as e:
-                    # Handle any errors during screen drawing
-                    log_message(f"Error drawing logs screen: {str(e)}")
-
-            # For logs, we handle the log window separately since it's a separate window
-            # Only update log content at a controlled rate to prevent flickering
-            current_time = time.time()
-            if current_time - ui_state.get('last_log_update', 0) > 0.2:  # 200ms between full log updates
-                try:
-                    # Make sure log_win exists and is valid
-                    if log_win is None:
-                        # Create log window if it doesn't exist
-                        try:
-                            max_y, max_x = stdscr.getmaxyx()
-                            log_win = curses.newwin(max_y - 7, max_x - 4, 6, 2)
-                        except Exception as e:
-                            log_message(f"Error creating log window: {str(e)}")
-                            continue
-
-                    # Display logs
-                    log_win.erase()  # Use erase instead of clear for better performance
-                    try:
-                        with open(LOG_FILE, "r") as f:
-                            lines = f.readlines()
-
-                            # Get the maximum number of lines that can be displayed
-                            try:
-                                max_y, _ = log_win.getmaxyx()
-                            except Exception as e:
-                                log_message(f"Error getting log window dimensions: {str(e)}")
-                                max_y = 20  # Default fallback value
-
-                            # If there are more lines than can fit, show the last ones
-                            if len(lines) > max_y:
-                                lines = lines[-max_y:]
-
-                            # Display the lines with appropriate colors
-                            for line in lines:
-                                try:
-                                    # Truncate long lines to prevent boundary errors
-                                    try:
-                                        max_width = curses.COLS - 10  # Leave some margin
-                                    except:
-                                        max_width = 70  # Default fallback value
-
-                                    if len(line) > max_width:
-                                        line = line[:max_width-3] + "...\n"
-
-                                    if "ERROR" in line:
-                                        log_win.addstr(line, curses.color_pair(COLOR_ERROR))
-                                    elif "WARNING" in line:
-                                        log_win.addstr(line, curses.color_pair(COLOR_WARNING))
-                                    elif "SUCCESS" in line:
-                                        log_win.addstr(line, curses.color_pair(COLOR_SUCCESS))
-                                    else:
-                                        log_win.addstr(line)
-                                except Exception as e:
-                                    # If we can't add a specific line, log it and continue
-                                    log_message(f"Error adding log line: {str(e)}")
-                                    continue
-
-                            # Move cursor to the end to ensure auto-scrolling
-                            try:
-                                y, _ = log_win.getyx()  # We only need the y coordinate
-                                log_win.move(y, 0)
-                            except Exception as e:
-                                log_message(f"Error moving cursor: {str(e)}")
-                    except FileNotFoundError:
-                        try:
-                            log_win.addstr("No log file found. Actions will be logged during this session.\n", curses.color_pair(COLOR_WARNING))
-                        except Exception as e:
-                            log_message(f"Error displaying file not found message: {str(e)}")
-                    except Exception as e:
-                        try:
-                            log_win.addstr(f"Error reading log file: {str(e)}\n", curses.color_pair(COLOR_ERROR))
-                        except Exception as e2:
-                            log_message(f"Error displaying error message: {str(e2)}")
-
-                    # Use noutrefresh instead of refresh for better performance
-                    try:
-                        log_win.noutrefresh()
-                        curses.doupdate()
-                    except Exception as e:
-                        log_message(f"Error refreshing log window: {str(e)}")
-
-                    # Update the last log update time
-                    ui_state['last_log_update'] = current_time
-                except Exception as e:
-                    # Handle any errors with the log window itself
-                    log_message(f"Error with log window: {str(e)}")
-
-        # Note: Key handling is now done at the beginning of the loop
-
-        # Note: Special handling for logs screen is now done in the logs screen section
-
-        # Process input (key will be -1 if no key was pressed)
-        if key == ord('q'):
-            break
-
-        elif current_screen == "menu":
-            if key == curses.KEY_UP:
-                selected_idx = (selected_idx - 1) % len(menu_items)
-            elif key == curses.KEY_DOWN:
-                selected_idx = (selected_idx + 1) % len(menu_items)
-            elif key == curses.KEY_ENTER or key == 10 or key == 13:
-                try:
-                    if selected_idx == 0:  # Hardware Detection
-                        current_screen = "hardware"
-                        # Reset hardware info to force refresh when entering screen
-                        hardware_info = None
-                    elif selected_idx == 1:  # Environment Setup
-                        current_screen = "environment"
-                    elif selected_idx == 2:  # Dependencies
-                        current_screen = "dependencies"
-                        # Initialize dependencies if needed
-                        if dependencies is None:
-                            ui_state['force_redraw'] = True
-                    elif selected_idx == 3:  # Components
-                        current_screen = "components"
-                        # Reset component selection indices to ensure correct highlighting
-                        comp_selected_section = 0
-                        comp_selected_idx = 0
-                        ui_state['last_comp_selected_section'] = -1
-                        ui_state['last_comp_selected_idx'] = -1
-                    elif selected_idx == 4:  # Installation
-                        current_screen = "installation"
-                        # Reset installation selection indices
-                        inst_selected_section = 0
-                        inst_selected_idx = 0
-                        ui_state['last_inst_selected_section'] = -1
-                        ui_state['last_inst_selected_idx'] = -1
-                    elif selected_idx == 5:  # Logs
-                        current_screen = "logs"
-                    elif selected_idx == 6:  # Exit
-                        break
-
-                    # Force redraw when changing screens
-                    ui_state['force_redraw'] = True
-                except Exception as e:
-                    log_message(f"Error changing screens: {str(e)}")
-
-        elif current_screen == "hardware":
-            if key == ord('r'):
-                hardware_info = None  # Force refresh
-
-        elif current_screen == "environment":
-            if key == curses.KEY_UP:
-                env_selected_idx = (env_selected_idx - 1) % len(ENVIRONMENT_SCRIPTS)
-            elif key == curses.KEY_DOWN:
-                env_selected_idx = (env_selected_idx + 1) % len(ENVIRONMENT_SCRIPTS)
-            elif key == ord(' '):  # Space to toggle selection
-                # Toggle selection of the current script
-                script = ENVIRONMENT_SCRIPTS[env_selected_idx]
-                script["selected"] = not script.get("selected", False)
-
-                # Update selected_env_scripts
-                if script.get("selected", False):
-                    if script["name"] not in selected_env_scripts:
-                        selected_env_scripts.append(script["name"])
-                else:
-                    if script["name"] in selected_env_scripts:
-                        selected_env_scripts.remove(script["name"])
-            elif key == ord('i'):
-                # Install selected environment scripts
-                selected_scripts = []
-                for script in ENVIRONMENT_SCRIPTS:
-                    if script.get("selected", False):
-                        selected_scripts.append(script)
-
-                if selected_scripts:
-                    current_screen = "logs"
-                    log_win.clear()
-                    log_win.addstr(f"Running {len(selected_scripts)} selected environment scripts...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
-
-                    # Run each selected script
-                    for script in selected_scripts:
-                        log_win.addstr(f"\nRunning {script['name']}...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
-                        install_component(script, stdscr, log_win)
-                else:
-                    # If no scripts are selected, run the currently highlighted script
-                    script = ENVIRONMENT_SCRIPTS[env_selected_idx]
-                    current_screen = "logs"
-                    log_win.clear()
-                    log_win.addstr(f"Running {script['name']}...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
-                    install_component(script, stdscr, log_win, hardware_info)
-
-        elif current_screen == "dependencies":
-            if key == ord('r'):
-                dependencies = None  # Force refresh
-            elif key == curses.KEY_UP:
-                # Add null check before accessing len(dependencies)
-                if dependencies is not None and len(dependencies) > 0:
-                    dep_selected_idx = (dep_selected_idx - 1) % len(dependencies)
-            elif key == curses.KEY_DOWN:
-                # Add null check before accessing len(dependencies)
-                if dependencies is not None and len(dependencies) > 0:
-                    dep_selected_idx = (dep_selected_idx + 1) % len(dependencies)
-            elif key == ord(' '):  # Space to toggle selection
-                # Add null check before accessing dependencies
-                if dependencies is not None and len(dependencies) > 0 and dep_selected_idx < len(dependencies):
-                    try:
-                        # Get the dependency name at the current index
-                        dep_name = list(dependencies.keys())[dep_selected_idx]
-
-                        # Toggle selection
-                        if dep_name in selected_deps:
-                            selected_deps.remove(dep_name)
-                        else:
-                            selected_deps.append(dep_name)
-                    except Exception as e:
-                        log_message(f"Error toggling dependency selection: {str(e)}")
-            elif key == ord('i'):
-                # Install selected dependencies
-                if selected_deps:
-                    stdscr.addstr(curses.LINES - 3, 2, f"Installing selected dependencies: {', '.join(selected_deps)}".ljust(curses.COLS - 4), curses.color_pair(COLOR_INFO))
-                    stdscr.refresh()
-                    install_dependencies(selected_deps, stdscr)
-                    dependencies = None  # Force refresh
-                    selected_deps = []   # Clear selections after installation
-                else:
-                    stdscr.addstr(curses.LINES - 3, 2, "No dependencies selected for installation".ljust(curses.COLS - 4), curses.color_pair(COLOR_WARNING))
-                    stdscr.refresh()
-                    time.sleep(2)
-
-        elif current_screen == "components":
-            if key == ord('r'):
-                # Refresh component status
-                pass
-            elif key == curses.KEY_UP:
-                try:
-                    if comp_selected_section == 0 and len(FOUNDATION_COMPONENTS) > 0:
-                        comp_selected_idx = (comp_selected_idx - 1) % len(FOUNDATION_COMPONENTS)
-                    elif comp_selected_section == 1 and len(CORE_COMPONENTS) > 0:
-                        comp_selected_idx = (comp_selected_idx - 1) % len(CORE_COMPONENTS)
-                    elif comp_selected_section == 2 and len(EXTENSION_COMPONENTS) > 0:
-                        comp_selected_idx = (comp_selected_idx - 1) % len(EXTENSION_COMPONENTS)
-                except Exception as e:
-                    log_message(f"Error navigating components (UP): {str(e)}")
-            elif key == curses.KEY_DOWN:
-                try:
-                    if comp_selected_section == 0:
-                        if len(FOUNDATION_COMPONENTS) > 0:
-                            if comp_selected_idx < len(FOUNDATION_COMPONENTS) - 1:
-                                comp_selected_idx += 1
-                            else:
-                                comp_selected_section = 1
-                                comp_selected_idx = 0
-                    elif comp_selected_section == 1:
-                        if len(CORE_COMPONENTS) > 0:
-                            if comp_selected_idx < len(CORE_COMPONENTS) - 1:
-                                comp_selected_idx += 1
-                            else:
-                                comp_selected_section = 2
-                                comp_selected_idx = 0
-                    elif comp_selected_section == 2:
-                        if len(EXTENSION_COMPONENTS) > 0:
-                            comp_selected_idx = (comp_selected_idx + 1) % len(EXTENSION_COMPONENTS)
-                except Exception as e:
-                    log_message(f"Error navigating components (DOWN): {str(e)}")
-            elif key == curses.KEY_LEFT:
-                if comp_selected_section > 0:
-                    comp_selected_section -= 1
-                    comp_selected_idx = 0
-            elif key == curses.KEY_RIGHT:
-                if comp_selected_section < 2:
-                    comp_selected_section += 1
-                    comp_selected_idx = 0
-            elif key == ord(' '):  # Space to toggle selection
-                # Toggle selection of the current component
-                if comp_selected_section == 0 and comp_selected_idx < len(FOUNDATION_COMPONENTS):
-                    component = FOUNDATION_COMPONENTS[comp_selected_idx]
-                    component["selected"] = not component.get("selected", False)
-                elif comp_selected_section == 1 and comp_selected_idx < len(CORE_COMPONENTS):
-                    component = CORE_COMPONENTS[comp_selected_idx]
-                    component["selected"] = not component.get("selected", False)
-                elif comp_selected_section == 2 and comp_selected_idx < len(EXTENSION_COMPONENTS):
-                    component = EXTENSION_COMPONENTS[comp_selected_idx]
-                    component["selected"] = not component.get("selected", False)
-            elif key == ord('i'):
-                # Install selected components
-                selected_components = []
-
-                # Get all selected foundation components
-                for comp in FOUNDATION_COMPONENTS:
-                    if comp.get("selected", False):
-                        selected_components.append(comp)
-
-                # Get all selected core components
-                for comp in CORE_COMPONENTS:
-                    if comp.get("selected", False):
-                        selected_components.append(comp)
-
-                # Get all selected extension components
-                for comp in EXTENSION_COMPONENTS:
-                    if comp.get("selected", False):
-                        selected_components.append(comp)
-
-                if selected_components:
-                    current_screen = "logs"
-                    log_win.clear()
-                    log_win.addstr(f"Installing {len(selected_components)} selected components...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
-
-                    # Install each selected component
-                    for component in selected_components:
-                        log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
-                        install_component(component, stdscr, log_win, hardware_info)
-                else:
-                    # If no components are selected, install the currently highlighted component
-                    if comp_selected_section == 0 and comp_selected_idx < len(FOUNDATION_COMPONENTS):
-                        component = FOUNDATION_COMPONENTS[comp_selected_idx]
-                        current_screen = "logs"
-                        log_win.clear()
-                        log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
-                        install_component(component, stdscr, log_win, hardware_info)
-                    elif comp_selected_section == 1 and comp_selected_idx < len(CORE_COMPONENTS):
-                        component = CORE_COMPONENTS[comp_selected_idx]
-                        current_screen = "logs"
-                        log_win.clear()
-                        log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
-                        install_component(component, stdscr, log_win, hardware_info)
-                    elif comp_selected_section == 2 and comp_selected_idx < len(EXTENSION_COMPONENTS):
-                        component = EXTENSION_COMPONENTS[comp_selected_idx]
-                        current_screen = "logs"
-                        log_win.clear()
-                        log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
-                        install_component(component, stdscr, log_win, hardware_info)
-
-        elif current_screen == "installation":
-            if key == curses.KEY_UP:
-                try:
-                    if inst_selected_section == 0 and len(FOUNDATION_COMPONENTS) > 0:
-                        inst_selected_idx = (inst_selected_idx - 1) % len(FOUNDATION_COMPONENTS)
-                    elif inst_selected_section == 1 and len(CORE_COMPONENTS) > 0:
-                        inst_selected_idx = (inst_selected_idx - 1) % len(CORE_COMPONENTS)
-                    elif inst_selected_section == 2 and len(EXTENSION_COMPONENTS) > 0:
-                        inst_selected_idx = (inst_selected_idx - 1) % len(EXTENSION_COMPONENTS)
-                except Exception as e:
-                    log_message(f"Error navigating installation (UP): {str(e)}")
-            elif key == curses.KEY_DOWN:
-                try:
-                    if inst_selected_section == 0:
-                        if len(FOUNDATION_COMPONENTS) > 0:
-                            if inst_selected_idx < len(FOUNDATION_COMPONENTS) - 1:
-                                inst_selected_idx += 1
-                            else:
-                                inst_selected_section = 1
-                                inst_selected_idx = 0
-                    elif inst_selected_section == 1:
-                        if len(CORE_COMPONENTS) > 0:
-                            if inst_selected_idx < len(CORE_COMPONENTS) - 1:
-                                inst_selected_idx += 1
-                            else:
-                                inst_selected_section = 2
-                                inst_selected_idx = 0
-                    elif inst_selected_section == 2:
-                        if len(EXTENSION_COMPONENTS) > 0:
-                            inst_selected_idx = (inst_selected_idx + 1) % len(EXTENSION_COMPONENTS)
-                except Exception as e:
-                    log_message(f"Error navigating installation (DOWN): {str(e)}")
-            elif key == curses.KEY_LEFT:
-                if inst_selected_section > 0:
-                    inst_selected_section -= 1
-                    inst_selected_idx = 0
-            elif key == curses.KEY_RIGHT:
-                if inst_selected_section < 2:
-                    inst_selected_section += 1
-                    inst_selected_idx = 0
-            elif key == ord(' '):  # Space to toggle selection
-                # Toggle selection of the current component
-                if inst_selected_section == 0 and inst_selected_idx < len(FOUNDATION_COMPONENTS):
-                    component = FOUNDATION_COMPONENTS[inst_selected_idx]
-                    component["selected"] = not component.get("selected", False)
-                elif inst_selected_section == 1 and inst_selected_idx < len(CORE_COMPONENTS):
-                    component = CORE_COMPONENTS[inst_selected_idx]
-                    component["selected"] = not component.get("selected", False)
-                elif inst_selected_section == 2 and inst_selected_idx < len(EXTENSION_COMPONENTS):
-                    component = EXTENSION_COMPONENTS[inst_selected_idx]
-                    component["selected"] = not component.get("selected", False)
-            elif key == ord('i'):
-                # Install selected components
-                selected_components = []
-
-                # Get all selected foundation components
-                for comp in FOUNDATION_COMPONENTS:
-                    if comp.get("selected", False) and comp["status"] != "installed":
-                        selected_components.append(comp)
-
-                # Get all selected core components
-                for comp in CORE_COMPONENTS:
-                    if comp.get("selected", False) and comp["status"] != "installed":
-                        selected_components.append(comp)
-
-                # Get all selected extension components
-                for comp in EXTENSION_COMPONENTS:
-                    if comp.get("selected", False) and comp["status"] != "installed":
-                        selected_components.append(comp)
-
-                if selected_components:
-                    current_screen = "logs"
-                    log_win.clear()
-                    log_win.addstr(f"Installing {len(selected_components)} selected components...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
-
-                    # Install each selected component
-                    for component in selected_components:
-                        log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                        log_win.refresh()
-                        install_component(component, stdscr, log_win)
-                else:
-                    # If no components are selected, show a menu of options
-                    # Create a selection menu for installation options
-                    install_menu_items = [
-                        "Install ROCm Configuration",
-                        "Install PyTorch with ROCm support",
-                        "Install ONNX Runtime with ROCm support",
-                        "Install MIGraphX",
-                        "Install Megatron-LM",
-                        "Install Flash Attention with AMD GPU support",
-                        "Install RCCL",
-                        "Install MPI",
-                        "Install All Core Components",
-                        "Verify Installation",
-                        "Repair ML Stack",
-                        "Cancel"
-                    ]
-
-                    # Draw the installation menu
-                    install_menu_y = 11  # Adjusted to be consistent with other screens
-                    install_menu_x = 10
-                    install_menu_width = curses.COLS - 20
-                    install_menu_height = len(install_menu_items) + 4
-
-                    # Create a window for the menu
-                    install_menu_win = curses.newwin(install_menu_height, install_menu_width, install_menu_y, install_menu_x)
-                    install_menu_win.box()
-
-                    # Add a title
-                    install_menu_win.attron(curses.color_pair(COLOR_TITLE))
-                    title = " ML Stack Installation Menu "
-                    install_menu_win.addstr(0, (install_menu_width - len(title)) // 2, title)
-                    install_menu_win.attroff(curses.color_pair(COLOR_TITLE))
-
-                    # Draw the menu items
-                    selected_menu_idx = 0
-
-                    # Menu loop
-                    while True:
-                        # Draw menu items
-                        for i, item in enumerate(install_menu_items):
-                            if i == selected_menu_idx:
-                                install_menu_win.attron(curses.color_pair(COLOR_HIGHLIGHT))
-                                install_menu_win.addstr(i + 2, 2, f"> {i+1}) {item}".ljust(install_menu_width - 4))
-                                install_menu_win.attroff(curses.color_pair(COLOR_HIGHLIGHT))
-                            else:
-                                install_menu_win.addstr(i + 2, 2, f"  {i+1}) {item}".ljust(install_menu_width - 4), curses.color_pair(COLOR_NORMAL))
-
-                        install_menu_win.refresh()
-
-                        # Get user input
-                        key = stdscr.getch()
-
-                        # Process input
-                        if key == curses.KEY_UP:
-                            selected_menu_idx = (selected_menu_idx - 1) % len(install_menu_items)
-                        elif key == curses.KEY_DOWN:
-                            selected_menu_idx = (selected_menu_idx + 1) % len(install_menu_items)
-                        elif key == ord('q') or key == ord('b') or key == 27:  # q, b or ESC
-                            break
-                        elif key == curses.KEY_ENTER or key == 10 or key == 13:  # Enter
-                            # Handle menu selection
-                            if selected_menu_idx == len(install_menu_items) - 1:  # Cancel
-                                break
-                            elif selected_menu_idx == 8:  # Install All Core Components
-                                current_screen = "logs"
-                                log_win.clear()
-                                log_win.addstr("Installing all core components...\n", curses.color_pair(COLOR_INFO))
-                                log_win.refresh()
-
-                                # Install core components
-                                for component in CORE_COMPONENTS:
-                                    if component["status"] != "installed":
-                                        log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                                        log_win.refresh()
-                                        install_component(component, stdscr, log_win)
-
-                                # After installation is done, return to menu
-                                current_screen = "menu"
-                                break
-                            else:
-                                # Install the selected component
-                                if selected_menu_idx < 8:  # Individual components
-                                    component = None
-                                    if selected_menu_idx == 0:  # ROCm Configuration
-                                        component = next((c for c in CORE_COMPONENTS if c["name"] == "ROCm Configuration"), None)
-                                    elif selected_menu_idx == 1:  # PyTorch
-                                        component = next((c for c in CORE_COMPONENTS if c["name"] == "PyTorch with ROCm support"), None)
-                                    elif selected_menu_idx == 2:  # ONNX Runtime
-                                        component = next((c for c in CORE_COMPONENTS if c["name"] == "ONNX Runtime with ROCm support"), None)
-                                    elif selected_menu_idx == 3:  # MIGraphX
-                                        component = next((c for c in CORE_COMPONENTS if c["name"] == "MIGraphX"), None)
-                                    elif selected_menu_idx == 4:  # Megatron-LM
-                                        component = next((c for c in EXTENSION_COMPONENTS if c["name"] == "Megatron-LM"), None)
-                                    elif selected_menu_idx == 5:  # Flash Attention
-                                        component = next((c for c in EXTENSION_COMPONENTS if c["name"] == "Flash Attention"), None)
-                                    elif selected_menu_idx == 6:  # RCCL
-                                        component = next((c for c in EXTENSION_COMPONENTS if c["name"] == "RCCL"), None)
-                                    elif selected_menu_idx == 7:  # MPI
-                                        component = next((c for c in EXTENSION_COMPONENTS if c["name"] == "MPI"), None)
-
-                                    if component:
-                                        current_screen = "logs"
-                                        log_win.clear()
-                                        log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
-                                        log_win.refresh()
-                                        install_component(component, stdscr, log_win)
-
-                                        # After installation is done, return to menu
-                                        current_screen = "menu"
-                                    break
-                                elif selected_menu_idx == 9:  # Verify Installation
-                                    current_screen = "logs"
-                                    log_win.clear()
-                                    log_win.addstr("Verifying installation...\n", curses.color_pair(COLOR_INFO))
-                                    log_win.refresh()
-
-                                    # Run verification script
-                                    verify_script = next((c for c in CORE_COMPONENTS if c["name"] == "Verify Installation"), None)
-                                    if verify_script:
-                                        install_component(verify_script, stdscr, log_win, hardware_info)
-
-                                    # After verification is done, return to menu
-                                    current_screen = "menu"
-                                    break
-                                elif selected_menu_idx == 10:  # Repair ML Stack
-                                    current_screen = "logs"
-                                    log_win.clear()
-                                    log_win.addstr("Repairing ML Stack installation...\n", curses.color_pair(COLOR_INFO))
-                                    log_win.refresh()
-
-                                    # Run repair script
-                                    repair_script = next((c for c in CORE_COMPONENTS if c["name"] == "Repair ML Stack"), None)
-                                    if repair_script:
-                                        install_component(repair_script, stdscr, log_win, hardware_info)
-
-                                    # After repair is done, return to menu
-                                    current_screen = "menu"
-                                    break
-                        # Handle number keys 1-9 for quick selection
-                        elif key >= ord('1') and key <= ord('9'):
-                            idx = key - ord('1')
-                            if idx < len(install_menu_items):
-                                selected_menu_idx = idx
-                                # Simulate Enter key press
-                                continue
-
-        elif current_screen == "logs":
-            pass  # No special key handling needed here
-
-# Original main function that takes a stdscr parameter
 def _main_curses(stdscr):
     """Main function."""
     # Create log file if it doesn't exist
@@ -4781,10 +3734,6 @@ def _main_curses(stdscr):
 
     # Set up automatic refresh with timeout in the main loop
     # This ensures the screen updates regularly without requiring user input
-
-    # Draw initial screen
-    draw_header(stdscr, "ML Stack Installation")
-    draw_footer(stdscr, "Press 'q' to quit, arrow keys to navigate, Enter to select")
 
     # Main menu
     menu_items = ["Hardware Detection", "Environment Setup", "Dependencies", "Components", "Installation", "System Benchmarking", "Logs", "Exit"]
@@ -4830,15 +3779,13 @@ def _main_curses(stdscr):
 
     # Implement double-buffering to eliminate screen flashing
     # Create a virtual screen (pad) for drawing that will be copied to the real screen only when ready
-    virtual_screen = curses.newpad(curses.LINES, curses.COLS)
+    virtual_screen = curses.newpad(2000, max(curses.COLS, 500))
 
     # Track the current screen to know when to redraw
     previous_screen = None
 
-    # Create a state dictionary to store UI state and timing information
-    # This avoids attaching attributes directly to curses window objects
-    ui_state = {
-        # Track the last state to avoid unnecessary redraws
+    # Update global UI state with fresh values for this session
+    ui_state.update({
         'last_selected_idx': -1,
         'last_env_selected_idx': -1,
         'last_dep_selected_idx': -1,
@@ -4846,13 +3793,15 @@ def _main_curses(stdscr):
         'last_comp_selected_idx': -1,
         'last_inst_selected_section': -1,
         'last_inst_selected_idx': -1,
-        # Timing information for controlled refreshes
         'last_refresh_time': 0,
-        # Flag to force redraw when needed
         'force_redraw': False,
-        # Last key press time for input responsiveness
-        'last_key_time': 0
-    }
+        'last_key_time': 0,
+        'dry_run': False
+    })
+
+    # Draw initial screen
+    draw_header(stdscr, "ML Stack Installation")
+    draw_footer(stdscr, "Press 'q' to quit, arrow keys to navigate, Enter to select", ui_state.get('dry_run', False))
 
     # Function to copy the virtual screen to the real screen
     def update_screen():
@@ -4981,7 +3930,7 @@ def _main_curses(stdscr):
                             for script in selected_env_scripts:
                                 log_win.addstr(f"\nRunning {script['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_component(script, stdscr, log_win, hardware_info)
+                                install_component(script, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                         else:
                             # If no scripts are selected, run the currently highlighted script
                             script = ENVIRONMENT_SCRIPTS[env_selected_idx]
@@ -4989,7 +3938,7 @@ def _main_curses(stdscr):
                             log_win.clear()
                             log_win.addstr(f"Running {script['name']}...\n", curses.color_pair(COLOR_INFO))
                             log_win.refresh()
-                            install_component(script, stdscr, log_win)
+                            install_component(script, stdscr, log_win, dry_run=ui_state.get('dry_run', False))
                         ui_state['force_redraw'] = True  # Force redraw
 
                 elif current_screen == "dependencies":
@@ -5096,7 +4045,7 @@ def _main_curses(stdscr):
                             for component in selected_components:
                                 log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                                 # Give a brief pause between components
@@ -5112,19 +4061,19 @@ def _main_curses(stdscr):
                                 component = FOUNDATION_COMPONENTS[comp_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif comp_selected_section == 1 and comp_selected_idx < len(CORE_COMPONENTS):
                                 component = CORE_COMPONENTS[comp_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif comp_selected_section == 2 and comp_selected_idx < len(EXTENSION_COMPONENTS):
                                 component = EXTENSION_COMPONENTS[comp_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                             # Return to components screen after installation
@@ -5231,7 +4180,7 @@ def _main_curses(stdscr):
                             for component in selected_components:
                                 log_win.addstr(f"\nInstalling {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info) # Pass hardware_info
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False)) # Pass hardware_info
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                                 # Give a brief pause between components
@@ -5263,19 +4212,19 @@ def _main_curses(stdscr):
                                 component = FOUNDATION_COMPONENTS[inst_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif inst_selected_section == 1 and inst_selected_idx < len(CORE_COMPONENTS):
                                 component = CORE_COMPONENTS[inst_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
                             elif inst_selected_section == 2 and inst_selected_idx < len(EXTENSION_COMPONENTS):
                                 component = EXTENSION_COMPONENTS[inst_selected_idx]
                                 log_win.addstr(f"Installing {component['name']}...\n", curses.color_pair(COLOR_INFO))
                                 log_win.refresh()
-                                install_result = install_component(component, stdscr, log_win, hardware_info)
+                                install_result = install_component(component, stdscr, log_win, hardware_info, dry_run=ui_state.get('dry_run', False))
                                 log_message(f"Installation of {component['name']} completed with result: {install_result}")
 
                             # Return to installation screen after installation
@@ -5342,7 +4291,7 @@ def _main_curses(stdscr):
 
                 if current_screen == "menu":
                     draw_header(virtual_screen, "ML Stack Installation")
-                    draw_footer(virtual_screen, "Press 'q' to quit, arrow keys to navigate, Enter to select")
+                    draw_footer(virtual_screen, "Press 'q' to quit, arrow keys to navigate, Enter to select", ui_state.get('dry_run', False))
                     draw_menu(virtual_screen, selected_idx, menu_items)
 
                     # Update tracking variables
@@ -5364,7 +4313,7 @@ def _main_curses(stdscr):
 
                 elif current_screen == "hardware":
                     draw_header(virtual_screen, "Hardware Detection")
-                    draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh")
+                    draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh", ui_state.get('dry_run', False))
 
                     if hardware_info is None:
                         try:
@@ -5400,7 +4349,7 @@ def _main_curses(stdscr):
 
                             virtual_screen.clear()  # Clear again to redraw with the new info
                             draw_header(virtual_screen, "Hardware Detection")
-                            draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh")
+                            draw_footer(virtual_screen, "Press 'b' to go back, 'r' to refresh", ui_state.get('dry_run', False))
                         except Exception as e:
                             log_message(f"Error updating hardware detection screen: {str(e)}")
 
@@ -5460,7 +4409,7 @@ def _main_curses(stdscr):
 
                 elif current_screen == "environment":
                     draw_header(virtual_screen, "Environment Setup")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to run selected scripts")
+                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to run selected scripts", ui_state.get('dry_run', False))
                     draw_environment_scripts(virtual_screen, ENVIRONMENT_SCRIPTS, env_selected_idx, selected_env_scripts)
 
                     # Update tracking variables
@@ -5492,7 +4441,7 @@ def _main_curses(stdscr):
 
                             virtual_screen.clear()  # Clear again to redraw with the new info
                             draw_header(virtual_screen, "Dependencies")
-                            draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to install selected")
+                            draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'i' to install selected", ui_state.get('dry_run', False))
                         except Exception as e:
                             log_message(f"Error updating dependencies screen: {str(e)}")
 
@@ -5513,7 +4462,7 @@ def _main_curses(stdscr):
 
                 elif current_screen == "components":
                     draw_header(virtual_screen, "Components")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select/deselect, 'i' to install selected, 'r' to refresh")
+                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select/deselect, 'i' to install selected, 'r' to refresh", ui_state.get('dry_run', False))
                     draw_components(virtual_screen, FOUNDATION_COMPONENTS, CORE_COMPONENTS, EXTENSION_COMPONENTS, comp_selected_section, comp_selected_idx)
 
                     # Update tracking variables
@@ -5532,7 +4481,7 @@ def _main_curses(stdscr):
 
                 elif current_screen == "installation":
                     draw_header(virtual_screen, "Installation")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select/deselect, 'i' or Enter to install selected")
+                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select/deselect, 'i' or Enter to install selected", ui_state.get('dry_run', False))
 
                     # Draw the installation screen with component selection
                     draw_installation_screen(virtual_screen, FOUNDATION_COMPONENTS, CORE_COMPONENTS, EXTENSION_COMPONENTS, inst_selected_section, inst_selected_idx)
@@ -5553,7 +4502,7 @@ def _main_curses(stdscr):
 
                 elif current_screen == "benchmarking":
                     draw_header(virtual_screen, "System Benchmarking")
-                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'r' to run benchmarks")
+                    draw_footer(virtual_screen, "Press 'b' to go back, Space to select, 'r' to run benchmarks", ui_state.get('dry_run', False))
                     draw_benchmarking_screen(virtual_screen, benchmark_selected_idx, benchmark_results, benchmark_options)
 
                     # Display logs
@@ -5606,7 +4555,7 @@ def _main_curses(stdscr):
                 try:
                     virtual_screen.clear()
                     draw_header(virtual_screen, f"Error in {current_screen} screen")
-                    draw_footer(virtual_screen, "Press 'b' to go back to main menu")
+                    draw_footer(virtual_screen, "Press 'b' to go back to main menu", ui_state.get('dry_run', False))
                     virtual_screen.addstr(11, 4, f"Error: {str(e)}", curses.color_pair(COLOR_ERROR))
                     update_screen()
                 except:

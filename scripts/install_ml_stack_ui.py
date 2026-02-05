@@ -116,14 +116,28 @@ EXTENSION_COMPONENTS = [
     {
         "name": "BITSANDBYTES",
         "description": "Efficient quantization for deep learning models",
-        "script": "install_bitsandbytes.sh",
+        "script": "install_bitsandbytes_multi.sh",
         "required": False,
         "status": "pending"
     },
     {
         "name": "vLLM",
         "description": "High-throughput inference engine for LLMs",
-        "script": "install_vllm.sh",
+        "script": "install_vllm_multi.sh",
+        "required": False,
+        "status": "pending"
+    },
+    {
+        "name": "AITER",
+        "description": "AMD AITER optimization tooling",
+        "script": "install_aiter.sh",
+        "required": False,
+        "status": "pending"
+    },
+    {
+        "name": "vLLM Studio",
+        "description": "Model lifecycle manager for vLLM/SGLang",
+        "script": "install_vllm_studio.sh",
         "required": False,
         "status": "pending"
     },
@@ -783,19 +797,19 @@ def check_ml_stack_components_original() -> Dict[str, bool]:
 
     # Define search paths for components
     search_paths = [
-        "/home/stan/pytorch",
-        "/home/stan/ml_stack/flash_attn_amd_direct",
-        "/home/stan/ml_stack/flash_attn_amd",
-        "/home/stan/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313",
-        "/home/stan/.local/lib/python3.13/site-packages",
-        "/home/stan/rocm_venv/lib/python3.13/site-packages",
-        "/home/stan/megatron/Megatron-LM",
-        "/home/stan/onnxruntime_build",
-        "/home/stan/migraphx_build",
-        "/home/stan/migraphx_package",
-        "/home/stan/vllm_build",
-        "/home/stan/vllm_py313",
-        "/home/stan/ml_stack/bitsandbytes/bitsandbytes"
+        "$HOME/pytorch",
+        "$HOME/ml_stack/flash_attn_amd_direct",
+        "$HOME/ml_stack/flash_attn_amd",
+        "$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313",
+        "$HOME/.local/lib/python3.13/site-packages",
+        "$HOME/rocm_venv/lib/python3.13/site-packages",
+        "$HOME/megatron/Megatron-LM",
+        "$HOME/onnxruntime_build",
+        "$HOME/migraphx_build",
+        "$HOME/migraphx_package",
+        "$HOME/vllm_build",
+        "$HOME/vllm_py313",
+        "$HOME/ml_stack/bitsandbytes/bitsandbytes"
     ]
 
     # Helper function to check if a component is installed by directory
@@ -812,7 +826,7 @@ def check_ml_stack_components_original() -> Dict[str, bool]:
         import torch
         components["pytorch"] = True
     except ImportError:
-        components["pytorch"] = check_component_dir("torch", search_paths) or os.path.exists("/home/stan/pytorch")
+        components["pytorch"] = check_component_dir("torch", search_paths) or os.path.exists("$HOME/pytorch")
 
     # Check PyTorch Profiler
     try:
@@ -829,14 +843,14 @@ def check_ml_stack_components_original() -> Dict[str, bool]:
         import onnxruntime
         components["onnxruntime"] = True
     except ImportError:
-        components["onnxruntime"] = check_component_dir("onnxruntime", search_paths) or os.path.exists("/home/stan/onnxruntime_build")
+        components["onnxruntime"] = check_component_dir("onnxruntime", search_paths) or os.path.exists("$HOME/onnxruntime_build")
 
     # Check MIGraphX
     try:
         import migraphx
         components["migraphx"] = True
     except ImportError:
-        components["migraphx"] = check_component_dir("migraphx", search_paths) or os.path.exists("/home/stan/migraphx_build") or os.path.exists("/home/stan/migraphx_package")
+        components["migraphx"] = check_component_dir("migraphx", search_paths) or os.path.exists("$HOME/migraphx_build") or os.path.exists("$HOME/migraphx_package")
 
     # Check Flash Attention
     try:
@@ -847,7 +861,7 @@ def check_ml_stack_components_original() -> Dict[str, bool]:
             import flash_attn
             components["flash_attention"] = True
         except ImportError:
-            components["flash_attention"] = check_component_dir("flash_attention_amd", search_paths) or os.path.exists("/home/stan/ml_stack/flash_attn_amd") or os.path.exists("/home/stan/ml_stack/flash_attn_amd_direct")
+            components["flash_attention"] = check_component_dir("flash_attention_amd", search_paths) or os.path.exists("$HOME/ml_stack/flash_attn_amd") or os.path.exists("$HOME/ml_stack/flash_attn_amd_direct")
 
     # Check RCCL
     if os.path.exists("/opt/rocm/lib/librccl.so"):
@@ -866,7 +880,7 @@ def check_ml_stack_components_original() -> Dict[str, bool]:
         import megatron
         components["megatron"] = True
     except ImportError:
-        components["megatron"] = check_component_dir("megatron", search_paths) or os.path.exists("/home/stan/megatron/Megatron-LM")
+        components["megatron"] = check_component_dir("megatron", search_paths) or os.path.exists("$HOME/megatron/Megatron-LM")
 
     # Check Triton
     try:
@@ -880,14 +894,14 @@ def check_ml_stack_components_original() -> Dict[str, bool]:
         import bitsandbytes
         components["bitsandbytes"] = True
     except ImportError:
-        components["bitsandbytes"] = check_component_dir("bitsandbytes", search_paths) or os.path.exists("/home/stan/ml_stack/bitsandbytes")
+        components["bitsandbytes"] = check_component_dir("bitsandbytes", search_paths) or os.path.exists("$HOME/ml_stack/bitsandbytes")
 
     # Check vLLM
     try:
         import vllm
         components["vllm"] = True
     except ImportError:
-        components["vllm"] = check_component_dir("vllm", search_paths) or os.path.exists("/home/stan/vllm_build") or os.path.exists("/home/stan/vllm_py313")
+        components["vllm"] = check_component_dir("vllm", search_paths) or os.path.exists("$HOME/vllm_build") or os.path.exists("$HOME/vllm_py313")
 
     # Check ROCm SMI
     try:
@@ -925,6 +939,8 @@ def verify_installation() -> Dict[str, bool]:
         "Triton": "triton",
         "BITSANDBYTES": "bitsandbytes",
         "vLLM": "vllm",
+        "AITER": "aiter",
+        "vLLM Studio": "vllm_studio",
         "ROCm SMI": "rocm_smi",
         "PyTorch Profiler": "pytorch_profiler",
         "Weights & Biases": "wandb"
@@ -933,6 +949,20 @@ def verify_installation() -> Dict[str, bool]:
     # Map component detection results to verification results
     for component in CORE_COMPONENTS + EXTENSION_COMPONENTS:
         name = component["name"]
+
+        if name == "vLLM Studio":
+            verification_results[name] = shutil.which("vllm-studio") is not None or os.path.exists(
+                os.path.join(HOME_DIR, "vllm-studio")
+            )
+            continue
+
+        if name == "AITER":
+            if "aiter" in components:
+                verification_results[name] = components["aiter"]
+            else:
+                verification_results[name] = run_command("python3 -c 'import aiter'", timeout=10)[0] == 0
+            continue
+
         if name in component_mapping and component_mapping[name] in components:
             verification_results[name] = components[component_mapping[name]]
         else:

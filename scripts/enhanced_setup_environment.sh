@@ -35,13 +35,19 @@
 
 # ASCII Art Banner
 cat << "EOF"
-  ██████╗████████╗ █████╗ ███╗   ██╗███████╗    ███╗   ███╗██╗         ███████╗████████╗ █████╗  ██████╗██╗  ██╗
- ██╔════╝╚══██╔══╝██╔══██╗████╗  ██║██╔════╝    ████╗ ████║██║         ██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
- ╚█████╗    ██║   ███████║██╔██╗ ██║███████╗    ██╔████╔██║██║         ███████╗   ██║   ███████║██║     █████╔╝
-  ╚═══██╗   ██║   ██╔══██║██║╚██╗██║╚════██║    ██║╚██╔╝██║██║         ╚════██║   ██║   ██╔══██║██║     ██╔═██╗
- ██████╔╝   ██║   ██║  ██║██║ ╚████║███████║    ██║ ╚═╝ ██║███████╗    ███████║   ██║   ██║  ██║╚██████╗██║  ██╗
- ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝    ╚═╝     ╚═╝╚══════╝    ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
-
+/**
+ *     /$$$$$$$  /$$   /$$  /$$$$$$  /$$$$$$$$ /$$     /$$        /$$$$$$  /$$$$$$$$ /$$$$$$   /$$$$$$  /$$   /$$
+ *    | $$__  $$| $$  | $$ /$$__  $$|__  $$__/|  $$   /$$/       /$$__  $$|__  $$__//$$__  $$ /$$__  $$| $$  /$$/
+ *    | $$  \ $$| $$  | $$| $$  \__/   | $$    \  $$ /$$/       | $$  \__/   | $$  | $$  \ $$| $$  \__/| $$ /$$/
+ *    | $$$$$$$/| $$  | $$|  $$$$$$    | $$     \  $$$$/        |  $$$$$$    | $$  | $$$$$$$$| $$      | $$$$$/
+ *    | $$__  $$| $$  | $$ \____  $$   | $$      \  $$/          \____  $$   | $$  | $$__  $$| $$      | $$  $$
+ *    | $$  \ $$| $$  | $$ /$$  \ $$   | $$       | $$           /$$  \ $$   | $$  | $$  | $$| $$    $$| $$\  $$
+ *    | $$  | $$|  $$$$$$/|  $$$$$$/   | $$       | $$          |  $$$$$$/   | $$  | $$  | $$|  $$$$$$/| $$ \  $$
+ *    |__/  |__/ \______/  \______/    |__/       |__/           \______/    |__/  |__/  |__/ \______/ |__/  \__/
+ *
+ *
+ *
+ */
                                 Enhanced ML Stack Environment Setup
 EOF
 echo
@@ -191,38 +197,38 @@ complete_progress_bar() {
 
 # Function definitions
 print_header() {
-    echo -e "${BLUE}=== $1 ===${RESET}"
-    echo
+    echo -e "${BLUE}=== $1 ===${RESET}" >&2
+    echo >&2
     # Flush stdout to ensure real-time output
     sleep 0.05
 }
 
 print_section() {
-    echo -e "${CYAN}>>> $1${RESET}"
+    echo -e "${CYAN}>>> $1${RESET}" >&2
     # Flush stdout to ensure real-time output
     sleep 0.05
 }
 
 print_step() {
-    echo -e "${YELLOW}>> $1${RESET}"
+    echo -e "${YELLOW}>> $1${RESET}" >&2
     # Flush stdout to ensure real-time output
     sleep 0.05
 }
 
 print_success() {
-    echo -e "${GREEN}✓ $1${RESET}"
+    echo -e "${GREEN}✓ $1${RESET}" >&2
     # Flush stdout to ensure real-time output
     sleep 0.05
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠ $1${RESET}"
+    echo -e "${YELLOW}⚠ $1${RESET}" >&2
     # Flush stdout to ensure real-time output
     sleep 0.05
 }
 
 print_error() {
-    echo -e "${RED}✗ $1${RESET}"
+    echo -e "${RED}✗ $1${RESET}" >&2
     # Flush stdout to ensure real-time output
     sleep 0.05
 }
@@ -252,9 +258,9 @@ detect_package_manager() {
 # Function to update package lists based on detected package manager
 update_package_lists() {
     local pkg_manager=$(detect_package_manager)
-    
+
     print_step "Using $pkg_manager package manager"
-    
+
     case $pkg_manager in
         "dnf")
             if [ -n "$NONINTERACTIVE" ]; then
@@ -289,7 +295,7 @@ update_package_lists() {
 install_system_package() {
     local package="$1"
     local pkg_manager=$(detect_package_manager)
-    
+
     # Map package names between different distributions
     local mapped_package="$package"
     case $pkg_manager in
@@ -317,7 +323,7 @@ install_system_package() {
             esac
             ;;
     esac
-    
+
     case $pkg_manager in
         "dnf")
             if [ -n "$NONINTERACTIVE" ]; then
@@ -353,7 +359,7 @@ install_system_package() {
 package_installed() {
     local package="$1"
     local pkg_manager=$(detect_package_manager)
-    
+
     case $pkg_manager in
         "dnf"|"yum")
             rpm -q "$package" >/dev/null 2>&1
@@ -379,7 +385,7 @@ install_python_package() {
     local package="$1"
     shift
     local extra_args="$@"
-    
+
     if command_exists uv; then
         print_step "Installing $package with uv..."
         uv pip install $extra_args "$package"
@@ -419,7 +425,13 @@ detect_amd_gpus() {
         print_step "ROCm version: $(rocminfo | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)"
 
         # Get GPU count from ROCm
-        gpu_count=$(rocminfo | grep "GPU ID" | wc -l)
+        gpu_count=$(rocminfo | grep -c "Device Type:.*GPU" || true)
+        if [ -z "$gpu_count" ] || [ "$gpu_count" -lt 1 ]; then
+            gpu_count=$(lspci | grep -i 'amd\|radeon\|advanced micro devices' | grep -i 'vga\|3d\|display' | wc -l)
+        fi
+        if [ -z "$gpu_count" ] || [ "$gpu_count" -lt 1 ]; then
+            gpu_count=1
+        fi
         print_step "ROCm detected $gpu_count GPU(s)"
 
         # List AMD GPUs from ROCm
@@ -549,7 +561,7 @@ detect_rocm() {
 
         print_step "Adding ROCm to PATH and LD_LIBRARY_PATH..."
         export PATH=$PATH:$ROCM_PATH/bin:$ROCM_PATH/hip/bin
-        export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$ROCM_PATH/lib:$ROCM_PATH/hip/lib
+        export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$ROCM_PATH/lib:$ROCM_PATH/hip/lib
 
         print_warning "Please install ROCm properly for full functionality"
     fi
@@ -594,51 +606,62 @@ configure_environment_variables() {
         if command_exists rocminfo; then
             # Try to run rocminfo with error handling
             print_step "Running rocminfo to detect GPUs..."
-            rocminfo_output=$(rocminfo 2>&1)
+            # Suppress stderr to avoid "Tool lib failed to load" noise, but capture stdout
+            rocminfo_output=$(rocminfo 2>/dev/null || true)
 
             # Check if rocminfo ran successfully
             if echo "$rocminfo_output" | grep -q "GPU ID"; then
                 print_success "rocminfo executed successfully"
 
                 # Get list of GPUs with their types
-                gpu_info=$(echo "$rocminfo_output" | grep -A 10 "GPU ID" | grep -E "GPU ID|Marketing Name|Device Type")
+                # Use a more reliable grep to get the blocks
 
                 # Initialize arrays for discrete GPU indices
                 declare -a discrete_gpu_indices
                 current_gpu_id=""
-                is_discrete=false
 
-                # Parse rocminfo output to identify discrete GPUs
+                # Use a flag to track if we're in an iGPU block
+                is_igpu=false
+
+                # Logic: Read rocminfo and look for "GPU ID", "Marketing Name", and "Device Type"
                 while IFS= read -r line; do
-                    if [[ $line == *"GPU ID"* ]]; then
-                        # Extract GPU ID
+                    if [[ $line == *"GPU ID:"* ]]; then
                         current_gpu_id=$(echo "$line" | grep -o '[0-9]\+')
-                        is_discrete=false
-                    elif [[ $line == *"Marketing Name"* ]]; then
-                        # Check if this is an integrated GPU (contains "Raphael" or other iGPU indicators)
+                        is_igpu=false
+                    elif [[ $line == *"Marketing Name:"* ]]; then
                         gpu_name=$(echo "$line" | awk -F: '{print $2}' | xargs)
+                        # Identify iGPUs
                         if [[ $gpu_name == *"Raphael"* || $gpu_name == *"Integrated"* || $gpu_name == *"iGPU"* ||
                               $gpu_name == *"AMD Ryzen"* || $gpu_name == *"AMD Radeon Graphics"* ]]; then
                             print_warning "Detected integrated GPU at index $current_gpu_id: $gpu_name"
-                            is_discrete=false
+                            is_igpu=true
                         else
                             print_success "Detected discrete GPU at index $current_gpu_id: $gpu_name"
-                            is_discrete=true
+                            is_igpu=false
                         fi
-                    elif [[ $line == *"Device Type"* && $is_discrete == true ]]; then
-                        # If we've confirmed this is a discrete GPU, add it to our list
-                        discrete_gpu_indices+=($current_gpu_id)
+                    elif [[ $line == *"Device Type:"* ]]; then
+                        device_type=$(echo "$line" | awk -F: '{print $2}' | xargs)
+                        # Double check for CPU/iGPU devices
+                        if [[ $device_type == *"CPU"* ]]; then
+                            is_igpu=true
+                        fi
+
+                        # If it's not an iGPU, add it to our list
+                        if [[ $is_igpu == false ]]; then
+                            discrete_gpu_indices+=($current_gpu_id)
+                        fi
                     fi
-                done <<< "$gpu_info"
+                done < <(rocminfo 2>/dev/null | grep -E "GPU ID:|Marketing Name:|Device Type:")
 
                 # Create comma-separated list of discrete GPU indices
                 if [ ${#discrete_gpu_indices[@]} -gt 0 ]; then
-                    discrete_gpu_list=$(IFS=,; echo "${discrete_gpu_indices[*]}")
+                    # Uniq the list in case of redundant output
+                    discrete_gpu_list=$(echo "${discrete_gpu_indices[@]}" | tr ' ' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
                     print_success "Using discrete GPUs: $discrete_gpu_list"
                 else
                     # Fallback to all GPUs if no discrete GPUs were identified
-                    print_warning "No discrete GPUs identified, using all available GPUs"
-                    discrete_gpu_list=$(seq -s, 0 $((GPU_COUNT-1)))
+                    print_warning "No discrete GPUs identified via rocminfo, attempting lspci fallback"
+                    discrete_gpu_list=$(lspci | grep -i 'amd\|radeon' | grep -i 'vga\|3d' | wc -l | xargs -I{} seq -s, 0 $(({}-1)))
                 fi
             else
                 # rocminfo failed, check for specific error messages
@@ -749,7 +772,7 @@ configure_environment_variables() {
     print_step "Setting performance-related variables..."
 
     # Fix for "Tool lib '1' failed to load" issue
-    export LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib:$LD_LIBRARY_PATH
+    export LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib:${LD_LIBRARY_PATH:-}
 
     # Set HSA_OVERRIDE_GFX_VERSION for compatibility
     if [ -z "$HSA_OVERRIDE_GFX_VERSION" ]; then
@@ -766,8 +789,10 @@ configure_environment_variables() {
     if [ -z "$GPU_MAX_ALLOC_PERCENT" ]; then
         export GPU_MAX_ALLOC_PERCENT=100
     fi
-    if [ -z "$HSA_TOOLS_LIB" ]; then
-        export HSA_TOOLS_LIB=1
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    else
+        unset HSA_TOOLS_LIB
     fi
 
     # Set MIOpen variables
@@ -819,9 +844,9 @@ configure_environment_variables() {
     fi
 
     # Add ONNX Runtime to Python path if it exists and not already in PYTHONPATH
-    if [ -d "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release" ]; then
-        if ! echo "$PYTHONPATH" | grep -q "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release"; then
-            export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
+    if [ -d "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release" ]; then
+        if ! echo "$PYTHONPATH" | grep -q "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release"; then
+            export PYTHONPATH=$HOME/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
             print_step "Added ONNX Runtime to PYTHONPATH"
         else
             print_step "ONNX Runtime already in PYTHONPATH"
@@ -848,55 +873,65 @@ create_environment_file() {
 
 # GPU Selection
 # Only set if not already set
-if [ -z "\$HIP_VISIBLE_DEVICES" ]; then export HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES; fi
-if [ -z "\$CUDA_VISIBLE_DEVICES" ]; then export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES; fi
-if [ -z "\$PYTORCH_ROCM_DEVICE" ]; then export PYTORCH_ROCM_DEVICE=$PYTORCH_ROCM_DEVICE; fi
+if [ -z "\${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}; fi
+if [ -z "\${CUDA_VISIBLE_DEVICES:-}" ]; then export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}; fi
+if [ -z "\${PYTORCH_ROCM_DEVICE:-}" ]; then export PYTORCH_ROCM_DEVICE=${PYTORCH_ROCM_DEVICE:-0}; fi
 
 # ROCm Settings
 # Only set if not already set
-if [ -z "\$ROCM_HOME" ]; then export ROCM_HOME=$ROCM_HOME; fi
-if [ -z "\$CUDA_HOME" ]; then export CUDA_HOME=$CUDA_HOME; fi
-export PATH=\$PATH:$ROCM_PATH/bin:$ROCM_PATH/hip/bin
-export LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib:\$LD_LIBRARY_PATH
+if [ -z "\${ROCM_HOME:-}" ]; then export ROCM_HOME=${ROCM_HOME:-/opt/rocm}; fi
+if [ -z "\${CUDA_HOME:-}" ]; then export CUDA_HOME=${CUDA_HOME:-/opt/rocm}; fi
+if [ -z "\${ROCM_VERSION:-}" ]; then export ROCM_VERSION=${ROCM_VERSION:-7.2.0}; fi
+if [ -z "\${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=${ROCM_CHANNEL:-latest}; fi
+if [ -z "\${GPU_ARCH:-}" ]; then export GPU_ARCH=${GPU_ARCH:-gfx1100}; fi
 
-# Fix for "Tool lib '1' failed to load" issue
-export LD_LIBRARY_PATH=$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/opencl/lib:\$LD_LIBRARY_PATH
+# Path Settings - Hardcoded safe paths to prevent "command not found" errors
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:${ROCM_PATH:-/opt/rocm}/bin:${ROCM_PATH:-/opt/rocm}/hip/bin:\$PATH"
+export LD_LIBRARY_PATH="${ROCM_PATH:-/opt/rocm}/lib:${ROCM_PATH:-/opt/rocm}/hip/lib:${ROCM_PATH:-/opt/rocm}/opencl/lib:\${LD_LIBRARY_PATH:-}"
 
 # Performance Settings
 # Only set if not already set
-if [ -z "\$HSA_OVERRIDE_GFX_VERSION" ]; then export HSA_OVERRIDE_GFX_VERSION=11.0.0; fi
-if [ -z "\$HSA_ENABLE_SDMA" ]; then export HSA_ENABLE_SDMA=0; fi
-if [ -z "\$GPU_MAX_HEAP_SIZE" ]; then export GPU_MAX_HEAP_SIZE=100; fi
-if [ -z "\$GPU_MAX_ALLOC_PERCENT" ]; then export GPU_MAX_ALLOC_PERCENT=100; fi
-if [ -z "\$HSA_TOOLS_LIB" ]; then export HSA_TOOLS_LIB=1; fi
+if [ -z "\${HSA_OVERRIDE_GFX_VERSION:-}" ]; then export HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.0.0}; fi
+if [ -z "\${HSA_ENABLE_SDMA:-}" ]; then export HSA_ENABLE_SDMA=${HSA_ENABLE_SDMA:-0}; fi
+if [ -z "\${GPU_MAX_HEAP_SIZE:-}" ]; then export GPU_MAX_HEAP_SIZE=${GPU_MAX_HEAP_SIZE:-100}; fi
+if [ -z "\${GPU_MAX_ALLOC_PERCENT:-}" ]; then export GPU_MAX_ALLOC_PERCENT=${GPU_MAX_ALLOC_PERCENT:-100}; fi
+# HSA_TOOLS_LIB must be a library path or 0, not 1
+if [ -z "\${HSA_TOOLS_LIB:-}" ]; then
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    else
+        export HSA_TOOLS_LIB=0
+    fi
+fi
 
 # MIOpen Settings
 # Only set if not already set
-if [ -z "\$MIOPEN_DEBUG_CONV_IMPLICIT_GEMM" ]; then export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1; fi
-if [ -z "\$MIOPEN_FIND_MODE" ]; then export MIOPEN_FIND_MODE=3; fi
-if [ -z "\$MIOPEN_FIND_ENFORCE" ]; then export MIOPEN_FIND_ENFORCE=3; fi
+if [ -z "\${MIOPEN_DEBUG_CONV_IMPLICIT_GEMM:-}" ]; then export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=${MIOPEN_DEBUG_CONV_IMPLICIT_GEMM:-1}; fi
+if [ -z "\${MIOPEN_FIND_MODE:-}" ]; then export MIOPEN_FIND_MODE=${MIOPEN_FIND_MODE:-3}; fi
+if [ -z "\${MIOPEN_FIND_ENFORCE:-}" ]; then export MIOPEN_FIND_ENFORCE=${MIOPEN_FIND_ENFORCE:-3}; fi
 
 # PyTorch Settings
 # Only set if not already set
-if [ -z "\$TORCH_CUDA_ARCH_LIST" ]; then export TORCH_CUDA_ARCH_LIST="7.0;8.0;9.0"; fi
-if [ -z "\$PYTORCH_CUDA_ALLOC_CONF" ]; then export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"; fi
-if [ -z "\$PYTORCH_HIP_ALLOC_CONF" ]; then export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"; fi
+if [ -z "\${TORCH_CUDA_ARCH_LIST:-}" ]; then export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.0;8.0;9.0}"; fi
+# Use PYTORCH_ALLOC_CONF instead of deprecated PYTORCH_CUDA_ALLOC_CONF
+if [ -z "\${PYTORCH_ALLOC_CONF:-}" ]; then export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-max_split_size_mb:512}"; fi
+if [ -z "\${PYTORCH_HIP_ALLOC_CONF:-}" ]; then export PYTORCH_HIP_ALLOC_CONF=${PYTORCH_HIP_ALLOC_CONF:-"max_split_size_mb:512"}; fi
 
 # MPI Settings
 # Only set if not already set
-if [ -z "\$OMPI_MCA_opal_cuda_support" ]; then export OMPI_MCA_opal_cuda_support=true; fi
-if [ -z "\$OMPI_MCA_pml_ucx_opal_cuda_support" ]; then export OMPI_MCA_pml_ucx_opal_cuda_support=true; fi
-if [ -z "\$OMPI_MCA_btl_openib_allow_ib" ]; then export OMPI_MCA_btl_openib_allow_ib=true; fi
-if [ -z "\$OMPI_MCA_btl_openib_warn_no_device_params_found" ]; then export OMPI_MCA_btl_openib_warn_no_device_params_found=0; fi
-if [ -z "\$OMPI_MCA_coll_hcoll_enable" ]; then export OMPI_MCA_coll_hcoll_enable=0; fi
-if [ -z "\$OMPI_MCA_pml" ]; then export OMPI_MCA_pml=ucx; fi
-if [ -z "\$OMPI_MCA_osc" ]; then export OMPI_MCA_osc=ucx; fi
-if [ -z "\$OMPI_MCA_btl" ]; then export OMPI_MCA_btl=^openib,uct; fi
+if [ -z "\${OMPI_MCA_opal_cuda_support:-}" ]; then export OMPI_MCA_opal_cuda_support=${OMPI_MCA_opal_cuda_support:-true}; fi
+if [ -z "\${OMPI_MCA_pml_ucx_opal_cuda_support:-}" ]; then export OMPI_MCA_pml_ucx_opal_cuda_support=${OMPI_MCA_pml_ucx_opal_cuda_support:-true}; fi
+if [ -z "\${OMPI_MCA_btl_openib_allow_ib:-}" ]; then export OMPI_MCA_btl_openib_allow_ib=${OMPI_MCA_btl_openib_allow_ib:-true}; fi
+if [ -z "\${OMPI_MCA_btl_openib_warn_no_device_params_found:-}" ]; then export OMPI_MCA_btl_openib_warn_no_device_params_found=${OMPI_MCA_btl_openib_warn_no_device_params_found:-0}; fi
+if [ -z "\${OMPI_MCA_coll_hcoll_enable:-}" ]; then export OMPI_MCA_coll_hcoll_enable=${OMPI_MCA_coll_hcoll_enable:-0}; fi
+if [ -z "\${OMPI_MCA_pml:-}" ]; then export OMPI_MCA_pml=${OMPI_MCA_pml:-ucx}; fi
+if [ -z "\${OMPI_MCA_osc:-}" ]; then export OMPI_MCA_osc=${OMPI_MCA_osc:-ucx}; fi
+if [ -z "\${OMPI_MCA_btl:-}" ]; then export OMPI_MCA_btl=${OMPI_MCA_btl:-^openib,uct}; fi
 
 # ONNX Runtime Settings
 # Only add if not already in PYTHONPATH
-if ! echo "\$PYTHONPATH" | grep -q "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release"; then
-  export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:\$PYTHONPATH
+if ! echo "\${PYTHONPATH:-}" | grep -q "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release"; then
+  export PYTHONPATH=$HOME/onnxruntime_build/onnxruntime/build/Linux/Release:\${PYTHONPATH:-}
 fi
 EOF
 
@@ -1045,7 +1080,7 @@ check_system_dependencies() {
             case $pkg_manager in
                 "dnf"|"yum")
                     case $package in
-                        "build-essential") 
+                        "build-essential")
                             # Check for development-tools group by checking for key components
                             if command_exists gcc && command_exists make; then
                                 print_success "Development tools (build-essential equivalent) are installed"
@@ -1075,7 +1110,7 @@ check_system_dependencies() {
                     esac
                     ;;
             esac
-            
+
             if package_installed "$mapped_package"; then
                 print_success "Verified $package ($mapped_package) is installed"
             else

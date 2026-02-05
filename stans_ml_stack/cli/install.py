@@ -156,9 +156,23 @@ EXTENSION_COMPONENTS = [
     {
         "name": "vLLM",
         "description": "High-throughput inference engine for LLMs (INSTALLED)",
-        "script": "install_vllm.sh",
+        "script": "install_vllm_multi.sh",
         "required": False,
         "status": "installed"
+    },
+    {
+        "name": "AITER",
+        "description": "AMD AITER optimization tooling",
+        "script": "install_aiter.sh",
+        "required": False,
+        "status": "pending"
+    },
+    {
+        "name": "vLLM Studio",
+        "description": "Model lifecycle manager for vLLM/SGLang",
+        "script": "install_vllm_studio.sh",
+        "required": False,
+        "status": "pending"
     },
     {
         "name": "Flash Attention CK",
@@ -170,14 +184,14 @@ EXTENSION_COMPONENTS = [
     {
         "name": "ONNX Runtime",
         "description": "Cross-platform inference accelerator (BUILDS TAKE HOURS)",
-        "script": "build_onnxruntime.sh",
+        "script": "build_onnxruntime_multi.sh",
         "required": False,
         "status": "pending"
     },
     {
         "name": "BITSANDBYTES",
         "description": "Efficient quantization for deep learning models",
-        "script": "install_bitsandbytes.sh",
+        "script": "install_bitsandbytes_multi.sh",
         "required": False,
         "status": "pending"
     },
@@ -191,7 +205,7 @@ EXTENSION_COMPONENTS = [
     {
         "name": "MIGraphX Python Wrapper",
         "description": "Python wrapper for MIGraphX library",
-        "script": "install_migraphx_python_wrapper.sh",
+        "script": "install_migraphx_multi.sh",
         "required": False,
         "status": "pending"
     },
@@ -899,26 +913,26 @@ def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info:
     # Adjust estimated duration based on component complexity
     component_specific_params = {
         "ML Stack Core": {
-            "estimated_duration": 180,  # Longer duration for complex component
-            "validation_duration": 90,
-            "testing_duration": 45,
+            "estimated_duration": 60,   # Reduced from 180
+            "validation_duration": 15,  # Reduced from 90
+            "testing_duration": 10,     # Reduced from 45
             "force_validation": True,   # Force validation phase for this component
             "aggressive_termination": True  # More aggressive process termination
         },
         "MIGraphX Python Wrapper": {
-            "estimated_duration": 180,
-            "validation_duration": 90,
-            "testing_duration": 45,
-            "force_validation": True,
+            "estimated_duration": 60,   # Reduced from 180
+            "validation_duration": 15,  # Reduced from 90
+            "testing_duration": 10,     # Reduced from 45
+            "force_validation": True,   # Force validation phase for this component
             "aggressive_termination": True
         }
     }
 
     # Get component-specific parameters or use defaults
     component_params = component_specific_params.get(name, {
-        "estimated_duration": 120,
-        "validation_duration": 60,
-        "testing_duration": 30,
+        "estimated_duration": 60,
+        "validation_duration": 15,
+        "testing_duration": 10,
         "force_validation": False,
         "aggressive_termination": False
     })
@@ -939,12 +953,10 @@ def install_component(component: Dict[str, Any], stdscr, log_win, hardware_info:
     component["status"] = "installing"
     log_win.addstr(f"Installing {name}...\n", curses.color_pair(COLOR_INFO))
 
-    # Add a progress bar
+    # Progress is rendered in the dedicated status window to avoid log clutter
     progress_width = 50
     progress_y, _ = log_win.getyx()
-    log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-    log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-    log_win.addstr("] 0%\n", curses.color_pair(COLOR_INFO))
+    log_win.addstr("Progress updates will appear in the status window below.\n", curses.color_pair(COLOR_INFO))
     log_win.refresh()
 
     # Special handling for PyTorch with ROCm
@@ -1497,27 +1509,25 @@ exit $exit_code
     validation_phase_started = False
     validation_progress_y = 0
     validation_start_time = 0
-    validation_estimated_duration = 60
+    validation_estimated_duration = 15  # Reduced from 60
     testing_phase_started = False
     testing_progress_y = 0
     testing_start_time = 0
-    testing_estimated_duration = 30
+    testing_estimated_duration = 10  # Reduced from 30
 
     # Progress bar state tracking
     last_progress_percent = 0
     last_validation_progress = 0
     last_testing_progress = 0
 
-    # Draw initial progress bar label
-    log_win.addstr(progress_y, 0, "Progress: [", curses.color_pair(COLOR_INFO))
-
     # Store the start time for progress calculation
     start_time = time.time()
-    estimated_duration = component_params["estimated_duration"]  # Use component-specific duration
-    validation_estimated_duration = component_params["validation_duration"]
-    testing_estimated_duration = component_params["testing_duration"]
-    force_validation = component_params["force_validation"]
-    aggressive_termination = component_params["aggressive_termination"]
+    # Use component-specific durations with sensible upper limits for simulated phases
+    estimated_duration = component_params.get("estimated_duration", 120)
+    validation_estimated_duration = min(20, component_params.get("validation_duration", 15))
+    testing_estimated_duration = min(15, component_params.get("testing_duration", 10))
+    force_validation = component_params.get("force_validation", False)
+    aggressive_termination = component_params.get("aggressive_termination", False)
 
     # Log component-specific settings
     log_message(f"Using estimated_duration={estimated_duration}, validation_duration={validation_estimated_duration}, testing_duration={testing_estimated_duration} for {name}", "INFO")
@@ -1530,6 +1540,44 @@ exit $exit_code
     # Set stdout to non-blocking mode
     fl = fcntl.fcntl(process.stdout, fcntl.F_GETFL)
     fcntl.fcntl(process.stdout, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+    # Create a dedicated window for progress bars at the bottom of the screen
+    # Position it above the footer (LINES-1) and below the log window
+    progress_win_height = 4
+    progress_win_y = curses.LINES - 6
+    progress_win_x = 4
+    progress_win_width = curses.COLS - 8
+    
+    try:
+        progress_win = curses.newwin(progress_win_height, progress_win_width, progress_win_y, progress_win_x)
+        # Add a border to the progress window
+        progress_win.attron(curses.color_pair(COLOR_BORDER))
+        progress_win.box()
+        progress_win.addstr(0, 2, f" {name} Status ", curses.color_pair(COLOR_TITLE))
+        progress_win.attroff(curses.color_pair(COLOR_BORDER))
+        progress_win.refresh()
+    except:
+        # Fallback if window creation fails
+        progress_win = None
+
+    # Create a dedicated window for progress bars at the bottom of the screen
+    # Position it above the footer (LINES-1) and below the log window
+    progress_win_height = 4
+    progress_win_y = curses.LINES - 6
+    progress_win_x = 4
+    progress_win_width = curses.COLS - 8
+    
+    try:
+        progress_win = curses.newwin(progress_win_height, progress_win_width, progress_win_y, progress_win_x)
+        # Add a border to the progress window
+        progress_win.attron(curses.color_pair(COLOR_BORDER))
+        progress_win.box()
+        progress_win.addstr(0, 2, f" {name} Status ", curses.color_pair(COLOR_TITLE))
+        progress_win.attroff(curses.color_pair(COLOR_BORDER))
+        progress_win.refresh()
+    except:
+        # Fallback if window creation fails
+        progress_win = None
 
     while process.poll() is None:
         # Check if there's data to read (with a short timeout)
@@ -1573,129 +1621,91 @@ exit $exit_code
                 # No more data to read without blocking
                 pass
 
-        # Update progress bar (do this regardless of new output)
-        elapsed_time = time.time() - start_time
-        progress_percent = min(1.0, elapsed_time / estimated_duration)
-        filled_width = int(progress_width * progress_percent)
+        # Update progress bars in the dedicated window
+        try:
+            if progress_win:
+                # Calculate progress for each potential phase
+                elapsed_time = time.time() - start_time
+                progress_percent = min(1.0, elapsed_time / estimated_duration)
+                
+                # Check for phase transitions
+                if (progress_percent >= 0.99 or force_validation) and not validation_phase_started:
+                    validation_phase_started = True
+                    current_phase = "validation"
+                    validation_start_time = time.time()
+                    log_message(f"Starting validation phase for {name}")
+                
+                # Update current phase logic
+                if validation_phase_started:
+                    validation_elapsed_time = time.time() - validation_start_time
+                    validation_progress = min(1.0, validation_elapsed_time / validation_estimated_duration)
+                    
+                    if validation_progress >= 0.99 and current_phase == "validation":
+                        current_phase = "testing"
+                        testing_phase_started = True
+                        testing_start_time = time.time()
+                        log_message(f"Starting testing phase for {name}")
+                    
+                    if current_phase == "testing":
+                        testing_elapsed_time = time.time() - testing_start_time
+                        testing_progress = min(1.0, testing_elapsed_time / testing_estimated_duration)
+                        
+                        # If testing is complete and aggressive_termination is on, we can finish
+                        if testing_progress >= 0.99 and aggressive_termination:
+                            break
+                
+                # Draw progress bars in progress_win
+                # Clear content lines (1 and 2)
+                progress_win.move(1, 1)
+                progress_win.clrtoeol()
+                progress_win.addstr(1, 1, "│") # Restore border if clrtoeol cleared it
+                progress_win.move(1, progress_win_width - 1)
+                progress_win.addstr("│")
+                
+                progress_win.move(2, 1)
+                progress_win.clrtoeol()
+                progress_win.addstr(2, 1, "│")
+                progress_win.move(2, progress_win_width - 1)
+                progress_win.addstr("│")
+
+                # Main Installation Progress
+                prog_label = "Installing: "
+                prog_width = progress_win_width - len(prog_label) - 15
+                filled = int(prog_width * progress_percent)
+                
+                progress_win.addstr(1, 2, prog_label, curses.color_pair(COLOR_INFO))
+                progress_win.addstr(1, 2 + len(prog_label), "█" * filled, curses.color_pair(COLOR_SUCCESS))
+                progress_win.addstr(1, 2 + len(prog_label) + filled, " " * (prog_width - filled), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                progress_win.addstr(1, 2 + len(prog_label) + prog_width + 1, f"{int(progress_percent * 100)}%", curses.color_pair(COLOR_SUCCESS))
+                
+                # Second bar for Validation/Testing
+                if current_phase == "validation":
+                    val_label = "Validating: "
+                    val_filled = int(prog_width * validation_progress)
+                    progress_win.addstr(2, 2, val_label, curses.color_pair(COLOR_INFO))
+                    progress_win.addstr(2, 2 + len(val_label), "█" * val_filled, curses.color_pair(COLOR_WARNING))
+                    progress_win.addstr(2, 2 + len(val_label) + val_filled, " " * (prog_width - val_filled), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                    progress_win.addstr(2, 2 + len(val_label) + prog_width + 1, f"{progress_chars[progress_position]} {int(validation_progress * 100)}%", curses.color_pair(COLOR_WARNING))
+                elif current_phase == "testing":
+                    test_label = "Testing:    "
+                    test_filled = int(prog_width * testing_progress)
+                    progress_win.addstr(2, 2, test_label, curses.color_pair(COLOR_INFO))
+                    progress_win.addstr(2, 2 + len(test_label), "█" * test_filled, curses.color_pair(COLOR_SUCCESS))
+                    progress_win.addstr(2, 2 + len(test_label) + test_filled, " " * (prog_width - test_filled), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
+                    progress_win.addstr(2, 2 + len(test_label) + prog_width + 1, f"{progress_chars[progress_position]} {int(testing_progress * 100)}%", curses.color_pair(COLOR_SUCCESS))
+                else:
+                    progress_win.addstr(2, 2, "Waiting for installation to complete...", curses.color_pair(COLOR_NORMAL))
+
+                progress_win.refresh()
+                progress_position = (progress_position + 1) % len(progress_chars)
+
+        except Exception as e:
+            log_message(f"Error updating progress window: {str(e)}", "WARNING")
 
         # Track current phase and update progress bars
         try:
-            # Save cursor position
-            current_y, current_x = log_win.getyx()
-
-            # Check if we've reached 100% or if we should force validation phase
-            if (progress_percent >= 0.99 or force_validation) and not validation_phase_started:
-                # Log the transition to validation phase
-                if force_validation:
-                    log_message(f"Forcing validation phase for component: {name}", "INFO")
-                else:
-                    log_message(f"Transitioning to validation phase for component: {name} at progress {int(progress_percent * 100)}%", "INFO")
-
-                # Mark that we've started the validation phase
-                validation_phase_started = True
-                current_phase = "validation"
-
-                # Clear the entire progress bar line to prevent overlapping
-                log_win.move(progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw a completed progress bar
-                log_win.move(progress_y, 0)
-                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-
-                # Add a message about post-installation validation with clear separation
-                log_win.addstr("\n\n", curses.color_pair(COLOR_INFO))
-                log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                log_win.addstr(f"Running post-installation validation for {name}...\n", curses.color_pair(COLOR_INFO))
-                log_win.addstr("=" * 70 + "\n\n", curses.color_pair(COLOR_TITLE))
-
-                # Create a new progress bar for validation phase
-                validation_progress_y = log_win.getyx()[0]
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr(" " * progress_width, curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"0%", curses.color_pair(COLOR_SUCCESS))
-
-                # Force refresh to show the validation message immediately
-                log_win.refresh()
-
-                # Reset timer for validation phase - use component-specific duration
-                validation_start_time = time.time()
-
-                # For problematic components, check if we need to force completion
-                if name in ["ML Stack Core", "MIGraphX Python Wrapper"]:
-                    log_message(f"Using special handling for component: {name} in validation phase", "INFO")
-                    # Add additional logging for debugging
-                    log_win.addstr(f"\nNote: Using special handling for {name}...\n", curses.color_pair(COLOR_INFO))
-                    log_win.refresh()
-
-            # Update the appropriate progress bar based on current phase
-            if validation_phase_started:
-                # Update validation progress bar
-                validation_elapsed_time = time.time() - validation_start_time
-                validation_progress = min(1.0, validation_elapsed_time / validation_estimated_duration)
-                validation_filled_width = int(progress_width * validation_progress)
-
-                # Clear the validation progress bar line to prevent overlapping
-                log_win.move(validation_progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw the validation progress bar
-                log_win.move(validation_progress_y, 0)
-                log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * validation_filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
-                if validation_filled_width < progress_width:
-                    log_win.addstr(" " * (progress_width - validation_filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-
-                # Add a spinner at the end of validation bar
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"{progress_chars[progress_position]} {int(validation_progress * 100)}%",
-                              curses.color_pair(COLOR_SUCCESS))
-
-                # Check if validation is complete (100%)
-                if validation_progress >= 0.99 and current_phase == "validation":
-                    # Mark that we've started the testing phase
-                    current_phase = "testing"
-
-                    # Complete the validation progress bar
-                    log_win.move(validation_progress_y, 0)
-                    log_win.clrtoeol()
-                    log_win.addstr("Validation: [", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-                    log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                    log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-
-                    # Add a message about testing phase
-                    log_win.addstr("\n\n", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                    log_win.addstr("Running final tests...\n", curses.color_pair(COLOR_INFO))
-                    log_win.addstr("=" * 70 + "\n", curses.color_pair(COLOR_TITLE))
-                    log_win.refresh()
-            else:
-                # Clear the progress bar line to prevent overlapping
-                log_win.move(progress_y, 0)
-                log_win.clrtoeol()
-
-                # Draw the installation progress bar
-                log_win.move(progress_y, 0)
-                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-                log_win.addstr("█" * filled_width, curses.color_pair(COLOR_INFO) | curses.A_REVERSE)
-                if filled_width < progress_width:
-                    log_win.addstr(" " * (progress_width - filled_width), curses.color_pair(COLOR_BORDER) | curses.A_REVERSE)
-
-                # Add a spinner at the end
-                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-                log_win.addstr(f"{progress_chars[progress_position]} {int(progress_percent * 100)}%",
-                              curses.color_pair(COLOR_SUCCESS))
-
-            # Update spinner position
-            progress_position = (progress_position + 1) % len(progress_chars)
-
-            # Restore cursor position
-            log_win.move(current_y, current_x)
+            # We already handled progress bars above, so we skip the old overlapping logic
+            pass
 
             # Force refresh more frequently to ensure smooth updates
             if current_time - last_refresh_time >= refresh_interval:
@@ -1997,16 +2007,17 @@ exit $exit_code
                 log_win.refresh()
         else:
             # If validation phase wasn't started (rare case), ensure main progress bar is complete
-            log_win.move(progress_y, 0)
-            log_win.clrtoeol()
+            if progress_win is None:
+                log_win.move(progress_y, 0)
+                log_win.clrtoeol()
 
-            # Draw a completed progress bar
-            log_win.move(progress_y, 0)
-            log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
-            log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
-            log_win.addstr("] ", curses.color_pair(COLOR_INFO))
-            log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
-            log_win.refresh()
+                # Draw a completed progress bar
+                log_win.move(progress_y, 0)
+                log_win.addstr("Progress: [", curses.color_pair(COLOR_INFO))
+                log_win.addstr("█" * progress_width, curses.color_pair(COLOR_SUCCESS) | curses.A_REVERSE)
+                log_win.addstr("] ", curses.color_pair(COLOR_INFO))
+                log_win.addstr(f"✓ 100%", curses.color_pair(COLOR_SUCCESS))
+                log_win.refresh()
 
         # Add a clear completion message with visual separation
         log_win.addstr("\n\n")
@@ -2075,7 +2086,12 @@ exit $exit_code
         except:
             pass
 
-    # Delete the password window
+    # Delete the progress and password windows
+    if progress_win:
+        progress_win.clear()
+        progress_win.refresh()
+        del progress_win
+    
     password_win.clear()
     password_win.refresh()
     del password_win
@@ -2483,73 +2499,110 @@ def draw_menu(stdscr, selected_idx, menu_items):
 def draw_header(stdscr, title):
     """Draw a header with the given title and enhanced ASCII art."""
     # Get screen dimensions
-    _, max_x = stdscr.getmaxyx()  # We only need max_x
+    pad_h, pad_w = stdscr.getmaxyx()
+    max_x = min(pad_w, curses.COLS)
 
     # Clear the header area first to prevent artifacts
-    for i in range(0, 8):
-        stdscr.addstr(i, 0, " " * (max_x - 1))
+    for i in range(0, 10):
+        if i < pad_h:
+            try:
+                stdscr.addstr(i, 0, " " * (max_x - 1))
+            except:
+                pass
 
     # Draw enhanced ASCII art banner
+    # Using a more compact and terminal-friendly banner
     banner_lines = [
-        " ██████╗ ████████╗ █████╗ ███╗   ██╗███████╗    ███╗   ███╗██╗         ███████╗████████╗ █████╗  ██████╗██╗  ██╗",
-        "██╔═══██╗╚══██╔══╝██╔══██╗████╗  ██║██╔════╝    ████╗ ████║██║         ██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝",
-        "██║   ██║   ██║   ███████║██╔██╗ ██║███████╗    ██╔████╔██║██║         ███████╗   ██║   ███████║██║     █████╔╝ ",
-        "██║   ██║   ██║   ██╔══██║██║╚██╗██║╚════██║    ██║╚██╔╝██║██║         ╚════██║   ██║   ██╔══██║██║     ██╔═██╗ ",
-        "╚██████╔╝   ██║   ██║  ██║██║ ╚████║███████║    ██║ ╚═╝ ██║███████╗    ███████║   ██║   ██║  ██║╚██████╗██║  ██╗",
-        " ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝    ╚═╝     ╚═╝╚══════╝    ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝"
+        "  __  __ _      ____  _             _      ",
+        " |  \/  | |    / ___|| |_ __ _  ___| | __  ",
+        " | |\/| | |    \___ \| __/ _` |/ __| |/ /  ",
+        " | |  | | |___  ___) | || (_| | (__|   <   ",
+        " |_|  |_|_____||____/ \__\__,_|\___|_|\_\  "
     ]
 
     # Calculate center position for banner
     banner_width = len(banner_lines[0])
-    banner_x = (max_x - banner_width) // 2
+    banner_x = max(0, (max_x - banner_width) // 2)
 
     # Draw the banner with colors
     for i, line in enumerate(banner_lines):
-        if i < 6:  # Ensure we don't go beyond screen height
+        if i < pad_h:
             try:
                 # Use different colors for different parts of the banner
-                color = [COLOR_TITLE, COLOR_INFO, COLOR_SUCCESS, COLOR_INFO, COLOR_WARNING, COLOR_TITLE][i % 6]
-                stdscr.addstr(i, banner_x, line, curses.color_pair(color) | curses.A_BOLD)
+                color = [COLOR_TITLE, COLOR_INFO, COLOR_SUCCESS, COLOR_INFO, COLOR_WARNING][i % 5]
+                # Ensure we don't write past max_x
+                display_line = line[:max_x - banner_x - 1]
+                stdscr.addstr(i + 1, banner_x, display_line, curses.color_pair(color) | curses.A_BOLD)
             except:
                 pass
 
     # Draw the title below the banner
     title_text = f"• ✵ {title} ✵ •"
-    title_x = (max_x - len(title_text)) // 2
+    title_x = max(0, (max_x - len(title_text)) // 2)
 
     # Create a fancy border
     border_char = "•"
-    border = border_char * (len(title_text))
+    border = border_char * min(len(title_text), max_x - title_x - 1)
 
     # Draw the fancy title header
-    stdscr.addstr(6, title_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
-    stdscr.addstr(7, title_x, title_text, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+    try:
+        stdscr.addstr(7, title_x, border, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+        display_title = title_text[:max_x - title_x - 1]
+        stdscr.addstr(8, title_x, display_title, curses.color_pair(COLOR_TITLE) | curses.A_BOLD)
+    except:
+        pass
 
     # Draw a separator line
-    stdscr.addstr(8, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    try:
+        stdscr.addstr(9, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    except:
+        pass
     # Don't call refresh here - let the caller handle refreshing
     # This allows the function to work with both regular windows and pads
 
 def draw_footer(stdscr, text):
     """Draw a footer with the given text."""
     # Ensure the footer is always at the bottom of the screen
-    max_y, max_x = stdscr.getmaxyx()
+    # Use curses.LINES to ensure it's at the bottom of the visible area
+    # even if stdscr is a pad larger than the screen
+    max_y = curses.LINES
+    max_x = curses.COLS
     footer_y = max_y - 1  # Last line of the screen
 
     # Clear the footer area first to prevent artifacts
+    # We use stdscr.addstr but we must ensure we don't exceed the pad's actual dimensions
+    # if it happens to be smaller than curses.LINES (unlikely here)
+    pad_h, pad_w = stdscr.getmaxyx()
+    
     for i in range(max_y - 3, max_y):
-        stdscr.addstr(i, 0, " " * (max_x - 1))
+        if i < pad_h:
+            try:
+                stdscr.addstr(i, 0, " " * (min(max_x, pad_w) - 1))
+            except:
+                pass
 
     # Draw stars in the footer
     for j in range(2, max_x - 2, 8):
-        stdscr.addstr(max_y - 2, j, "✧", curses.color_pair(COLOR_INFO))
+        if max_y - 2 < pad_h and j < pad_w:
+            try:
+                stdscr.addstr(max_y - 2, j, "✧", curses.color_pair(COLOR_INFO))
+            except:
+                pass
 
     # Draw a separator line
-    stdscr.addstr(max_y - 3, 2, "=" * (max_x - 4), curses.color_pair(COLOR_TITLE))
+    if max_y - 3 < pad_h:
+        try:
+            stdscr.addstr(max_y - 3, 2, "=" * (min(max_x, pad_w) - 4), curses.color_pair(COLOR_TITLE))
+        except:
+            pass
 
     # Draw the footer text with decorative elements
     footer_text = f"✦ {text} ✦"
-    stdscr.addstr(footer_y, 2, footer_text.center(max_x - 4), curses.color_pair(COLOR_INFO) | curses.A_BOLD)
+    if footer_y < pad_h:
+        try:
+            stdscr.addstr(footer_y, 2, footer_text.center(min(max_x, pad_w) - 4), curses.color_pair(COLOR_INFO) | curses.A_BOLD)
+        except:
+            pass
     # Don't call refresh here - let the caller handle refreshing
     # This allows the function to work with both regular windows and pads
 
@@ -2943,9 +2996,10 @@ def create_log_window(parent_win):
     """Create a scrollable log window with decorative border."""
     # Adjust dimensions to account for the header and footer
     # Reduce height to ensure it doesn't overlap with the footer
-    height = curses.LINES - 19  # Adjusted for starting at line 11 instead of 16
-    width = curses.COLS - 8
-    y = 11  # Moved 5 lines higher from previous position of 16
+    # Ensure height and width are at least minimum usable values
+    height = max(5, curses.LINES - 17)
+    width = max(20, curses.COLS - 8)
+    y = min(11, curses.LINES - height - 1)
     x = 4
 
     # Create the window
@@ -3661,7 +3715,7 @@ def main(stdscr):
 
     # Implement double-buffering to eliminate screen flashing
     # Create a virtual screen (pad) for drawing that will be copied to the real screen only when ready
-    virtual_screen = curses.newpad(curses.LINES, curses.COLS)
+    virtual_screen = curses.newpad(2000, max(curses.COLS, 500))
 
     # Track the current screen to know when to redraw
     previous_screen = None
@@ -4774,7 +4828,7 @@ def _main_curses(stdscr):
 
     # Implement double-buffering to eliminate screen flashing
     # Create a virtual screen (pad) for drawing that will be copied to the real screen only when ready
-    virtual_screen = curses.newpad(curses.LINES, curses.COLS)
+    virtual_screen = curses.newpad(2000, max(curses.COLS, 500))
 
     # Track the current screen to know when to redraw
     previous_screen = None

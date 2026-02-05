@@ -114,6 +114,18 @@ wandb/
 # Manim environment
 manim_env/
 
+# Tool-specific ignores
+.claude/
+.code_indexer_data/
+.leindex/
+.maestro/
+.sisyphus/
+.gocache/
+.gomodcache/
+.gotmp/
+rusty-stack/target/
+target/
+
 # Specific JSON files to ignore (but not all JSON files)
 # Add specific patterns for JSON files that should be ignored
 # For example: config.local.json

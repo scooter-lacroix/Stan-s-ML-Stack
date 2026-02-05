@@ -10,6 +10,13 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+# Wrapper for python3 to ensure we use the correct interpreter
+python3() {
+    "$PYTHON_BIN" "$@"
+}
+
 # Progress bar variables
 PROGRESS_BAR_WIDTH=50
 PROGRESS_CURRENT=0
@@ -488,6 +495,10 @@ setup_rocm_environment() {
         export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
         unset PYTORCH_CUDA_ALLOC_CONF
         print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
+    elif [ -z "${PYTORCH_ALLOC_CONF:-}" ]; then
+        # Set a sensible default for ROCm GPUs
+        export PYTORCH_ALLOC_CONF="expandable_segments:True"
+        print_step "Set PYTORCH_ALLOC_CONF=expandable_segments:True"
     fi
 
     print_success "ROCm environment variables configured"
@@ -629,13 +640,35 @@ install_megatron() {
     update_progress_bar 5
     draw_progress_bar "Checking dependencies..."
 
-    # Check if PyTorch is installed
+    # Check if PyTorch is installed and working
     if ! python_module_exists "torch"; then
-        log_message "ERROR" "PyTorch is not installed"
-        print_error "PyTorch is not installed. Please install PyTorch first."
-        print_step "Run the install_pytorch_rocm.sh script to install PyTorch."
-        complete_progress_bar
-        return 1
+        # Check if torch package exists but can't be imported (broken install)
+        if python3 -c "import importlib.util; spec = importlib.util.find_spec('torch'); exit(0 if spec else 1)" 2>/dev/null; then
+            log_message "ERROR" "PyTorch is installed but cannot be imported (possibly missing system libraries)"
+            print_error "PyTorch is installed but cannot be imported!"
+            print_step "This usually means missing system libraries (e.g., libmpi_cxx.so.40)"
+            print_step "Attempting to reinstall ROCm PyTorch..."
+
+            # Uninstall broken torch and reinstall from AMD repo
+            python3 -m pip uninstall -y torch torchvision torchaudio triton 2>/dev/null || true
+            python3 -m pip install \
+                torch torchvision torchaudio triton \
+                --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/ \
+                --break-system-packages --no-cache-dir
+
+            if ! python_module_exists "torch"; then
+                print_error "Failed to fix PyTorch. Please run: ./scripts/install_pytorch_multi.sh"
+                complete_progress_bar
+                return 1
+            fi
+            print_success "ROCm PyTorch reinstalled successfully"
+        else
+            log_message "ERROR" "PyTorch is not installed"
+            print_error "PyTorch is not installed. Please install PyTorch first."
+            print_step "Run the install_pytorch_rocm.sh script to install PyTorch."
+            complete_progress_bar
+            return 1
+        fi
     fi
 
     print_success "PyTorch is installed"
@@ -719,8 +752,14 @@ install_megatron() {
             fi
         else
             print_warning "Megatron-LM directory already exists at $HOME/Megatron-LM"
-            read -p "Do you want to reinstall Megatron-LM? (y/n) " -n 1 -r
-            echo
+            # In batch/non-interactive mode, proceed with reinstall
+            if [ "${MLSTACK_BATCH_MODE:-0}" = "1" ] || [ -n "${RUSTY_STACK:-}" ] || [ ! -t 0 ]; then
+                print_step "Non-interactive mode: proceeding with reinstall..."
+                REPLY="y"
+            else
+                read -p "Do you want to reinstall Megatron-LM? (y/n) " -n 1 -r
+                echo
+            fi
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 print_step "Skipping installation"
                 complete_progress_bar
@@ -867,7 +906,7 @@ except ImportError:
         # Try to install the pre-built wheel first
         if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
             # For Python 3.12+, use a specific version that's compatible
-            if ! pip install tensorstore==0.1.75; then
+            if ! python3 -m pip install tensorstore==0.1.75; then
                 print_warning "Failed to install tensorstore from PyPI, trying alternative approach..."
                 # Create a dummy tensorstore package to satisfy the import
                 SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
@@ -879,7 +918,7 @@ except ImportError:
             fi
         else
             # For Python 3.8/3.9, use the standard installation
-            if ! pip install tensorstore; then
+            if ! python3 -m pip install tensorstore; then
                 print_error "Failed to install tensorstore"
             else
                 print_success "tensorstore installed successfully"
@@ -892,7 +931,7 @@ except ImportError:
     # Install nvidia-modelopt with compatibility fix
     print_step "Installing nvidia-modelopt..."
     if ! python_module_exists "nvidia_modelopt"; then
-        if ! pip install nvidia-modelopt; then
+        if ! python3 -m pip install nvidia-modelopt; then
             print_warning "Failed to install nvidia-modelopt, trying alternative approach..."
             # Create a dummy nvidia_modelopt package to satisfy the import
             SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
@@ -1394,10 +1433,7 @@ EOF
         log_message "INFO" "Megatron-LM installation completed successfully"
         log_message "INFO" "Log file: $LOG_FILE"
 
-        # Kill any remaining background processes and force exit
-        jobs -p | xargs -r kill -9 2>/dev/null
-        kill -9 $$ 2>/dev/null
-        exit 0
+        return 0
     else
         print_error "Megatron-LM verification failed"
 
@@ -1457,10 +1493,7 @@ EOF
                 # Clean up test script
                 rm -f /tmp/test_megatron.py
 
-                # Kill any remaining background processes and force exit
-                jobs -p | xargs -r kill -9 2>/dev/null
-                kill -9 $$ 2>/dev/null
-                exit 0
+                return 0
             fi
         fi
 
@@ -1472,19 +1505,10 @@ EOF
 
         # Force exit even on failure
         echo -e "${RED}${BOLD}Installation failed. Exiting now.${RESET}"
-        jobs -p | xargs -r kill -9 2>/dev/null
-        kill -9 $$ 2>/dev/null
-        exit 1
+        return 1
     fi
 }
 
-# Trap to ensure we exit properly
-trap 'echo "Forced exit"; kill -9 $$' EXIT
-
 # Main function - run directly without nested functions to avoid return issues
 install_megatron
-
-# Force exit regardless of what happened above
-echo "Forcing exit to prevent hanging..."
-kill -9 $$
-exit 0
+exit $?

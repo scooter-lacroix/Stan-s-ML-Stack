@@ -367,10 +367,10 @@ install_python_package() {
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --break-system-packages $extra_args "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        python3 -m pip install --break-system-packages $extra_args "$package"
     fi
 }
 
@@ -642,7 +642,7 @@ build_openmpi_with_ucx_rocm() {
 # Function to install system MPI packages
 install_system_mpi() {
     print_step "Installing system MPI packages..."
-    
+
     # Detect package manager and install appropriate MPI packages
     if command -v dnf >/dev/null 2>&1; then
         print_step "Using dnf to install OpenMPI..."
@@ -663,6 +663,16 @@ install_system_mpi() {
         # Try with sudo first, fallback to direct installation if sudo fails
         if sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin; then
             print_success "System MPI packages installed with apt-get"
+            # Check if MPI C++ bindings are available (removed in Open MPI 5.0)
+            if [ ! -f "/usr/lib/x86_64-linux-gnu/libmpi_cxx.so.40" ]; then
+                print_warning "MPI C++ bindings (libmpi_cxx.so) not available in system packages"
+                print_step "Building Open MPI from source with C++ bindings..."
+                if build_openmpi_with_cxx_bindings; then
+                    print_success "Open MPI with C++ bindings installed successfully"
+                else
+                    print_warning "Failed to build Open MPI with C++ bindings - some packages may not work"
+                fi
+            fi
             return 0
         elif apt-get update && apt-get install -y libopenmpi-dev openmpi-bin; then
             print_success "System MPI packages installed with apt-get (no sudo)"
@@ -698,9 +708,81 @@ install_system_mpi() {
         print_error "Unknown package manager. Cannot auto-install MPI."
         return 1
     fi
-    
+
     print_error "Failed to install system MPI packages"
     return 1
+}
+
+# Function to build Open MPI with C++ bindings (needed for some PyTorch builds)
+build_openmpi_with_cxx_bindings() {
+    print_step "Building Open MPI 4.1.x with C++ bindings..."
+
+    # We use Open MPI 4.1.x because it still supports --enable-mpi-cxx
+    # Open MPI 5.0+ removed C++ bindings entirely
+
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cd "$temp_dir" || return 1
+
+    # Download Open MPI 4.1.8 (last version with C++ bindings support)
+    if ! wget -q https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-4.1.8.tar.bz2; then
+        print_error "Failed to download Open MPI 4.1.8 source"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Extract
+    if ! tar -xf openmpi-4.1.8.tar.bz2; then
+        print_error "Failed to extract Open MPI source"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    cd openmpi-4.1.8 || return 1
+
+    # Configure with C++ bindings enabled
+    print_step "Configuring Open MPI with C++ bindings..."
+    if ! ./configure --prefix="$HOME/.local/openmpi-4.1.8" \
+        --enable-mpi-cxx \
+        --disable-mpi-fortran \
+        --without-cuda \
+        CFLAGS="-O2" CXXFLAGS="-O2"; then
+        print_error "Open MPI configure failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Build and install
+    print_step "Building Open MPI (this may take a while)..."
+    if ! make -j$(nproc) && make install; then
+        print_error "Open MPI build/install failed"
+        cd - >/dev/null
+        rm -rf "$temp_dir"
+        return 1
+    fi
+
+    # Cleanup
+    cd - >/dev/null
+    rm -rf "$temp_dir"
+
+    # Create symlinks for libmpi_cxx.so.40 in standard location
+    local mpi_lib="$HOME/.local/openmpi-4.1.8/lib"
+    if [ -f "$mpi_lib/libmpi_cxx.so" ]; then
+        print_step "Creating symlinks for MPI C++ library..."
+        sudo mkdir -p /usr/local/lib
+        sudo ln -sf "$mpi_lib/libmpi_cxx.so" /usr/local/lib/libmpi_cxx.so.40 2>/dev/null || true
+        sudo ln -sf "$mpi_lib/libmpi_cxx.so" /usr/local/lib/libmpi_cxx.so 2>/dev/null || true
+        sudo ldconfig 2>/dev/null || true
+
+        # Also add to LD_LIBRARY_PATH
+        export LD_LIBRARY_PATH="$mpi_lib:$LD_LIBRARY_PATH"
+        print_success "MPI C++ bindings installed at $mpi_lib"
+    fi
+
+    return 0
 }
 
 # Function to install mpi4py
@@ -861,7 +943,7 @@ install_mpi4py() {
     if ! command_exists uv; then
         if [ "$DRY_RUN" = false ]; then
             print_step "Installing uv package manager..."
-            python3 -m pip install uv
+            python3 -m pip install --break-system-packages uv 2>/dev/null || python3 -m pip install uv 2>/dev/null || true
 
             # Add uv to PATH if it was installed in a user directory
             if [ -f "$HOME/.local/bin/uv" ]; then
@@ -874,8 +956,7 @@ install_mpi4py() {
             fi
 
             if ! command_exists uv; then
-                print_error "Failed to install uv package manager"
-                print_step "Falling back to pip"
+                print_warning "Could not install uv, will use pip instead"
             else
                 print_success "Installed uv package manager"
             fi
@@ -899,9 +980,15 @@ install_mpi4py() {
         if command_exists uv; then
             case $INSTALL_METHOD in
                 "global")
-                    print_step "Installing globally with pip..."
-                    python3 -m pip install --break-system-packages $args
-                    MPI4PY_VENV_PYTHON=""
+                    print_step "Installing globally with uv + --break-system-packages..."
+                    if uv pip install --break-system-packages $args; then
+                        print_success "Global installation successful"
+                        MPI4PY_VENV_PYTHON=""
+                    else
+                        print_warning "uv failed, falling back to pip..."
+                        python3 -m pip install --break-system-packages $args
+                        MPI4PY_VENV_PYTHON=""
+                    fi
                     ;;
                 "venv")
                     print_step "Creating uv virtual environment..."
@@ -915,60 +1002,38 @@ install_mpi4py() {
                     MPI4PY_VENV_PYTHON="$VENV_DIR/bin/python"
                     print_success "Installed in virtual environment: $VENV_DIR"
                     ;;
-                "auto")
-                    # Try global install first
-                    print_step "Attempting global installation with uv..."
-                    local install_output
-                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                    local install_exit_code=$?
-
-                    if echo "$install_output" | grep -q "externally managed"; then
-                        print_warning "Global installation failed due to externally managed environment"
-                        print_step "Creating uv virtual environment for installation..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./mpi4py_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        MPI4PY_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    elif [ $install_exit_code -eq 0 ]; then
+                "auto"|*)
+                    # Try global install with --break-system-packages
+                    print_step "Attempting global installation with --break-system-packages..."
+                    if uv pip install --break-system-packages $args 2>&1; then
                         print_success "Global installation successful"
                         MPI4PY_VENV_PYTHON=""
                     else
-                        print_error "Global installation failed with unknown error:"
-                        echo "$install_output"
-                        print_step "Falling back to virtual environment..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./mpi4py_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
+                        # Fallback to pip with --break-system-packages
+                        print_warning "uv failed, trying pip with --break-system-packages..."
+                        if python3 -m pip install --break-system-packages $args 2>&1; then
+                            print_success "pip installation successful"
+                            MPI4PY_VENV_PYTHON=""
+                        else
+                            # Last resort: create venv
+                            print_warning "pip failed, falling back to virtual environment..."
+                            VENV_DIR="./mpi4py_venv"
+                            if [ ! -d "$VENV_DIR" ]; then
+                                python3 -m venv "$VENV_DIR"
+                            fi
+                            source "$VENV_DIR/bin/activate"
+                            print_step "Installing in virtual environment..."
+                            pip install $args
+                            MPI4PY_VENV_PYTHON="$VENV_DIR/bin/python"
+                            print_success "Installed in virtual environment: $VENV_DIR"
                         fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        MPI4PY_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
                     fi
                     ;;
             esac
         else
-            # Fall back to pip
-            print_step "Installing with pip..."
-            python3 -m pip install $args
+            # Fall back to pip with --break-system-packages
+            print_step "Installing with pip --break-system-packages..."
+            python3 -m pip install --break-system-packages $args
             MPI4PY_VENV_PYTHON=""
         fi
     }

@@ -33,24 +33,30 @@ echo
 
 set -e  # Exit on error
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${MLSTACK_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
 # Create log directory
-LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs"
-mkdir -p $LOG_DIR
+LOG_DIR="${MLSTACK_LOG_DIR:-$HOME/.mlstack/logs}"
+mkdir -p "$LOG_DIR"
 
 # Log file
 LOG_FILE="$LOG_DIR/ml_stack_verify_$(date +"%Y%m%d_%H%M%S").log"
 
 # Set up environment variables for ROCm and ONNX Runtime
 export PATH="/opt/rocm/bin:$PATH"
-export LD_LIBRARY_PATH="/opt/rocm/lib:/home/stan/.local/lib:$LD_LIBRARY_PATH"
-export ORT_ROCM_EP_PROVIDER_PATH="/home/stan/.local/lib/python3.13/site-packages/onnxruntime/capi/libonnxruntime_providers_rocm.so"
+export LD_LIBRARY_PATH="/opt/rocm/lib:$HOME/.local/lib:$LD_LIBRARY_PATH"
 
 # Suppress HIP logs by setting environment variables
 export HIP_TRACE_API=0
 export HIP_VISIBLE_DEVICES=0,1,2
 export ROCR_VISIBLE_DEVICES=0,1,2
 export HSA_ENABLE_SDMA=0
-export HSA_TOOLS_LIB=0
+if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+else
+    unset HSA_TOOLS_LIB
+fi
 export HSA_TOOLS_REPORT_LOAD_FAILURE=0
 export HSA_ENABLE_DEBUG=0
 export MIOPEN_ENABLE_LOGGING=0
@@ -59,14 +65,43 @@ export MIOPEN_LOG_LEVEL=0
 export MIOPEN_ENABLE_LOGGING_IMPL=0
 export AMD_LOG_LEVEL=0
 
-# Use the virtual environment's Python if available
-if [ -f "/home/stan/rocm_venv/bin/python" ]; then
-    PYTHON_CMD="/home/stan/rocm_venv/bin/python"
-    # Activate the virtual environment to ensure all libraries are found
-    source /home/stan/rocm_venv/bin/activate
-else
-    PYTHON_CMD="python3"
+# Select Python interpreter (prefer installer-selected venvs)
+PYTHON_CMD="${MLSTACK_PYTHON_BIN:-${AITER_VENV_PYTHON:-${UV_PYTHON:-}}}"
+if [ -z "$PYTHON_CMD" ]; then
+    if [ -f "$HOME/rocm_venv/bin/python" ]; then
+        PYTHON_CMD="$HOME/rocm_venv/bin/python"
+        # Activate the virtual environment to ensure all libraries are found
+        source "$HOME/rocm_venv/bin/activate"
+    else
+        PYTHON_CMD="python3"
+    fi
 fi
+
+# Detect ONNX Runtime ROCm provider library if present
+ORT_ROCM_EP_PROVIDER_PATH=$(
+    $PYTHON_CMD - <<'PY'
+import sys
+try:
+    import onnxruntime
+    from pathlib import Path
+    base = Path(onnxruntime.__file__).parent
+    libs = list(base.rglob("libonnxruntime_providers_rocm.so"))
+    if libs:
+        print(libs[0])
+except Exception:
+    pass
+PY
+)
+if [ -n "$ORT_ROCM_EP_PROVIDER_PATH" ]; then
+    export ORT_ROCM_EP_PROVIDER_PATH
+fi
+
+PYTHON_SITEPACKAGES=$(
+    $PYTHON_CMD - <<'PY'
+import sysconfig
+print(sysconfig.get_paths().get("purelib", ""))
+PY
+)
 
 # Check if terminal supports colors
 if [ -t 1 ]; then
@@ -173,8 +208,16 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+python_has_module() {
+    $PYTHON_CMD - <<PY
+import importlib.util
+import sys
+sys.exit(0 if importlib.util.find_spec("$1") else 1)
+PY
+}
+
 # Set up comprehensive PYTHONPATH to find all components
-export PYTHONPATH="$HOME/.local/lib/python3.13/site-packages:$HOME/.local/lib/python3.12/site-packages:$HOME/rocm_venv/lib/python3.13/site-packages:$HOME/rocm_venv/lib/python3.12/site-packages:$HOME/ml_stack/flash_attn_amd_direct:$HOME/ml_stack/flash_attn_amd:$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313:$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-312:$HOME/megatron/Megatron-LM:$HOME/migraphx_build:$HOME/vllm_build:$HOME/vllm_py313:$HOME/ml_stack/bitsandbytes/bitsandbytes:/opt/rocm/lib:$HOME/ml_stack:$HOME/Prod/Stan-s-ML-Stack:$HOME/pytorch:$PYTHONPATH"
+export PYTHONPATH="$HOME/.local/lib/python3.13/site-packages:$HOME/.local/lib/python3.12/site-packages:$HOME/rocm_venv/lib/python3.13/site-packages:$HOME/rocm_venv/lib/python3.12/site-packages:$HOME/ml_stack/flash_attn_amd_direct:$HOME/ml_stack/flash_attn_amd:$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313:$HOME/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-312:$HOME/megatron/Megatron-LM:$HOME/migraphx_build:$HOME/vllm_build:$HOME/vllm_py313:$HOME/ml_stack/bitsandbytes/bitsandbytes:/opt/rocm/lib:$HOME/ml_stack:$REPO_ROOT:$HOME/pytorch:$PYTHONPATH"
 print_step "Enhanced PYTHONPATH to find all components"
 
 # Start verification
@@ -231,7 +274,7 @@ if $PYTHON_CMD -c "import torch; print(f'PyTorch version: {torch.__version__}')"
     fi
 else
     # Check for PyTorch installation in specific directories
-    if [ -d "/home/stan/pytorch" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/torch" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/torch" ]; then
+    if [ -d "$HOME/pytorch" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/torch" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/torch" ]; then
         print_success "PyTorch is installed"
     else
         print_error "PyTorch is not installed."
@@ -265,7 +308,7 @@ if $PYTHON_CMD -c "import onnxruntime; print(f'ONNX Runtime version: {onnxruntim
         fi
 
         # Find the ROCMExecutionProvider library
-        ROCM_PROVIDER_LIB=$(find /home/stan -name "libonnxruntime_providers_rocm.so" | head -n 1)
+        ROCM_PROVIDER_LIB=${ORT_ROCM_EP_PROVIDER_PATH:-$(find "$HOME" -name "libonnxruntime_providers_rocm.so" | head -n 1)}
 
         if [ -n "$ROCM_PROVIDER_LIB" ]; then
             print_step "Found ROCMExecutionProvider library at: $ROCM_PROVIDER_LIB"
@@ -280,7 +323,7 @@ os.environ['ORT_ROCM_EP_PROVIDER_PATH'] = '$ROCM_PROVIDER_LIB'
 os.environ['LD_LIBRARY_PATH'] = '/opt/rocm/lib:' + os.environ.get('LD_LIBRARY_PATH', '')
 
 # Try to import ONNX Runtime from the system installation
-sys.path.insert(0, '/home/stan/.local/lib/python3.13/site-packages')
+sys.path.insert(0, '${PYTHON_SITEPACKAGES}')
 
 try:
     import onnxruntime
@@ -300,15 +343,15 @@ try:
             import subprocess
 
             # Create the directory if it doesn't exist
-            os.makedirs('/home/stan/.local/lib', exist_ok=True)
+            os.makedirs('${HOME}/.local/lib', exist_ok=True)
 
             # Create a symbolic link to the ROCMExecutionProvider library
-            link_cmd = f"ln -sf {os.environ['ORT_ROCM_EP_PROVIDER_PATH']} /home/stan/.local/lib/libonnxruntime_providers_rocm.so"
+            link_cmd = f"ln -sf {os.environ['ORT_ROCM_EP_PROVIDER_PATH']} ${HOME}/.local/lib/libonnxruntime_providers_rocm.so"
             print(f"Creating symbolic link: {link_cmd}")
             subprocess.run(link_cmd, shell=True, check=True)
 
             # Set the environment variable to point to the symbolic link
-            os.environ['ORT_ROCM_EP_PROVIDER_PATH'] = '/home/stan/.local/lib/libonnxruntime_providers_rocm.so'
+            os.environ['ORT_ROCM_EP_PROVIDER_PATH'] = '${HOME}/.local/lib/libonnxruntime_providers_rocm.so'
 
             # Try to create a session with ROCMExecutionProvider
             providers = ['ROCMExecutionProvider', 'CPUExecutionProvider']
@@ -355,7 +398,7 @@ EOF
             if $PYTHON_CMD /tmp/enable_rocm_provider.py; then
                 print_success "Successfully enabled ROCMExecutionProvider"
                 # Update the providers variable
-                providers=$($PYTHON_CMD -c "import sys; sys.path.insert(0, '/home/stan/.local/lib/python3.13/site-packages'); import os; os.environ['ORT_ROCM_EP_PROVIDER_PATH'] = '$ROCM_PROVIDER_LIB'; os.environ['LD_LIBRARY_PATH'] = '/opt/rocm/lib:' + os.environ.get('LD_LIBRARY_PATH', ''); import onnxruntime; print(onnxruntime.get_available_providers())" 2>/dev/null)
+                providers=$($PYTHON_CMD -c "import sys; sys.path.insert(0, '${PYTHON_SITEPACKAGES}'); import os; os.environ['ORT_ROCM_EP_PROVIDER_PATH'] = '$ROCM_PROVIDER_LIB'; os.environ['LD_LIBRARY_PATH'] = '/opt/rocm/lib:' + os.environ.get('LD_LIBRARY_PATH', ''); import onnxruntime; print(onnxruntime.get_available_providers())" 2>/dev/null)
             else
                 print_warning "Failed to enable ROCMExecutionProvider"
 
@@ -372,7 +415,7 @@ EOF
                 fi
 
                 # Check ONNX Runtime version
-                $PYTHON_CMD -c "import sys; sys.path.insert(0, '/home/stan/.local/lib/python3.13/site-packages'); import onnxruntime; print(f'ONNX Runtime version: {onnxruntime.__version__}')" 2>/dev/null
+                $PYTHON_CMD -c "import sys; sys.path.insert(0, '${PYTHON_SITEPACKAGES}'); import onnxruntime; print(f'ONNX Runtime version: {onnxruntime.__version__}')" 2>/dev/null
 
                 print_warning "ONNX Runtime was not built with ROCm support or ROCm support is not properly configured."
                 print_step "To fix this issue, you need to rebuild ONNX Runtime with ROCm support:"
@@ -387,7 +430,7 @@ EOF
     fi
 else
     # Check for ONNX Runtime installation in specific directories
-    if [ -d "/home/stan/onnxruntime" ] || [ -d "/home/stan/onnxruntime_build" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/onnxruntime" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/onnxruntime" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/onnxruntime" ]; then
+    if [ -d "$HOME/onnxruntime" ] || [ -d "$HOME/onnxruntime_build" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/onnxruntime" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/onnxruntime" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/onnxruntime" ]; then
         print_success "ONNX Runtime is installed"
         print_warning "ONNX Runtime cannot be imported (Python compatibility issue)"
     else
@@ -404,7 +447,7 @@ if $PYTHON_CMD -c "import migraphx; print(f'MIGraphX is installed')" 2>/dev/null
     print_step "MIGraphX version: $migraphx_version"
 else
     # Check for MIGraphX installation in specific directories
-    if [ -d "/home/stan/migraphx_build" ] || [ -d "/home/stan/migraphx_package" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/migraphx" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/migraphx" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/migraphx" ]; then
+    if [ -d "$HOME/migraphx_build" ] || [ -d "$HOME/migraphx_package" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/migraphx" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/migraphx" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/migraphx" ]; then
         print_success "MIGraphX is installed"
         print_warning "MIGraphX cannot be imported (Python compatibility issue)"
     else
@@ -430,7 +473,7 @@ fi
 
 # Verify AITER
 print_section "Verifying AITER"
-if $PYTHON_CMD -c "import aiter; print('AITER is installed')" 2>/dev/null; then
+if $PYTHON_CMD -c "import aiter; import aiter.torch; print('AITER is installed')" 2>/dev/null; then
     print_success "AITER is installed"
 
     # Get AITER version
@@ -443,6 +486,9 @@ if $PYTHON_CMD -c "import aiter; print('AITER is installed')" 2>/dev/null; then
     else
         print_error "AITER basic functionality test failed"
     fi
+elif python_has_module aiter; then
+    print_success "AITER is installed"
+    print_warning "AITER cannot be imported (Python compatibility issue)"
 else
     print_error "AITER is not installed"
 fi
@@ -468,7 +514,7 @@ fi
 
 # Check for Flash Attention installation in specific directories if import failed
 if ! $PYTHON_CMD -c "import flash_attention_amd" 2>/dev/null; then
-    if [ -d "/home/stan/ml_stack/flash_attn_amd" ] || [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ] || [ -d "/home/stan/ml_stack/flash-attention" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/flash_attention_amd" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/flash_attention_amd" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/flash_attention_amd" ]; then
+    if [ -d "$HOME/ml_stack/flash_attn_amd" ] || [ -d "$HOME/ml_stack/flash_attn_amd_direct" ] || [ -d "$HOME/ml_stack/flash-attention" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/flash_attention_amd" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/flash_attention_amd" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/flash_attention_amd" ]; then
         print_success "Flash Attention is installed"
         print_warning "Flash Attention cannot be imported (Python compatibility issue)"
     else
@@ -505,7 +551,7 @@ if $PYTHON_CMD -c "import mpi4py; print('mpi4py is installed')" 2>/dev/null; the
     mpi_found=true
 else
     # Check for mpi4py installation in specific directories
-    if [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/mpi4py" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/mpi4py" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/mpi4py" ]; then
+    if [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/mpi4py" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/mpi4py" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/mpi4py" ]; then
         print_warning "mpi4py is installed but cannot be imported (Python compatibility issue)"
         mpi_found=true
     else
@@ -539,7 +585,7 @@ if $PYTHON_CMD -c "import megatron; print('Megatron-LM is installed')" 2>/dev/nu
     print_success "Megatron-LM is installed"
 else
     # Check for Megatron-LM installation in specific directories
-    if [ -d "/home/stan/megatron/Megatron-LM" ] || [ -d "/home/stan/Megatron-LM" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/megatron" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/megatron" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/megatron" ]; then
+    if [ -d "$HOME/megatron/Megatron-LM" ] || [ -d "$HOME/Megatron-LM" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/megatron" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/megatron" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/megatron" ]; then
         print_success "Megatron-LM is installed"
         print_warning "Megatron-LM cannot be imported (Python compatibility issue)"
     else
@@ -558,7 +604,7 @@ if $PYTHON_CMD -c "import triton; print(f'Triton is installed')" 2>/dev/null; th
     print_step "Triton version: $triton_version"
 else
     # Check for Triton installation in specific directories
-    if [ -d "/home/stan/ml_stack/triton" ] || [ -d "/home/stan/Stans_MLStack/Stan-s-ML-Stack/extensions/triton" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/triton" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/triton" ]; then
+    if [ -d "$HOME/ml_stack/triton" ] || [ -d "$HOME/Stans_MLStack/Stan-s-ML-Stack/extensions/triton" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/triton" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/triton" ]; then
         print_success "Triton is installed"
         print_warning "Triton cannot be imported (Python compatibility issue)"
     else
@@ -574,7 +620,7 @@ if $PYTHON_CMD -c "import bitsandbytes; print(f'BITSANDBYTES is installed')" 2>/
     print_step "BITSANDBYTES version: $bnb_version"
 else
     # Check for BITSANDBYTES installation in specific directories
-    if [ -d "/home/stan/ml_stack/bitsandbytes" ] || [ -d "/home/stan/Stans_MLStack/Stan-s-ML-Stack/extensions/bitsandbytes" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/bitsandbytes" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/bitsandbytes" ]; then
+    if [ -d "$HOME/ml_stack/bitsandbytes" ] || [ -d "$HOME/Stans_MLStack/Stan-s-ML-Stack/extensions/bitsandbytes" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/bitsandbytes" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/bitsandbytes" ]; then
         print_success "BITSANDBYTES is installed"
         print_warning "BITSANDBYTES cannot be imported (Python compatibility issue)"
     else
@@ -584,13 +630,16 @@ fi
 
 # Verify vLLM
 print_section "Verifying vLLM"
-if $PYTHON_CMD -c "import vllm; print(f'vLLM is installed')" 2>/dev/null; then
+if $PYTHON_CMD -c "import vllm; print('vLLM is installed')" 2>/dev/null; then
     print_success "vLLM is installed"
     vllm_version=$($PYTHON_CMD -c "import vllm; print(getattr(vllm, '__version__', 'unknown'))" 2>&1)
     print_step "vLLM version: $vllm_version"
+elif python_has_module vllm; then
+    print_success "vLLM is installed"
+    print_warning "vLLM cannot be imported (Python compatibility issue)"
 else
     # Check for vLLM installation in specific directories
-    if [ -d "/home/stan/vllm" ] || [ -d "/home/stan/vllm_build" ] || [ -d "/home/stan/vllm_py313" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/vllm" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/vllm" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/vllm" ]; then
+    if [ -d "$HOME/vllm" ] || [ -d "$HOME/vllm_build" ] || [ -d "$HOME/vllm_py313" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/vllm" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/vllm" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/vllm" ]; then
         print_success "vLLM is installed"
         print_warning "vLLM cannot be imported (Python compatibility issue)"
     else
@@ -604,7 +653,7 @@ if $PYTHON_CMD -c "from rocm_smi_lib import rsmi; print('ROCm SMI is installed')
     print_success "ROCm SMI is installed"
 else
     # Check for ROCm SMI installation
-    if [ -f "/opt/rocm/bin/rocm-smi" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/rocm_smi_lib" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/rocm_smi_lib" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/rocm_smi_lib" ]; then
+    if [ -f "/opt/rocm/bin/rocm-smi" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/rocm_smi_lib" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/rocm_smi_lib" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/rocm_smi_lib" ]; then
         print_success "ROCm SMI is installed"
         print_warning "ROCm SMI cannot be imported (Python compatibility issue)"
     else
@@ -618,7 +667,7 @@ if $PYTHON_CMD -c "from torch.profiler import profile; print('PyTorch Profiler i
     print_success "PyTorch Profiler is installed"
 else
     # Check for PyTorch Profiler installation in specific directories
-    if [ -d "/home/stan/pytorch/torch/profiler" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/torch/profiler" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/torch/profiler" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch/profiler" ]; then
+    if [ -d "$HOME/pytorch/torch/profiler" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/torch/profiler" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/torch/profiler" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch/profiler" ]; then
         print_success "PyTorch Profiler is installed"
         print_warning "PyTorch Profiler cannot be imported (Python compatibility issue)"
     else
@@ -634,7 +683,7 @@ if $PYTHON_CMD -c "import wandb; print(f'Weights & Biases is installed')" 2>/dev
     print_step "Weights & Biases version: $wandb_version"
 else
     # Check for Weights & Biases installation directory
-    if [ -d "/home/stan/ml_stack/wandb" ] || [ -d "/home/stan/Stans_MLStack/extensions/wandb" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/wandb" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/wandb" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/wandb" ]; then
+    if [ -d "$HOME/ml_stack/wandb" ] || [ -d "$HOME/Stans_MLStack/extensions/wandb" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/wandb" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/wandb" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/wandb" ]; then
         print_success "Weights & Biases is installed"
         print_warning "Weights & Biases cannot be imported (Python compatibility issue)"
     else
@@ -664,7 +713,7 @@ fi
 if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     if $PYTHON_CMD -c "import torch" 2>/dev/null; then
         echo -e "- PyTorch: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/pytorch" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/torch" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/torch" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch" ]; then
+    elif [ -d "$HOME/pytorch" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/torch" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/torch" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch" ]; then
         echo -e "- PyTorch: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- PyTorch: ${RED}Not installed${RESET}"
@@ -673,7 +722,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check ONNX Runtime with fallback
     if $PYTHON_CMD -c "import onnxruntime" 2>/dev/null; then
         echo -e "- ONNX Runtime: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/onnxruntime" ] || [ -d "/home/stan/onnxruntime_build" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/onnxruntime" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/onnxruntime" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/onnxruntime" ]; then
+    elif [ -d "$HOME/onnxruntime" ] || [ -d "$HOME/onnxruntime_build" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/onnxruntime" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/onnxruntime" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/onnxruntime" ]; then
         echo -e "- ONNX Runtime: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- ONNX Runtime: ${RED}Not installed${RESET}"
@@ -682,7 +731,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check MIGraphX with fallback
     if $PYTHON_CMD -c "import migraphx" 2>/dev/null; then
         echo -e "- MIGraphX: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/migraphx_build" ] || [ -d "/home/stan/migraphx_package" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/migraphx" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/migraphx" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/migraphx" ]; then
+    elif [ -d "$HOME/migraphx_build" ] || [ -d "$HOME/migraphx_package" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/migraphx" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/migraphx" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/migraphx" ]; then
         echo -e "- MIGraphX: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- MIGraphX: ${RED}Not installed${RESET}"
@@ -691,7 +740,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check Flash Attention with fallback
     if $PYTHON_CMD -c "import flash_attention_amd" 2>/dev/null; then
         echo -e "- Flash Attention: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/ml_stack/flash_attn_amd" ] || [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ] || [ -d "/home/stan/ml_stack/flash-attention" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/flash_attention_amd" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/flash_attention_amd" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/flash_attention_amd" ]; then
+    elif [ -d "$HOME/ml_stack/flash_attn_amd" ] || [ -d "$HOME/ml_stack/flash_attn_amd_direct" ] || [ -d "$HOME/ml_stack/flash-attention" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/flash_attention_amd" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/flash_attention_amd" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/flash_attention_amd" ]; then
         echo -e "- Flash Attention: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- Flash Attention: ${RED}Not installed${RESET}"
@@ -703,7 +752,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check Megatron-LM with fallback
     if $PYTHON_CMD -c "import megatron" 2>/dev/null; then
         echo -e "- Megatron-LM: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/megatron/Megatron-LM" ] || [ -d "/home/stan/Megatron-LM" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/megatron" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/megatron" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/megatron" ]; then
+    elif [ -d "$HOME/megatron/Megatron-LM" ] || [ -d "$HOME/Megatron-LM" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/megatron" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/megatron" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/megatron" ]; then
         echo -e "- Megatron-LM: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- Megatron-LM: ${RED}Not installed${RESET}"
@@ -712,7 +761,9 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check AITER with fallback
     if $PYTHON_CMD -c "import aiter" 2>/dev/null; then
         echo -e "- AITER: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/aiter" ] || [ -d "/home/stan/ml_stack/aiter" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/aiter" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/aiter" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/aiter" ]; then
+    elif python_has_module aiter; then
+        echo -e "- AITER: ${GREEN}Installed${RESET} (Python compatibility issue)"
+    elif [ -d "$HOME/aiter" ] || [ -d "$HOME/ml_stack/aiter" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/aiter" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/aiter" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/aiter" ]; then
         echo -e "- AITER: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- AITER: ${RED}Not installed${RESET}"
@@ -721,7 +772,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check DeepSpeed with fallback
     if $PYTHON_CMD -c "import deepspeed" 2>/dev/null; then
         echo -e "- DeepSpeed: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/deepspeed" ] || [ -d "/home/stan/ml_stack/deepspeed" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/deepspeed" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/deepspeed" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/deepspeed" ]; then
+    elif [ -d "$HOME/deepspeed" ] || [ -d "$HOME/ml_stack/deepspeed" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/deepspeed" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/deepspeed" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/deepspeed" ]; then
         echo -e "- DeepSpeed: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- DeepSpeed: ${RED}Not installed${RESET}"
@@ -732,7 +783,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
 else
     if $PYTHON_CMD -c "import torch" 2>/dev/null; then
         echo "- PyTorch: Installed"
-    elif [ -d "/home/stan/pytorch" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/torch" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/torch" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch" ]; then
+    elif [ -d "$HOME/pytorch" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/torch" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/torch" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch" ]; then
         echo "- PyTorch: Installed (Python compatibility issue)"
     else
         echo "- PyTorch: Not installed"
@@ -741,7 +792,7 @@ else
     # Check ONNX Runtime with fallback
     if $PYTHON_CMD -c "import onnxruntime" 2>/dev/null; then
         echo "- ONNX Runtime: Installed"
-    elif [ -d "/home/stan/onnxruntime" ] || [ -d "/home/stan/onnxruntime_build" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/onnxruntime" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/onnxruntime" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/onnxruntime" ]; then
+    elif [ -d "$HOME/onnxruntime" ] || [ -d "$HOME/onnxruntime_build" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/onnxruntime" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/onnxruntime" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/onnxruntime" ]; then
         echo "- ONNX Runtime: Installed (Python compatibility issue)"
     else
         echo "- ONNX Runtime: Not installed"
@@ -750,7 +801,7 @@ else
     # Check MIGraphX with fallback
     if $PYTHON_CMD -c "import migraphx" 2>/dev/null; then
         echo "- MIGraphX: Installed"
-    elif [ -d "/home/stan/migraphx_build" ] || [ -d "/home/stan/migraphx_package" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/migraphx" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/migraphx" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/migraphx" ]; then
+    elif [ -d "$HOME/migraphx_build" ] || [ -d "$HOME/migraphx_package" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/migraphx" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/migraphx" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/migraphx" ]; then
         echo "- MIGraphX: Installed (Python compatibility issue)"
     else
         echo "- MIGraphX: Not installed"
@@ -759,7 +810,7 @@ else
     # Check Flash Attention with fallback
     if $PYTHON_CMD -c "import flash_attention_amd" 2>/dev/null; then
         echo "- Flash Attention: Installed"
-    elif [ -d "/home/stan/ml_stack/flash_attn_amd" ] || [ -d "/home/stan/ml_stack/flash_attn_amd_direct" ] || [ -d "/home/stan/ml_stack/flash-attention" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/flash_attention_amd" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/flash_attention_amd" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/flash_attention_amd" ]; then
+    elif [ -d "$HOME/ml_stack/flash_attn_amd" ] || [ -d "$HOME/ml_stack/flash_attn_amd_direct" ] || [ -d "$HOME/ml_stack/flash-attention" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/flash_attention_amd" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/flash_attention_amd" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/flash_attention_amd" ]; then
         echo "- Flash Attention: Installed (Python compatibility issue)"
     else
         echo "- Flash Attention: Not installed"
@@ -771,7 +822,7 @@ else
     # Check Megatron-LM with fallback
     if $PYTHON_CMD -c "import megatron" 2>/dev/null; then
         echo "- Megatron-LM: Installed"
-    elif [ -d "/home/stan/megatron/Megatron-LM" ] || [ -d "/home/stan/Megatron-LM" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/megatron" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/megatron" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/megatron" ]; then
+    elif [ -d "$HOME/megatron/Megatron-LM" ] || [ -d "$HOME/Megatron-LM" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/megatron" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/megatron" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/megatron" ]; then
         echo "- Megatron-LM: Installed (Python compatibility issue)"
     else
         echo "- Megatron-LM: Not installed"
@@ -780,7 +831,9 @@ else
     # Check AITER with fallback
     if $PYTHON_CMD -c "import aiter" 2>/dev/null; then
         echo "- AITER: Installed"
-    elif [ -d "/home/stan/aiter" ] || [ -d "/home/stan/ml_stack/aiter" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/aiter" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/aiter" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/aiter" ]; then
+    elif python_has_module aiter; then
+        echo "- AITER: Installed (Python compatibility issue)"
+    elif [ -d "$HOME/aiter" ] || [ -d "$HOME/ml_stack/aiter" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/aiter" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/aiter" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/aiter" ]; then
         echo "- AITER: Installed (Python compatibility issue)"
     else
         echo "- AITER: Not installed"
@@ -789,7 +842,7 @@ else
     # Check DeepSpeed with fallback
     if $PYTHON_CMD -c "import deepspeed" 2>/dev/null; then
         echo "- DeepSpeed: Installed"
-    elif [ -d "/home/stan/deepspeed" ] || [ -d "/home/stan/ml_stack/deepspeed" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/deepspeed" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/deepspeed" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/deepspeed" ]; then
+    elif [ -d "$HOME/deepspeed" ] || [ -d "$HOME/ml_stack/deepspeed" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/deepspeed" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/deepspeed" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/deepspeed" ]; then
         echo "- DeepSpeed: Installed (Python compatibility issue)"
     else
         echo "- DeepSpeed: Not installed"
@@ -803,7 +856,7 @@ fi
 if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     if $PYTHON_CMD -c "import triton" 2>/dev/null; then
         echo -e "- Triton: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/ml_stack/triton" ] || [ -d "/home/stan/Stans_MLStack/Stan-s-ML-Stack/extensions/triton" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/triton" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/triton" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/triton" ]; then
+    elif [ -d "$HOME/ml_stack/triton" ] || [ -d "$HOME/Stans_MLStack/Stan-s-ML-Stack/extensions/triton" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/triton" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/triton" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/triton" ]; then
         echo -e "- Triton: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- Triton: ${YELLOW}Not installed${RESET}"
@@ -812,7 +865,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check BITSANDBYTES with fallback
     if $PYTHON_CMD -c "import bitsandbytes" 2>/dev/null; then
         echo -e "- BITSANDBYTES: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/ml_stack/bitsandbytes" ] || [ -d "/home/stan/Stans_MLStack/Stan-s-ML-Stack/extensions/bitsandbytes" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/bitsandbytes" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/bitsandbytes" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/bitsandbytes" ]; then
+    elif [ -d "$HOME/ml_stack/bitsandbytes" ] || [ -d "$HOME/Stans_MLStack/Stan-s-ML-Stack/extensions/bitsandbytes" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/bitsandbytes" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/bitsandbytes" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/bitsandbytes" ]; then
         echo -e "- BITSANDBYTES: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- BITSANDBYTES: ${YELLOW}Not installed${RESET}"
@@ -821,7 +874,9 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check vLLM with fallback
     if $PYTHON_CMD -c "import vllm" 2>/dev/null; then
         echo -e "- vLLM: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/vllm" ] || [ -d "/home/stan/vllm_build" ] || [ -d "/home/stan/vllm_py313" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/vllm" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/vllm" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/vllm" ]; then
+    elif python_has_module vllm; then
+        echo -e "- vLLM: ${GREEN}Installed${RESET} (Python compatibility issue)"
+    elif [ -d "$HOME/vllm" ] || [ -d "$HOME/vllm_build" ] || [ -d "$HOME/vllm_py313" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/vllm" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/vllm" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/vllm" ]; then
         echo -e "- vLLM: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- vLLM: ${YELLOW}Not installed${RESET}"
@@ -830,7 +885,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check ROCm SMI with fallback
     if $PYTHON_CMD -c "from rocm_smi_lib import rsmi" 2>/dev/null; then
         echo -e "- ROCm SMI: ${GREEN}Installed${RESET}"
-    elif [ -f "/opt/rocm/bin/rocm-smi" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/rocm_smi_lib" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/rocm_smi_lib" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/rocm_smi_lib" ]; then
+    elif [ -f "/opt/rocm/bin/rocm-smi" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/rocm_smi_lib" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/rocm_smi_lib" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/rocm_smi_lib" ]; then
         echo -e "- ROCm SMI: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- ROCm SMI: ${YELLOW}Not installed${RESET}"
@@ -839,7 +894,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check PyTorch Profiler with fallback
     if $PYTHON_CMD -c "from torch.profiler import profile" 2>/dev/null; then
         echo -e "- PyTorch Profiler: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/pytorch/torch/profiler" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/torch/profiler" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/torch/profiler" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch/profiler" ]; then
+    elif [ -d "$HOME/pytorch/torch/profiler" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/torch/profiler" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/torch/profiler" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch/profiler" ]; then
         echo -e "- PyTorch Profiler: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- PyTorch Profiler: ${YELLOW}Not installed${RESET}"
@@ -848,7 +903,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
     # Check Weights & Biases with fallback
     if $PYTHON_CMD -c "import wandb" 2>/dev/null; then
         echo -e "- Weights & Biases: ${GREEN}Installed${RESET}"
-    elif [ -d "/home/stan/ml_stack/wandb" ] || [ -d "/home/stan/Stans_MLStack/extensions/wandb" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/wandb" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/wandb" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/wandb" ]; then
+    elif [ -d "$HOME/ml_stack/wandb" ] || [ -d "$HOME/Stans_MLStack/extensions/wandb" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/wandb" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/wandb" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/wandb" ]; then
         echo -e "- Weights & Biases: ${GREEN}Installed${RESET} (Python compatibility issue)"
     else
         echo -e "- Weights & Biases: ${YELLOW}Not installed${RESET}"
@@ -859,7 +914,7 @@ if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
 else
     if $PYTHON_CMD -c "import triton" 2>/dev/null; then
         echo "- Triton: Installed"
-    elif [ -d "/home/stan/ml_stack/triton" ] || [ -d "/home/stan/Stans_MLStack/Stan-s-ML-Stack/extensions/triton" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/triton" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/triton" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/triton" ]; then
+    elif [ -d "$HOME/ml_stack/triton" ] || [ -d "$HOME/Stans_MLStack/Stan-s-ML-Stack/extensions/triton" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/triton" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/triton" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/triton" ]; then
         echo "- Triton: Installed (Python compatibility issue)"
     else
         echo "- Triton: Not installed"
@@ -868,7 +923,7 @@ else
     # Check BITSANDBYTES with fallback
     if $PYTHON_CMD -c "import bitsandbytes" 2>/dev/null; then
         echo "- BITSANDBYTES: Installed"
-    elif [ -d "/home/stan/ml_stack/bitsandbytes" ] || [ -d "/home/stan/Stans_MLStack/Stan-s-ML-Stack/extensions/bitsandbytes" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/bitsandbytes" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/bitsandbytes" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/bitsandbytes" ]; then
+    elif [ -d "$HOME/ml_stack/bitsandbytes" ] || [ -d "$HOME/Stans_MLStack/Stan-s-ML-Stack/extensions/bitsandbytes" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/bitsandbytes" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/bitsandbytes" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/bitsandbytes" ]; then
         echo "- BITSANDBYTES: Installed (Python compatibility issue)"
     else
         echo "- BITSANDBYTES: Not installed"
@@ -877,7 +932,9 @@ else
     # Check vLLM with fallback
     if $PYTHON_CMD -c "import vllm" 2>/dev/null; then
         echo "- vLLM: Installed"
-    elif [ -d "/home/stan/vllm" ] || [ -d "/home/stan/vllm_build" ] || [ -d "/home/stan/vllm_py313" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/vllm" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/vllm" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/vllm" ]; then
+    elif python_has_module vllm; then
+        echo "- vLLM: Installed (Python compatibility issue)"
+    elif [ -d "$HOME/vllm" ] || [ -d "$HOME/vllm_build" ] || [ -d "$HOME/vllm_py313" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/vllm" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/vllm" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/vllm" ]; then
         echo "- vLLM: Installed (Python compatibility issue)"
     else
         echo "- vLLM: Not installed"
@@ -886,7 +943,7 @@ else
     # Check ROCm SMI with fallback
     if $PYTHON_CMD -c "from rocm_smi_lib import rsmi" 2>/dev/null; then
         echo "- ROCm SMI: Installed"
-    elif [ -f "/opt/rocm/bin/rocm-smi" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/rocm_smi_lib" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/rocm_smi_lib" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/rocm_smi_lib" ]; then
+    elif [ -f "/opt/rocm/bin/rocm-smi" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/rocm_smi_lib" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/rocm_smi_lib" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/rocm_smi_lib" ]; then
         echo "- ROCm SMI: Installed (Python compatibility issue)"
     else
         echo "- ROCm SMI: Not installed"
@@ -895,7 +952,7 @@ else
     # Check PyTorch Profiler with fallback
     if $PYTHON_CMD -c "from torch.profiler import profile" 2>/dev/null; then
         echo "- PyTorch Profiler: Installed"
-    elif [ -d "/home/stan/pytorch/torch/profiler" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/torch/profiler" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/torch/profiler" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch/profiler" ]; then
+    elif [ -d "$HOME/pytorch/torch/profiler" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/torch/profiler" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/torch/profiler" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/torch/profiler" ]; then
         echo "- PyTorch Profiler: Installed (Python compatibility issue)"
     else
         echo "- PyTorch Profiler: Not installed"
@@ -904,7 +961,7 @@ else
     # Check Weights & Biases with fallback
     if $PYTHON_CMD -c "import wandb" 2>/dev/null; then
         echo "- Weights & Biases: Installed"
-    elif [ -d "/home/stan/ml_stack/wandb" ] || [ -d "/home/stan/Stans_MLStack/extensions/wandb" ] || [ -d "/home/stan/rocm_venv/lib/python3.13/site-packages/wandb" ] || [ -d "/home/stan/rocm_venv/lib/python3.12/site-packages/wandb" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/wandb" ]; then
+    elif [ -d "$HOME/ml_stack/wandb" ] || [ -d "$HOME/Stans_MLStack/extensions/wandb" ] || [ -d "$HOME/rocm_venv/lib/python3.13/site-packages/wandb" ] || [ -d "$HOME/rocm_venv/lib/python3.12/site-packages/wandb" ] || [ -d "$HOME/.local/lib/python3.13/site-packages/wandb" ]; then
         echo "- Weights & Biases: Installed (Python compatibility issue)"
     else
         echo "- Weights & Biases: Not installed"
@@ -913,3 +970,59 @@ else
     echo "Log File: $LOG_FILE"
     echo "============================================================"
 fi
+
+summary_file="${MLSTACK_LOG_DIR:-$HOME/.mlstack/logs}/verify_summary_$(date +"%Y%m%d_%H%M%S").txt"
+mkdir -p "$(dirname "$summary_file")"
+
+rocm_status=$(command_exists hipcc && echo installed || echo missing)
+pytorch_status=$(python_has_module torch && echo installed || echo missing)
+onnx_status=$(python_has_module onnxruntime && echo installed || echo missing)
+onnx_provider=$($PYTHON_CMD - <<'PY'
+import importlib.util
+import sys
+if not importlib.util.find_spec("onnxruntime"):
+    print("missing")
+    sys.exit(0)
+import onnxruntime
+providers = onnxruntime.get_available_providers()
+print("available" if "ROCMExecutionProvider" in providers else "missing")
+PY
+)
+vllm_status=$(python_has_module vllm && echo installed || echo missing)
+aiter_status=$(python_has_module aiter && echo installed || echo missing)
+aiter_torch_status=$(python_has_module aiter.torch && echo available || echo missing)
+triton_status=$(python_has_module triton && echo installed || echo missing)
+bnb_status=$(python_has_module bitsandbytes && echo installed || echo missing)
+
+cat <<REPORT
+========================================
+Verification Summary (copyable)
+========================================
+Log file: $LOG_FILE
+Python: $PYTHON_CMD
+ROCm: $rocm_status
+PyTorch: $pytorch_status
+ONNX Runtime: $onnx_status
+ONNX ROCm EP: $onnx_provider
+vLLM: $vllm_status
+AITER: $aiter_status
+AITER torch: $aiter_torch_status
+Triton: $triton_status
+BITSANDBYTES: $bnb_status
+========================================
+Saved summary to: $summary_file
+REPORT
+
+cat <<REPORT > "$summary_file"
+Log file: $LOG_FILE
+Python: $PYTHON_CMD
+ROCm: $rocm_status
+PyTorch: $pytorch_status
+ONNX Runtime: $onnx_status
+ONNX ROCm EP: $onnx_provider
+vLLM: $vllm_status
+AITER: $aiter_status
+AITER torch: $aiter_torch_status
+Triton: $triton_status
+BITSANDBYTES: $bnb_status
+REPORT

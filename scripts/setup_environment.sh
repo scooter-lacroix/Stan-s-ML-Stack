@@ -127,7 +127,13 @@ detect_gpus() {
     fi
 
     # Get GPU count
-    gpu_count=$(rocminfo | grep "GPU ID" | wc -l)
+    gpu_count=$(rocminfo | grep -c "Device Type:.*GPU" || true)
+    if [ -z "$gpu_count" ] || [ "$gpu_count" -lt 1 ]; then
+        gpu_count=$(lspci | grep -i 'amd\|radeon\|advanced micro devices' | grep -i 'vga\|3d\|display' | wc -l)
+    fi
+    if [ -z "$gpu_count" ] || [ "$gpu_count" -lt 1 ]; then
+        gpu_count=1
+    fi
     print_step "Detected $gpu_count AMD GPU(s)"
 
     # List AMD GPUs
@@ -164,38 +170,43 @@ create_environment_file() {
 # Created by ML Stack Environment Setup Script
 
 # GPU Selection
-export HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES
-export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
-export PYTORCH_ROCM_DEVICE=$PYTORCH_ROCM_DEVICE
+if [ -z "\${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}; fi
+if [ -z "\${CUDA_VISIBLE_DEVICES:-}" ]; then export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}; fi
+if [ -z "\${PYTORCH_ROCM_DEVICE:-}" ]; then export PYTORCH_ROCM_DEVICE=${PYTORCH_ROCM_DEVICE:-0}; fi
 
 # Performance Settings
-export HSA_ENABLE_SDMA=0
-export GPU_MAX_HEAP_SIZE=100
-export GPU_MAX_ALLOC_PERCENT=100
-export HSA_TOOLS_LIB=1
+if [ -z "\${HSA_ENABLE_SDMA:-}" ]; then export HSA_ENABLE_SDMA=${HSA_ENABLE_SDMA:-0}; fi
+if [ -z "\${GPU_MAX_HEAP_SIZE:-}" ]; then export GPU_MAX_HEAP_SIZE=${GPU_MAX_HEAP_SIZE:-100}; fi
+if [ -z "\${GPU_MAX_ALLOC_PERCENT:-}" ]; then export GPU_MAX_ALLOC_PERCENT=${GPU_MAX_ALLOC_PERCENT:-100}; fi
+
+if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+else
+    unset HSA_TOOLS_LIB
+fi
 
 # MIOpen Settings
-export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
-export MIOPEN_FIND_MODE=3
-export MIOPEN_FIND_ENFORCE=3
+if [ -z "\${MIOPEN_DEBUG_CONV_IMPLICIT_GEMM:-}" ]; then export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=${MIOPEN_DEBUG_CONV_IMPLICIT_GEMM:-1}; fi
+if [ -z "\${MIOPEN_FIND_MODE:-}" ]; then export MIOPEN_FIND_MODE=${MIOPEN_FIND_MODE:-3}; fi
+if [ -z "\${MIOPEN_FIND_ENFORCE:-}" ]; then export MIOPEN_FIND_ENFORCE=${MIOPEN_FIND_ENFORCE:-3}; fi
 
 # PyTorch Settings
-export TORCH_CUDA_ARCH_LIST="7.0;8.0;9.0"
-export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"
+if [ -z "\${TORCH_CUDA_ARCH_LIST:-}" ]; then export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.0;8.0;9.0}"; fi
+if [ -z "\${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:512}"; fi
 
 # MPI Settings
-export OMPI_MCA_opal_cuda_support=true
-export OMPI_MCA_pml_ucx_opal_cuda_support=true
-export OMPI_MCA_btl_openib_allow_ib=true
-export OMPI_MCA_btl_openib_warn_no_device_params_found=0
-export OMPI_MCA_coll_hcoll_enable=0
-export OMPI_MCA_pml=ucx
-export OMPI_MCA_osc=ucx
-export OMPI_MCA_btl=^openib,uct
+if [ -z "\${OMPI_MCA_opal_cuda_support:-}" ]; then export OMPI_MCA_opal_cuda_support=${OMPI_MCA_opal_cuda_support:-true}; fi
+if [ -z "\${OMPI_MCA_pml_ucx_opal_cuda_support:-}" ]; then export OMPI_MCA_pml_ucx_opal_cuda_support=${OMPI_MCA_pml_ucx_opal_cuda_support:-true}; fi
+if [ -z "\${OMPI_MCA_btl_openib_allow_ib:-}" ]; then export OMPI_MCA_btl_openib_allow_ib=${OMPI_MCA_btl_openib_allow_ib:-true}; fi
+if [ -z "\${OMPI_MCA_btl_openib_warn_no_device_params_found:-}" ]; then export OMPI_MCA_btl_openib_warn_no_device_params_found=${OMPI_MCA_btl_openib_warn_no_device_params_found:-0}; fi
+if [ -z "\${OMPI_MCA_coll_hcoll_enable:-}" ]; then export OMPI_MCA_coll_hcoll_enable=${OMPI_MCA_coll_hcoll_enable:-0}; fi
+if [ -z "\${OMPI_MCA_pml:-}" ]; then export OMPI_MCA_pml=${OMPI_MCA_pml:-ucx}; fi
+if [ -z "\${OMPI_MCA_osc:-}" ]; then export OMPI_MCA_osc=${OMPI_MCA_osc:-ucx}; fi
+if [ -z "\${OMPI_MCA_btl:-}" ]; then export OMPI_MCA_btl=${OMPI_MCA_btl:-^openib,uct}; fi
 
-# Path Settings
-export PATH=\$PATH:/opt/rocm/bin:/opt/rocm/hip/bin
-export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/hip/lib
+# Path Settings - Hardcoded safe paths to prevent "command not found" errors
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:/opt/rocm/bin:/opt/rocm/hip/bin:\$PATH"
+export LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/hip/lib:/opt/rocm/opencl/lib:\${LD_LIBRARY_PATH:-}"
 EOF
 
     # Add source to .bashrc if not already there

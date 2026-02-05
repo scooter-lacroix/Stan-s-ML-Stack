@@ -375,7 +375,7 @@ complete_progress_bar() {
     fi
 }
 
-# Function to handle uv commands properly with venv fallback
+# Function to handle pip installation with venv fallback
 uv_pip_install() {
     local args="$@"
 
@@ -384,88 +384,50 @@ uv_pip_install() {
         return 0
     fi
 
-    # Check if uv is available as a command
-    if command_exists uv; then
-        case $INSTALL_METHOD in
-            "global")
-                print_step "Installing globally with pip..."
-                python3 -m pip install --break-system-packages $args
-                local install_exit_code=$?
-                if [ $install_exit_code -eq 0 ]; then
-                    DEEPSPEED_VENV_PYTHON=""
-                else
-                    print_error "Global installation failed, DeepSpeed requires manual installation"
-                    return 1
-                fi
-                ;;
-            "venv")
-                print_step "Creating uv virtual environment..."
+    case $INSTALL_METHOD in
+        "global")
+            print_step "Installing globally with pip..."
+            python3 -m pip install --break-system-packages $args
+            local install_exit_code=$?
+            if [ $install_exit_code -eq 0 ]; then
+                DEEPSPEED_VENV_PYTHON=""
+            else
+                print_error "Global installation failed, DeepSpeed requires manual installation"
+                return 1
+            fi
+            ;;
+        "venv")
+            print_step "Creating virtual environment..."
+            VENV_DIR="./deepspeed_rocm_venv"
+            if [ ! -d "$VENV_DIR" ]; then
+                python3 -m venv "$VENV_DIR"
+            fi
+            source "$VENV_DIR/bin/activate"
+            print_step "Installing in virtual environment..."
+            python3 -m pip install $args
+            DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
+            print_success "Installed in virtual environment: $VENV_DIR"
+            ;;
+        "auto")
+            # Try global install first
+            print_step "Attempting global installation..."
+            if python3 -m pip install --break-system-packages $args; then
+                print_success "Global installation successful"
+                DEEPSPEED_VENV_PYTHON=""
+            else
+                print_warning "Global installation failed, creating virtual environment..."
                 VENV_DIR="./deepspeed_rocm_venv"
                 if [ ! -d "$VENV_DIR" ]; then
-                    uv venv "$VENV_DIR"
+                    python3 -m venv "$VENV_DIR"
                 fi
                 source "$VENV_DIR/bin/activate"
                 print_step "Installing in virtual environment..."
-                uv pip install $args
+                python3 -m pip install $args
                 DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
                 print_success "Installed in virtual environment: $VENV_DIR"
-                ;;
-            "auto")
-                # Try global install first
-                print_step "Attempting global installation with uv..."
-                local install_output
-                install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                local install_exit_code=$?
-
-                if echo "$install_output" | grep -q "externally managed"; then
-                    print_warning "Global installation failed due to externally managed environment"
-                    print_step "Creating uv virtual environment for installation..."
-
-                    # Create uv venv in project directory
-                    VENV_DIR="./deepspeed_rocm_venv"
-                    if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
-                    fi
-
-                    # Activate venv and install
-                    source "$VENV_DIR/bin/activate"
-                    print_step "Installing in virtual environment..."
-                    uv pip install $args
-
-                    # Store venv path for verification
-                    DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
-                    print_success "Installed in virtual environment: $VENV_DIR"
-                elif [ $install_exit_code -eq 0 ]; then
-                    print_success "Global installation successful"
-                    DEEPSPEED_VENV_PYTHON=""
-                else
-                    print_error "Global installation failed with unknown error:"
-                    echo "$install_output"
-                    print_step "Falling back to virtual environment..."
-
-                    # Create uv venv in project directory
-                    VENV_DIR="./deepspeed_rocm_venv"
-                    if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
-                    fi
-
-                    # Activate venv and install
-                    source "$VENV_DIR/bin/activate"
-                    print_step "Installing in virtual environment..."
-                    uv pip install $args
-
-                    # Store venv path for verification
-                    DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
-                    print_success "Installed in virtual environment: $VENV_DIR"
-                fi
-                ;;
-        esac
-    else
-        # Fall back to pip
-        print_step "Installing with pip..."
-        python3 -m pip install $args
-        DEEPSPEED_VENV_PYTHON=""
-    fi
+            fi
+            ;;
+    esac
 }
 
 # Main installation function
@@ -479,21 +441,26 @@ install_deepspeed() {
 
     # Check if DeepSpeed is already installed
     if package_installed "deepspeed"; then
-        deepspeed_version=$(python3 -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null)
+        # Try to get version cleanly, ignoring warnings and stderr
+        deepspeed_version=$(python3 -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null | tail -n 1)
 
-        # Check if --force flag is provided
-        if [[ "$FORCE_REINSTALL" == "true" ]]; then
-            print_warning "Force reinstall requested - proceeding with reinstallation"
-            print_step "Will reinstall DeepSpeed despite working installation"
-        else
-            print_warning "DeepSpeed is already installed (version: $deepspeed_version)"
-            read -p "Do you want to reinstall? (y/n) " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                print_step "Skipping DeepSpeed installation"
+        # Check if it's working properly and detecting ROCm
+        # We check for 'cuda' or 'rocm' support in the accelerator
+        if python3 -c "import deepspeed; from deepspeed.accelerator import get_accelerator; acc=get_accelerator().communication_backend_name(); print('Working' if acc in ['nccl', 'rccl'] else 'CPU')" 2>/dev/null | grep -q "Working"; then
+            print_success "DeepSpeed is already installed and working (version: $deepspeed_version)"
+
+            # Check if --force flag is provided
+            if [[ "$FORCE_REINSTALL" == "true" ]]; then
+                print_warning "Force reinstall requested - proceeding with reinstallation"
+                print_step "Will reinstall DeepSpeed despite working installation"
+            else
+                print_step "DeepSpeed installation is complete and working. Use --force to reinstall anyway."
                 complete_progress_bar
                 return 0
             fi
+        else
+            print_warning "DeepSpeed is installed but not detecting GPU or missing deps"
+            print_step "Proceeding with reinstallation to repair it"
         fi
     fi
 
@@ -530,6 +497,15 @@ install_deepspeed() {
     # Detect environment
     is_wsl=$(detect_wsl)
     is_container=$(detect_container)
+
+    # Force DeepSpeed to use the correct accelerator if supported
+    # If 'rocm' is not supported by the installed deepspeed version, 
+    # it usually defaults to 'cuda' as an alias for HIP on ROCm systems
+    # or auto-detects it. 
+    export ROCM_HOME=/opt/rocm
+    export HIP_PATH=/opt/rocm
+    # We remove DS_ACCELERATOR=rocm as it's causing ValueError in newer versions
+    unset DS_ACCELERATOR
 
     if [ "$is_wsl" = "true" ]; then
         print_step "Detected Windows Subsystem for Linux (WSL) environment"
@@ -720,7 +696,21 @@ install_deepspeed() {
     draw_progress_bar "Installing required dependencies..."
     print_step "Installing required dependencies first..."
 
-    uv_pip_install packaging ninja pydantic jsonschema
+    # Ensure einops is installed in the correct environment
+    python3 -m pip install --break-system-packages packaging ninja pydantic jsonschema einops
+    python3 -m pip install --user --break-system-packages einops || true
+    
+    # Check for anaconda
+    if [ -d "$HOME/anaconda3" ]; then
+        "$HOME/anaconda3/bin/python" -m pip install --break-system-packages einops || true
+    fi
+    
+    # Force DeepSpeed to use ROCm during installation too
+    # We remove DS_ACCELERATOR=rocm as it's causing ValueError in newer versions
+    # DeepSpeed auto-detects ROCm when ROCM_HOME is set
+    unset DS_ACCELERATOR
+    export ROCM_HOME=/opt/rocm
+    export HIP_PATH=/opt/rocm
 
     # Install DeepSpeed
     update_progress_bar 20
@@ -731,7 +721,12 @@ install_deepspeed() {
     set +e  # Don't exit on error
 
     # First attempt
-    uv_pip_install deepspeed
+    # We remove DS_ACCELERATOR=rocm as it's causing ValueError in newer versions
+    # DeepSpeed auto-detects ROCm when ROCM_HOME is set
+    unset DS_ACCELERATOR
+    export ROCM_HOME=/opt/rocm
+    export HIP_PATH=/opt/rocm
+    python3 -m pip install --break-system-packages deepspeed einops
     install_result=$?
 
     if [ $install_result -ne 0 ]; then
@@ -779,7 +774,7 @@ install_deepspeed() {
         # Check for all required dependencies
         print_step "Verifying all dependencies are installed..."
         log_message "INFO" "Verifying dependencies"
-        for dep in packaging ninja pydantic jsonschema; do
+        for dep in packaging ninja pydantic jsonschema einops; do
             if $PYTHON_CMD -c "import ${dep//-/_}" &>/dev/null; then
                 print_success "$dep is installed"
                 log_message "INFO" "Dependency $dep is installed"

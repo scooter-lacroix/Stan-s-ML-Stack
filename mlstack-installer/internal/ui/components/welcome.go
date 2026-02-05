@@ -17,8 +17,8 @@ type WelcomeComponent struct {
 	X, Y   int
 
 	// State
-	Ready    bool
-	Focused  bool
+	Ready     bool
+	Focused   bool
 	StartTime time.Time
 
 	// Integration
@@ -34,6 +34,13 @@ type WelcomeComponent struct {
 
 // NewWelcomeComponent creates a new welcome component with AMD branding
 func NewWelcomeComponent(width, height int, integration integration.Manager) *WelcomeComponent {
+	if width < 40 {
+		width = 40
+	}
+	if height < 10 {
+		height = 10
+	}
+
 	// Calculate dimensions
 	borderWidth := 4
 	contentWidth := width - borderWidth*2
@@ -71,16 +78,16 @@ func NewWelcomeComponent(width, height int, integration integration.Manager) *We
 		Padding(1)
 
 	return &WelcomeComponent{
-		Width:      width,
-		Height:     height,
-		Ready:      true,
-		StartTime:  time.Now(),
-		integration: integration,
-		TitleStyle:  titleStyle,
+		Width:         width,
+		Height:        height,
+		Ready:         true,
+		StartTime:     time.Now(),
+		integration:   integration,
+		TitleStyle:    titleStyle,
 		SubtitleStyle: subtitleStyle,
-		ContentStyle: contentStyle,
-		HelpStyle:   helpStyle,
-		BorderStyle: borderStyle,
+		ContentStyle:  contentStyle,
+		HelpStyle:     helpStyle,
+		BorderStyle:   borderStyle,
 	}
 }
 
@@ -133,7 +140,7 @@ func (c *WelcomeComponent) View() string {
 	}
 
 	for _, feature := range features {
-		content += c.ContentStyle.Render("  • " + feature) + "\n"
+		content += c.ContentStyle.Render("  • "+feature) + "\n"
 	}
 
 	content += "\n"
@@ -147,6 +154,12 @@ func (c *WelcomeComponent) View() string {
 
 // SetBounds sets the component bounds
 func (c *WelcomeComponent) SetBounds(x, y, width, height int) {
+	if width < 40 {
+		width = 40
+	}
+	if height < 10 {
+		height = 10
+	}
 	c.X = x
 	c.Y = y
 	c.Width = width

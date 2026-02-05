@@ -37,7 +37,7 @@ echo "Setting up environment for tests..."
 unset HSA_TOOLS_LIB
 
 # Add custom ONNX Runtime build to PYTHONPATH
-export PYTHONPATH="/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH"
+export PYTHONPATH="$HOME/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH"
 
 # Set environment variables for ROCm (similar to test_onnx_simple.py)
 export HIP_VISIBLE_DEVICES="0,1"
