@@ -1,0 +1,40 @@
+apiVersion: v2
+name: stans-ml-stack
+description: A comprehensive machine learning environment optimized for AMD GPUs
+type: application
+version: 1.0.0
+appVersion: "0.1.5"
+home: https://github.com/scooter-lacroix/Stans_MLStack
+sources:
+  - https://github.com/scooter-lacroix/Stans_MLStack
+maintainers:
+  - name: Stanley Chisango (Scooter Lacroix)
+    email: scooterlacroix@gmail.com
+keywords:
+  - machine-learning
+  - amd-gpu
+  - rocm
+  - pytorch
+  - deep-learning
+  - llm
+  - artificial-intelligence
+annotations:
+  category: Analytics
+  licenses: MIT
+dependencies:
+  - name: prometheus
+    version: "25.8.0"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheus.enabled
+  - name: grafana
+    version: "8.0.0"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: grafana.enabled
+  - name: redis
+    version: "18.1.4"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: postgresql
+    version: "12.12.10"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled

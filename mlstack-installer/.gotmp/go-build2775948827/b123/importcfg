@@ -1,7 +1,0 @@
-# import config
-packagefile fmt=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b002/_pkg_.a
-packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/types=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b122/_pkg_.a
-packagefile runtime=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b009/_pkg_.a
-packagefile sync=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b038/_pkg_.a
-packagefile sync/atomic=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b040/_pkg_.a
-packagefile time=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b049/_pkg_.a

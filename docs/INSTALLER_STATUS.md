@@ -42,12 +42,12 @@ This document describes the current status of all installers for Rusty Stack (fo
 | **Rusty-Stack TUI** | ✅ **ACTIVE** | Rust + Ratatui | The primary system management interface. Handles installation, hardware detection, and persistent performance benchmarking. |
 | **PyPI Package** | ✅ **ACTIVE** | Python | `stans-ml-stack` package on PyPI. Maintained for backward compatibility and CLI automation. |
 
-### End of Life (Deprecated)
+### End of Life (Deprecated/Removed)
 
 | Installer | Status | Technology | Description |
 |-----------|--------|------------|-------------|
 | **Python Curses** | 💀 **EOL** | Python + curses | `scripts/install_ml_stack_curses.py`. No longer recommended. |
-| **Go Installer** | ❌ **DEPRECATED** | Go + Bubble Tea | `mlstack-installer/`. No longer maintained. |
+| **Go Installer** | ❌ **REMOVED** | Go + Bubble Tea | Completely removed from repository. Use Rusty-Stack TUI instead. |
 
 ## Installation Methods
 
@@ -93,9 +93,9 @@ If you're currently using the Python curses installer (`install_ml_stack_curses.
 
 ### From Go Installer
 
-If you're using the deprecated Go installer:
+The Go installer has been completely removed from the repository.
 
-1. **Switch to Rusty-Stack** - The Go installer is no longer maintained
+1. **Switch to Rusty-Stack** - The Go installer is no longer available
 2. **Your installation is still valid** - Components installed via the Go installer remain functional
 3. **Use Rusty-Stack for updates** - Run Rusty-Stack to update or add components
 

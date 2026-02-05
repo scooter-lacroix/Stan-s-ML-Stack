@@ -1,0 +1,420 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "performance-optimization-engine.fullname" . }}-performance-engine
+  labels:
+    {{- include "performance-optimization-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+spec:
+  {{- if not .Values.performanceEngine.autoscaling.enabled }}
+  replicas: {{ .Values.performanceEngine.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "performance-optimization-engine.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: performance-engine
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.performanceEngine.monitoring.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.performanceEngine.monitoring.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
+      labels:
+        {{- include "performance-optimization-engine.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: performance-engine
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "performance-optimization-engine.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.security.podSecurityContext | nindent 8 }}
+      {{- if .Values.performanceEngine.amdGPU.enabled }}
+      nodeSelector:
+        accelerator: "amd-gpu"
+        {{- with .Values.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else if .Values.gpu.nvidia.enabled }}
+      nodeSelector:
+        accelerator: "nvidia-gpu"
+        {{- with .Values.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/component
+                      operator: In
+                      values:
+                        - performance-engine
+                topologyKey: kubernetes.io/hostname
+        {{- with .Values.affinity }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      tolerations:
+        {{- if .Values.performanceEngine.amdGPU.enabled }}
+        - key: "amd.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        {{- end }}
+        {{- if .Values.gpu.nvidia.enabled }}
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+        {{- end }}
+        {{- with .Values.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      initContainers:
+        - name: init-permissions
+          image: busybox:1.35
+          command: ['sh', '-c', 'mkdir -p /data/performance /data/security /logs && chown -R 1000:1000 /data /logs']
+          volumeMounts:
+            - name: performance-data
+              mountPath: /data/performance
+            - name: security-data
+              mountPath: /data/security
+            - name: logs
+              mountPath: /logs
+          securityContext:
+            runAsUser: 0
+        - name: wait-for-database
+          image: postgres:15-alpine
+          command: ['sh', '-c', 
+            'until pg_isready -h {{ .Values.database.postgresql.primary.service.ports.postgresql }} -p {{ .Values.database.postgresql.primary.service.ports.postgresql }} -U {{ .Values.database.postgresql.auth.username }}; do echo "Waiting for PostgreSQL..."; sleep 2; done']
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-postgresql
+                  key: password
+        - name: wait-for-redis
+          image: redis:7-alpine
+          command: ['sh', '-c',
+            'until redis-cli -h {{ .Values.database.redis.master.service.ports.redis }} -p {{ .Values.database.redis.master.service.ports.redis }} -a {{ .Values.database.redis.auth.password }} ping; do echo "Waiting for Redis..."; sleep 2; done']
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-redis
+                  key: password
+      containers:
+        - name: performance-engine
+          securityContext:
+            {{- toYaml .Values.security.containerSecurityContext | nindent 12 }}
+          image: "{{ .Values.performanceEngine.image.registry }}/{{ .Values.performanceEngine.image.repository }}:{{ .Values.performanceEngine.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.performanceEngine.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.performanceEngine.service.targetPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.performanceEngine.monitoring.metricsPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.performanceEngine.monitoring.healthPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: {{ .Values.observability.health.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.observability.health.livenessProbe.periodSeconds }}
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: {{ .Values.observability.health.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.observability.health.readinessProbe.periodSeconds }}
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: DATABASE_HOST
+              value: {{ .Values.database.postgresql.primary.service.ports.postgresql }}
+            - name: DATABASE_PORT
+              value: "{{ .Values.database.postgresql.primary.service.ports.postgresql }}"
+            - name: DATABASE_NAME
+              value: {{ .Values.database.postgresql.auth.database }}
+            - name: DATABASE_USER
+              value: {{ .Values.database.postgresql.auth.username }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-postgresql
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.database.redis.master.service.ports.redis }}
+            - name: REDIS_PORT
+              value: "{{ .Values.database.redis.master.service.ports.redis }}"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-redis
+                  key: password
+            - name: PERFORMANCE_ENGINE_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-config
+                  key: performance-engine.yaml
+            - name: LOG_LEVEL
+              value: {{ .Values.custom.environment | upper }}
+            - name: ENVIRONMENT
+              value: {{ .Values.custom.environment }}
+            - name: OPTIMIZATION_ENABLED
+              value: {{ .Values.performanceEngine.optimization.enabled | quote }}
+            - name: REAL_TIME_MODE
+              value: {{ .Values.performanceEngine.optimization.realTimeMode | quote }}
+            - name: AMD_GPU_ENABLED
+              value: {{ .Values.performanceEngine.optimization.amdGPUEnabled | quote }}
+            - name: SECURITY_ENABLED
+              value: {{ .Values.performanceEngine.optimization.securityEnabled | quote }}
+            - name: MONITORING_ENABLED
+              value: {{ .Values.performanceEngine.monitoring.enabled | quote }}
+            - name: GPU_DEVICE_COUNT
+              value: {{ .Values.performanceEngine.amdGPU.deviceCount | quote }}
+            - name: GPU_MEMORY_LIMIT
+              value: {{ .Values.performanceEngine.amdGPU.memoryLimit | quote }}
+            - name: GPU_POWER_LIMIT
+              value: {{ .Values.performanceEngine.amdGPU.powerLimit | quote }}
+            {{- if .Values.performanceEngine.amdGPU.enabled }}
+            - name: ROCM_PATH
+              value: "/opt/rocm"
+            - name: HIP_VISIBLE_DEVICES
+              value: "0"
+            - name: HSA_OVERRIDE_GFX_VERSION
+              value: "11.0.0"
+            - name: GPU_MAX_HEAP_SIZE
+              value: "100M"
+            - name: GPU_MAX_ALLOC_PERCENT
+              value: "100"
+            - name: GPU_SINGLE_ALLOC_PERCENT
+              value: "100"
+            - name: GPU_MAX_CLOCKS
+              value: "0"
+            - name: GPU_ALLOW_GROWTH
+              value: "1"
+            - name: PYTORCH_ROCM_ARCH
+              value: "GFX1100"
+            {{- end }}
+          resources:
+            {{- if .Values.performanceEngine.amdGPU.enabled }}
+            limits:
+              cpu: {{ .Values.performanceEngine.resources.limits.cpu }}
+              memory: {{ .Values.performanceEngine.resources.limits.memory }}
+              amd.com/gpu: {{ .Values.performanceEngine.amdGPU.deviceCount | quote }}
+            requests:
+              cpu: {{ .Values.performanceEngine.resources.requests.cpu }}
+              memory: {{ .Values.performanceEngine.resources.requests.memory }}
+            {{- else if .Values.gpu.nvidia.enabled }}
+            limits:
+              cpu: {{ .Values.performanceEngine.resources.limits.cpu }}
+              memory: {{ .Values.performanceEngine.resources.limits.memory }}
+              nvidia.com/gpu: {{ .Values.gpu.nvidia.deviceCount | quote }}
+            requests:
+              cpu: {{ .Values.performanceEngine.resources.requests.cpu }}
+              memory: {{ .Values.performanceEngine.resources.requests.memory }}
+            {{- else }}
+            limits:
+              cpu: {{ .Values.performanceEngine.resources.limits.cpu }}
+              memory: {{ .Values.performanceEngine.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.performanceEngine.resources.requests.cpu }}
+              memory: {{ .Values.performanceEngine.resources.requests.memory }}
+            {{- end }}
+          volumeMounts:
+            - name: performance-data
+              mountPath: /data/performance
+              subPath: performance
+            - name: security-data
+              mountPath: /data/security
+              subPath: security
+            - name: logs
+              mountPath: /logs
+              subPath: logs
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+            - name: tmp-volume
+              mountPath: /tmp
+            {{- if .Values.performanceEngine.amdGPU.enabled }}
+            - name: rocm-volume
+              mountPath: /opt/rocm
+              readOnly: true
+            {{- end }}
+          {{- if .Values.development.enabled }}
+          - name: debug-volume
+            mountPath: /app/debug
+          {{- end }}
+        {{- if .Values.securityScanner.enabled }}
+        - name: security-scanner
+          securityContext:
+            {{- toYaml .Values.security.containerSecurityContext | nindent 12 }}
+          image: "{{ .Values.securityScanner.image.registry }}/{{ .Values.securityScanner.image.repository }}:{{ .Values.securityScanner.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.securityScanner.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.securityScanner.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DATABASE_HOST
+              value: {{ .Values.database.postgresql.primary.service.ports.postgresql }}
+            - name: DATABASE_PORT
+              value: "{{ .Values.database.postgresql.primary.service.ports.postgresql }}"
+            - name: DATABASE_NAME
+              value: {{ .Values.database.postgresql.auth.database }}
+            - name: DATABASE_USER
+              value: {{ .Values.database.postgresql.auth.username }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-postgresql
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.database.redis.master.service.ports.redis }}
+            - name: REDIS_PORT
+              value: "{{ .Values.database.redis.master.service.ports.redis }}"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-redis
+                  key: password
+            - name: SCANNER_CONFIG
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "performance-optimization-engine.fullname" . }}-config
+                  key: security-scanner.yaml
+            - name: SCAN_INTERVAL
+              value: {{ .Values.securityScanner.scanning.interval | quote }}
+            - name: MAX_CONCURRENT_SCANS
+              value: {{ .Values.securityScanner.scanning.maxConcurrentScans | quote }}
+            - name: REAL_TIME_MONITORING
+              value: {{ .Values.securityScanner.scanning.realTimeMonitoring | quote }}
+          resources:
+            limits:
+              cpu: {{ .Values.securityScanner.resources.limits.cpu }}
+              memory: {{ .Values.securityScanner.resources.limits.memory }}
+            requests:
+              cpu: {{ .Values.securityScanner.resources.requests.cpu }}
+              memory: {{ .Values.securityScanner.resources.requests.memory }}
+          volumeMounts:
+            - name: security-data
+              mountPath: /data/security
+              subPath: security
+            - name: logs
+              mountPath: /logs
+              subPath: security
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+            - name: tmp-volume
+              mountPath: /tmp
+        {{- end }}
+      volumes:
+        - name: performance-data
+          persistentVolumeClaim:
+            claimName: {{ include "performance-optimization-engine.fullname" . }}-performance-data
+        - name: security-data
+          persistentVolumeClaim:
+            claimName: {{ include "performance-optimization-engine.fullname" . }}-security-data
+        - name: logs
+          persistentVolumeClaim:
+            claimName: {{ include "performance-optimization-engine.fullname" . }}-logs
+        - name: config-volume
+          configMap:
+            name: {{ include "performance-optimization-engine.fullname" . }}-config
+        - name: tmp-volume
+          emptyDir: {}
+        {{- if .Values.performanceEngine.amdGPU.enabled }}
+        - name: rocm-volume
+          hostPath:
+            path: /opt/rocm
+            type: Directory
+        {{- end }}
+        {{- if .Values.development.enabled }}
+        - name: debug-volume
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

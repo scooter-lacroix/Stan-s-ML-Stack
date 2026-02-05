@@ -1,0 +1,581 @@
+# Default values for performance-optimization-engine.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global configuration
+global:
+  imageRegistry: "bartholemewii"
+  imageTag: "latest"
+  imagePullPolicy: "IfNotPresent"
+  storageClass: "standard"
+  
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+
+# Performance Engine Configuration
+performanceEngine:
+  # Image configuration
+  image:
+    registry: "bartholemewii"
+    repository: "stans-ml-stack"
+    tag: "latest"
+    pullPolicy: "IfNotPresent"
+
+  # Replica count
+  replicaCount: 3
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+    annotations: {}
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: performance.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: performance-tls
+        hosts:
+          - performance.example.com
+
+  # Resource management
+  resources:
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+      gpu: "1"
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+
+  # Performance optimization settings
+  optimization:
+    enabled: true
+    interval: "5m"
+    realTimeMode: true
+    amdGPUEnabled: true
+    optimizationEnabled: true
+    securityEnabled: true
+    predictionEnabled: true
+    alertingEnabled: true
+    storageEnabled: true
+
+  # AMD GPU Configuration
+  amdGPU:
+    enabled: true
+    deviceCount: 1
+    memoryLimit: "24Gi"
+    powerLimit: "300W"
+    clockBoost: true
+    overdriveEnabled: true
+
+  # Monitoring configuration
+  monitoring:
+    enabled: true
+    interval: "30s"
+    metricsPort: 9090
+    healthPort: 8081
+
+  # Security configuration
+  security:
+    enabled: true
+    scanInterval: "1h"
+    deepScanInterval: "24h"
+    realTimeMonitoring: true
+    threatDetectionEnabled: true
+    malwareScanningEnabled: true
+    complianceCheckingEnabled: true
+
+# Security Scanner Configuration
+securityScanner:
+  # Image configuration
+  image:
+    registry: "bartholemewii"
+    repository: "stans-ml-stack"
+    tag: "latest"
+    pullPolicy: "IfNotPresent"
+
+  # Replica count
+  replicaCount: 2
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 8081
+    targetPort: 8081
+
+  # Resource management
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+
+  # Scanning configuration
+  scanning:
+    enabled: true
+    interval: "1h"
+    maxConcurrentScans: 5
+    realTimeMonitoring: true
+    vulnerabilityScanning: true
+    malwareDetection: true
+    complianceChecking: true
+
+# Monitoring Stack Configuration
+monitoring:
+  # Prometheus configuration
+  prometheus:
+    enabled: true
+    server:
+      replicaCount: 2
+      retention: "15d"
+      resources:
+        limits:
+          cpu: "1000m"
+          memory: "2Gi"
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+      persistentVolume:
+        enabled: true
+        size: "20Gi"
+        storageClass: "standard"
+
+  # Grafana configuration
+  grafana:
+    enabled: true
+    replicaCount: 2
+    adminPassword: "admin123"
+    service:
+      type: ClusterIP
+      port: 3000
+    persistence:
+      enabled: true
+      size: "10Gi"
+      storageClass: "standard"
+    plugins:
+      - "grafana-piechart-panel"
+      - "grafana-worldmap-panel"
+      - "grafana-clock-panel"
+    dashboards:
+      enabled: true
+      default:
+        performance-engine:
+          json: |
+            {
+              "dashboard": {
+                "title": "Performance Engine Dashboard",
+                "panels": [
+                  {
+                    "title": "CPU Usage",
+                    "type": "stat",
+                    "targets": [
+                      {
+                        "expr": "rate(cpu_usage_total[5m])",
+                        "legendFormat": "CPU Usage %"
+                      }
+                    ]
+                  },
+                  {
+                    "title": "Memory Usage",
+                    "type": "stat",
+                    "targets": [
+                      {
+                        "expr": "rate(memory_usage_bytes[5m])",
+                        "legendFormat": "Memory Usage"
+                      }
+                    ]
+                  },
+                  {
+                    "title": "GPU Utilization",
+                    "type": "stat",
+                    "targets": [
+                      {
+                        "expr": "rate(gpu_utilization_percent[5m])",
+                        "legendFormat": "GPU Utilization %"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+
+# Database Configuration
+database:
+  # PostgreSQL configuration
+  postgresql:
+    enabled: true
+    auth:
+      postgresPassword: "postgres123"
+      username: "perfengine"
+      password: "perfengine123"
+      database: "performance_engine"
+    primary:
+      persistence:
+        enabled: true
+        size: "20Gi"
+        storageClass: "standard"
+      resources:
+        limits:
+          cpu: "1000m"
+          memory: "2Gi"
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+
+  # Redis configuration
+  redis:
+    enabled: true
+    auth:
+      enabled: true
+      password: "redis123"
+    master:
+      persistence:
+        enabled: true
+        size: "8Gi"
+        storageClass: "standard"
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "1Gi"
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+
+# Logging Configuration
+logging:
+  # Elasticsearch configuration
+  elasticsearch:
+    enabled: true
+    replicas: 3
+    minimumMasterNodes: 2
+    volumeClaimTemplate:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: "30Gi"
+      storageClassName: "standard"
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+
+  # Kibana configuration
+  kibana:
+    enabled: true
+    replicas: 2
+    service:
+      type: ClusterIP
+      port: 5601
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+
+# Storage Configuration
+storage:
+  # Persistent volumes for performance data
+  performanceData:
+    enabled: true
+    size: "100Gi"
+    storageClass: "standard"
+    accessMode: "ReadWriteOnce"
+
+  # Persistent volumes for security data
+  securityData:
+    enabled: true
+    size: "50Gi"
+    storageClass: "standard"
+    accessMode: "ReadWriteOnce"
+
+  # Persistent volumes for logs
+  logs:
+    enabled: true
+    size: "200Gi"
+    storageClass: "standard"
+    accessMode: "ReadWriteOnce"
+
+# Network Configuration
+network:
+  # Network policies
+  policies:
+    enabled: true
+    ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+    egress:
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      - to: []
+        ports:
+          - protocol: TCP
+            port: 443
+          - protocol: TCP
+            port: 53
+          - protocol: UDP
+            port: 53
+
+  # Service mesh configuration
+  serviceMesh:
+    enabled: false
+    istio:
+      enabled: false
+      sidecarInjection: enabled
+
+# Security Configuration
+security:
+  # Pod Security Policy
+  podSecurityPolicy:
+    enabled: true
+    privileged: false
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    runAsUser:
+      rule: MustRunAsNonRoot
+    fsGroup:
+      rule: MustRunAs
+
+  # RBAC configuration
+  rbac:
+    enabled: true
+    serviceAccount:
+      create: true
+      name: "performance-engine"
+      annotations: {}
+
+  # Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  # Container security context
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+    privileged: false
+
+# Autoscaling Configuration
+autoscaling:
+  # Horizontal Pod Autoscaler
+  hpa:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 60
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+          - type: Percent
+            value: 10
+            periodSeconds: 60
+
+  # Vertical Pod Autoscaler
+  vpa:
+    enabled: false
+    updateMode: "Auto"
+
+# Backup Configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *" # Daily at 2 AM
+  retention: "30d"
+  storage:
+    size: "100Gi"
+    storageClass: "standard"
+  databases:
+    postgresql:
+      enabled: true
+      schedule: "0 3 * * *"
+    redis:
+      enabled: true
+      schedule: "0 4 * * *"
+  files:
+    enabled: true
+    paths:
+      - "/data/performance"
+      - "/data/security"
+      - "/logs"
+
+# Disaster Recovery Configuration
+disasterRecovery:
+  enabled: true
+  region: "us-west-2"
+  multiRegion:
+    enabled: false
+    backupRegion: "us-east-1"
+  rpo: "1h" # Recovery Point Objective
+  rto: "4h" # Recovery Time Objective
+  testing:
+    enabled: true
+    schedule: "0 0 1 * *" # Monthly disaster recovery test
+
+# Observability Configuration
+observability:
+  # Tracing
+  tracing:
+    enabled: true
+    jaeger:
+      enabled: true
+      collector:
+        port: 14268
+      agent:
+        port: 6831
+
+  # Metrics
+  metrics:
+    enabled: true
+    prometheus:
+      enabled: true
+      port: 9090
+      path: "/metrics"
+
+  # Health checks
+  health:
+    enabled: true
+    livenessProbe:
+      httpGet:
+        path: "/health"
+        port: 8081
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: "/ready"
+        port: 8081
+      initialDelaySeconds: 5
+      periodSeconds: 5
+
+# Testing Configuration
+testing:
+  # Load testing
+  loadTesting:
+    enabled: false
+    k6:
+      enabled: false
+      script: "./tests/load.js"
+      duration: "10m"
+      vus: 100
+
+  # Integration testing
+  integrationTesting:
+    enabled: false
+    pytest:
+      enabled: false
+      path: "./tests/integration"
+
+# Development Configuration
+development:
+  enabled: false
+  debug:
+    enabled: false
+    port: 4000
+  hotReload:
+    enabled: false
+  profiling:
+    enabled: false
+    port: 6060
+
+# Production Configuration
+production:
+  enabled: true
+  highAvailability:
+    enabled: true
+  multiAZ:
+    enabled: true
+  rollingUpdate:
+    enabled: true
+    maxUnavailable: 1
+    maxSurge: 1
+  resources:
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+
+# GPU Configuration
+gpu:
+  enabled: true
+  vendor: "amd"
+  deviceCount: 1
+  deviceType: "rocm"
+  resources:
+    requests:
+      amd.com/gpu: 1
+    limits:
+      amd.com/gpu: 1
+  # NVIDIA GPU configuration (alternative)
+  nvidia:
+    enabled: false
+    deviceCount: 1
+    migManager:
+      enabled: false
+    dcgmExporter:
+      enabled: false
+
+# Custom Configuration
+custom:
+  # Environment-specific settings
+  environment: "production"
+  
+  # Feature flags
+  features:
+    advancedOptimization: true
+    realTimeMonitoring: true
+    aiPredictions: true
+    securityScanning: true
+    complianceReporting: true
+  
+  # Custom annotations
+  annotations: {}
+  
+  # Custom labels
+  labels:
+    app: "performance-optimization-engine"
+    tier: "application"
+    environment: "production"

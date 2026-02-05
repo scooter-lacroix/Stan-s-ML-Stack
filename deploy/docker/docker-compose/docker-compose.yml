@@ -1,0 +1,439 @@
+# Stan's ML Stack - Production Docker Compose Configuration
+# Enterprise-grade containerized deployment with multi-platform support
+
+version: '3.8'
+
+services:
+  # Main ML Stack Application
+  ml-stack:
+    image: bartholemewii/stans-ml-stack:latest
+    container_name: stans-ml-stack
+    restart: unless-stopped
+
+    # Platform-specific build configuration
+    platform: ${PLATFORM:-linux/amd64}
+
+    # Port mapping
+    ports:
+      - "8080:8080"      # Main application port
+      - "9090:9090"      # Metrics port
+      - "6006:6006"      # TensorBoard/Jupyter
+
+    # Environment variables
+    environment:
+      # ROCm/GPU Configuration
+      - ROCM_PATH=/opt/rocm
+      - HIP_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTORCH_ROCM_ARCH=GFX1100
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
+
+      # Performance Settings
+      - GPU_MAX_HEAP_SIZE=100
+      - GPU_MAX_ALLOC_PERCENT=100
+      - HSA_ENABLE_SDMA=0
+      - HSA_TOOLS_LIB=1
+
+      # Application Settings
+      - MLSTACK_ENV=production
+      - MLSTACK_LOG_LEVEL=INFO
+      - MLSTACK_DATA_DIR=/data
+      - MLSTACK_CACHE_DIR=/cache
+      - MLSTACK_LOG_DIR=/logs
+      - PYTHONPATH=/opt/stans-ml-stack:/opt/rocm/lib
+      - PYTHONUNBUFFERED=1
+
+      # Database Configuration
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/mlstack
+      - REDIS_URL=redis://redis:6379/0
+
+      # Monitoring Configuration
+      - PROMETHEUS_ENABLED=true
+      - GRAFANA_ENABLED=true
+      - METRICS_PORT=9090
+
+    # Volume mounts
+    volumes:
+      - mlstack_data:/data
+      - mlstack_cache:/cache
+      - mlstack_logs:/logs
+      - mlstack_config:/config
+      - ./config:/app/config:ro
+
+    # GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia  # Changed to amd for ROCm support
+              count: 1
+              capabilities: [gpu]
+
+    # Health checks
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service,environment"
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # User configuration
+    user: "1000:1000"
+
+    # Networks
+    networks:
+      - mlstack-network
+      - monitoring-network
+
+    # Dependencies
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: mlstack-postgres
+    restart: unless-stopped
+
+    environment:
+      - POSTGRES_DB=mlstack
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secure_password_change_me}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+
+    ports:
+      - "5432:5432"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - mlstack-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: mlstack-redis
+    restart: unless-stopped
+
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password_change_me}
+
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+
+    ports:
+      - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - mlstack-network
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: mlstack-prometheus
+    restart: unless-stopped
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+
+    volumes:
+      - prometheus_data:/prometheus
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+
+    ports:
+      - "9091:9090"
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - monitoring-network
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: mlstack-grafana
+    restart: unless-stopped
+
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin_change_me}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,grafana-piechart-panel
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SMTP_ENABLED=${SMTP_ENABLED:-false}
+      - GF_SMTP_HOST=${SMTP_HOST}
+      - GF_SMTP_USER=${SMTP_USER}
+      - GF_SMTP_PASSWORD=${SMTP_PASSWORD}
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    ports:
+      - "3000:3000"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - monitoring-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: mlstack-nginx
+    restart: unless-stopped
+
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - mlstack-network
+      - monitoring-network
+
+    depends_on:
+      - ml-stack
+
+  # Jupyter Notebook Service (Optional)
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: mlstack-jupyter
+    restart: unless-stopped
+
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-secure_token_change_me}
+      - NOTEBOOK_DIR=/home/jovyan/work
+
+    volumes:
+      - jupyter_data:/home/jovyan/work
+      - ./jupyter/config:/etc/jupyter:ro
+
+    ports:
+      - "8888:8888"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/api"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - mlstack-network
+
+    # Optional service - set JUPYTER_ENABLED=false to disable
+    profiles:
+      - optional
+
+  # TensorBoard Service (Optional)
+  tensorboard:
+    image: tensorflow/tensorflow:latest
+    container_name: mlstack-tensorboard
+    restart: unless-stopped
+
+    command: tensorboard --logdir=/logs --host=0.0.0.0 --port=6006
+
+    volumes:
+      - mlstack_logs:/logs
+      - ./tensorboard/config:/etc/tensorboard:ro
+
+    ports:
+      - "6006:6006"
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6006"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - mlstack-network
+
+    # Optional service - set TENSORBOARD_ENABLED=false to disable
+    profiles:
+      - optional
+
+# Network Configuration
+networks:
+  mlstack-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+  monitoring-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+# Volume Configuration
+volumes:
+  # Application Data
+  mlstack_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/data
+
+  mlstack_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/cache
+
+  mlstack_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/logs
+
+  mlstack_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PWD}/config
+
+  # Database Data
+  postgres_data:
+    driver: local
+
+  redis_data:
+    driver: local
+
+  # Monitoring Data
+  prometheus_data:
+    driver: local
+
+  grafana_data:
+    driver: local
+
+  # Development Data
+  jupyter_data:
+    driver: local

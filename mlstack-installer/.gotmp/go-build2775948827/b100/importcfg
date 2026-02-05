@@ -1,8 +1,0 @@
-# import config
-packagefile errors=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b003/_pkg_.a
-packagefile fmt=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b002/_pkg_.a
-packagefile golang.org/x/sys/unix=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b084/_pkg_.a
-packagefile io=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b043/_pkg_.a
-packagefile os=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b044/_pkg_.a
-packagefile strings=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b065/_pkg_.a
-packagefile sync=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b038/_pkg_.a

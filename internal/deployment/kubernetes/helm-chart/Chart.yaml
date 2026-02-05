@@ -1,0 +1,60 @@
+apiVersion: v2
+name: performance-optimization-engine
+description: Enterprise-grade performance optimization and security framework for AMD GPU environments
+type: application
+version: 1.0.0
+appVersion: "0.1.5"
+
+keywords:
+  - performance
+  - optimization
+  - security
+  - amd-gpu
+  - rocm
+  - monitoring
+  - ml-ops
+  - devops
+
+home: https://github.com/scooter-lacroix/Stan-s-ML-Stack
+sources:
+  - https://github.com/scooter-lacroix/Stan-s-ML-Stack
+
+maintainers:
+  - name: Stanley Chisango
+    email: scooterlacroix@gmail.com
+    url: https://github.com/scooter-lacroix
+
+dependencies:
+  - name: prometheus
+    version: "25.8.0"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheus.enabled
+  - name: grafana
+    version: "7.3.9"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: grafana.enabled
+  - name: redis
+    version: "19.5.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: postgresql
+    version: "15.5.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: elasticsearch
+    version: "21.3.2"
+    repository: "https://helm.elastic.co"
+    condition: elasticsearch.enabled
+  - name: kibana
+    version: "10.4.4"
+    repository: "https://helm.elastic.co"
+    condition: kibana.enabled
+
+annotations:
+  category: "Analytics"
+  licenses: "MIT"
+  images: |
+    - name: performance-engine
+      image: "bartholemewii/stans-ml-stack:latest"
+  - name: security-scanner
+      image: "bartholemewii/stans-ml-stack:latest"

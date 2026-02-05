@@ -1,6 +1,0 @@
-# import config
-packagefile github.com/charmbracelet/bubbles/progress=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b119/_pkg_.a
-packagefile github.com/charmbracelet/bubbles/spinner=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b108/_pkg_.a
-packagefile github.com/scooter-lacroix/mlstack-installer/internal/installer=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b110/_pkg_.a
-packagefile github.com/scooter-lacroix/mlstack-installer/internal/ui/types=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b122/_pkg_.a
-packagefile time=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b049/_pkg_.a

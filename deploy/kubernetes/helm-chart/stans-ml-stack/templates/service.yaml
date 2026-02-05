@@ -1,0 +1,50 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "stans-ml-stack.fullname" . }}
+  labels:
+    {{- include "stans-ml-stack.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+      name: http
+    {{- if .Values.monitoring.enabled }}
+    - port: {{ .Values.monitoring.prometheus.metrics.port }}
+      targetPort: {{ .Values.monitoring.prometheus.metrics.port }}
+      protocol: TCP
+      name: metrics
+    {{- end }}
+  selector:
+    {{- include "stans-ml-stack.selectorLabels" . | nindent 4 }}
+
+---
+{{- if .Values.monitoring.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "stans-ml-stack.fullname" . }}-metrics
+  labels:
+    {{- include "stans-ml-stack.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.monitoring.prometheus.metrics.port }}"
+    prometheus.io/path: "{{ .Values.monitoring.prometheus.metrics.path }}"
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.monitoring.prometheus.metrics.port }}
+      targetPort: {{ .Values.monitoring.prometheus.metrics.port }}
+      protocol: TCP
+      name: metrics
+  selector:
+    {{- include "stans-ml-stack.selectorLabels" . | nindent 4 }}
+{{- end }}

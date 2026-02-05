@@ -1,0 +1,581 @@
+# Stan's ML Stack - Production Helm Configuration
+# Enterprise-grade deployment configuration for Kubernetes
+
+# Global Configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+  # Common environment variables for all containers
+  env: []
+  # Security context for all pods
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+# Main Application Configuration
+replicaCount: 3
+
+image:
+  registry: docker.io
+  repository: bartholemewii/stans-ml-stack
+  pullPolicy: IfNotPresent
+  tag: "latest"
+  # Pull secrets for private registries
+  pullSecrets: []
+
+# Service Configuration
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+  annotations: {}
+  labels: {}
+
+# Ingress Configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: ml-stack.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ml-stack-tls
+      hosts:
+        - ml-stack.example.com
+
+# Resource Management
+resources:
+  limits:
+    cpu: 8
+    memory: 32Gi
+    amd.com/gpu: 1
+  requests:
+    cpu: 4
+    memory: 16Gi
+    amd.com/gpu: 1
+
+# Autoscaling Configuration
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # HPA configuration
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+
+# GPU Configuration
+gpu:
+  enabled: true
+  vendor: amd
+  deviceCount: 1
+  # AMD GPU specific settings
+  amd:
+    useHugePages: true
+    hugePageSize: "2Mi"
+    # ROCm settings
+    rocm:
+      enabled: true
+      version: "6.4.43482"
+      # GPU memory settings
+      memory:
+        enableHugePages: true
+        hugePageSize: "2Mi"
+        maxMemory: "24Gi"
+
+# Persistence Configuration
+persistence:
+  enabled: true
+  storageClass: "fast-ssd"
+  accessModes:
+    - ReadWriteOnce
+  size: 100Gi
+  # Multiple persistent volumes
+  volumes:
+    # Data volume for datasets and models
+    data:
+      enabled: true
+      storageClass: "fast-ssd"
+      size: 500Gi
+      accessModes:
+        - ReadWriteOnce
+      mountPath: /data
+      annotations: {}
+    # Cache volume for temporary data
+    cache:
+      enabled: true
+      storageClass: "fast-ssd"
+      size: 100Gi
+      accessModes:
+        - ReadWriteOnce
+      mountPath: /cache
+      annotations: {}
+    # Logs volume for persistent logging
+    logs:
+      enabled: true
+      storageClass: "standard"
+      size: 50Gi
+      accessModes:
+        - ReadWriteOnce
+      mountPath: /logs
+      annotations: {}
+
+# Network Configuration
+network:
+  # Network policies
+  policies:
+    enabled: true
+    # Egress rules
+    egress:
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      - to: []
+        ports:
+        - protocol: TCP
+          port: 443  # HTTPS
+        - protocol: TCP
+          port: 53   # DNS
+        - protocol: UDP
+          port: 53   # DNS
+    # Ingress rules
+    ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      - from: []
+        ports:
+        - protocol: TCP
+          port: 8080
+
+# Security Configuration
+security:
+  # Pod Security Context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Container Security Context
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
+    # Required capabilities for GPU access
+    add:
+    - SYS_ADMIN  # Required for ROCm
+
+  # RBAC
+  rbac:
+    enabled: true
+    # Service account configuration
+    serviceAccount:
+      create: true
+      annotations: {}
+      name: ""
+
+  # PSP (Pod Security Policy) - deprecated in newer K8s versions
+  psp:
+    enabled: false
+
+  # Security context constraints for OpenShift
+  scc:
+    enabled: false
+
+# Environment Variables
+env:
+  # ROCm Environment
+  - name: ROCM_PATH
+    value: "/opt/rocm"
+  - name: HIP_VISIBLE_DEVICES
+    value: "0"
+  - name: CUDA_VISIBLE_DEVICES
+    value: "0"
+  - name: PYTORCH_ROCM_ARCH
+    value: "GFX1100"
+  - name: HSA_OVERRIDE_GFX_VERSION
+    value: "11.0.0"
+
+  # Performance Settings
+  - name: GPU_MAX_HEAP_SIZE
+    value: "100"
+  - name: GPU_MAX_ALLOC_PERCENT
+    value: "100"
+  - name: HSA_ENABLE_SDMA
+    value: "0"
+  - name: HSA_TOOLS_LIB
+    value: "1"
+
+  # Python Environment
+  - name: PYTHONPATH
+    value: "/opt/stans-ml-stack:/opt/rocm/lib"
+  - name: PYTHONUNBUFFERED
+    value: "1"
+
+  # Application Settings
+  - name: MLSTACK_ENV
+    value: "production"
+  - name: MLSTACK_LOG_LEVEL
+    value: "INFO"
+  - name: MLSTACK_DATA_DIR
+    value: "/data"
+  - name: MLSTACK_CACHE_DIR
+    value: "/cache"
+  - name: MLSTACK_LOG_DIR
+    value: "/logs"
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+
+  # Prometheus integration
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      scrapeTimeout: 10s
+      # Additional labels for service monitor
+      labels: {}
+      # Annotations for service monitor
+      annotations: {}
+
+    # Metrics endpoint configuration
+    metrics:
+      enabled: true
+      port: 9090
+      path: "/metrics"
+      # Custom metrics configuration
+      customMetrics: []
+
+  # Grafana integration
+  grafana:
+    enabled: true
+    dashboards:
+      enabled: true
+      # Custom dashboards
+      customDashboards: []
+
+  # Health checks
+  healthChecks:
+    enabled: true
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    startupProbe:
+      httpGet:
+        path: /health
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 30
+
+# Logging Configuration
+logging:
+  enabled: true
+
+  # Log configuration
+  level: "INFO"
+  format: "json"
+
+  # Log collection
+  collection:
+    enabled: true
+    # Fluentd configuration
+    fluentd:
+      enabled: false
+    # Logstash configuration
+    logstash:
+      enabled: false
+      host: "logstash.default.svc.cluster.local"
+      port: 5044
+
+  # Log rotation
+  rotation:
+    enabled: true
+    maxAge: 30
+    maxSize: "100Mi"
+    maxFiles: 10
+
+# Backup Configuration
+backup:
+  enabled: true
+
+  # Backup schedule
+  schedule: "0 2 * * *"  # Daily at 2 AM
+
+  # Retention policy
+  retention:
+    daily: 7
+    weekly: 4
+    monthly: 12
+
+  # Backup storage
+  storage:
+    type: "s3"
+    s3:
+      bucket: "ml-stack-backups"
+      region: "us-west-2"
+      endpoint: ""
+      accessKey: ""
+      secretKey: ""
+
+  # Backup configuration
+  config:
+    include:
+      - "/data"
+      - "/config"
+    exclude:
+      - "/cache"
+      - "/tmp"
+
+# Update Strategy
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: 1  # Alternative to minAvailable
+
+# Node Selection and Affinity
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - stans-ml-stack
+          topologyKey: kubernetes.io/hostname
+
+# GPU Node Selection
+gpuNodeSelector:
+  enabled: true
+  nodeSelector:
+    accelerator: "amd-gpu"
+    node-type: "compute"
+  tolerations:
+    - key: "amd.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+# Additional Labels and Annotations
+podLabels: {}
+podAnnotations: {}
+
+# Service Account Configuration
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Init Containers
+initContainers: []
+# Example init containers
+# - name: init-data
+#   image: busybox:1.35
+#   command: ['sh', '-c', 'until ls /data; do sleep 1; done']
+#   volumeMounts:
+#     - name: data
+#       mountPath: /data
+
+# Sidecar Containers
+sidecars: []
+# Example sidecars
+# - name: log-shipper
+#   image: fluent/fluent-bit:1.9
+#   volumeMounts:
+#     - name: logs
+#       mountPath: /logs
+
+# Extra Volumes and Volume Mounts
+extraVolumes: []
+extraVolumeMounts: []
+
+# Tests
+test:
+  enabled: true
+  image:
+    repository: curlimages/curl
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# Development/Testing Configuration
+development:
+  enabled: false
+  # Development-specific settings
+  debug: true
+  hotReload: false
+  profiling: false
+
+# Production Configuration
+production:
+  enabled: true
+  # Production-specific settings
+  debug: false
+  hotReload: false
+  profiling: false
+  # Performance optimizations
+  optimizations:
+    enabled: true
+    # JVM options if applicable
+    jvmOptions: []
+    # Python optimizations
+    pythonOptions: []
+    # GPU optimizations
+    gpuOptions: []
+
+# Multi-cluster Configuration
+multiCluster:
+  enabled: false
+  # Primary cluster configuration
+  primary:
+    region: "us-west-2"
+    zones: ["us-west-2a", "us-west-2b"]
+  # Secondary clusters
+  secondary: []
+  # Federation configuration
+  federation:
+    enabled: false
+
+# Disaster Recovery
+disasterRecovery:
+  enabled: false
+  # RTO/RPO targets
+  rto: "4h"  # Recovery Time Objective
+  rpo: "1h"  # Recovery Point Objective
+  # Cross-region replication
+  replication:
+    enabled: false
+    regions: []
+
+# Compliance Configuration
+compliance:
+  enabled: false
+  # SOC 2 compliance
+  soc2:
+    enabled: false
+  # HIPAA compliance
+  hipaa:
+    enabled: false
+  # GDPR compliance
+  gdpr:
+    enabled: false
+
+# Cost Optimization
+costOptimization:
+  enabled: true
+  # Spot instances
+  spotInstances:
+    enabled: false
+    maxPrice: "0.10"
+  # Resource limits
+  resourceLimits:
+    enabled: true
+    maxCPU: 16
+    maxMemory: 64Gi
+    maxGPU: 4
+  # Autoscaling for cost
+  costBasedAutoscaling:
+    enabled: false
+    targetCostPerHour: 5.0
+
+# Environment-specific configurations
+environments:
+  development:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 2
+        memory: 8Gi
+      limits:
+        cpu: 4
+        memory: 16Gi
+    monitoring:
+      enabled: false
+    persistence:
+      size: 50Gi
+
+  staging:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 4
+        memory: 16Gi
+      limits:
+        cpu: 8
+        memory: 32Gi
+    monitoring:
+      enabled: true
+    persistence:
+      size: 200Gi
+
+  production:
+    replicaCount: 3
+    resources:
+      requests:
+        cpu: 4
+        memory: 16Gi
+        amd.com/gpu: 1
+      limits:
+        cpu: 8
+        memory: 32Gi
+        amd.com/gpu: 1
+    monitoring:
+      enabled: true
+    persistence:
+      size: 500Gi
+    backup:
+      enabled: true

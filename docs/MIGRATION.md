@@ -57,7 +57,7 @@ The package now points to Rusty-Stack TUI as the recommended installer.
 
 ### If You Used the Go Installer
 
-The Go installer (`mlstack-installer/`) is deprecated and no longer maintained.
+The Go installer (`mlstack-installer/`) has been completely removed from the repository.
 
 **Migration:** Switch to Rusty-Stack TUI:
 ```bash

@@ -1,0 +1,160 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "performance-optimization-engine.fullname" . }}-performance-engine
+  labels:
+    {{- include "performance-optimization-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+  annotations:
+    {{- if .Values.performanceEngine.monitoring.enabled }}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.performanceEngine.monitoring.metricsPort | quote }}
+    prometheus.io/path: "/metrics"
+    prometheus.io/scheme: "http"
+    {{- end }}
+    {{- if .Values.performanceEngine.service.annotations }}
+    {{- toYaml .Values.performanceEngine.service.annotations | nindent 4 }}
+    {{- end }}
+spec:
+  type: {{ .Values.performanceEngine.service.type }}
+  ports:
+    - port: {{ .Values.performanceEngine.service.port }}
+      targetPort: {{ .Values.performanceEngine.service.targetPort }}
+      protocol: TCP
+      name: http
+    - port: {{ .Values.performanceEngine.monitoring.metricsPort }}
+      targetPort: {{ .Values.performanceEngine.monitoring.metricsPort }}
+      protocol: TCP
+      name: metrics
+    - port: {{ .Values.performanceEngine.monitoring.healthPort }}
+      targetPort: {{ .Values.performanceEngine.monitoring.healthPort }}
+      protocol: TCP
+      name: health
+  selector:
+    {{- include "performance-optimization-engine.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+
+---
+{{- if .Values.securityScanner.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "performance-optimization-engine.fullname" . }}-security-scanner
+  labels:
+    {{- include "performance-optimization-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: security-scanner
+  annotations:
+    {{- if .Values.securityScanner.service.annotations }}
+    {{- toYaml .Values.securityScanner.service.annotations | nindent 4 }}
+    {{- end }}
+spec:
+  type: {{ .Values.securityScanner.service.type }}
+  ports:
+    - port: {{ .Values.securityScanner.service.port }}
+      targetPort: {{ .Values.securityScanner.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "performance-optimization-engine.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: security-scanner
+{{- end }}
+
+---
+# Headless service for stateful communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "performance-optimization-engine.fullname" . }}-headless
+  labels:
+    {{- include "performance-optimization-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: {{ .Values.performanceEngine.service.targetPort }}
+      targetPort: {{ .Values.performanceEngine.service.targetPort }}
+      protocol: TCP
+      name: http
+    - port: {{ .Values.performanceEngine.monitoring.metricsPort }}
+      targetPort: {{ .Values.performanceEngine.monitoring.metricsPort }}
+      protocol: TCP
+      name: metrics
+    - port: {{ .Values.performanceEngine.monitoring.healthPort }}
+      targetPort: {{ .Values.performanceEngine.monitoring.healthPort }}
+      protocol: TCP
+      name: health
+  selector:
+    {{- include "performance-optimization-engine.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+
+---
+# Service for monitoring endpoints
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "performance-optimization-engine.fullname" . }}-monitoring
+  labels:
+    {{- include "performance-optimization-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+    prometheus.io/scheme: "http"
+    monitoring.coreos.com/scrape: "true"
+    monitoring.coreos.com/path: "/metrics"
+    monitoring.coreos.com/port: "9090"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: metrics
+    - port: 8081
+      targetPort: 8081
+      protocol: TCP
+      name: health
+    - port: 4000
+      targetPort: 4000
+      protocol: TCP
+      name: debug
+  selector:
+    {{- include "performance-optimization-engine.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+
+---
+# Service for GPU monitoring (if GPU is enabled)
+{{- if or .Values.performanceEngine.amdGPU.enabled .Values.gpu.nvidia.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "performance-optimization-engine.fullname" . }}-gpu-monitoring
+  labels:
+    {{- include "performance-optimization-engine.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gpu-monitoring
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9400"
+    prometheus.io/path: "/metrics"
+    prometheus.io/scheme: "http"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9400
+      targetPort: 9400
+      protocol: TCP
+      name: dcgm-metrics
+    {{- if .Values.performanceEngine.amdGPU.enabled }}
+    - port: 9445
+      targetPort: 9445
+      protocol: TCP
+      name: rocm-smi-metrics
+    {{- end }}
+  selector:
+    {{- include "performance-optimization-engine.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: performance-engine
+{{- end }}

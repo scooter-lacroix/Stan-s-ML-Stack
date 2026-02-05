@@ -1,0 +1,369 @@
+# ML Stack Alert Rules
+# Comprehensive alerting for Stan's ML Stack
+
+groups:
+  - name: ml-stack.rules
+    rules:
+      # Application Health Alerts
+      - alert: MLStackDown
+        expr: up{job="stans-ml-stack"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ml-stack
+        annotations:
+          summary: "ML Stack instance is down"
+          description: "ML Stack instance {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: MLStackHighMemoryUsage
+        expr: (container_memory_usage_bytes{name="stans-ml-stack"} / container_spec_memory_limit_bytes{name="stans-ml-stack"}) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: ml-stack
+        annotations:
+          summary: "ML Stack high memory usage"
+          description: "ML Stack memory usage is above 90% for more than 5 minutes."
+
+      - alert: MLStackHighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total{name="stans-ml-stack"}[5m]) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: ml-stack
+        annotations:
+          summary: "ML Stack high CPU usage"
+          description: "ML Stack CPU usage is above 80% for more than 10 minutes."
+
+      # GPU Alerts
+      - alert: GPUHighUtilization
+        expr: rocm_gpu_utilization_percent > 95
+        for: 15m
+        labels:
+          severity: warning
+          service: gpu
+        annotations:
+          summary: "GPU utilization is very high"
+          description: "GPU {{ $labels.gpu_id }} utilization is {{ $value }}% for more than 15 minutes."
+
+      - alert: GPUHighMemoryUsage
+        expr: (rocm_gpu_memory_used_bytes / rocm_gpu_memory_total_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: gpu
+        annotations:
+          summary: "GPU memory usage is critical"
+          description: "GPU {{ $labels.gpu_id }} memory usage is {{ $value }}% for more than 5 minutes."
+
+      - alert: GPUHighTemperature
+        expr: rocm_gpu_temperature_celsius > 85
+        for: 5m
+        labels:
+          severity: critical
+          service: gpu
+        annotations:
+          summary: "GPU temperature is critical"
+          description: "GPU {{ $labels.gpu_id }} temperature is {{ $value }}°C for more than 5 minutes."
+
+      - alert: GPUPowerUsageHigh
+        expr: rocm_gpu_power_usage_watts > 300
+        for: 10m
+        labels:
+          severity: warning
+          service: gpu
+        annotations:
+          summary: "GPU power usage is high"
+          description: "GPU {{ $labels.gpu_id }} power usage is {{ $value }}W for more than 10 minutes."
+
+      # PyTorch Training Alerts
+      - alert: PyTorchTrainingStalled
+        expr: pytorch_training_loss_change == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: training
+        annotations:
+          summary: "PyTorch training appears stalled"
+          description: "PyTorch training loss hasn't changed for 30 minutes."
+
+      - alert: PyTorchHighLoss
+        expr: pytorch_training_loss > 10
+        for: 15m
+        labels:
+          severity: warning
+          service: training
+        annotations:
+          summary: "PyTorch training loss is high"
+          description: "PyTorch training loss is {{ $value }} for more than 15 minutes."
+
+      - alert: DistributedTrainingNodeDown
+        expr: pytorch_distributed_nodes_total < pytorch_distributed_nodes_expected
+        for: 2m
+        labels:
+          severity: critical
+          service: training
+        annotations:
+          summary: "Distributed training node down"
+          description: "Distributed training has {{ $value }} nodes running, expected {{ $labels.pytorch_distributed_nodes_expected }}."
+
+      # Database Alerts
+      - alert: PostgreSQLDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL instance {{ $labels.instance }} is down."
+
+      - alert: PostgreSQLHighConnections
+        expr: pg_stat_database_numbackends / pg_settings_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "PostgreSQL high connection usage"
+          description: "PostgreSQL connection usage is {{ $value }}%."
+
+      - alert: PostgreSQLSlowQueries
+        expr: rate(pg_stat_database_tup_returned[5m]) < 100
+        for: 10m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "PostgreSQL slow queries detected"
+          description: "PostgreSQL query rate is {{ $value }} queries/sec."
+
+      - alert: RedisDown
+        expr: up{job="redis-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis instance {{ $labels.instance }} is down."
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: cache
+        annotations:
+          summary: "Redis high memory usage"
+          description: "Redis memory usage is {{ $value }}%."
+
+      # Storage Alerts
+      - alert: DiskSpaceHighUsage
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          service: storage
+        annotations:
+          summary: "Disk space is critically low"
+          description: "Disk space usage is {{ $value }}% on {{ $labels.instance }}."
+
+      - alert: DiskSpaceWarning
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 20
+        for: 15m
+        labels:
+          severity: warning
+          service: storage
+        annotations:
+          summary: "Disk space is getting low"
+          description: "Disk space usage is {{ $value }}% on {{ $labels.instance }}."
+
+      - alert: DiskSlowIO
+        expr: rate(node_disk_io_time_seconds_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: storage
+        annotations:
+          summary: "Disk I/O is slow"
+          description: "Disk I/O wait time is {{ $value }}s on {{ $labels.instance }}."
+
+      # Network Alerts
+      - alert: NetworkHighLatency
+        expr: probe_duration_seconds > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: network
+        annotations:
+          summary: "Network latency is high"
+          description: "Network latency to {{ $labels.instance }} is {{ $value }}s."
+
+      - alert: NetworkPacketLoss
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: network
+        annotations:
+          summary: "Network packet loss detected"
+          description: "Network connectivity to {{ $labels.instance }} is failing."
+
+      # System Resource Alerts
+      - alert: SystemHighLoadAverage
+        expr: node_load15 > (count by (instance) (node_cpu_seconds_total{mode="idle"}) * 1.5)
+        for: 10m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "System load average is high"
+          description: "System load average is {{ $value }} on {{ $labels.instance }}."
+
+      - alert: SystemHighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: system
+        annotations:
+          summary: "System memory usage is critical"
+          description: "System memory usage is {{ $value }}% on {{ $labels.instance }}."
+
+      - alert: SystemCPUStealTime
+        expr: rate(node_cpu_seconds_total{mode="steal"}[5m]) * 100 > 20
+        for: 10m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High CPU steal time detected"
+          description: "CPU steal time is {{ $value }}% on {{ $labels.instance }}."
+
+      # Kubernetes Specific Alerts
+      - alert: KubernetesPodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: kubernetes
+        annotations:
+          summary: "Pod is crash looping"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping."
+
+      - alert: KubernetesPodNotReady
+        expr: kube_pod_status_ready{condition="true"} == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: kubernetes
+        annotations:
+          summary: "Pod is not ready"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been not ready for more than 15 minutes."
+
+      - alert: KubernetesNodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 10m
+        labels:
+          severity: critical
+          service: kubernetes
+        annotations:
+          summary: "Kubernetes node is not ready"
+          description: "Node {{ $labels.node }} has been not ready for more than 10 minutes."
+
+      # Security Alerts
+      - alert: UnauthorizedAccessAttempts
+        expr: rate(http_requests_total{status=~"4.."}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "High rate of unauthorized access attempts"
+          description: "{{ $value }} unauthorized requests per second detected."
+
+      - alert: SSLCertificateExpiringSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 7
+        for: 1h
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "SSL certificate expiring soon"
+          description: "SSL certificate for {{ $labels.instance }} expires in less than 7 days."
+
+      # Performance Alerts
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: performance
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s."
+
+      - alert: LowThroughput
+        expr: rate(http_requests_total[5m]) < 1
+        for: 15m
+        labels:
+          severity: warning
+          service: performance
+        annotations:
+          summary: "Low throughput detected"
+          description: "Request rate is {{ $value }} requests per second."
+
+      # Backup Alerts
+      - alert: BackupFailed
+        expr: backup_last_success_timestamp == 0
+        for: 1h
+        labels:
+          severity: critical
+          service: backup
+        annotations:
+          summary: "Backup failed"
+          description: "Last backup failed or has not completed successfully."
+
+      - alert: BackupOld
+        expr: time() - backup_last_success_timestamp > 86400 * 2
+        for: 1h
+        labels:
+          severity: warning
+          service: backup
+        annotations:
+          summary: "Backup is old"
+          description: "Last successful backup was more than 2 days ago."
+
+  - name: ml-stack.recording.rules
+    rules:
+      # Recording Rules for Better Performance
+      - record: ml_stack:cpu_usage:rate5m
+        expr: rate(container_cpu_usage_seconds_total{name="stans-ml-stack"}[5m]) * 100
+
+      - record: ml_stack:memory_usage:percent
+        expr: (container_memory_usage_bytes{name="stans-ml-stack"} / container_spec_memory_limit_bytes{name="stans-ml-stack"}) * 100
+
+      - record: gpu:utilization:percent
+        expr: rocm_gpu_utilization_percent
+
+      - record: gpu:memory_usage:percent
+        expr: (rocm_gpu_memory_used_bytes / rocm_gpu_memory_total_bytes) * 100
+
+      - record: gpu:temperature:celsius
+        expr: rocm_gpu_temperature_celsius
+
+      - record: pytorch:training_loss:rate1m
+        expr: rate(pytorch_training_loss[1m])
+
+      - record: system:memory_usage:percent
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100
+
+      - record: system:disk_usage:percent
+        expr: (node_filesystem_size_bytes - node_filesystem_avail_bytes) / node_filesystem_size_bytes * 100
+
+      - record: http:requests:rate5m
+        expr: rate(http_requests_total[5m])
+
+      - record: http:response_time:p95:5m
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))

@@ -1,6 +1,0 @@
-# import config
-packagefile errors=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b003/_pkg_.a
-packagefile internal/reflectlite=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b004/_pkg_.a
-packagefile sync=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b038/_pkg_.a
-packagefile sync/atomic=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b040/_pkg_.a
-packagefile time=/home/stan/Documents/Stan-s-ML-Stack/mlstack-installer/.gotmp/go-build2775948827/b049/_pkg_.a
