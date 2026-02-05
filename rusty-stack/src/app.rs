@@ -21,6 +21,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WelcomePage {
+    Introduction,
+    UseCases,
+    Walkthrough,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Line,
     Raw,
@@ -98,6 +105,7 @@ pub struct App {
     pub should_exit: bool,
     pub password_input: String,
     pub verification_reports: HashMap<String, Vec<String>>,
+    pub welcome_page: WelcomePage,
     pub install_input_buffer: String,
     pub install_input_mode: InputMode,
     pub last_line_transient: bool,
@@ -141,6 +149,7 @@ impl App {
             should_exit: false,
             password_input: String::new(),
             verification_reports: HashMap::new(),
+            welcome_page: WelcomePage::Introduction,
             install_input_buffer: String::new(),
             install_input_mode: InputMode::Line,
             last_line_transient: false,
@@ -162,6 +171,20 @@ impl App {
         use crossterm::event::KeyCode;
         match self.stage {
             Stage::Welcome => match key.code {
+                KeyCode::Right | KeyCode::Tab => {
+                    self.welcome_page = match self.welcome_page {
+                        WelcomePage::Introduction => WelcomePage::UseCases,
+                        WelcomePage::UseCases => WelcomePage::Walkthrough,
+                        WelcomePage::Walkthrough => WelcomePage::Introduction,
+                    };
+                }
+                KeyCode::Left => {
+                    self.welcome_page = match self.welcome_page {
+                        WelcomePage::Introduction => WelcomePage::Walkthrough,
+                        WelcomePage::UseCases => WelcomePage::Introduction,
+                        WelcomePage::Walkthrough => WelcomePage::UseCases,
+                    };
+                }
                 KeyCode::Enter => {
                     if self.entering_password {
                         if !self.password_input.is_empty() {
@@ -175,9 +198,8 @@ impl App {
                     self.stage = Stage::HardwareDetect;
                     self.start_hardware_detection();
                 }
-                KeyCode::Char('q') => {
-                    self.stage = Stage::Recovery;
-                    self.errors.push("User quit".into());
+                KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.should_exit = true;
                 }
                 KeyCode::Char(c) => {
                     if self.entering_password {
@@ -190,12 +212,6 @@ impl App {
                 KeyCode::Backspace => {
                     if self.entering_password {
                         self.password_input.pop();
-                    }
-                }
-                KeyCode::Tab => {
-                    if self.entering_password {
-                        self.sudo_password = Some(self.password_input.clone());
-                        self.entering_password = false;
                     }
                 }
                 _ => {}
@@ -420,36 +436,327 @@ impl App {
     }
 
     fn draw_welcome(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let mut lines = vec![
-            Line::from(vec![Span::styled(
-                "Welcome to Rusty-Stack",
+        use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Rectangle};
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .split(area);
+
+        let content_area = chunks[0];
+        let footer_area = chunks[1];
+
+        match self.welcome_page {
+            WelcomePage::Introduction => {
+                let sub_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(content_area);
+
+                // Left Side: ASCII Logo & Intro
+                let logo = r#"
+      __  __ _      ____  _             _    
+     |  \/  | |    / ___|| |_ __ _  ___| | __
+     | |\/| | |    \___ \| __/ _` |/ __| |/ /
+     | |  | | |___  ___) | || (_| | (__|   < 
+     |_|  |_|_____||____/ \__\__,_|\___|_|\_\
+                "#;
+                let intro_text = vec![
+                    Line::from(vec![Span::styled(
+                        logo,
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "Rusty-Stack ",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("is a high-performance"),
+                    ]),
+                    Line::from("ML infrastructure toolkit for AMD GPUs."),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("✓ ", Style::default().fg(Color::Green)),
+                        Span::raw("Automated ROCm Toolchain Setup"),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("✓ ", Style::default().fg(Color::Green)),
+                        Span::raw("Verified AI Extensions (DeepSpeed, vLLM)"),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("✓ ", Style::default().fg(Color::Green)),
+                        Span::raw("Real-time Hardware Performance Benchmarks"),
+                    ]),
+                ];
+                let intro_para = Paragraph::new(Text::from(intro_text))
+                    .block(Block::default().borders(Borders::ALL).title("Overview"))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(intro_para, sub_chunks[0]);
+
+                // Right Side: Visual Diagram
+                let canvas = Canvas::default()
+                    .block(Block::default().borders(Borders::ALL).title("Architecture"))
+                    .paint(|ctx| {
+                        // Main Hub
+                        ctx.draw(&Rectangle {
+                            x: 40.0,
+                            y: 40.0,
+                            width: 20.0,
+                            height: 20.0,
+                            color: Color::Cyan,
+                        });
+                        ctx.print(42.0, 50.0, "ROCm");
+
+                        // Connection lines
+                        ctx.draw(&CanvasLine {
+                            x1: 50.0,
+                            y1: 60.0,
+                            x2: 30.0,
+                            y2: 80.0,
+                            color: Color::White,
+                        });
+                        ctx.draw(&CanvasLine {
+                            x1: 50.0,
+                            y1: 60.0,
+                            x2: 70.0,
+                            y2: 80.0,
+                            color: Color::White,
+                        });
+                        ctx.draw(&CanvasLine {
+                            x1: 50.0,
+                            y1: 40.0,
+                            x2: 50.0,
+                            y2: 20.0,
+                            color: Color::White,
+                        });
+
+                        // Nodes
+                        ctx.print(20.0, 85.0, "PyTorch");
+                        ctx.print(65.0, 85.0, "Docker");
+                        ctx.print(45.0, 15.0, "Hardware");
+                    })
+                    .x_bounds([0.0, 100.0])
+                    .y_bounds([0.0, 100.0]);
+                frame.render_widget(canvas, sub_chunks[1]);
+            }
+            WelcomePage::UseCases => {
+                let sub_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(content_area);
+
+                // Left: Textual Use Cases
+                let cases = vec![
+                    Line::from(""),
+                    Line::from(vec![Span::styled(
+                        "🚀 Large Language Models",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from("   Optimize vLLM and DeepSpeed for fast inference."),
+                    Line::from(""),
+                    Line::from(vec![Span::styled(
+                        "🧪 Deep Learning Research",
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from("   Stable PyTorch builds with full HIP support."),
+                    Line::from(""),
+                    Line::from(vec![Span::styled(
+                        "📦 Enterprise Deployment",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from("   Reproducible Docker environments for production."),
+                ];
+                let cases_para = Paragraph::new(Text::from(cases))
+                    .block(Block::default().borders(Borders::ALL).title("Core Focus"))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(cases_para, sub_chunks[0]);
+
+                // Right: Component Stack Diagram
+                let canvas = Canvas::default()
+                    .block(Block::default().borders(Borders::ALL).title("Tech Stack"))
+                    .paint(|ctx| {
+                        // Layers
+                        // Base: Hardware
+                        ctx.draw(&Rectangle {
+                            x: 10.0,
+                            y: 10.0,
+                            width: 80.0,
+                            height: 10.0,
+                            color: Color::DarkGray,
+                        });
+                        ctx.print(40.0, 14.0, "AMD GPU (GFX)");
+
+                        // ROCm Layer
+                        ctx.draw(&Rectangle {
+                            x: 10.0,
+                            y: 20.0,
+                            width: 80.0,
+                            height: 10.0,
+                            color: Color::Blue,
+                        });
+                        ctx.print(42.0, 24.0, "ROCm / HIP");
+
+                        // AI Frameworks
+                        ctx.draw(&CanvasLine {
+                            x1: 50.0,
+                            y1: 30.0,
+                            x2: 30.0,
+                            y2: 40.0,
+                            color: Color::White,
+                        });
+                        ctx.draw(&Rectangle {
+                            x: 15.0,
+                            y: 40.0,
+                            width: 30.0,
+                            height: 15.0,
+                            color: Color::Cyan,
+                        });
+                        ctx.print(25.0, 47.5, "PyTorch");
+
+                        // Inference
+                        ctx.draw(&CanvasLine {
+                            x1: 50.0,
+                            y1: 30.0,
+                            x2: 70.0,
+                            y2: 40.0,
+                            color: Color::White,
+                        });
+                        ctx.draw(&Rectangle {
+                            x: 55.0,
+                            y: 40.0,
+                            width: 30.0,
+                            height: 15.0,
+                            color: Color::Green,
+                        });
+                        ctx.print(62.0, 47.5, "vLLM / DS");
+                    })
+                    .x_bounds([0.0, 100.0])
+                    .y_bounds([0.0, 100.0]);
+                frame.render_widget(canvas, sub_chunks[1]);
+            }
+            WelcomePage::Walkthrough => {
+                let lines = vec![
+                    Line::from(""),
+                    Line::from(vec![Span::styled(
+                        "📖 Installation Walkthrough",
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "1. Hardware Check ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("✓", Style::default().fg(Color::Green)),
+                        Span::raw(" - Detects GPU, VRAM, and ROCm compatibility"),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "2. Pre-flight     ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("⚠", Style::default().fg(Color::Yellow)),
+                        Span::raw(" - Verifies OS dependencies and environment"),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "3. Selection      ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("☐", Style::default().fg(Color::Cyan)),
+                        Span::raw(" - Choose components (Core, Extensions, Tools)"),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "4. Configuration  ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("⚙", Style::default().fg(Color::Magenta)),
+                        Span::raw(" - Set paths and version preferences"),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "5. Installation   ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("⟳", Style::default().fg(Color::Cyan)),
+                        Span::raw(" - Automated build and setup process"),
+                    ]),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled(
+                            "6. Verification   ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("?", Style::default().fg(Color::Blue)),
+                        Span::raw(" - Run diagnostics to ensure success"),
+                    ]),
+                ];
+                let text_widget = Paragraph::new(Text::from(lines))
+                    .block(Block::default().borders(Borders::ALL).title("Workflow"))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(text_widget, content_area);
+            }
+        }
+
+        // Render Footer
+        let page_num = match self.welcome_page {
+            WelcomePage::Introduction => "1/3",
+            WelcomePage::UseCases => "2/3",
+            WelcomePage::Walkthrough => "3/3",
+        };
+
+        let footer_text = vec![Line::from(vec![
+            Span::styled("Page ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                page_num,
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("High-performance AMD ML Stack installer"),
-            Line::from(""),
-            Line::from("• Press Enter to begin hardware detection"),
-            Line::from("• Press Q to quit"),
-        ];
+            ),
+            Span::styled("  •  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Tab/→", Style::default().fg(Color::Yellow)),
+            Span::raw(" next  "),
+            Span::styled("←", Style::default().fg(Color::Yellow)),
+            Span::raw(" prev  "),
+            Span::styled("Enter", Style::default().fg(Color::Green)),
+            Span::raw(" start  "),
+            Span::styled("Q", Style::default().fg(Color::Red)),
+            Span::raw(" quit"),
+        ])];
 
-        if self.entering_password {
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "Sudo password required to run installers",
-                Style::default().fg(Color::Yellow),
-            )));
-            lines.push(Line::from(
-                "Type password and press Enter (input is hidden).",
-            ));
-            let masked = "*".repeat(self.password_input.len());
-            lines.push(Line::from(format!("Password: {}", masked)));
-        }
-
-        let paragraph = Paragraph::new(Text::from(lines))
-            .block(Block::default().borders(Borders::ALL).title("Welcome"))
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        let footer_paragraph =
+            Paragraph::new(Text::from(footer_text)).block(Block::default().borders(Borders::TOP));
+        frame.render_widget(footer_paragraph, footer_area);
     }
 
     fn draw_hardware(&self, frame: &mut Frame, area: ratatui::layout::Rect) {

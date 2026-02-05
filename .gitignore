@@ -92,6 +92,9 @@ models/
 onnxruntime_build/
 vllm_build/
 .rocm-smi/
+target/
+target_stan/
+rusty-stack/target/
 
 # Embedded git repositories (should be handled as submodules)
 nano-vllm/
@@ -100,6 +103,8 @@ ratatui/
 # Benchmark and test results
 benchmark_results/
 test_results/
+rusty-stack/deepspeed_*.json
+rusty-stack/debug_ds_*.log
 
 # Large media files
 *.mp4
@@ -114,9 +119,26 @@ wandb/
 # Manim environment
 manim_env/
 
+# Tool-specific ignores
+.claude/
+.code_indexer_data/
+.leindex/
+.maestro/
+.sisyphus/
+.gocache/
+.gomodcache/
+.gomod
+.gotmp/
+rusty-stack/target/
+target/
+taget_stan/
+
 # Specific JSON files to ignore (but not all JSON files)
 # Add specific patterns for JSON files that should be ignored
 # For example: config.local.json
+
+# Deleted project source
+mlstack-installer/
 
 # Explicitly track these directories even if they match ignore patterns
 !assets/
@@ -128,3 +150,31 @@ manim_env/
 !tutorials/
 !troubleshooting/
 !reference/
+mlstack-installer/internal/ui_backup_20251027_155632/views.go
+mlstack-installer/internal/ui_backup_20251027_155632/models.go
+mlstack-installer/internal/ui_backup_20251027_155632/app.go
+internal/security/scanner.go
+internal/performance/gpu_optimizer.go
+internal/performance/optimizer.go
+internal/performance/engine.go
+internal/integration/monitoring_dashboard.go
+amdgpu-install_7.2.70200-1_all.deb.3
+amdgpu-install_7.2.70200-1_all.deb.2
+amdgpu-install_7.2.70200-1_all.deb.1
+ML_STACK_MVU_IMPLEMENTATION_REPORT.md
+PORTING_PLAN.md
+QWEN.md
+archive/BUBBLE_TEA_INSTALLATION_GUIDE.md
+archive/COMPREHENSIVE_ANALYSIS_REPORT.md
+archive/DASHBOARD_IMPLEMENTATION_SUMMARY.md
+archive/ENTERPRISE_IMPLEMENTATION_SUMMARY.md
+archive/PHASE_4_DOCUMENTATION.md
+archive/PHASE_5_TEST_REPORT.md
+archive/PR_5_ASSESSMENT.md
+archive/PR5_MERGE_SUMMARY.md
+archive/part 10/commit_message.txt
+target/
+target_stan/
+rusty-stack/deepspeed_*.json
+rusty-stack/debug_ds_*.log
+

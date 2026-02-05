@@ -38,22 +38,60 @@ fn run_python_benchmark(name: &str) -> BenchmarkResult {
     let helper = ensure_helper_script();
     let start = Instant::now();
 
-    let output = Command::new("python3")
-        .arg(helper)
-        .arg(name)
-        .arg("--json")
-        .output();
+    let mut cmd = Command::new("python3");
+    cmd.arg(helper).arg(name).arg("--json");
+
+    // Special handling for DeepSpeed to work around root-owned site-packages permissions
+    // during HIPIFICATION (converting CUDA to HIP code)
+    if name == "deepspeed" {
+        let shadow_root =
+            std::env::temp_dir().join(format!("ds_shadow_{}", unsafe { libc::getuid() }));
+        let _ = fs::create_dir_all(&shadow_root);
+        let ds_dest = shadow_root.join("deepspeed");
+
+        if !ds_dest.exists() {
+            // Find deepspeed path
+            if let Ok(output) = Command::new("python3")
+                .arg("-c")
+                .arg("import deepspeed; import os; print(os.path.dirname(deepspeed.__file__))")
+                .output()
+            {
+                let ds_src = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !ds_src.is_empty() && std::path::Path::new(&ds_src).exists() {
+                    let _ = Command::new("cp")
+                        .arg("-r")
+                        .arg(ds_src)
+                        .arg(&ds_dest)
+                        .status();
+                    let _ = Command::new("chmod")
+                        .arg("-R")
+                        .arg("u+w")
+                        .arg(&ds_dest)
+                        .status();
+                }
+            }
+        }
+
+        if shadow_root.exists() {
+            cmd.env("PYTHONPATH", shadow_root);
+        }
+    }
+
+    let output = cmd.output();
 
     match output {
         Ok(out) if out.status.success() => {
             let stdout_str = String::from_utf8_lossy(&out.stdout);
-            
+
             // Look for the clear marker first, then fallback to last JSON object
-            let mut json_str = if let Some(marker_pos) = stdout_str.find("---BENCHMARK_RESULTS_START---") {
-                stdout_str[marker_pos + "---BENCHMARK_RESULTS_START---".len()..].trim().to_string()
-            } else {
-                stdout_str.trim().to_string()
-            };
+            let mut json_str =
+                if let Some(marker_pos) = stdout_str.find("---BENCHMARK_RESULTS_START---") {
+                    stdout_str[marker_pos + "---BENCHMARK_RESULTS_START---".len()..]
+                        .trim()
+                        .to_string()
+                } else {
+                    stdout_str.trim().to_string()
+                };
 
             if !json_str.starts_with('{') {
                 if let Some(start) = json_str.find('{') {
@@ -81,11 +119,15 @@ fn run_python_benchmark(name: &str) -> BenchmarkResult {
                     .and_then(|v| v.as_str())
                     .unwrap_or(name)
                     .to_string(),
-                success: parsed.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+                success: parsed
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
                 execution_time_ms: parsed
                     .get("execution_time_ms")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(start.elapsed().as_millis() as u64) as u128,
+                    .unwrap_or(start.elapsed().as_millis() as u64)
+                    as u128,
                 metrics: parsed.get("metrics").cloned().unwrap_or_default(),
                 errors: parsed
                     .get("errors")
@@ -544,22 +586,64 @@ def _vllm():
 
 
 def _deepspeed():
-    try:
-        import deepspeed
-        import torch
-        import os
-    except Exception as exc:
-        return False, {}, [f"DeepSpeed or Torch not available: {exc}"]
+    import warnings
+    import logging
+    import sys
+    import os
+    from io import StringIO
+    
+    # Suppress all warnings and unnecessary logging
+    warnings.filterwarnings("ignore")
+    logging.getLogger("deepspeed").setLevel(logging.CRITICAL)
+    logging.getLogger("torch.distributed").setLevel(logging.CRITICAL)
+    os.environ["DEEPSPEED_LOG_LEVEL"] = "ERROR"
+    
+    # Ensure ROCm environment BEFORE imports
+    os.environ["DS_ACCELERATOR"] = "cuda"
+    os.environ["ROCM_HOME"] = "/opt/rocm"
+    os.environ["ROCM_PATH"] = "/opt/rocm"
+    os.environ["HIP_PATH"] = "/opt/rocm"
+    os.environ["CPATH"] = "/opt/rocm/include:/opt/rocm/include/hip:/opt/rocm/llvm/include"
+    os.environ["DS_SKIP_CUDA_CHECK"] = "1"
+    os.environ["HIPCC_VERBOSE"] = "1"
 
-    # Ensure ROCm environment
-    os.environ["DS_ACCELERATOR"] = "rocm"
+    # Writable workspace for JIT builds
+    import tempfile
+    temp_root = tempfile.mkdtemp(prefix="ds_workspace_")
+    build_dir = os.path.join(temp_root, "build")
+    os.makedirs(build_dir, exist_ok=True)
+    os.environ["DS_BUILD_DIR"] = build_dir
+
+    try:
+        import torch
+        import torch.utils.cpp_extension as ce
+        if not hasattr(ce, 'ROCM_HOME'): ce.ROCM_HOME = "/opt/rocm"
+        if not hasattr(ce, 'HIP_HOME'): ce.HIP_HOME = "/opt/rocm"
+
+        # Shadow deepspeed package in a writable directory to allow HIPIFICATION
+        import deepspeed
+        ds_orig_path = os.path.dirname(deepspeed.__file__)
+        ds_shadow_root = os.path.join(temp_root, "shadow")
+        ds_shadow_path = os.path.join(ds_shadow_root, "deepspeed")
+        
+        if not os.path.exists(ds_shadow_path):
+            os.makedirs(ds_shadow_root, exist_ok=True)
+            subprocess.run(["cp", "-r", ds_orig_path, ds_shadow_path], check=True)
+            subprocess.run(["chmod", "-R", "u+w", ds_shadow_path], check=True)
+        
+        if ds_shadow_root not in sys.path:
+            sys.path.insert(0, ds_shadow_root)
+            
+        import importlib
+        importlib.reload(deepspeed)
+        from deepspeed.accelerator import get_accelerator
+    except Exception as exc:
+        import traceback
+        return False, {}, [f"DeepSpeed Shadowing/Loading failed: {traceback.format_exc()}"]
     
     try:
-        from deepspeed.ops.op_builder import CPUAdamBuilder
-        from deepspeed.accelerator import get_accelerator
-        
         accelerator = get_accelerator()
-        device = accelerator.device_name(0)
+        device_name = accelerator.device_name(0)
         
         # Simple test: Initialize a small model and wrap it with DeepSpeed
         # We'll measure the time for a forward/backward pass with ZeRO-1
@@ -574,7 +658,7 @@ def _deepspeed():
             def forward(self, x):
                 return self.net(x)
 
-        model = SimpleModel().to(accelerator.device_name())
+        model = SimpleModel().to(device_name)
         ds_config = {
             "train_batch_size": 4,
             "zero_optimization": {
@@ -585,17 +669,39 @@ def _deepspeed():
                 "params": {
                     "lr": 0.001
                 }
-            }
+            },
+            # Suppress DeepSpeed's own logging
+            "steps_per_print": 999999,
+            "wall_clock_breakdown": False
         }
 
-        # Use dummy data
-        model_engine, optimizer, _, _ = deepspeed.initialize(
-            config=ds_config,
-            model=model,
-            model_parameters=model.parameters()
-        )
+        # Capture and suppress stdout/stderr during initialization
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        capture_stdout = StringIO()
+        capture_stderr = StringIO()
+        sys.stdout = capture_stdout
+        sys.stderr = capture_stderr
+        
+        try:
+            # Use dummy data
+            model_engine, optimizer, _, _ = deepspeed.initialize(
+                config=ds_config,
+                model=model,
+                model_parameters=model.parameters()
+            )
+        except Exception as e:
+            # Restore streams before bailing
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            # Re-raise with captured context
+            raise RuntimeError(f"{e}\n---STDOUT---\n{capture_stdout.getvalue()}\n---STDERR---\n{capture_stderr.getvalue()}")
+        finally:
+            if sys.stdout == capture_stdout:
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
 
-        input_data = torch.randn(4, 1024).to(accelerator.device_name())
+        input_data = torch.randn(4, 1024).to(device_name)
         
         # Warmup
         for _ in range(2):
@@ -615,17 +721,27 @@ def _deepspeed():
             times.append(time.perf_counter() - start)
 
         avg_time = sum(times) / len(times)
-        throughput = 4 / avg_time # samples per second
+        throughput = 4 / avg_time  # samples per second
 
+        # Clean up distributed backend if initialized
+        try:
+            if torch.distributed.is_initialized():
+                torch.distributed.destroy_process_group()
+        except:
+            pass
+        
         return True, {
             "throughput_samples_per_sec": round(throughput, 2),
             "avg_latency_ms": round(avg_time * 1000, 2),
             "stage": 1,
             "accelerator": "rocm",
-            "samples": [round(4/t, 2) for t in times]
+            "samples": [round(4/t, 2) for t in times],
+            "version": deepspeed.__version__
         }, []
     except Exception as exc:
-        return False, {}, [f"DeepSpeed benchmark failed: {exc}"]
+        import traceback
+        error_details = traceback.format_exc()
+        return False, {}, [f"DeepSpeed benchmark failed: {error_details}"]
 
 
 BENCHES = {
