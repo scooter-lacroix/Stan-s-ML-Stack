@@ -240,7 +240,7 @@ pub fn component_verification_commands(
             "bitsandbytes",
             &["bitsandbytes"],
             python_candidates,
-            "import bitsandbytes as bnb\nimport pathlib\nimport sys\nprint(f'Version: {getattr(bnb, \"__version__\", \"unknown\")}');\npath=pathlib.Path(bnb.__file__).parent;\nlibs=list(path.glob('libbitsandbytes_rocm*.so'));\nprint(f'ROCm Libs: {libs}');\nsys.exit(0 if libs else 1)",
+            "import bitsandbytes as bnb; import pathlib; import sys; print('Version:', getattr(bnb, '__version__', 'unknown')); path=pathlib.Path(bnb.__file__).parent; libs=list(path.glob('libbitsandbytes_rocm*.so')); print('ROCm Libs:', libs); sys.exit(0 if libs else 1)",
         )],
         "rocm-smi" => vec![shell_command(
             "ROCm SMI",
@@ -451,7 +451,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "bitsandbytes",
             &["bitsandbytes"],
             python_candidates,
-            "import bitsandbytes as bnb\nimport pathlib\nimport sys\nprint(f'Version: {getattr(bnb, \"__version__\", \"unknown\")}');\npath=pathlib.Path(bnb.__file__).parent;\nlibs=list(path.glob('libbitsandbytes_rocm*.so'));\nprint(f'ROCm Libs: {libs}');\nsys.exit(0 if libs else 1)",
+            "import bitsandbytes as bnb; import pathlib; import sys; print('Version:', getattr(bnb, '__version__', 'unknown')); path=pathlib.Path(bnb.__file__).parent; libs=list(path.glob('libbitsandbytes_rocm*.so')); print('ROCm Libs:', libs); sys.exit(0 if libs else 1)",
         ),
         shell_command("ROCm SMI", "rocm-smi", "rocm-smi", &["--showproductname"]),
         python_command(

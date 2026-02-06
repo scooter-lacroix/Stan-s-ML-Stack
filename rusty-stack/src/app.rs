@@ -792,6 +792,7 @@ impl App {
                 let style = if idx == self.selected_category {
                     Style::default()
                         .fg(Color::Yellow)
+                        .bg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -842,6 +843,7 @@ impl App {
                 let style = if selected {
                     Style::default()
                         .fg(Color::Cyan)
+                        .bg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     if comp.installed {
