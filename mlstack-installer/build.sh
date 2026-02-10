@@ -12,6 +12,6 @@ cd "$ROOT_DIR/rusty-stack"
 
 cargo build --release
 
-cp target/release/Rusty-Stack "$BUILD_DIR/Rusty-Stack"
+cp target/release/rusty-stack "$BUILD_DIR/rusty-stack"
 
-echo "Built Rusty-Stack -> $BUILD_DIR/Rusty-Stack"
+echo "Built rusty-stack -> $BUILD_DIR/rusty-stack"

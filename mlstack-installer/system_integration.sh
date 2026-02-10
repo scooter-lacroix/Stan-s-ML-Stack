@@ -14,9 +14,9 @@ cd "$ROOT_DIR/rusty-stack"
 
 cargo build --release
 
-sudo install -m 0755 target/release/Rusty-Stack "$INSTALL_DIR/Rusty-Stack"
+sudo install -m 0755 target/release/rusty-stack "$INSTALL_DIR/rusty-stack"
 
 cat << EOF
-Rusty-Stack installed to $INSTALL_DIR/Rusty-Stack
-Run with: sudo Rusty-Stack
+Rusty-Stack installed to $INSTALL_DIR/rusty-stack
+Run with: sudo rusty-stack
 EOF

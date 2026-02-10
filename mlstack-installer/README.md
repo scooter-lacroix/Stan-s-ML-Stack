@@ -13,7 +13,7 @@ Rusty-Stack is the primary TUI installer for Stan's ML Stack.
 ```bash
 cd rusty-stack
 cargo build --release
-./target/release/Rusty-Stack
+./target/release/rusty-stack
 ```
 
 ## Logs

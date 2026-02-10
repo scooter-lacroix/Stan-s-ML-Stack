@@ -37,9 +37,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY --from=builder /build/rusty-stack/target/release/Rusty-Stack /usr/local/bin/Rusty-Stack
+COPY --from=builder /build/rusty-stack/target/release/rusty-stack /usr/local/bin/rusty-stack
 COPY --from=builder /build/scripts /app/scripts
 
-RUN chmod +x /usr/local/bin/Rusty-Stack /app/scripts/*.sh /app/scripts/*.py
+RUN chmod +x /usr/local/bin/rusty-stack /app/scripts/*.sh /app/scripts/*.py
 
-ENTRYPOINT ["/usr/local/bin/Rusty-Stack"]
+ENTRYPOINT ["/usr/local/bin/rusty-stack"]

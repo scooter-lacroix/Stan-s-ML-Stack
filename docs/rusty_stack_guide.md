@@ -16,7 +16,7 @@ ml-stack-install
 # Or manual build
 cd rusty-stack
 cargo build --release
-./target/release/Rusty-Stack
+./target/release/rusty-stack
 ```
 
 ## Features

@@ -38,10 +38,10 @@ cd "$PROJECT_ROOT"
 
 if [ "$BUILD_MODE" = "debug" ]; then
     cargo build -p rusty-stack
-    EXEC_PATH="target/debug/Rusty-Stack"
+    EXEC_PATH="target/debug/rusty-stack"
 else
     cargo build -p rusty-stack --release
-    EXEC_PATH="target/release/Rusty-Stack"
+    EXEC_PATH="target/release/rusty-stack"
 fi
 
 print_step "Launching $EXEC_PATH"
