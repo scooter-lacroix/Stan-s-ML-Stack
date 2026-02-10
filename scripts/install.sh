@@ -160,10 +160,23 @@ else
 fi
 
 # Launch installer
+BINARY_PATH="$REPO_DIR/rusty-stack/target/release/rusty-stack"
+
+if [ ! -f "$BINARY_PATH" ]; then
+    log_error "Binary not found at: $BINARY_PATH"
+    log_info "This may indicate a build failure. Please check the output above."
+    exit 1
+fi
+
+if [ ! -x "$BINARY_PATH" ]; then
+    log_error "Binary is not executable: $BINARY_PATH"
+    exit 1
+fi
+
 echo ""
 log_success "Installation preparation complete!"
 echo ""
 log_info "Launching Rusty-Stack TUI..."
 echo ""
 
-exec "$REPO_DIR/rusty-stack/target/release/Rusty-Stack"
+exec "$BINARY_PATH"

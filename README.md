@@ -150,7 +150,7 @@ The recommended way to install Rusty Stack is using the Rust-based **Rusty-Stack
 # Or build manually
 cd rusty-stack
 cargo build --release
-./target/release/Rusty-Stack
+./target/release/rusty-stack
 ```
 
 This script will:

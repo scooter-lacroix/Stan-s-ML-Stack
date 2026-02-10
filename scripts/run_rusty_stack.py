@@ -10,7 +10,7 @@ from pathlib import Path
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     crate_dir = repo_root / "rusty-stack"
-    binary = crate_dir / "target" / "release" / "Rusty-Stack"
+    binary = crate_dir / "target" / "release" / "rusty-stack"
 
     if not binary.exists():
         subprocess.run(["cargo", "build", "--release"], cwd=crate_dir, check=True)
