@@ -782,6 +782,7 @@ impl App {
             (Category::Foundation, "🔧", "Foundation"),
             (Category::Core, "⚙️", "Core"),
             (Category::Extension, "📦", "Extensions"),
+            (Category::UiUx, "🎨", "UI/UX"),
             (Category::Verification, "✅", "Verification"),
             (Category::Performance, "📊", "Performance"),
         ];
@@ -827,6 +828,7 @@ impl App {
                     Category::Environment => "🌍",
                     Category::Foundation => "🔧",
                     Category::Core => "⚙️",
+                    Category::UiUx => "🎨",
                     Category::Extension => "📦",
                     Category::Verification => "✅",
                     Category::Performance => "📊",
@@ -892,6 +894,13 @@ impl App {
                 }
                 Category::Core => {
                     // Core components show their status based on installation
+                    if comp.installed {
+                        ("Installed", Color::Green, "✓")
+                    } else {
+                        ("Not installed", Color::Yellow, "○")
+                    }
+                }
+                Category::UiUx => {
                     if comp.installed {
                         ("Installed", Color::Green, "✓")
                     } else {
@@ -1303,6 +1312,68 @@ impl App {
             }
         }
 
+        // UI/UX Applications section with post-install instructions
+        let uiux_apps: Vec<&Component> = self
+            .components
+            .iter()
+            .filter(|c| c.category == Category::UiUx && c.installed)
+            .collect();
+        if !uiux_apps.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                Style::default().fg(Color::Magenta),
+            )));
+            lines.push(Line::from(Span::styled(
+                " UI/UX Applications",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                Style::default().fg(Color::Magenta),
+            )));
+
+            for app in uiux_apps {
+                lines.push(Line::from(""));
+                if app.id == "vllm-studio" {
+                    lines.push(Line::from(vec![
+                        Span::styled("🎨 vLLM Studio:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::raw("   Run: "),
+                        Span::styled("vllm-studio", Style::default().fg(Color::Green)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::raw("   Tips: "),
+                        Span::styled("Start from $HOME/vllm-studio/controller", Style::default().fg(Color::Gray)),
+                    ]));
+                } else if app.id == "comfyui" {
+                    lines.push(Line::from(vec![
+                        Span::styled("🎨 ComfyUI:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::raw("   Run: "),
+                        Span::styled("comfy", Style::default().fg(Color::Green)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::raw("   URL: "),
+                        Span::styled("http://localhost:8188", Style::default().fg(Color::Green)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::raw("   Tips: "),
+                        Span::styled("Uses ROCm GPU acceleration", Style::default().fg(Color::Gray)),
+                    ]));
+                }
+            }
+
+            lines.push(Line::from(Span::styled(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                Style::default().fg(Color::Magenta),
+            )));
+        }
+
         let (env, verification) = self.partition_categories();
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -1534,7 +1605,7 @@ impl App {
     }
 
     fn change_category(&mut self, delta: i32) {
-        let categories_len = 6i32; // Environment, Foundation, Core, Extension, Verification, Performance
+        let categories_len = 7i32; // Environment, Foundation, Core, Extension, UiUx, Verification, Performance
         let mut idx = self.selected_category as i32 + delta;
         if idx < 0 {
             idx = categories_len - 1;
@@ -1760,13 +1831,17 @@ impl App {
     fn start_installation(&mut self) {
         let selected = self.selected_components();
         if selected.is_empty() {
-            self.logs.push("No components selected".into());
+            self.errors
+                .push("No components selected. Go back and select at least one component.".into());
+            self.stage = Stage::Recovery;
             return;
         }
-        if unsafe { libc::geteuid() != 0 } && self.sudo_password.is_none() {
+        // Only require sudo password if at least one selected component needs it
+        let any_needs_sudo = selected.iter().any(|c| c.needs_sudo);
+        if unsafe { libc::geteuid() != 0 } && any_needs_sudo && self.sudo_password.is_none() {
             self.errors
-                .push("Sudo password required before installation".into());
-            self.stage = Stage::Configuration;
+                .push("Sudo password required for selected components. Press Esc to go back to Welcome screen and enter your sudo password.".into());
+            self.stage = Stage::Recovery;
             return;
         }
 
@@ -2070,7 +2145,8 @@ impl App {
             1 => Category::Foundation,
             2 => Category::Core,
             3 => Category::Extension,
-            4 => Category::Verification,
+            4 => Category::UiUx,
+            5 => Category::Verification,
             _ => Category::Performance,
         }
     }

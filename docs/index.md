@@ -49,6 +49,7 @@ This documentation is organized into the following sections:
 - [vLLM](extensions/vllm_guide.md)
 - [BitsAndBytes](extensions/bitsandbytes_guide.md)
 - [Weights & Biases](extensions/wandb_guide.md)
+- [ComfyUI](extensions/comfyui_guide.md)
 
 ### Tutorials
 - [Training a Model with PyTorch and ROCm](tutorials/pytorch_rocm_training.md)
@@ -125,6 +126,7 @@ The ML Stack consists of the following core components:
 | **vLLM** | High-throughput inference engine for LLMs | 0.8.5 |
 | **vLLM Studio** | Web UI for vLLM model management and deployment | [Latest](https://github.com/0xSero/vllm-studio) |
 | **ROCm SMI** | System monitoring and management for AMD GPUs | Latest |
+| **ComfyUI** | Node-based UI for AI image generation with ROCm support | [Latest](https://github.com/comfyanonymous/ComfyUI) |
 | **PyTorch Profiler** | Performance analysis for PyTorch models | Latest |
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
 ## Installation
@@ -253,6 +255,9 @@ If you prefer to install components manually, follow these steps:
 
    # Install vLLM Studio
    ./scripts/install_vllm_studio.sh
+
+   # Install ComfyUI (ROCm edition)
+   ./scripts/install_comfyui.sh
    ```
 
 5. **Verify the installation**:

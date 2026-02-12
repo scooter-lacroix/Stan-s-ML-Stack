@@ -5,13 +5,23 @@ All notable changes to Stan's ML Stack will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **ComfyUI**: Node-based AI image generation UI with full ROCm GPU acceleration support
+- **UI/UX Category**: New component category in Rusty-Stack installer for user-facing applications
+- **Smart Sudo Detection**: Components that install to user home directory (ComfyUI, vLLM Studio) no longer require sudo password
+- **Model Preservation**: ComfyUI reinstall now preserves existing models, inputs, outputs, and user data
 - ROCm 7.2 (Latest) as installation option with expanded RDNA 4 GPU support
 - ROCM_VERSION and ROCM_CHANNEL environment variable exports
 
 ### Changed
 - Default ROCm version updated from 7.0.0 to 7.2
+- Category order: Extensions now appear before UI/UX in the component selection screen
 - ROCm version selector now offers 3 channels: Legacy (6.4.3), Stable (7.1), Latest (7.2)
 - Framework installation prompt extended to cover all ROCm 7.x versions
+
+### Fixed
+- **Silent Installation Failures**: Error messages now properly display in Recovery stage instead of failing silently
+- **Category Count**: Fixed off-by-one error in category navigation (was 6, now 7 categories)
+- **Missing ComfyUI Detection**: ComfyUI installations are now properly detected and verified
 
 ## [0.1.5] - 2025-09-16 (Anagami)
 

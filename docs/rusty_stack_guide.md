@@ -23,12 +23,46 @@ cargo build --release
 
 - Hardware detection with AMD GPU and ROCm awareness
 - Preflight checks for disk, memory, GPU presence, and ROCm availability
-- Component selection across foundation, core, extensions, environment, and verification categories
+- Component selection across foundation, core, extensions, **UI/UX**, environment, and verification categories
 - **Performance Category**: Dedicated tasks for vLLM, ROCm, and PyTorch hardware benchmarking
 - Configuration screen with batch mode, auto-confirm, theme, and performance profile toggles
 - Live installation progress with captured logs
 - **Comparative Benchmarking**: Integrated dashboard for "Before vs After" performance analysis
 - Completion summary with install/failed/skipped breakdown
+
+## UI/UX Components
+
+Rusty-Stack includes user-facing applications that install to your home directory and **don't require sudo**:
+
+### ComfyUI (ROCm Edition)
+A powerful node-based UI for AI image generation with full AMD GPU acceleration.
+
+**Installation:** Select from the UI/UX category in the installer
+
+**Run commands:**
+```bash
+comfy                    # Start ComfyUI with manager
+comfy --listen 0.0.0.0   # Allow network access
+comfy --port 8188        # Custom port
+```
+
+**Web Interface:** http://localhost:8188
+
+**Features:**
+- Full ROCm GPU acceleration
+- Automatic torch dependency filtering (uses your existing ROCm PyTorch)
+- Model preservation during updates
+- ComfyUI Manager integration
+
+### vLLM Studio
+Web UI for vLLM model management and deployment.
+
+**Installation:** Select from the UI/UX category in the installer
+
+**Run command:**
+```bash
+vllm-studio              # Start the controller
+```
 
 ## Performance & Benchmarking Dashboard
 

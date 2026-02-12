@@ -137,6 +137,14 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "vllm-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
         "deepspeed-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
         "all-benchmarks" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
+        "comfyui" => {
+            // Check for ComfyUI installation
+            // Default location: $HOME/ComfyUI
+            // User location: /mnt/e0f7c1a8-b834-4827-b579-0251b006bc1f/ComfyUI/
+            // Check for .git folder and main.py
+            let default_path = home_path(&home, &["ComfyUI"]);
+            path_exists(default_path.join(".git")) || path_exists(default_path.join("main.py"))
+        }
         _ => false,
     }
 }
@@ -368,6 +376,12 @@ pub fn component_verification_commands(
                 "-c",
                 "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"full_benchmarks\" && echo \"Suite logs found\" || echo \"No suite logs yet\"",
             ],
+        )],
+        "comfyui" => vec![shell_command(
+            "ComfyUI",
+            "comfyui",
+            "bash",
+            &["-c", "test -f \"$HOME/ComfyUI/main.py\" && echo 'ComfyUI installed' || exit 1"],
         )],
         _ => Vec::new(),
     }

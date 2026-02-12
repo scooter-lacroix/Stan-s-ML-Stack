@@ -18,6 +18,7 @@ pub enum Stage {
 pub enum Category {
     Foundation,
     Core,
+    UiUx,
     Extension,
     Environment,
     Verification,
@@ -36,6 +37,8 @@ pub struct Component {
     pub installed: bool,
     pub progress: f32,
     pub estimate: String,
+    /// Whether this component requires sudo to install
+    pub needs_sudo: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +141,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "1-2 min".into(),
+            needs_sudo: true,
         },
         // Foundation components
         Component {
@@ -151,6 +155,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "30-45 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "pytorch".into(),
@@ -163,6 +168,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "triton".into(),
@@ -175,6 +181,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "5-10 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "mpi4py".into(),
@@ -187,6 +194,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "3-5 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "deepspeed".into(),
@@ -199,6 +207,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "8-12 min".into(),
+            needs_sudo: true,
         },
         // Core components
         Component {
@@ -212,6 +221,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-20 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "flash-attn".into(),
@@ -224,6 +234,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "20-30 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "repair-stack".into(),
@@ -236,6 +247,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "5-10 min".into(),
+            needs_sudo: true,
         },
         // Extension components
         Component {
@@ -249,6 +261,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "25-40 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "vllm".into(),
@@ -261,6 +274,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-25 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "aiter".into(),
@@ -273,18 +287,33 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-20 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "vllm-studio".into(),
             name: "vLLM Studio".into(),
             description: "Model lifecycle manager for vLLM/SGLang".into(),
             script: "install_vllm_studio.sh".into(),
-            category: Extension,
+            category: UiUx,
             required: false,
             selected: false,
             installed: false,
             progress: 0.0,
             estimate: "10-20 min".into(),
+            needs_sudo: false,
+        },
+        Component {
+            id: "comfyui".into(),
+            name: "ComfyUI".into(),
+            description: "Node-based AI image generation UI with ROCm support".into(),
+            script: "install_comfyui.sh".into(),
+            category: UiUx,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "5-10 min".into(),
+            needs_sudo: false,
         },
         Component {
             id: "onnx".into(),
@@ -297,6 +326,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "45-90 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "bitsandbytes".into(),
@@ -309,6 +339,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "3-5 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "rocm-smi".into(),
@@ -321,6 +352,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "2-3 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "migraphx".into(),
@@ -333,6 +365,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "pytorch-profiler".into(),
@@ -345,6 +378,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "3-5 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "wandb".into(),
@@ -357,6 +391,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "5-8 min".into(),
+            needs_sudo: true,
         },
         // Verification components
         Component {
@@ -370,6 +405,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "2-5 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "verify-enhanced".into(),
@@ -382,6 +418,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "5-10 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "verify-build".into(),
@@ -394,6 +431,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
+            needs_sudo: true,
         },
         // Performance components
         Component {
@@ -407,6 +445,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "30-60 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "rocm-benchmarks".into(),
@@ -419,6 +458,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "20-40 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "gpu-memory-bandwidth".into(),
@@ -431,6 +471,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "rocm-smi-bench".into(),
@@ -443,6 +484,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-25 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "vllm-performance".into(),
@@ -455,6 +497,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-25 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "deepspeed-performance".into(),
@@ -467,6 +510,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-20 min".into(),
+            needs_sudo: true,
         },
         Component {
             id: "all-benchmarks".into(),
@@ -479,6 +523,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "45-90 min".into(),
+            needs_sudo: true,
         },
     ]
 }
