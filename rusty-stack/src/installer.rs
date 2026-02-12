@@ -82,7 +82,10 @@ pub fn run_installation(
         }
     }
 
-    if needs_sudo() {
+    // Check if any selected component needs sudo
+    let any_component_needs_sudo = components.iter().any(|c| c.needs_sudo);
+
+    if needs_sudo() && any_component_needs_sudo {
         if let Some(password) = sudo_password.clone() {
             if let Err(err) = validate_sudo(password) {
                 let _ = sender.send(InstallerEvent::Log(
@@ -1099,7 +1102,10 @@ fn run_script(
 
     let python_bin = resolve_python_bin();
 
-    let mut command = if needs_sudo() {
+    // Check if this specific component needs sudo
+    let component_needs_sudo = component.needs_sudo && needs_sudo();
+
+    let mut command = if component_needs_sudo {
         let mut cmd = Command::new("sudo");
         cmd.arg("-S")
             .arg("-p")
