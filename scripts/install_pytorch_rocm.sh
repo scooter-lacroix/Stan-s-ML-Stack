@@ -633,6 +633,26 @@ install_pytorch_rocm() {
         uv_pip_install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
     fi
 
+    # Install common ML dependencies shared across projects
+    print_section "Installing Common ML Dependencies"
+    print_step "Installing torchsde and sentencepiece (shared across ML Stack)..."
+
+    # torchsde - stochastic differential equation solvers for PyTorch
+    # Used by ComfyUI and other diffusion-based projects
+    if uv_pip_install torchsde; then
+        print_success "torchsde installed successfully"
+    else
+        print_warning "torchsde installation failed, some features may not work"
+    fi
+
+    # sentencepiece - tokenizer/detokenizer for text processing
+    # Used by vLLM, ComfyUI, and other NLP projects
+    if uv_pip_install sentencepiece; then
+        print_success "sentencepiece installed successfully"
+    else
+        print_warning "sentencepiece installation failed, some features may not work"
+    fi
+
     # Verify installation
     print_section "Verifying Installation"
 

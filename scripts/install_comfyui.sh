@@ -115,11 +115,13 @@ if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
 fi
 
 # Install Python dependencies (excluding torch/torchvision/torchaudio since ROCm version is installed)
+# Note: torchsde and sentencepiece are installed globally by the PyTorch installer
 if [ -f "$COMFYUI_DIR/requirements.txt" ]; then
     print_step "Installing ComfyUI Python dependencies..."
 
     if [ "$DRY_RUN" = "false" ]; then
         # Create a filtered requirements file, excluding torch packages
+        # torchsde and sentencepiece are excluded as they're installed by the PyTorch installer
         FILTERED_REQS=$(mktemp)
         grep -v -E '^(torch|torchvision|torchaudio|torchsde|sentencepiece)' "$COMFYUI_DIR/requirements.txt" > "$FILTERED_REQS" || true
 
@@ -142,14 +144,32 @@ mkdir -p "$LAUNCHER_DIR" 2>/dev/null || true
 
 print_step "Creating ComfyUI launcher script..."
 
+# Detect GPU count for device selection
+GPU_DEVICES=""
+if command -v rocm-smi &>/dev/null; then
+    GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[")
+    if [ "$GPU_COUNT" -gt 0 ]; then
+        # Generate comma-separated list: 0,1,2,...
+        GPU_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
+        print_step "Detected $GPU_COUNT AMD GPU(s)"
+    fi
+fi
+
+# Default to 0,1 if GPU detection failed
+if [ -z "$GPU_DEVICES" ]; then
+    GPU_DEVICES="0,1"
+    print_warning "Could not detect GPU count, using default: $GPU_DEVICES"
+fi
+
 if [ "$DRY_RUN" = "false" ]; then
     LAUNCHER_PATH="$LAUNCHER_DIR/comfy"
     cat > "$LAUNCHER_PATH" << EOF
 #!/bin/bash
 # ComfyUI launcher for Stan's ML Stack
+# Auto-detected GPU devices: $GPU_DEVICES
 cd "$COMFYUI_DIR" && \\
-    HIP_VISIBLE_DEVICES=0,1 \\
-    CUDA_VISIBLE_DEVICES=0,1 \\
+    HIP_VISIBLE_DEVICES=$GPU_DEVICES \\
+    CUDA_VISIBLE_DEVICES=$GPU_DEVICES \\
     python3 main.py --enable-manager "\$@"
 EOF
     chmod +x "$LAUNCHER_PATH"
@@ -176,8 +196,8 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$COMFYUI_DIR
-Environment="HIP_VISIBLE_DEVICES=0,1"
-Environment="CUDA_VISIBLE_DEVICES=0,1"
+Environment="HIP_VISIBLE_DEVICES=$GPU_DEVICES"
+Environment="CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
 ExecStart=$PYTHON_BIN $COMFYUI_DIR/main.py --enable-manager
 Restart=on-failure
 
