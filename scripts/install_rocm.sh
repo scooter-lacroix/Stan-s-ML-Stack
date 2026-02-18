@@ -919,8 +919,18 @@ install_rocm() {
         echo "3) Full installation (ROCm + development tools + libraries)"
         echo "4) Custom installation (select specific components)"
         echo
-        read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
-        INSTALL_METHOD=${INSTALL_METHOD:-1}
+
+        # Check for pre-seeded value from TUI
+        if [ -n "${MLSTACK_ROCM_METHOD:-}" ]; then
+            INSTALL_METHOD="$MLSTACK_ROCM_METHOD"
+            print_step "Using pre-seeded installation method: $INSTALL_METHOD"
+        elif [ -t 0 ]; then
+            read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
+            INSTALL_METHOD=${INSTALL_METHOD:-1}
+        else
+            INSTALL_METHOD=1
+            echo "Choose installation method (1-4) [1]: $INSTALL_METHOD (auto-selected)"
+        fi
 
         case $INSTALL_METHOD in
             1)
@@ -952,8 +962,18 @@ install_rocm() {
     echo "2) Create ROCm virtual environment (recommended for development)"
     echo "3) Use existing virtual environment (specify path)"
     echo
-    read -p "Choose virtual environment option (1-3) [2]: " VENV_METHOD
-    VENV_METHOD=${VENV_METHOD:-2}
+
+    # Check for pre-seeded value from TUI
+    if [ -n "${MLSTACK_VENV_METHOD:-}" ]; then
+        VENV_METHOD="$MLSTACK_VENV_METHOD"
+        print_step "Using pre-seeded venv method: $VENV_METHOD"
+    elif [ -t 0 ]; then
+        read -p "Choose virtual environment option (1-3) [2]: " VENV_METHOD
+        VENV_METHOD=${VENV_METHOD:-2}
+    else
+        VENV_METHOD=1
+        echo "Choose virtual environment option (1-3) [2]: $VENV_METHOD (auto-selected)"
+    fi
 
     case $VENV_METHOD in
         1)
@@ -985,25 +1005,11 @@ install_rocm() {
         print_section "Installing ROCm"
 
         # Choose ROCm version (only if not additional components)
-        # Check for non-interactive mode (pre-seeded choice)
-        if [ -n "$INSTALL_ROCM_PRESEEDED_CHOICE" ]; then
-            # Non-interactive mode: use pre-seeded choice
+        # Check for pre-seeded choice from TUI or environment
+        if [ -n "${INSTALL_ROCM_PRESEEDED_CHOICE:-}" ]; then
             ROCM_CHOICE="$INSTALL_ROCM_PRESEEDED_CHOICE"
-
-            # Validate the choice is in valid range
-            if [[ ! "$ROCM_CHOICE" =~ ^[1-3]$ ]]; then
-                print_error "Invalid INSTALL_ROCM_PRESEEDED_CHOICE value: $ROCM_CHOICE"
-                echo
-                echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2)${RESET}"
-                echo
-                echo -e "${CYAN}For ROCm 7.10.0 Preview (TheRock distribution):${RESET}"
-                echo "  https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html"
-                return 1
-            fi
-
-            # Set default if choice is empty
-            ROCM_CHOICE=${ROCM_CHOICE:-3}
-        else
+            print_step "Using pre-seeded ROCm version choice: $ROCM_CHOICE"
+        elif [ -t 0 ]; then
             # Interactive mode: prompt user
             echo
             echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
@@ -1018,6 +1024,24 @@ install_rocm() {
             echo
             read -p "Choose ROCm version (1-3) [3]: " ROCM_CHOICE
             ROCM_CHOICE=${ROCM_CHOICE:-3}
+        else
+            # Non-interactive mode: use default
+            ROCM_CHOICE=3
+            echo
+            echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
+            echo "1) ROCm 6.4.3 (Legacy - Stable)"
+            echo "2) ROCm 7.1 (Stable)"
+            echo "3) ROCm 7.2 (Latest - Recommended)"
+            echo
+            echo "Choose ROCm version (1-3) [3]: $ROCM_CHOICE (auto-selected)"
+        fi
+
+        # Validate the choice is in valid range
+        if [[ ! "$ROCM_CHOICE" =~ ^[1-3]$ ]]; then
+            print_error "Invalid ROCm choice: $ROCM_CHOICE"
+            echo
+            echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2)${RESET}"
+            return 1
         fi
 
         case $ROCM_CHOICE in
@@ -1057,8 +1081,8 @@ install_rocm() {
         esac
 
         # Log mode information for debugging
-        if [ -n "$INSTALL_ROCM_PRESEEDED_CHOICE" ]; then
-            print_step "Non-interactive mode: Using pre-seeded choice $ROCM_CHOICE ($ROCM_CHANNEL channel)"
+        if [ -n "${INSTALL_ROCM_PRESEEDED_CHOICE:-}" ]; then
+            print_step "Using pre-seeded choice $ROCM_CHOICE ($ROCM_CHANNEL channel)"
         fi
 
         # For ROCm 7.x, offer to install updated framework components
@@ -1069,8 +1093,18 @@ install_rocm() {
             echo "1) Yes - Install updated frameworks (PyTorch 2.7, JAX 0.6.0, ONNX Runtime 1.22.0, etc.)"
             echo "2) No - Install ROCm core only"
             echo
-            read -p "Install additional frameworks? (1-2) [1]: " INSTALL_FRAMEWORKS
-            INSTALL_FRAMEWORKS=${INSTALL_FRAMEWORKS:-1}
+
+            # Check for pre-seeded value from TUI
+            if [ -n "${MLSTACK_INSTALL_FRAMEWORKS:-}" ]; then
+                INSTALL_FRAMEWORKS="$MLSTACK_INSTALL_FRAMEWORKS"
+                print_step "Using pre-seeded frameworks choice: $INSTALL_FRAMEWORKS"
+            elif [ -t 0 ]; then
+                read -p "Install additional frameworks? (1-2) [1]: " INSTALL_FRAMEWORKS
+                INSTALL_FRAMEWORKS=${INSTALL_FRAMEWORKS:-1}
+            else
+                INSTALL_FRAMEWORKS=1
+                echo "Install additional frameworks? (1-2) [1]: $INSTALL_FRAMEWORKS (auto-selected)"
+            fi
 
             if [ "$INSTALL_FRAMEWORKS" = "1" ]; then
                 INSTALL_ROCM7_FRAMEWORKS=true
@@ -1118,8 +1152,18 @@ install_rocm() {
             echo "2) Install official AMD tarball manually"
             echo "3) Skip ROCm installation (install manually later)"
             echo
-            read -p "Choose installation method (1-3) [1]: " ARCH_ROCM_METHOD
-            ARCH_ROCM_METHOD=${ARCH_ROCM_METHOD:-1}
+
+            # Check for pre-seeded value from TUI
+            if [ -n "${MLSTACK_ARCH_ROCM_METHOD:-}" ]; then
+                ARCH_ROCM_METHOD="$MLSTACK_ARCH_ROCM_METHOD"
+                print_step "Using pre-seeded Arch method: $ARCH_ROCM_METHOD"
+            elif [ -t 0 ]; then
+                read -p "Choose installation method (1-3) [1]: " ARCH_ROCM_METHOD
+                ARCH_ROCM_METHOD=${ARCH_ROCM_METHOD:-1}
+            else
+                ARCH_ROCM_METHOD=1
+                echo "Choose installation method (1-3) [1]: $ARCH_ROCM_METHOD (auto-selected)"
+            fi
 
             case $ARCH_ROCM_METHOD in
                 1)

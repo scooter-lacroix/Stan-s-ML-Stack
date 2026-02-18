@@ -1711,9 +1711,6 @@ fn python_has_rocm_torch(python: &str) -> bool {
 fn default_component_input(component_id: &str) -> Option<&'static str> {
     match component_id {
         "ml-stack-core" => Some("9\n0\n"),
-        // ROCm defaults: install method=1 (standard), venv=1 (no venv), version=3 (7.2 latest),
-        // frameworks=1 (yes), arch method=1 (AUR), confirm=y
-        "rocm" => Some("1\n1\n3\n1\n1\ny\n"),
         _ => None,
     }
 }
