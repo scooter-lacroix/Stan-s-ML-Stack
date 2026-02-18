@@ -838,8 +838,8 @@ fn detect_gpu() -> GPUInfo {
                         }
                     }
                 }
-                if line.contains("gfx") && info.architecture.is_empty() {
-                    // Extract only the gfx architecture identifier (e.g., gfx1100, gfx906)
+                if line.contains("gfx") {
+                    // Collect all gfx architectures found
                     let trimmed = line.trim();
                     if let Some(gfx_start) = trimmed.find("gfx") {
                         let after_gfx = &trimmed[gfx_start + 3..];
@@ -848,7 +848,13 @@ fn detect_gpu() -> GPUInfo {
                             .take_while(|c| c.is_ascii_digit())
                             .collect();
                         if !gfx_num.is_empty() {
-                            info.architecture = format!("gfx{}", gfx_num);
+                            let arch = format!("gfx{}", gfx_num);
+                            // Skip known iGPU architectures (Raphael: gfx1030, gfx1031)
+                            // and prefer dGPU architectures
+                            let is_igpu = matches!(gfx_num.as_str(), "1030" | "1031" | "1010" | "1012");
+                            if !is_igpu && info.architecture.is_empty() {
+                                info.architecture = arch;
+                            }
                         }
                     }
                 }
