@@ -1705,6 +1705,18 @@ esac
 EOF
 
     print_success "ROCm installation completed successfully"
+    echo
+    echo -e "${RED}${BOLD}╔═══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${RED}${BOLD}║                    ⚠️  REBOOT REQUIRED ⚠️                      ║${RESET}"
+    echo -e "${RED}${BOLD}╠═══════════════════════════════════════════════════════════════╣${RESET}"
+    echo -e "${RED}${BOLD}║  A system reboot is REQUIRED for:                              ║${RESET}"
+    echo -e "${RED}${BOLD}║  • AMD GPU drivers to properly load                            ║${RESET}"
+    echo -e "${RED}${BOLD}║  • ROCm to access the GPU                                      ║${RESET}"
+    echo -e "${RED}${BOLD}║  • Group membership changes (render, video) to take effect     ║${RESET}"
+    echo -e "${RED}${BOLD}║                                                                 ║${RESET}"
+    echo -e "${RED}${BOLD}║  Run: sudo reboot                                               ║${RESET}"
+    echo -e "${RED}${BOLD}╚═══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
     print_warning "You may need to log out and log back in for group changes to take effect"
     echo
     echo -e "${CYAN}${BOLD}ROCm Environment Variables:${RESET}"
