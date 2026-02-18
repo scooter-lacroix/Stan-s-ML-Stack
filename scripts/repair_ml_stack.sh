@@ -17,6 +17,20 @@
 # all components are properly installed and configured.
 # =============================================================================
 
+# =============================================================================
+# SOURCE MULTI-DISTRO ABSTRACTION LAYER
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
   ██████╗████████╗ █████╗ ███╗   ██╗███████╗    ███╗   ███╗██╗         ███████╗████████╗ █████╗  ██████╗██╗  ██╗
@@ -220,6 +234,85 @@ command_exists() {
 # Function to check if Python package is installed
 package_installed() {
     python3 -c "import $1" &>/dev/null
+}
+
+# Function to check if system package is installed (uses library or fallback)
+system_package_installed() {
+    local package="$1"
+    if command -v pm_is_installed >/dev/null 2>&1; then
+        pm_is_installed "$package"
+    else
+        # Fallback implementation
+        local pkg_manager="${PKG_MANAGER:-unknown}"
+        case $pkg_manager in
+            "dnf"|"yum")
+                rpm -q "$package" >/dev/null 2>&1
+                ;;
+            "apt")
+                dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"
+                ;;
+            "pacman")
+                pacman -Q "$package" >/dev/null 2>&1
+                ;;
+            "zypper")
+                zypper se -i "$package" 2>/dev/null | grep -q "^i"
+                ;;
+            *)
+                command_exists "$package"
+                ;;
+        esac
+    fi
+}
+
+# Function to install system package (uses library or fallback)
+install_system_package() {
+    local package="$1"
+    if command -v pm_install >/dev/null 2>&1; then
+        pm_install "$package"
+    else
+        # Fallback implementation with package name mapping
+        local pkg_manager="${PKG_MANAGER:-unknown}"
+        local mapped_package="$package"
+
+        # Map package names between different distributions
+        case $pkg_manager in
+            "dnf"|"yum")
+                case $package in
+                    "build-essential") mapped_package="@development-tools" ;;
+                    "python3-dev") mapped_package="python3-devel" ;;
+                    "libnuma-dev") mapped_package="numactl-devel" ;;
+                    "mesa-utils") mapped_package="mesa-demos" ;;
+                esac
+                ;;
+            "pacman")
+                case $package in
+                    "build-essential") mapped_package="base-devel" ;;
+                    "python3-dev") mapped_package="python" ;;
+                    "libnuma-dev") mapped_package="numactl" ;;
+                    "mesa-utils") mapped_package="mesa-demos" ;;
+                esac
+                ;;
+            "zypper")
+                case $package in
+                    "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
+                    "python3-dev") mapped_package="python3-devel" ;;
+                    "libnuma-dev") mapped_package="libnuma-devel" ;;
+                esac
+                ;;
+        esac
+
+        case $pkg_manager in
+            "dnf") sudo dnf install -y "$mapped_package" ;;
+            "apt") sudo apt-get install -y "$mapped_package" ;;
+            "yum") sudo yum install -y "$mapped_package" ;;
+            "pacman") sudo pacman -S --noconfirm "$mapped_package" ;;
+            "zypper") sudo zypper install -y "$mapped_package" ;;
+            *)
+                print_error "Cannot install $package: unknown package manager"
+                return 1
+                ;;
+        esac
+    fi
 }
 
 # Function to check if Python package version is correct
@@ -995,9 +1088,24 @@ run_diagnostics() {
     print_step "System information:"
     uname -a
 
-    # Check ROCm installation
+    # Show distribution information if library is loaded
+    if command -v print_distro_info >/dev/null 2>&1; then
+        print_step "Distribution: ${DISTRO_NAME:-unknown} (${DISTRO_ID:-unknown})"
+        print_step "Package Manager: ${PKG_MANAGER:-unknown}"
+    fi
+
+    # Check ROCm installation using library or fallback
     print_step "ROCm installation:"
-    if command_exists rocminfo; then
+    if command -v detect_rocm_path >/dev/null 2>&1; then
+        detect_rocm_path >/dev/null 2>&1 || true
+        if [[ "$ROCM_DETECTED" == "true" ]]; then
+            rocm_version=$(get_rocm_version 2>/dev/null || echo "unknown")
+            print_success "ROCm is installed (version: $rocm_version)"
+            print_step "ROCm path: ${ROCm_PATH:-unknown}"
+        else
+            print_error "ROCm is not installed"
+        fi
+    elif command_exists rocminfo; then
         rocm_version=$(rocminfo 2>/dev/null | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
         print_success "ROCm is installed (version: $rocm_version)"
     else

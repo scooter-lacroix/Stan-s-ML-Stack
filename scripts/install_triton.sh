@@ -17,6 +17,20 @@
 # virtual environment support, and comprehensive error handling.
 # =============================================================================
 
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
   ████████╗██████╗ ██╗████████╗ ██████╗ ███╗   ██╗
@@ -198,6 +212,18 @@ detect_container() {
 # Function to install system packages
 install_system_package() {
     local package="$1"
+
+    # Use multi-distro abstraction layer if available
+    if declare -f pm_install &>/dev/null; then
+        if [ "$DRY_RUN" = true ]; then
+            print_step "[DRY RUN] Would install $package using pm_install"
+            return 0
+        fi
+        pm_install "$package"
+        return $?
+    fi
+
+    # Fallback to original implementation
     local package_manager=$(detect_package_manager)
 
     case $package_manager in

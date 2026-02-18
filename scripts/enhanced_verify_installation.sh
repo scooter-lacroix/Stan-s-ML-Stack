@@ -1,6 +1,20 @@
 #!/bin/bash
 set -euo pipefail
 
+# =============================================================================
+# SOURCE MULTI-DISTRO ABSTRACTION LAYER
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 if [ -f "$HOME/.mlstack_env" ]; then
     source "$HOME/.mlstack_env"
 fi

@@ -15,6 +15,30 @@
 # This script installs PyTorch with ROCm support for AMD GPUs.
 # =============================================================================
 
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+# Get the directory where this script is located
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+
+# Source distro detection library
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    # shellcheck source=lib/distro_detection.sh
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+
+# Source package manager library
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    # shellcheck source=lib/package_manager.sh
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+
+# Source ROCm environment library
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    # shellcheck source=lib/rocm_env.sh
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
   ██████╗ ██╗   ██╗████████╗ ██████╗ ██████╗  ██████╗██╗  ██╗    ██████╗  ██████╗  ██████╗███╗   ███╗
@@ -126,8 +150,15 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
-# Function to detect package manager
+# Function to detect package manager (use library version if available)
 detect_package_manager() {
+    # Use library function if loaded
+    if [[ -n "${PKG_MANAGER:-}" ]]; then
+        echo "$PKG_MANAGER"
+        return 0
+    fi
+
+    # Fallback implementation
     if command_exists dnf; then
         echo "dnf"
     elif command_exists apt-get; then
@@ -327,7 +358,18 @@ install_pytorch_rocm() {
             print_step "ROCm profiler library found and configured"
         else
             # Check if we can install rocprofiler
-            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                pm_update && pm_install rocprofiler || true
+                if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                    export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                    print_success "ROCm profiler installed and configured"
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler installation failed, disabling HSA tools"
+                fi
+            elif command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
                 print_step "Installing rocprofiler for HSA tools support..."
                 sudo apt-get update && sudo apt-get install -y rocprofiler
                 if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -355,17 +397,22 @@ install_pytorch_rocm() {
         print_step "rocminfo not found in PATH, checking for ROCm installation..."
         if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
             print_step "ROCm directory found, attempting to install rocminfo..."
-            package_manager=$(detect_package_manager)
-            case $package_manager in
-                apt)
-                    sudo apt update && sudo apt install -y rocminfo
-                    ;;
-                dnf)
-                    sudo dnf install -y rocminfo
-                    ;;
-                yum)
-                    sudo yum install -y rocminfo
-                    ;;
+
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                pm_update && pm_install rocminfo
+            else
+                package_manager=$(detect_package_manager)
+                case $package_manager in
+                    apt)
+                        sudo apt update && sudo apt install -y rocminfo
+                        ;;
+                    dnf)
+                        sudo dnf install -y rocminfo
+                        ;;
+                    yum)
+                        sudo yum install -y rocminfo
+                        ;;
                 pacman)
                     sudo pacman -S rocminfo
                     ;;
@@ -376,7 +423,8 @@ install_pytorch_rocm() {
                     print_error "Unsupported package manager: $package_manager"
                     return 1
                     ;;
-            esac
+                esac
+            fi
             if command_exists rocminfo; then
                 print_success "Installed rocminfo"
             else

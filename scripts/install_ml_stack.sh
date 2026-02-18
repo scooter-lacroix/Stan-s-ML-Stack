@@ -18,6 +18,30 @@
 # Date: 2023-04-19
 # =============================================================================
 
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+# Get the directory where this script is located
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+
+# Source distro detection library
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    # shellcheck source=lib/distro_detection.sh
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+
+# Source package manager library
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    # shellcheck source=lib/package_manager.sh
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+
+# Source ROCm environment library
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    # shellcheck source=lib/rocm_env.sh
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 # Trap to ensure we exit properly
 trap 'echo "Forced exit"; kill -9 $$' EXIT
 
@@ -145,8 +169,15 @@ package_installed() {
     python3 -c "import $1" &>/dev/null
 }
 
-# Function to detect package manager
+# Function to detect package manager (use library version if available)
 detect_package_manager() {
+    # Use library function if loaded
+    if [[ -n "${PKG_MANAGER:-}" ]]; then
+        echo "$PKG_MANAGER"
+        return 0
+    fi
+
+    # Fallback implementation
     if command_exists dnf; then
         echo "dnf"
     elif command_exists apt-get; then
@@ -218,8 +249,14 @@ show_env() {
     echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
 }
 
-# Function to detect WSL environment
+# Function to detect WSL environment (use library version if available)
 detect_wsl() {
+    # Use library variable if loaded
+    if [[ -n "${IS_WSL:-}" ]]; then
+        echo "$IS_WSL"
+        return 0
+    fi
+
     if [ -f "/proc/version" ] && grep -q "Microsoft" "/proc/version"; then
         echo "true"
     elif [ -f "/proc/version" ] && grep -q "microsoft" "/proc/version"; then
@@ -229,8 +266,18 @@ detect_wsl() {
     fi
 }
 
-# Function to detect container environment
+# Function to detect container environment (use library version if available)
 detect_container() {
+    # Use library variable if loaded
+    if [[ -n "${IS_CONTAINER:-}" ]]; then
+        if [ "$IS_CONTAINER" = "true" ]; then
+            echo "container"
+        else
+            echo "bare-metal"
+        fi
+        return 0
+    fi
+
     if [ -f "/.dockerenv" ]; then
         echo "docker"
     elif grep -q "container" "/proc/1/cgroup" 2>/dev/null; then
@@ -457,28 +504,34 @@ check_prerequisites() {
         print_step "rocminfo not found in PATH, checking for ROCm installation..."
         if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
             print_step "ROCm directory found, attempting to install rocminfo..."
-            package_manager=$(detect_package_manager)
-            case $package_manager in
-                apt)
-                    sudo apt update && sudo apt install -y rocminfo
-                    ;;
-                dnf)
-                    sudo dnf install -y rocminfo
-                    ;;
-                yum)
-                    sudo yum install -y rocminfo
-                    ;;
-                pacman)
-                    sudo pacman -S rocminfo
-                    ;;
-                zypper)
-                    sudo zypper install -y rocminfo
-                    ;;
-                *)
-                    print_error "Unsupported package manager: $package_manager"
-                    return 1
-                    ;;
-            esac
+
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                pm_update && pm_install rocminfo
+            else
+                package_manager=$(detect_package_manager)
+                case $package_manager in
+                    apt)
+                        sudo apt update && sudo apt install -y rocminfo
+                        ;;
+                    dnf)
+                        sudo dnf install -y rocminfo
+                        ;;
+                    yum)
+                        sudo yum install -y rocminfo
+                        ;;
+                    pacman)
+                        sudo pacman -S --noconfirm rocminfo
+                        ;;
+                    zypper)
+                        sudo zypper install -y rocminfo
+                        ;;
+                    *)
+                        print_error "Unsupported package manager: $package_manager"
+                        return 1
+                        ;;
+                esac
+            fi
             if command_exists rocminfo; then
                 print_success "Installed rocminfo"
             else
@@ -898,30 +951,35 @@ install_migraphx() {
     # Install MIGraphX from ROCm repository
     print_step "Installing MIGraphX from ROCm repository..."
 
-    # Use detected package manager
-    package_manager=$(detect_package_manager)
-    case $package_manager in
-        apt)
-            dry_run_command "sudo apt-get update"
-            dry_run_command "sudo apt-get install -y migraphx python3-migraphx"
-            ;;
-        dnf)
-            dry_run_command "sudo dnf install -y migraphx python3-migraphx"
-            ;;
-        yum)
-            dry_run_command "sudo yum install -y migraphx python3-migraphx"
-            ;;
-        pacman)
-            dry_run_command "sudo pacman -S migraphx python-migraphx"
-            ;;
-        zypper)
-            dry_run_command "sudo zypper install -y migraphx python3-migraphx"
-            ;;
-        *)
-            print_error "Unsupported package manager: $package_manager"
-            return 1
-            ;;
-    esac
+    # Use pm_* functions if available
+    if declare -f pm_install &>/dev/null; then
+        pm_update && pm_install migraphx python3-migraphx
+    else
+        # Use detected package manager
+        package_manager=$(detect_package_manager)
+        case $package_manager in
+            apt)
+                dry_run_command "sudo apt-get update"
+                dry_run_command "sudo apt-get install -y migraphx python3-migraphx"
+                ;;
+            dnf)
+                dry_run_command "sudo dnf install -y migraphx python3-migraphx"
+                ;;
+            yum)
+                dry_run_command "sudo yum install -y migraphx python3-migraphx"
+                ;;
+            pacman)
+                dry_run_command "sudo pacman -S --noconfirm migraphx python-migraphx"
+                ;;
+            zypper)
+                dry_run_command "sudo zypper install -y migraphx python3-migraphx"
+                ;;
+            *)
+                print_error "Unsupported package manager: $package_manager"
+                return 1
+                ;;
+        esac
+    fi
 
     # Verify installation
     if [ "$DRY_RUN" != "true" ] && python3 -c "import migraphx; print(migraphx.__version__)" &> /dev/null; then
@@ -1185,30 +1243,35 @@ install_rccl() {
     # Install RCCL from ROCm repository
     print_step "Installing RCCL from ROCm repository..."
 
-    # Use detected package manager
-    package_manager=$(detect_package_manager)
-    case $package_manager in
-        apt)
-            dry_run_command "sudo apt-get update"
-            dry_run_command "sudo apt-get install -y rccl"
-            ;;
-        dnf)
-            dry_run_command "sudo dnf install -y rccl"
-            ;;
-        yum)
-            dry_run_command "sudo yum install -y rccl"
-            ;;
-        pacman)
-            dry_run_command "sudo pacman -S rccl"
-            ;;
-        zypper)
-            dry_run_command "sudo zypper install -y rccl"
-            ;;
-        *)
-            print_error "Unsupported package manager: $package_manager"
-            return 1
-            ;;
-    esac
+    # Use pm_* functions if available
+    if declare -f pm_install &>/dev/null; then
+        pm_update && pm_install rccl
+    else
+        # Use detected package manager
+        package_manager=$(detect_package_manager)
+        case $package_manager in
+            apt)
+                dry_run_command "sudo apt-get update"
+                dry_run_command "sudo apt-get install -y rccl"
+                ;;
+            dnf)
+                dry_run_command "sudo dnf install -y rccl"
+                ;;
+            yum)
+                dry_run_command "sudo yum install -y rccl"
+                ;;
+            pacman)
+                dry_run_command "sudo pacman -S --noconfirm rccl"
+                ;;
+            zypper)
+                dry_run_command "sudo zypper install -y rccl"
+                ;;
+            *)
+                print_error "Unsupported package manager: $package_manager"
+                return 1
+                ;;
+        esac
+    fi
 
     # Verify installation
     if [ "$DRY_RUN" != "true" ] && [ -f "/opt/rocm/lib/librccl.so" ]; then
@@ -1244,8 +1307,25 @@ install_mpi() {
 
     # Install OpenMPI
     print_step "Installing OpenMPI..."
-    sudo apt-get update
-    sudo apt-get install -y openmpi-bin libopenmpi-dev
+
+    # Use pm_* functions if available
+    if declare -f pm_install &>/dev/null; then
+        pm_update && pm_install openmpi-bin libopenmpi-dev
+    elif is_debian_based 2>/dev/null; then
+        sudo apt-get update
+        sudo apt-get install -y openmpi-bin libopenmpi-dev
+    elif is_fedora_based 2>/dev/null; then
+        local pkg_manager=$(detect_package_manager)
+        sudo $pkg_manager install -y openmpi openmpi-devel
+    elif is_arch_based 2>/dev/null; then
+        sudo pacman -S --noconfirm openmpi
+    elif is_suse_based 2>/dev/null; then
+        sudo zypper install -y openmpi openmpi-devel
+    else
+        print_warning "Unknown distribution, attempting apt-based installation..."
+        sudo apt-get update
+        sudo apt-get install -y openmpi-bin libopenmpi-dev || true
+    fi
 
     # Configure OpenMPI for ROCm
     print_step "Configuring OpenMPI for ROCm..."

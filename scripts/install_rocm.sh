@@ -17,6 +17,30 @@
 # Supports ROCm 7.1 and 7.2 with updated frameworks from manylinux repositories.
 # =============================================================================
 
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+# Get the directory where this script is located
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+
+# Source distro detection library
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    # shellcheck source=lib/distro_detection.sh
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+
+# Source package manager library
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    # shellcheck source=lib/package_manager.sh
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+
+# Source ROCm environment library
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    # shellcheck source=lib/rocm_env.sh
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 # Parse command line arguments first to handle --show-env
 DRY_RUN=false
 for arg in "$@"; do
@@ -174,8 +198,15 @@ execute_command() {
     fi
 }
 
-# Function to detect package manager
+# Function to detect package manager (use library version if available)
 detect_package_manager() {
+    # Use library function if loaded
+    if declare -f detect_package_manager &>/dev/null && [[ -n "${PKG_MANAGER:-}" ]]; then
+        echo "$PKG_MANAGER"
+        return 0
+    fi
+
+    # Fallback implementation for when library is not loaded
     if command_exists dnf; then
         echo "dnf"
     elif command_exists apt-get; then
@@ -247,8 +278,14 @@ detect_gpu_architecture() {
     echo "$gpu_arch"
 }
 
-# Function to detect if running in WSL
+# Function to detect if running in WSL (use library version if available)
 detect_wsl() {
+    # Use library variable if loaded
+    if [[ -n "${IS_WSL:-}" ]]; then
+        echo "$IS_WSL"
+        return 0
+    fi
+
     if [ -f /proc/version ] && grep -qi "microsoft\|wsl" /proc/version; then
         echo "true"
     else
@@ -256,8 +293,14 @@ detect_wsl() {
     fi
 }
 
-# Function to detect if running in a container
+# Function to detect if running in a container (use library version if available)
 detect_container() {
+    # Use library variable if loaded
+    if [[ -n "${IS_CONTAINER:-}" ]]; then
+        echo "$IS_CONTAINER"
+        return 0
+    fi
+
     if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q "docker\|container" /proc/1/cgroup 2>/dev/null; then
         echo "true"
     else
@@ -265,8 +308,14 @@ detect_container() {
     fi
 }
 
-# Function to detect ROCm installation path
+# Function to detect ROCm installation path (use library version if available)
 detect_rocm_path() {
+    # Use library function if loaded
+    if [[ -n "${ROCm_PATH:-}" ]]; then
+        echo "$ROCm_PATH"
+        return 0
+    fi
+
     local rocm_path=""
 
     # Check common ROCm installation paths
@@ -420,51 +469,62 @@ show_env_clean() {
 # Function to purge ROCm and AMDGPU packages
 purge_rocm() {
     print_warning "Purging existing ROCm and AMDGPU packages to prevent dependency conflicts..."
-    
+
     local pkg_manager=$(detect_package_manager)
-    
-    if [ "$pkg_manager" = "apt" ]; then
+
+    # Use library function for distribution check if available
+    if is_debian_based 2>/dev/null || [ "$pkg_manager" = "apt" ]; then
         # Use dpkg to find all ROCm and AMDGPU packages
         print_step "Identifying all ROCm and AMDGPU packages..."
         local all_pkgs=$(dpkg -l | grep -E "rocm|amdgpu|hsa-rocr|rocminfo|hip-runtime|miopen|rocblas|migraphx|rccl|comgr|mivisionx|rpp|half|librocclr|hsa-ext-rocr" | awk '{print $2}' || true)
-        
+
         if [ -n "$all_pkgs" ]; then
             print_step "Force-purging $(echo "$all_pkgs" | wc -w) packages..."
             # Using dpkg directly avoids apt's dependency resolver which is currently stuck
             # We use --force-all because we want to nuke everything and start over
             sudo dpkg --purge --force-all $all_pkgs || true
         fi
-        
+
         # Clean up any broken package states
         print_step "Fixing potential broken states..."
         sudo dpkg --configure -a || true
         sudo apt-get install -f -y || true
-        
+
         # Clean up the apt state
         print_step "Cleaning up apt state..."
         sudo apt-get autoremove -y --purge || true
         sudo apt-get clean
-        
+
         # Remove all possible ROCm and AMDGPU repository files
         print_step "Removing repository configurations..."
         sudo rm -f /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/amdgpu-proprietary.list /etc/apt/sources.list.d/amdgpu-install.list
         sudo rm -f /etc/apt/preferences.d/rocm-pin-600
-        
+
         # Ensure no locks remain
         sudo dpkg --configure -a || true
-        
+
         # Remove ROCm directories to prevent detection of partial installs
         print_step "Removing ROCm system directories..."
         sudo rm -rf /opt/rocm*
-        
-        sudo apt-get update
-    elif [ "$pkg_manager" = "dnf" ] || [ "$pkg_manager" = "yum" ]; then
+
+        # Use pm_update if available, otherwise fallback
+        if declare -f pm_update &>/dev/null; then
+            pm_update || sudo apt-get update
+        else
+            sudo apt-get update
+        fi
+    elif is_fedora_based 2>/dev/null || [ "$pkg_manager" = "dnf" ] || [ "$pkg_manager" = "yum" ]; then
         execute_command "sudo $pkg_manager remove -y rocm-* amdgpu-*" "Removing ROCm and AMDGPU packages"
         execute_command "sudo $pkg_manager autoremove -y" "Removing unused dependencies"
-    elif [ "$pkg_manager" = "zypper" ]; then
+    elif is_suse_based 2>/dev/null || [ "$pkg_manager" = "zypper" ]; then
         execute_command "sudo zypper remove -y rocm-* amdgpu-*" "Removing ROCm and AMDGPU packages"
+    elif is_arch_based 2>/dev/null || [ "$pkg_manager" = "pacman" ]; then
+        print_step "Removing ROCm packages on Arch-based system..."
+        # Arch requires manual package removal - ROCm packages are typically from AUR
+        sudo pacman -Rns --noconfirm $(pacman -Qq | grep -E "rocm|amdgpu|hip" 2>/dev/null) 2>/dev/null || true
+        print_warning "Arch users may need to manually remove AUR ROCm packages"
     fi
-    
+
     print_success "System-wide ROCm purge completed."
 }
 
@@ -524,8 +584,18 @@ validate_system() {
     if [ -n "$missing_tools" ]; then
         print_warning "Missing required tools:$missing_tools"
         print_step "Installing missing tools..."
-        if [ "$package_manager" = "apt" ]; then
+
+        # Use pm_* functions if available
+        if declare -f pm_install &>/dev/null; then
+            pm_update && pm_install wget gnupg curl
+        elif is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
             execute_command "sudo apt update && sudo apt install -y wget gnupg curl" "Installing required tools"
+        elif is_fedora_based 2>/dev/null || [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+            execute_command "sudo $package_manager install -y wget gnupg2 curl" "Installing required tools"
+        elif is_arch_based 2>/dev/null || [ "$package_manager" = "pacman" ]; then
+            execute_command "sudo pacman -S --noconfirm wget gnupg curl" "Installing required tools"
+        elif is_suse_based 2>/dev/null || [ "$package_manager" = "zypper" ]; then
+            execute_command "sudo zypper install -y wget gpg2 curl" "Installing required tools"
         fi
     fi
 
@@ -616,8 +686,17 @@ install_rocm_python_packages() {
     fi
 }
 
-# Function to detect OS information robustly
+# Function to detect OS information robustly (use library version if available)
 detect_os_info() {
+    # Use library variables if loaded
+    if [[ -n "${DISTRO_ID:-}" ]]; then
+        OS_ID="$DISTRO_ID"
+        OS_VERSION_ID="${DISTRO_VERSION:-}"
+        OS_CODENAME="${DISTRO_CODENAME:-}"
+        return 0
+    fi
+
+    # Fallback implementation
     if [ -f /etc/os-release ]; then
         # shellcheck source=/dev/null
         . /etc/os-release
@@ -635,7 +714,7 @@ detect_os_info() {
         OS_VERSION_ID=$(uname -r)
         OS_CODENAME=""
     fi
-    
+
     # Normalize ID to lowercase
     OS_ID=$(echo "$OS_ID" | tr '[:upper:]' '[:lower:]')
 }
@@ -699,29 +778,34 @@ install_rocm() {
             print_warning "ROCm is installed but rocminfo is missing"
             print_step "Installing rocminfo..."
 
-            package_manager=$(detect_package_manager)
-            case $package_manager in
-                apt)
-                    sudo apt update && sudo apt install -y rocminfo
-                    ;;
-                dnf)
-                    sudo dnf install -y rocminfo
-                    ;;
-                yum)
-                    sudo yum install -y rocminfo
-                    ;;
-                pacman)
-                    sudo pacman -S rocminfo
-                    ;;
-                zypper)
-                    sudo zypper install -y rocminfo
-                    ;;
-                *)
-                    print_error "Unsupported package manager: $package_manager"
-                    print_step "Please install rocminfo manually"
-                    return 1
-                    ;;
-            esac
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                pm_update && pm_install rocminfo
+            else
+                package_manager=$(detect_package_manager)
+                case $package_manager in
+                    apt)
+                        sudo apt update && sudo apt install -y rocminfo
+                        ;;
+                    dnf)
+                        sudo dnf install -y rocminfo
+                        ;;
+                    yum)
+                        sudo yum install -y rocminfo
+                        ;;
+                    pacman)
+                        sudo pacman -S --noconfirm rocminfo
+                        ;;
+                    zypper)
+                        sudo zypper install -y rocminfo
+                        ;;
+                    *)
+                        print_error "Unsupported package manager: $package_manager"
+                        print_step "Please install rocminfo manually"
+                        return 1
+                        ;;
+                esac
+            fi
 
             if command_exists rocminfo; then
                 print_success "Installed rocminfo component"
@@ -1086,16 +1170,24 @@ EOF" "Setting ROCm repository priorities"
 
         # Update package lists
         print_step "Updating package lists..."
-        if [ "$package_manager" = "apt" ]; then
+        # Use pm_update if available
+        if declare -f pm_update &>/dev/null; then
+            pm_update
+        elif [ "$package_manager" = "apt" ]; then
             sudo apt clean
             sudo apt update
         elif [ "$package_manager" = "zypper" ]; then
             sudo zypper --gpg-auto-import-keys refresh
+        elif [ "$package_manager" = "pacman" ]; then
+            sudo pacman -Sy
         fi
 
         # Install prerequisites
         print_step "Installing prerequisites..."
-        if [ "$package_manager" = "apt" ]; then
+        # Use pm_install if available
+        if declare -f pm_install &>/dev/null; then
+            pm_install python3-setuptools python3-wheel || true
+        elif [ "$package_manager" = "apt" ]; then
             sudo apt install -y python3-setuptools python3-wheel
         elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
             # RHEL prerequisites
@@ -1107,15 +1199,17 @@ EOF" "Setting ROCm repository priorities"
             sudo $package_manager install -y python3-setuptools python3-wheel
         elif [ "$package_manager" = "zypper" ]; then
             sudo zypper install -y python3-setuptools python3-wheel
+        elif [ "$package_manager" = "pacman" ]; then
+            sudo pacman -S --noconfirm python-setuptools python-wheel
         fi
 
         # Add user to render and video groups
         print_step "Adding user to render and video groups..."
-        sudo usermod -a -G render,video $LOGNAME
+        sudo usermod -a -G render,video $LOGNAME 2>/dev/null || true
     fi
-    
+
     # For Debian, install any missing dependencies from Ubuntu Noble
-    if [ "$distributor" = "Debian" ]; then
+    if [ "$distributor" = "Debian" ] || is_debian_based 2>/dev/null; then
         print_step "Installing any missing dependencies from Ubuntu Noble..."
 
         # Temporarily add Ubuntu noble for missing dependencies
@@ -1264,12 +1358,17 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
             execute_command "sudo amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing additional ROCm components"
         else
             # Fallback for RCCL if usecase not available
-            if [ "$package_manager" = "apt" ]; then
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                pm_update && pm_install librccl-dev librccl1 || print_warning "RCCL installation via pm_install failed"
+            elif is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
                 execute_command "sudo apt update && sudo apt install -y librccl-dev librccl1" "Installing RCCL libraries directly"
-            elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+            elif is_fedora_based 2>/dev/null || [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
                 execute_command "sudo $package_manager install -y rccl-devel" "Installing RCCL libraries directly"
-            elif [ "$package_manager" = "zypper" ]; then
+            elif is_suse_based 2>/dev/null || [ "$package_manager" = "zypper" ]; then
                 execute_command "sudo zypper install -y rccl-devel" "Installing RCCL libraries directly"
+            elif is_arch_based 2>/dev/null || [ "$package_manager" = "pacman" ]; then
+                print_warning "Arch users should install rccl from AUR: yay -S rccl"
             fi
         fi
         ;;
@@ -1279,8 +1378,14 @@ esac
         print_error "Failed to install ROCm"
 
         print_step "Installation failed. Check the error messages above for details."
-        print_step "You can try: sudo apt install -f  # to fix broken dependencies"
-        print_step "Or check: sudo apt update && sudo apt upgrade  # to update packages"
+        if is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
+            print_step "You can try: sudo apt install -f  # to fix broken dependencies"
+            print_step "Or check: sudo apt update && sudo apt upgrade  # to update packages"
+        elif is_arch_based 2>/dev/null || [ "$package_manager" = "pacman" ]; then
+            print_step "You can try: sudo pacman -Fy && sudo pacman -Su  # to fix/update packages"
+        elif is_fedora_based 2>/dev/null || [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+            print_step "You can try: sudo $package_manager clean all && sudo $package_manager upgrade"
+        fi
 
         return 1
     fi
@@ -1386,9 +1491,10 @@ esac
     verify_rocm_installation "$ROCM_VERSION"
 
     # Final cleanup and fix for any remaining dependency issues
-    if [ "$package_manager" = "apt" ]; then
+    # Only applicable to Debian-based systems
+    if is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
         print_step "Performing final dependency resolution..."
-        sudo apt install -f -y
+        sudo apt install -f -y || true
     fi
 
     if command_exists rocminfo; then

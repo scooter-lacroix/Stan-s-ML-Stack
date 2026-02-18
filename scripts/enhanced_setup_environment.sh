@@ -33,6 +33,20 @@
 # Author: Stanley Chisango (Scooter Lacroix)
 # =============================================================================
 
+# =============================================================================
+# SOURCE MULTI-DISTRO ABSTRACTION LAYER
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
 /**
@@ -238,146 +252,142 @@ command_exists() {
     command -v "$1" > /dev/null 2>&1
 }
 
-# Function to detect package manager
-detect_package_manager() {
-    if command_exists dnf; then
-        echo "dnf"
-    elif command_exists apt-get; then
-        echo "apt"
-    elif command_exists yum; then
-        echo "yum"
-    elif command_exists pacman; then
-        echo "pacman"
-    elif command_exists zypper; then
-        echo "zypper"
+# Wrapper functions for multi-distro library integration
+# These maintain backward compatibility while using the new abstraction layer
+
+# Function to update package lists using library or fallback
+update_package_lists() {
+    if command -v pm_update >/dev/null 2>&1; then
+        print_step "Using ${PKG_MANAGER:-unknown} package manager"
+        pm_update
     else
-        echo "unknown"
+        # Fallback implementation
+        local pkg_manager="${PKG_MANAGER:-$(detect_package_manager 2>/dev/null || echo unknown)}"
+
+        print_step "Using $pkg_manager package manager"
+
+        case $pkg_manager in
+            "dnf")
+                sudo dnf check-update -y || true
+                ;;
+            "apt")
+                if [ -n "$NONINTERACTIVE" ]; then
+                    DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -y
+                else
+                    sudo apt-get update -y
+                fi
+                ;;
+            "yum")
+                sudo yum check-update -y || true
+                ;;
+            "pacman")
+                sudo pacman -Sy
+                ;;
+            "zypper")
+                sudo zypper ref
+                ;;
+            *)
+                print_warning "Unknown package manager, skipping package list update"
+                ;;
+        esac
     fi
 }
 
-# Function to update package lists based on detected package manager
-update_package_lists() {
-    local pkg_manager=$(detect_package_manager)
-
-    print_step "Using $pkg_manager package manager"
-
-    case $pkg_manager in
-        "dnf")
-            if [ -n "$NONINTERACTIVE" ]; then
-                sudo dnf check-update -y || true  # dnf returns 100 for available updates
-            else
-                sudo dnf check-update -y || true
-            fi
-            ;;
-        "apt")
-            if [ -n "$NONINTERACTIVE" ]; then
-                DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -y
-            else
-                sudo apt-get update -y
-            fi
-            ;;
-        "yum")
-            sudo yum check-update -y || true
-            ;;
-        "pacman")
-            sudo pacman -Sy
-            ;;
-        "zypper")
-            sudo zypper ref
-            ;;
-        *)
-            print_warning "Unknown package manager, skipping package list update"
-            ;;
-    esac
-}
-
-# Function to install packages based on detected package manager
+# Function to install packages using library or fallback
 install_system_package() {
     local package="$1"
-    local pkg_manager=$(detect_package_manager)
 
-    # Map package names between different distributions
-    local mapped_package="$package"
-    case $pkg_manager in
-        "dnf"|"yum")
-            case $package in
-                "build-essential") mapped_package="@development-tools" ;;
-                "python3-dev") mapped_package="python3-devel" ;;
-                "libnuma-dev") mapped_package="numactl-devel" ;;
-                "mesa-utils") mapped_package="mesa-demos" ;;
-            esac
-            ;;
-        "pacman")
-            case $package in
-                "build-essential") mapped_package="base-devel" ;;
-                "python3-dev") mapped_package="python" ;;
-                "libnuma-dev") mapped_package="numactl" ;;
-                "mesa-utils") mapped_package="mesa-demos" ;;
-            esac
-            ;;
-        "zypper")
-            case $package in
-                "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
-                "python3-dev") mapped_package="python3-devel" ;;
-                "libnuma-dev") mapped_package="libnuma-devel" ;;
-            esac
-            ;;
-    esac
+    if command -v pm_install >/dev/null 2>&1; then
+        pm_install "$package"
+    else
+        # Fallback implementation with package name mapping
+        local pkg_manager="${PKG_MANAGER:-$(detect_package_manager 2>/dev/null || echo unknown)}"
 
-    case $pkg_manager in
-        "dnf")
-            if [ -n "$NONINTERACTIVE" ]; then
+        # Map package names between different distributions
+        local mapped_package="$package"
+        case $pkg_manager in
+            "dnf"|"yum")
+                case $package in
+                    "build-essential") mapped_package="@development-tools" ;;
+                    "python3-dev") mapped_package="python3-devel" ;;
+                    "libnuma-dev") mapped_package="numactl-devel" ;;
+                    "mesa-utils") mapped_package="mesa-demos" ;;
+                esac
+                ;;
+            "pacman")
+                case $package in
+                    "build-essential") mapped_package="base-devel" ;;
+                    "python3-dev") mapped_package="python" ;;
+                    "libnuma-dev") mapped_package="numactl" ;;
+                    "mesa-utils") mapped_package="mesa-demos" ;;
+                esac
+                ;;
+            "zypper")
+                case $package in
+                    "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
+                    "python3-dev") mapped_package="python3-devel" ;;
+                    "libnuma-dev") mapped_package="libnuma-devel" ;;
+                esac
+                ;;
+        esac
+
+        case $pkg_manager in
+            "dnf")
                 sudo dnf install -y "$mapped_package"
-            else
-                sudo dnf install -y "$mapped_package"
-            fi
-            ;;
-        "apt")
-            if [ -n "$NONINTERACTIVE" ]; then
-                DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$mapped_package"
-            else
-                sudo apt-get install -y "$mapped_package"
-            fi
-            ;;
-        "yum")
-            sudo yum install -y "$mapped_package"
-            ;;
-        "pacman")
-            sudo pacman -S --noconfirm "$mapped_package"
-            ;;
-        "zypper")
-            sudo zypper install -y "$mapped_package"
-            ;;
-        *)
-            print_error "Cannot install $package: unknown package manager"
-            return 1
-            ;;
-    esac
+                ;;
+            "apt")
+                if [ -n "$NONINTERACTIVE" ]; then
+                    DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y "$mapped_package"
+                else
+                    sudo apt-get install -y "$mapped_package"
+                fi
+                ;;
+            "yum")
+                sudo yum install -y "$mapped_package"
+                ;;
+            "pacman")
+                sudo pacman -S --noconfirm "$mapped_package"
+                ;;
+            "zypper")
+                sudo zypper install -y "$mapped_package"
+                ;;
+            *)
+                print_error "Cannot install $package: unknown package manager"
+                return 1
+                ;;
+        esac
+    fi
 }
 
-# Function to check if package is installed based on package manager
+# Function to check if package is installed using library or fallback
 package_installed() {
     local package="$1"
-    local pkg_manager=$(detect_package_manager)
 
-    case $pkg_manager in
-        "dnf"|"yum")
-            rpm -q "$package" >/dev/null 2>&1
-            ;;
-        "apt")
-            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"
-            ;;
-        "pacman")
-            pacman -Q "$package" >/dev/null 2>&1
-            ;;
-        "zypper")
-            zypper se -i "$package" | grep -q "^i"
-            ;;
-        *)
-            # Fallback to command existence check
-            command_exists "$package"
-            ;;
-    esac
+    if command -v pm_is_installed >/dev/null 2>&1; then
+        pm_is_installed "$package"
+    else
+        # Fallback implementation
+        local pkg_manager="${PKG_MANAGER:-$(detect_package_manager 2>/dev/null || echo unknown)}"
+
+        case $pkg_manager in
+            "dnf"|"yum")
+                rpm -q "$package" >/dev/null 2>&1
+                ;;
+            "apt")
+                dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"
+                ;;
+            "pacman")
+                pacman -Q "$package" >/dev/null 2>&1
+                ;;
+            "zypper")
+                zypper se -i "$package" | grep -q "^i"
+                ;;
+            *)
+                # Fallback to command existence check
+                command_exists "$package"
+                ;;
+        esac
+    fi
 }
 
 # Function to use uv or pip for Python packages
@@ -399,10 +409,14 @@ install_python_package() {
 detect_amd_gpus() {
     print_section "Detecting AMD GPUs"
 
-    # Check if lspci is available
+    # Check if lspci is available - use library function if available
     if ! command_exists lspci; then
         print_warning "lspci command not found. Installing pciutils..."
-        sudo apt-get update && sudo apt-get install -y pciutils
+        if command -v pm_install >/dev/null 2>&1; then
+            pm_install pciutils
+        else
+            sudo apt-get update && sudo apt-get install -y pciutils
+        fi
     fi
 
     # Detect AMD GPUs using lspci
@@ -491,79 +505,98 @@ detect_amd_gpus() {
 detect_rocm() {
     print_section "Detecting ROCm Installation"
 
-    # Check if ROCm is installed
-    if command_exists rocminfo; then
-        print_success "ROCm is installed"
+    # Use library function if available for enhanced multi-distro support
+    if command -v detect_rocm_path >/dev/null 2>&1; then
+        detect_rocm_path
+        rocm_version=$(get_rocm_version 2>/dev/null || echo "unknown")
+        rocm_path="${ROCm_PATH:-/opt/rocm}"
 
-        # Get ROCm version
-        rocm_version=$(rocminfo | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
-        if [ -z "$rocm_version" ]; then
-            # Try alternative method to get ROCm version
-            rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+        if [[ "$ROCM_DETECTED" == "true" ]]; then
+            print_success "ROCm is installed"
+            print_step "ROCm version: $rocm_version"
+            print_step "ROCm path: $rocm_path"
+            export ROCM_VERSION=$rocm_version
+            export ROCM_PATH=$rocm_path
+        else
+            print_warning "ROCm is not installed or not in PATH"
+            print_step "Please install ROCm from https://rocm.docs.amd.com/en/latest/deploy/linux/index.html"
+            return 1
+        fi
+    else
+        # Fallback implementation for backward compatibility
+        if command_exists rocminfo; then
+            print_success "ROCm is installed"
+
+            # Get ROCm version
+            rocm_version=$(rocminfo | grep -i "ROCm Version" | awk -F: '{print $2}' | xargs)
+            if [ -z "$rocm_version" ]; then
+                # Try alternative method to get ROCm version
+                rocm_version=$(ls -d /opt/rocm-* 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n 1)
+                if [ -z "$rocm_version" ]; then
+                    rocm_version="unknown"
+                fi
+            fi
+
+            print_step "ROCm version: $rocm_version"
+            export ROCM_VERSION=$rocm_version
+
+            # Check ROCm path
+            if [ -d "/opt/rocm" ]; then
+                rocm_path="/opt/rocm"
+            elif [ -d "/opt/rocm-$rocm_version" ]; then
+                rocm_path="/opt/rocm-$rocm_version"
+            else
+                # Try to find ROCm path
+                rocm_path=$(dirname $(which rocminfo))/..
+            fi
+
+            print_step "ROCm path: $rocm_path"
+            export ROCM_PATH=$rocm_path
+        else
+            print_warning "ROCm is not installed or not in PATH"
+
+            # Check if ROCm is installed in common locations
+            if [ -d "/opt/rocm" ]; then
+                print_step "Found ROCm in /opt/rocm"
+                rocm_path="/opt/rocm"
+            else
+                # Try to find any rocm installation
+                rocm_dirs=$(ls -d /opt/rocm* 2>/dev/null)
+                if [ -n "$rocm_dirs" ]; then
+                    rocm_path=$(echo "$rocm_dirs" | head -n 1)
+                    print_step "Found ROCm in $rocm_path"
+                else
+                    print_error "Could not find ROCm installation"
+                    print_step "Please install ROCm from https://rocm.docs.amd.com/en/latest/deploy/linux/index.html"
+                    return 1
+                fi
+            fi
+
+            # Try to get ROCm version
+            rocm_version=$(echo "$rocm_path" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
             if [ -z "$rocm_version" ]; then
                 rocm_version="unknown"
             fi
+
+            export ROCM_PATH=$rocm_path
+            export ROCM_VERSION=$rocm_version
+
+            print_step "Adding ROCm to PATH and LD_LIBRARY_PATH..."
+            export PATH=$PATH:$ROCM_PATH/bin:$ROCM_PATH/hip/bin
+            export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$ROCM_PATH/lib:$ROCM_PATH/hip/lib
+
+            print_warning "Please install ROCm properly for full functionality"
         fi
+    fi
 
-        print_step "ROCm version: $rocm_version"
-        export ROCM_VERSION=$rocm_version
-
-        # Check ROCm path
-        if [ -d "/opt/rocm" ]; then
-            rocm_path="/opt/rocm"
-        elif [ -d "/opt/rocm-$rocm_version" ]; then
-            rocm_path="/opt/rocm-$rocm_version"
-        else
-            # Try to find ROCm path
-            rocm_path=$(dirname $(which rocminfo))/..
-        fi
-
-        print_step "ROCm path: $rocm_path"
-        export ROCM_PATH=$rocm_path
-
-        # Check if user has proper permissions
-        if groups | grep -q -E '(video|render|rocm)'; then
-            print_success "User has proper permissions for ROCm"
-        else
-            print_warning "User may not have proper permissions for ROCm"
-            print_step "Recommended: Add user to video and render groups:"
-            print_step "  sudo usermod -a -G video,render $USER"
-            print_step "  (Requires logout/login to take effect)"
-        fi
+    # Check if user has proper permissions
+    if groups | grep -q -E '(video|render|rocm)'; then
+        print_success "User has proper permissions for ROCm"
     else
-        print_warning "ROCm is not installed or not in PATH"
-
-        # Check if ROCm is installed in common locations
-        if [ -d "/opt/rocm" ]; then
-            print_step "Found ROCm in /opt/rocm"
-            rocm_path="/opt/rocm"
-        else
-            # Try to find any rocm installation
-            rocm_dirs=$(ls -d /opt/rocm* 2>/dev/null)
-            if [ -n "$rocm_dirs" ]; then
-                rocm_path=$(echo "$rocm_dirs" | head -n 1)
-                print_step "Found ROCm in $rocm_path"
-            else
-                print_error "Could not find ROCm installation"
-                print_step "Please install ROCm from https://rocm.docs.amd.com/en/latest/deploy/linux/index.html"
-                return 1
-            fi
-        fi
-
-        # Try to get ROCm version
-        rocm_version=$(echo "$rocm_path" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
-        if [ -z "$rocm_version" ]; then
-            rocm_version="unknown"
-        fi
-
-        export ROCM_PATH=$rocm_path
-        export ROCM_VERSION=$rocm_version
-
-        print_step "Adding ROCm to PATH and LD_LIBRARY_PATH..."
-        export PATH=$PATH:$ROCM_PATH/bin:$ROCM_PATH/hip/bin
-        export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:$ROCM_PATH/lib:$ROCM_PATH/hip/lib
-
-        print_warning "Please install ROCm properly for full functionality"
+        print_warning "User may not have proper permissions for ROCm"
+        print_step "Recommended: Add user to video and render groups:"
+        print_step "  sudo usermod -a -G video,render $USER"
+        print_step "  (Requires logout/login to take effect)"
     fi
 
     return 0
@@ -1017,31 +1050,35 @@ check_system_dependencies() {
                 print_step "Installing libnuma-dev with special handling..."
 
                 # Check if libnuma-dev is already installed despite detection failure
-                if ldconfig -p | grep -q "libnuma.so"; then
+                if ldconfig -p 2>/dev/null | grep -q "libnuma.so"; then
                     print_success "libnuma shared library is already available in the system"
                 else
-                    # Try to install with apt-get
-                    if [ -n "$NONINTERACTIVE" ]; then
+                    # Use library function or fallback
+                    if command -v pm_install >/dev/null 2>&1; then
+                        pm_install libnuma-dev
+                    elif [ -n "$NONINTERACTIVE" ]; then
                         DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y libnuma-dev
                     else
                         sudo apt-get install -y libnuma-dev
                     fi
 
                     # Verify installation with multiple methods
-                    if dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q "install ok installed"; then
+                    if command -v pm_is_installed >/dev/null 2>&1 && pm_is_installed libnuma-dev; then
+                        print_success "libnuma-dev package is installed"
+                    elif dpkg-query -W -f='${Status}' libnuma-dev 2>/dev/null | grep -q "install ok installed"; then
                         print_success "libnuma-dev package is installed according to dpkg"
                     else
                         print_warning "libnuma-dev package installation status is uncertain"
                     fi
 
                     # Check if the shared library is available
-                    if ldconfig -p | grep -q "libnuma.so"; then
+                    if ldconfig -p 2>/dev/null | grep -q "libnuma.so"; then
                         print_success "libnuma shared library is available in the system"
                     else
                         print_warning "libnuma shared library not found in ldconfig cache"
                         # Update the ldconfig cache
-                        sudo ldconfig
-                        if ldconfig -p | grep -q "libnuma.so"; then
+                        sudo ldconfig 2>/dev/null || true
+                        if ldconfig -p 2>/dev/null | grep -q "libnuma.so"; then
                             print_success "libnuma shared library is now available after ldconfig update"
                         else
                             print_error "libnuma shared library still not found after ldconfig update"
@@ -1074,42 +1111,48 @@ check_system_dependencies() {
         # Final verification of all packages using adaptive checking
         print_step "Final verification of installed packages..."
         for package in "${missing_packages[@]}"; do
-            # For verification, we need to check the mapped package name, not the original
-            local pkg_manager=$(detect_package_manager)
+            # For verification, get the mapped package name if using library
             local mapped_package="$package"
-            case $pkg_manager in
-                "dnf"|"yum")
-                    case $package in
-                        "build-essential")
-                            # Check for development-tools group by checking for key components
-                            if command_exists gcc && command_exists make; then
-                                print_success "Development tools (build-essential equivalent) are installed"
-                            else
-                                print_error "Development tools installation incomplete"
-                            fi
-                            continue
-                            ;;
-                        "python3-dev") mapped_package="python3-devel" ;;
-                        "libnuma-dev") mapped_package="numactl-devel" ;;
-                        "mesa-utils") mapped_package="mesa-demos" ;;
-                    esac
-                    ;;
-                "pacman")
-                    case $package in
-                        "build-essential") mapped_package="base-devel" ;;
-                        "python3-dev") mapped_package="python" ;;
-                        "libnuma-dev") mapped_package="numactl" ;;
-                        "mesa-utils") mapped_package="mesa-demos" ;;
-                    esac
-                    ;;
-                "zypper")
-                    case $package in
-                        "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
-                        "python3-dev") mapped_package="python3-devel" ;;
-                        "libnuma-dev") mapped_package="libnuma-devel" ;;
-                    esac
-                    ;;
-            esac
+
+            if command -v pm_get_native_name >/dev/null 2>&1; then
+                mapped_package=$(pm_get_native_name "$package")
+            else
+                # Fallback mapping
+                local pkg_manager="${PKG_MANAGER:-unknown}"
+                case $pkg_manager in
+                    "dnf"|"yum")
+                        case $package in
+                            "build-essential")
+                                # Check for development-tools group by checking for key components
+                                if command_exists gcc && command_exists make; then
+                                    print_success "Development tools (build-essential equivalent) are installed"
+                                else
+                                    print_error "Development tools installation incomplete"
+                                fi
+                                continue
+                                ;;
+                            "python3-dev") mapped_package="python3-devel" ;;
+                            "libnuma-dev") mapped_package="numactl-devel" ;;
+                            "mesa-utils") mapped_package="mesa-demos" ;;
+                        esac
+                        ;;
+                    "pacman")
+                        case $package in
+                            "build-essential") mapped_package="base-devel" ;;
+                            "python3-dev") mapped_package="python" ;;
+                            "libnuma-dev") mapped_package="numactl" ;;
+                            "mesa-utils") mapped_package="mesa-demos" ;;
+                        esac
+                        ;;
+                    "zypper")
+                        case $package in
+                            "build-essential") mapped_package="patterns-devel-base-devel_basis" ;;
+                            "python3-dev") mapped_package="python3-devel" ;;
+                            "libnuma-dev") mapped_package="libnuma-devel" ;;
+                        esac
+                        ;;
+                esac
+            fi
 
             if package_installed "$mapped_package"; then
                 print_success "Verified $package ($mapped_package) is installed"
@@ -1131,7 +1174,7 @@ check_system_dependencies() {
         print_step "pip version: $pip_version"
     else
         print_warning "pip3 not found, installing..."
-        sudo apt-get install -y python3-pip
+        install_system_package python3-pip
     fi
 
     # Check git
@@ -1140,7 +1183,7 @@ check_system_dependencies() {
         print_step "git version: $git_version"
     else
         print_warning "git not found, installing..."
-        sudo apt-get install -y git
+        install_system_package git
     fi
 
     # Check cmake
@@ -1149,7 +1192,7 @@ check_system_dependencies() {
         print_step "cmake version: $cmake_version"
     else
         print_warning "cmake not found, installing..."
-        sudo apt-get install -y cmake
+        install_system_package cmake
     fi
 
     return 0
