@@ -90,7 +90,36 @@ pub fn is_component_installed(component: &Component, python_candidates: &[String
 pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[String]) -> bool {
     let home = env::var("HOME").unwrap_or_default();
     match component_id {
-        "rocm" => path_exists("/opt/rocm/.info/version") || command_exists("rocminfo"),
+        // ROCm requires BOTH version file AND functional rocminfo (not just binary existence)
+        // This prevents false positives from partial downloads
+        "rocm" => {
+            // Check for version file in multiple locations
+            let version_exists = path_exists("/opt/rocm/.info/version")
+                || path_exists("/opt/rocm/version")
+                || path_exists("/usr/lib/rocm/.info/version");
+
+            // Check if rocminfo actually works (not just exists)
+            let rocminfo_functional = if let Ok(output) = std::process::Command::new("rocminfo")
+                .arg("--version")
+                .output()
+            {
+                output.status.success()
+            } else {
+                // Try from ROCm path
+                if let Ok(output) = std::process::Command::new("/opt/rocm/bin/rocminfo")
+                    .arg("--version")
+                    .output()
+                {
+                    output.status.success()
+                } else {
+                    false
+                }
+            };
+
+            // Require both: version file AND functional rocminfo
+            // This ensures we don't report partial installs as complete
+            version_exists && rocminfo_functional
+        }
         "pytorch" => python_any(python_candidates, &["torch"]),
         "triton" => python_any(python_candidates, &["triton"]),
         "mpi4py" => python_any(python_candidates, &["mpi4py"]),
@@ -124,7 +153,37 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             python_any(python_candidates, &["bitsandbytes"])
                 || path_exists(home_path(&home, &["ml_stack", "bitsandbytes"]))
         }
-        "rocm-smi" => path_exists("/opt/rocm/bin/rocm-smi"),
+        // rocm-smi - check multiple locations and verify it works
+        "rocm-smi" => {
+            let rocm_smi_paths = [
+                "/opt/rocm/bin/rocm-smi",
+                "/usr/bin/rocm-smi",
+                "/usr/local/bin/rocm-smi",
+            ];
+            for path in &rocm_smi_paths {
+                if path_exists(path) {
+                    // Verify it actually works
+                    if let Ok(output) = std::process::Command::new(path)
+                        .arg("--showuse")
+                        .output()
+                    {
+                        if output.status.success() {
+                            return true;
+                        }
+                    }
+                }
+            }
+            // Also check if rocm-smi is in PATH and works
+            if command_exists("rocm-smi") {
+                if let Ok(output) = std::process::Command::new("rocm-smi")
+                    .arg("--showuse")
+                    .output()
+                {
+                    return output.status.success();
+                }
+            }
+            false
+        }
         "migraphx" => {
             python_any(python_candidates, &["migraphx"])
                 || path_exists(home_path(&home, &["migraphx_build"]))
