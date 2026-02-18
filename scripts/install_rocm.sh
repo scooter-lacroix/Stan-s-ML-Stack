@@ -1088,7 +1088,137 @@ install_rocm() {
             *)       ROCM_PKG_VER="7.2.70200-1" ;;
         esac
 
-        if [ "$package_manager" = "apt" ]; then
+        # Handle different package managers
+        if [ "$package_manager" = "pacman" ]; then
+            # =====================================================================
+            # ARCH LINUX - Use AUR packages or official tarballs
+            # =====================================================================
+            print_step "Detected Arch Linux - using AUR packages for ROCm installation"
+            echo
+            echo -e "${CYAN}${BOLD}Arch Linux ROCm Installation Options:${RESET}"
+            echo -e "${YELLOW}ROCm on Arch Linux is typically installed via AUR packages.${RESET}"
+            echo
+            echo "1) Install via AUR helper (yay/paru) - Recommended"
+            echo "2) Install official AMD tarball manually"
+            echo "3) Skip ROCm installation (install manually later)"
+            echo
+            read -p "Choose installation method (1-3) [1]: " ARCH_ROCM_METHOD
+            ARCH_ROCM_METHOD=${ARCH_ROCM_METHOD:-1}
+
+            case $ARCH_ROCM_METHOD in
+                1)
+                    # Check for AUR helper
+                    AUR_HELPER=""
+                    if command -v yay &>/dev/null; then
+                        AUR_HELPER="yay"
+                    elif command -v paru &>/dev/null; then
+                        AUR_HELPER="paru"
+                    fi
+
+                    if [ -z "$AUR_HELPER" ]; then
+                        print_error "No AUR helper found (yay or paru required)"
+                        echo
+                        echo -e "${YELLOW}Install an AUR helper first:${RESET}"
+                        echo "  sudo pacman -S --needed base-devel git"
+                        echo "  git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
+                        echo
+                        echo -e "${CYAN}Alternatively, choose option 2 to use official tarballs.${RESET}"
+                        return 1
+                    fi
+
+                    print_step "Using AUR helper: $AUR_HELPER"
+
+                    # Core ROCm AUR packages
+                    ROCM_AUR_PACKAGES=(
+                        "rocm-hip-sdk"      # HIP SDK (core)
+                        "rocminfo"          # ROCm info utility
+                        "rocm-smi-lib"      # System Management Interface
+                        "hipblas"           # HIP BLAS library
+                        "rocblas"           # ROCm BLAS library
+                    )
+
+                    # Optional packages based on ROCm version
+                    if [ "$ROCM_CHOICE" = "2" ] || [ "$ROCM_CHOICE" = "3" ]; then
+                        ROCM_AUR_PACKAGES+=(
+                            "rocm-opencl-sdk"   # OpenCL support
+                            "rccl"              # ROCm Collective Communications
+                        )
+                    fi
+
+                    echo
+                    echo -e "${CYAN}Will install the following AUR packages:${RESET}"
+                    for pkg in "${ROCM_AUR_PACKAGES[@]}"; do
+                        echo "  - $pkg"
+                    done
+                    echo
+                    read -p "Proceed with installation? (y/n) [y]: " CONFIRM_AUR
+                    CONFIRM_AUR=${CONFIRM_AUR:-y}
+
+                    if [ "$CONFIRM_AUR" != "y" ]; then
+                        print_warning "ROCm installation cancelled"
+                        return 1
+                    fi
+
+                    # Install packages using AUR helper
+                    for pkg in "${ROCM_AUR_PACKAGES[@]}"; do
+                        print_step "Installing $pkg via $AUR_HELPER..."
+                        if [ "$DRY_RUN" != true ]; then
+                            if ! $AUR_HELPER -S --needed --noconfirm "$pkg"; then
+                                print_warning "Failed to install $pkg, continuing..."
+                            fi
+                        fi
+                    done
+
+                    # Set up environment for Arch
+                    print_step "Configuring ROCm environment for Arch Linux..."
+                    execute_command "sudo tee -a /etc/profile.d/rocm.sh << 'EOF'
+# ROCm Environment (Arch Linux)
+export ROCm_PATH=/opt/rocm
+export HIP_PATH=/opt/rocm/hip
+export HSA_PATH=/opt/rocm/hsa
+export PATH=\$PATH:/opt/rocm/bin:/opt/rocm/hip/bin
+export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+EOF" "Creating ROCm environment profile"
+
+                    execute_command "sudo chmod +x /etc/profile.d/rocm.sh" "Setting profile permissions"
+
+                    print_success "ROCm AUR packages installed successfully!"
+                    print_step "Please log out and log back in for environment changes to take effect."
+                    return 0
+                    ;;
+
+                2)
+                    # Official tarball installation
+                    print_step "Downloading official ROCm tarball for Arch Linux..."
+
+                    # Determine tarball URL based on ROCm version
+                    ROCM_TARBALL="rocm-dev-${ROCM_VERSION}-linux.tar.gz"
+                    ROCM_TARBALL_URL="https://repo.radeon.com/rocm/apt/$ROCM_DIR_PATH/pool/main/r/rocm-dev/$ROCM_TARBALL"
+
+                    # Alternative: Use the generic Linux tarball
+                    print_warning "Official tarball installation is experimental on Arch Linux"
+                    echo -e "${YELLOW}The recommended method is to use AUR packages (option 1).${RESET}"
+                    echo
+                    echo "For manual installation, download from:"
+                    echo "  https://rocm.docs.amd.com/en/latest/install/native_install/install.html"
+                    return 1
+                    ;;
+
+                3)
+                    print_warning "Skipping ROCm installation"
+                    echo
+                    echo -e "${CYAN}To install ROCm manually on Arch Linux:${RESET}"
+                    echo "  yay -S rocm-hip-sdk rocminfo rocm-smi-lib"
+                    return 0
+                    ;;
+
+                *)
+                    print_error "Invalid choice: $ARCH_ROCM_METHOD"
+                    return 1
+                    ;;
+            esac
+
+        elif [ "$package_manager" = "apt" ]; then
             installer_file="amdgpu-install_${ROCM_PKG_VER}_all.deb"
             installer_url="https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/ubuntu/$ubuntu_codename/$installer_file"
         elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
@@ -1103,37 +1233,44 @@ install_rocm() {
         elif [ "$package_manager" = "zypper" ]; then
             installer_file="amdgpu-install-$ROCM_PKG_VER.noarch.rpm"
             installer_url="https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/sle/$sles_version/$installer_file"
+        else
+            print_error "Unsupported package manager: $package_manager"
+            echo -e "${YELLOW}Supported package managers: apt, pacman, dnf, yum, zypper${RESET}"
+            return 1
         fi
 
-        if [ "$DRY_RUN" != true ]; then
-            print_step "Downloading installer from: $installer_url"
-            if ! retry_command "wget -q \"$installer_url\" -O \"$installer_file\"" 3 2; then
-                print_error "Failed to download installer package after retries"
-                return 1
+        # Skip download/install for pacman (handled above)
+        if [ "$package_manager" != "pacman" ]; then
+            if [ "$DRY_RUN" != true ]; then
+                print_step "Downloading installer from: $installer_url"
+                if ! retry_command "wget -q \"$installer_url\" -O \"$installer_file\"" 3 2; then
+                    print_error "Failed to download installer package after retries"
+                    return 1
+                fi
+                print_success "Downloaded installer package: $installer_file"
             fi
-            print_success "Downloaded installer package: $installer_file"
-        fi
 
-        # Install the package using the appropriate package manager
-        if [ "$package_manager" = "apt" ]; then
-            # Fix: Pre-create the file that causes postinst script failures
-            print_step "Applying permission fix for amdgpu-install..."
-            execute_command "sudo chattr -i /etc/apt/sources.list.d/amdgpu-proprietary.list 2>/dev/null || true" "Removing immutable attribute"
-            execute_command "sudo touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
-            execute_command "sudo chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
-            
-            execute_command "sudo apt install -y ./$installer_file" "Installing amdgpu-install package..."
-            
-            # Handle postinst script failures gracefully
-            if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
-                print_warning "amdgpu-install installation had post-install script issues, attempting recovery..."
-                execute_command "sudo dpkg --configure -a" "Reconfiguring packages"
+            # Install the package using the appropriate package manager
+            if [ "$package_manager" = "apt" ]; then
+                # Fix: Pre-create the file that causes postinst script failures
+                print_step "Applying permission fix for amdgpu-install..."
+                execute_command "sudo chattr -i /etc/apt/sources.list.d/amdgpu-proprietary.list 2>/dev/null || true" "Removing immutable attribute"
+                execute_command "sudo touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
+                execute_command "sudo chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
+
+                execute_command "sudo apt install -y ./$installer_file" "Installing amdgpu-install package..."
+
+                # Handle postinst script failures gracefully
+                if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
+                    print_warning "amdgpu-install installation had post-install script issues, attempting recovery..."
+                    execute_command "sudo dpkg --configure -a" "Reconfiguring packages"
+                fi
+            elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+                execute_command "sudo $package_manager install -y ./$installer_file" "Installing amdgpu-install package..."
+                execute_command "sudo $package_manager clean all" "Cleaning package cache"
+            elif [ "$package_manager" = "zypper" ]; then
+                execute_command "sudo zypper --no-gpg-checks install -y ./$installer_file" "Installing amdgpu-install package..."
             fi
-        elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
-            execute_command "sudo $package_manager install -y ./$installer_file" "Installing amdgpu-install package..."
-            execute_command "sudo $package_manager clean all" "Cleaning package cache"
-        elif [ "$package_manager" = "zypper" ]; then
-            execute_command "sudo zypper --no-gpg-checks install -y ./$installer_file" "Installing amdgpu-install package..."
         fi
 
         # Setup ROCm repositories manually for better control (Debian/Ubuntu only)
@@ -1271,8 +1408,22 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
                         "full")     execute_command "sudo amdgpu-install --usecase=rocm,rocmdev --accept-eula --no-32 -y" "Fallback: Full ROCm installation" ;;
                     esac
                 fi
+            elif [ "$package_manager" = "pacman" ]; then
+                # =====================================================================
+                # ARCH LINUX - ROCm already installed via AUR packages above
+                # =====================================================================
+                print_success "ROCm installation via AUR packages completed earlier"
+                print_step "Skipping amdgpu-install (not used on Arch Linux)"
+
+                # Verify ROCm installation
+                if command_exists rocminfo && command_exists rocm-smi; then
+                    print_success "ROCm tools verified: rocminfo and rocm-smi available"
+                else
+                    print_warning "Some ROCm tools may not be in PATH"
+                    print_step "You may need to log out and log back in for PATH changes"
+                fi
             else
-                # For non-apt managers, use the standard case
+                # For dnf/yum/zypper, use the standard amdgpu-install
                 case $INSTALL_TYPE in
                     "minimal")
                         # Install minimal ROCm runtime
