@@ -828,7 +828,19 @@ fn detect_gpu() -> GPUInfo {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut gpu_count = 0usize;
+            // Track marketing name and device type to detect iGPUs
+            let mut current_marketing_name = String::new();
+            let mut current_device_type = String::new();
             for line in stdout.lines() {
+                let trimmed = line.trim();
+                // Track marketing name to detect iGPUs (Agent section)
+                if trimmed.starts_with("Marketing Name:") {
+                    current_marketing_name = trimmed.strip_prefix("Marketing Name:").unwrap_or("").trim().to_string();
+                }
+                // Track device type to distinguish GPU from CPU
+                if trimmed.starts_with("Device Type:") {
+                    current_device_type = trimmed.strip_prefix("Device Type:").unwrap_or("").trim().to_string();
+                }
                 if line.contains("Name:") {
                     let name = line.replace("Name:", "").trim().to_string();
                     if !name.is_empty() && !name.to_lowercase().contains("cpu") {
@@ -838,33 +850,29 @@ fn detect_gpu() -> GPUInfo {
                         }
                     }
                 }
-                if line.contains("gfx") {
-                    // Only parse lines that have "Name:" followed by gfx (not generic architectures)
-                    // rocminfo output: "  Name:                    gfx1100"
-                    // Skip lines like: "Name: amdgcn-amd-amdhsa--gfx10-3-generic"
-                    let trimmed = line.trim();
-
-                    // Check if this is a "Name:" line with a clean gfx architecture
-                    if trimmed.starts_with("Name:") && trimmed.contains("gfx") {
-                        // Extract the value after "Name:"
-                        if let Some(name_value) = trimmed.strip_prefix("Name:") {
-                            let name_value = name_value.trim();
-                            // Only accept pure gfx architectures (e.g., "gfx1100", "gfx1030")
-                            // Reject generic ones like "amdgcn-amd-amdhsa--gfx10-3-generic"
-                            if name_value.starts_with("gfx") {
-                                let after_gfx = &name_value[3..];
-                                let gfx_num: String = after_gfx
-                                    .chars()
-                                    .take_while(|c| c.is_ascii_digit())
-                                    .collect();
-                                if !gfx_num.is_empty() && gfx_num.len() >= 3 {
-                                    // Valid architecture must have at least 3 digits (e.g., 1100, 1030)
-                                    let arch = format!("gfx{}", gfx_num);
-                                    // Skip known iGPU architectures (Raphael: gfx1030, gfx1031)
-                                    let is_igpu = matches!(gfx_num.as_str(), "1030" | "1031" | "1010" | "1012");
-                                    if !is_igpu && info.architecture.is_empty() {
-                                        info.architecture = arch;
-                                    }
+                // Detect GPU architecture from Name field
+                if trimmed.starts_with("Name:") && trimmed.contains("gfx") {
+                    if let Some(name_value) = trimmed.strip_prefix("Name:") {
+                        let name_value = name_value.trim();
+                        // Only accept pure gfx architectures (e.g., "gfx1100", "gfx1030")
+                        if name_value.starts_with("gfx") {
+                            let after_gfx = &name_value[3..];
+                            let gfx_num: String = after_gfx
+                                .chars()
+                                .take_while(|c| c.is_ascii_digit())
+                                .collect();
+                            if !gfx_num.is_empty() && gfx_num.len() >= 3 {
+                                let arch = format!("gfx{}", gfx_num);
+                                // Detect iGPU by marketing name containing "Ryzen" or device being APU
+                                let is_igpu = current_marketing_name.to_lowercase().contains("ryzen")
+                                    || current_marketing_name.to_lowercase().contains("apu")
+                                    || current_marketing_name.to_lowercase().contains("integrated");
+                                // Only set architecture for dGPUs (not iGPUs, not CPUs)
+                                if !is_igpu
+                                    && current_device_type == "GPU"
+                                    && info.architecture.is_empty()
+                                {
+                                    info.architecture = arch;
                                 }
                             }
                         }

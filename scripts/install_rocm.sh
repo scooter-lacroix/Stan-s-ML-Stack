@@ -1176,10 +1176,24 @@ install_rocm() {
                     fi
 
                     # Install packages using AUR helper
+                    # AUR helpers should NOT run as root - detect and run as regular user
+                    AUR_RUN_CMD="$AUR_HELPER"
+                    if [ "$(id -u)" -eq 0 ]; then
+                        # Running as root - use SUDO_USER if available
+                        if [ -n "$SUDO_USER" ]; then
+                            print_step "Running $AUR_HELPER as user $SUDO_USER (AUR helpers should not run as root)..."
+                            AUR_RUN_CMD="sudo -u $SUDO_USER $AUR_HELPER"
+                        elif [ -n "$PKEXEC_UID" ]; then
+                            AUR_RUN_CMD="sudo -u #$PKEXEC_UID $AUR_HELPER"
+                        fi
+                    fi
+
                     for pkg in "${ROCM_AUR_PACKAGES[@]}"; do
                         print_step "Installing $pkg via $AUR_HELPER..."
                         if [ "$DRY_RUN" != true ]; then
-                            if ! $AUR_HELPER -S --needed --noconfirm "$pkg"; then
+                            # Use --noconfirm --answeredit "" to avoid editor prompts
+                            # --mflags "--skipinteg" can help with some AUR packages
+                            if ! $AUR_RUN_CMD -S --needed --noconfirm --answerdiff None --answerclean None "$pkg" 2>&1; then
                                 print_warning "Failed to install $pkg, continuing..."
                             fi
                         fi
@@ -1204,20 +1218,60 @@ EOF" "Creating ROCm environment profile"
                     ;;
 
                 2)
-                    # Official tarball installation
-                    print_step "Downloading official ROCm tarball for Arch Linux..."
-
-                    # Determine tarball URL based on ROCm version
-                    ROCM_TARBALL="rocm-dev-${ROCM_VERSION}-linux.tar.gz"
-                    ROCM_TARBALL_URL="https://repo.radeon.com/rocm/apt/$ROCM_DIR_PATH/pool/main/r/rocm-dev/$ROCM_TARBALL"
-
-                    # Alternative: Use the generic Linux tarball
+                    # Official tarball installation for Arch Linux
                     print_warning "Official tarball installation is experimental on Arch Linux"
-                    echo -e "${YELLOW}The recommended method is to use AUR packages (option 1).${RESET}"
-                    echo
-                    echo "For manual installation, download from:"
-                    echo "  https://rocm.docs.amd.com/en/latest/install/native_install/install.html"
-                    return 1
+                    print_step "Downloading ROCm ${ROCM_VERSION} tarball..."
+
+                    # Use the official AMD tarball download URL
+                    # Format: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/native-install/install.html
+                    ROCM_TARBALL_DIR="/tmp/rocm-tarball-$$"
+                    mkdir -p "$ROCM_TARBALL_DIR"
+
+                    # Download URL for the Linux tarball
+                    ROCM_TARBALL_URL="https://download.amd.com/rocm/releases/${ROCM_VERSION}/rocm-rel-${ROCM_VERSION}.tar.gz"
+
+                    print_step "Downloading from: $ROCM_TARBALL_URL"
+                    if ! wget -q --show-progress "$ROCM_TARBALL_URL" -O "$ROCM_TARBALL_DIR/rocm.tar.gz"; then
+                        # Try alternative URL format
+                        ROCM_TARBALL_URL="https://repo.radeon.com/rocm/rocm-releases/${ROCM_VERSION}/rocm-rel-${ROCM_VERSION}.tar.gz"
+                        print_step "Trying alternative URL: $ROCM_TARBALL_URL"
+                        if ! wget -q --show-progress "$ROCM_TARBALL_URL" -O "$ROCM_TARBALL_DIR/rocm.tar.gz"; then
+                            print_error "Failed to download ROCm tarball"
+                            echo -e "${YELLOW}Please download manually from:${RESET}"
+                            echo "  https://rocm.docs.amd.com/en/latest/install/native_install/install.html"
+                            rm -rf "$ROCM_TARBALL_DIR"
+                            return 1
+                        fi
+                    fi
+
+                    print_success "Downloaded ROCm tarball"
+                    print_step "Extracting to /opt/rocm..."
+
+                    # Create /opt/rocm directory
+                    execute_command "sudo mkdir -p /opt/rocm" "Creating ROCm directory"
+
+                    # Extract the tarball
+                    execute_command "sudo tar -xzf '$ROCM_TARBALL_DIR/rocm.tar.gz' -C /opt/rocm --strip-components=1" "Extracting ROCm tarball"
+
+                    # Clean up
+                    rm -rf "$ROCM_TARBALL_DIR"
+
+                    # Set up environment
+                    print_step "Configuring ROCm environment..."
+                    execute_command "sudo tee /etc/profile.d/rocm.sh << 'EOF'
+# ROCm Environment (Arch Linux - Tarball)
+export ROCm_PATH=/opt/rocm
+export HIP_PATH=/opt/rocm/hip
+export HSA_PATH=/opt/rocm/hsa
+export PATH=\$PATH:/opt/rocm/bin:/opt/rocm/hip/bin
+export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+EOF" "Creating ROCm environment profile"
+
+                    execute_command "sudo chmod +x /etc/profile.d/rocm.sh" "Setting profile permissions"
+
+                    print_success "ROCm tarball installed successfully!"
+                    print_step "Please log out and log back in for environment changes to take effect."
+                    return 0
                     ;;
 
                 3)
