@@ -1167,8 +1167,16 @@ install_rocm() {
                         echo "  - $pkg"
                     done
                     echo
-                    read -p "Proceed with installation? (y/n) [y]: " CONFIRM_AUR
-                    CONFIRM_AUR=${CONFIRM_AUR:-y}
+
+                    # Check if running interactively (stdin is a terminal)
+                    if [ -t 0 ]; then
+                        read -p "Proceed with installation? (y/n) [y]: " CONFIRM_AUR
+                        CONFIRM_AUR=${CONFIRM_AUR:-y}
+                    else
+                        # Non-interactive mode - auto-confirm
+                        echo "Proceed with installation? (y/n) [y]: y (auto-confirmed)"
+                        CONFIRM_AUR="y"
+                    fi
 
                     if [ "$CONFIRM_AUR" != "y" ]; then
                         print_warning "ROCm installation cancelled"
