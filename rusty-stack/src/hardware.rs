@@ -5,7 +5,7 @@ use crate::state::{
 use anyhow::Result;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use sysinfo::{Disks, System};
 
@@ -660,7 +660,19 @@ fn check_system_dependencies() -> PreflightCheck {
 }
 
 fn check_distribution_compatibility(system: &SystemInfo) -> PreflightCheck {
-    let supported = ["ubuntu", "debian", "linux mint", "pop!_os", "fedora"];
+    // Supported distributions include major distros and Arch-based derivatives
+    let supported = [
+        "ubuntu",
+        "debian",
+        "linux mint",
+        "pop!_os",
+        "fedora",
+        "arch",
+        "cachyos",
+        "manjaro",
+        "endeavouros",
+        "garuda",
+    ];
     let dist = system.distribution.to_lowercase();
     let compatible = supported.iter().any(|name| dist.contains(name));
 
@@ -682,12 +694,134 @@ fn check_distribution_compatibility(system: &SystemInfo) -> PreflightCheck {
     }
 }
 
+/// Detect ROCm installation path by searching common locations
+/// Returns the first valid ROCm path found, or None if not found
+fn detect_rocm_path() -> Option<PathBuf> {
+    // Build search paths in priority order
+    let mut search_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Environment variable override (highest priority)
+    if let Ok(env_path) = std::env::var("ROCm_PATH") {
+        search_paths.push(PathBuf::from(env_path));
+    }
+
+    // 2. Standard location
+    search_paths.push(PathBuf::from("/opt/rocm"));
+
+    // First check explicit paths
+    for path in &search_paths {
+        if validate_rocm_path(path) {
+            return Some(path.clone());
+        }
+    }
+
+    // 3. Check for versioned ROCm directories in /opt (sorted by version, newest first)
+    if let Ok(entries) = fs::read_dir("/opt") {
+        let mut versioned_paths: Vec<(String, PathBuf)> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("rocm-") {
+                    let version = name.trim_start_matches("rocm-").to_string();
+                    Some((version, e.path()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by version (descending)
+        versioned_paths.sort_by(|a, b| {
+            let a_parts: Vec<i32> = a.0.split('.').filter_map(|s: &str| s.parse().ok()).collect();
+            let b_parts: Vec<i32> = b.0.split('.').filter_map(|s: &str| s.parse().ok()).collect();
+            for i in 0..std::cmp::max(a_parts.len(), b_parts.len()) {
+                let a_val = *a_parts.get(i).unwrap_or(&0);
+                let b_val = *b_parts.get(i).unwrap_or(&0);
+                if a_val != b_val {
+                    return b_val.cmp(&a_val); // Descending order
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        for (_version, path) in versioned_paths {
+            if validate_rocm_path(&path) {
+                return Some(path);
+            }
+        }
+    }
+
+    // 4. Check for Arch AUR package locations
+    let arch_paths = [
+        "/usr/lib/rocm",
+        "/usr/local/rocm",
+    ];
+    for path_str in &arch_paths {
+        let path = PathBuf::from(path_str);
+        if validate_rocm_path(&path) {
+            return Some(path);
+        }
+    }
+
+    // 5. Check for versioned paths in /usr/lib (Arch AUR)
+    if let Ok(entries) = fs::read_dir("/usr/lib") {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("rocm-") && validate_rocm_path(&entry.path()) {
+                return Some(entry.path());
+            }
+        }
+    }
+
+    // 6. Try to derive from rocminfo in PATH
+    if let Ok(output) = Command::new("which").arg("rocminfo").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                if let Some(parent) = Path::new(&path).parent() {
+                    if let Some(rocm_root) = parent.parent() {
+                        if validate_rocm_path(rocm_root) {
+                            return Some(rocm_root.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Validate that a path is a valid ROCm installation
+fn validate_rocm_path(path: &Path) -> bool {
+    if !path.exists() || !path.is_dir() {
+        return false;
+    }
+
+    // Should have at least bin or lib directory
+    path.join("bin").exists() || path.join("lib").exists()
+        // Or contain ROCm tools directly
+        || path.join("rocminfo").exists() || path.join("rocm-smi").exists()
+}
+
 fn detect_gpu() -> GPUInfo {
     let mut info = GPUInfo::default();
-    let rocminfo_cmd = if Path::new("/opt/rocm/bin/rocminfo").exists() {
-        "/opt/rocm/bin/rocminfo"
+
+    // Detect ROCm path first
+    let rocm_path = detect_rocm_path();
+
+    // Determine rocminfo path
+    let rocminfo_cmd = if let Some(ref path) = rocm_path {
+        let rocminfo_path = path.join("bin/rocminfo");
+        if rocminfo_path.exists() {
+            rocminfo_path.to_string_lossy().to_string()
+        } else {
+            "rocminfo".to_string()
+        }
+    } else if Path::new("/opt/rocm/bin/rocminfo").exists() {
+        "/opt/rocm/bin/rocminfo".to_string()
     } else {
-        "rocminfo"
+        "rocminfo".to_string()
     };
 
     if let Ok(output) = Command::new(rocminfo_cmd).output() {
@@ -726,9 +860,16 @@ fn detect_gpu() -> GPUInfo {
     }
 
     if info.rocm_version.is_empty() {
+        // Try detected ROCm path first
+        let version_path = if let Some(ref path) = rocm_path {
+            path.join(".info/version")
+        } else {
+            PathBuf::from("/opt/rocm/.info/version")
+        };
+
         if let Ok(output) = Command::new("bash")
             .arg("-c")
-            .arg("cat /opt/rocm/.info/version 2>/dev/null")
+            .arg(format!("cat {} 2>/dev/null", version_path.display()))
             .output()
         {
             if output.status.success() {
@@ -769,13 +910,21 @@ fn detect_gpu() -> GPUInfo {
         info.gpu_count = 1;
     }
 
-    let rocm_smi_cmd = if Path::new("/opt/rocm/bin/rocm-smi").exists() {
-        "/opt/rocm/bin/rocm-smi"
+    // Determine rocm-smi path using detected ROCm path
+    let rocm_smi_cmd = if let Some(ref path) = rocm_path {
+        let rocm_smi_path = path.join("bin/rocm-smi");
+        if rocm_smi_path.exists() {
+            rocm_smi_path.to_string_lossy().to_string()
+        } else {
+            "rocm-smi".to_string()
+        }
+    } else if Path::new("/opt/rocm/bin/rocm-smi").exists() {
+        "/opt/rocm/bin/rocm-smi".to_string()
     } else {
-        "rocm-smi"
+        "rocm-smi".to_string()
     };
 
-    if let Ok(output) = Command::new(rocm_smi_cmd)
+    if let Ok(output) = Command::new(&rocm_smi_cmd)
         .arg("--showmeminfo")
         .arg("vram")
         .arg("--csv")
@@ -795,7 +944,7 @@ fn detect_gpu() -> GPUInfo {
         }
     }
 
-    if let Ok(output) = Command::new(rocm_smi_cmd)
+    if let Ok(output) = Command::new(&rocm_smi_cmd)
         .arg("--showtemp")
         .arg("--csv")
         .output()
@@ -814,7 +963,7 @@ fn detect_gpu() -> GPUInfo {
         }
     }
 
-    if let Ok(output) = Command::new(rocm_smi_cmd)
+    if let Ok(output) = Command::new(&rocm_smi_cmd)
         .arg("--showpower")
         .arg("--csv")
         .output()

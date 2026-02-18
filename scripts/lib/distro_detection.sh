@@ -66,15 +66,15 @@ fi
 
 # Logging functions (can be silenced by setting MLSTACK_QUIET=1)
 _distro_log_info() {
-    [[ -z "${MLSTACK_QUIET:-}" ]] && echo -e "${_DISTRO_BLUE}[INFO]${_DISTRO_RESET} $1" >&2
+    [[ -z "${MLSTACK_QUIET:-}" ]] && echo -e "${_DISTRO_BLUE}[INFO]${_DISTRO_RESET} $1" >&2 || true
 }
 
 _distro_log_success() {
-    [[ -z "${MLSTACK_QUIET:-}" ]] && echo -e "${_DISTRO_GREEN}[SUCCESS]${_DISTRO_RESET} $1" >&2
+    [[ -z "${MLSTACK_QUIET:-}" ]] && echo -e "${_DISTRO_GREEN}[SUCCESS]${_DISTRO_RESET} $1" >&2 || true
 }
 
 _distro_log_warning() {
-    [[ -z "${MLSTACK_QUIET:-}" ]] && echo -e "${_DISTRO_YELLOW}[WARNING]${_DISTRO_RESET} $1" >&2
+    [[ -z "${MLSTACK_QUIET:-}" ]] && echo -e "${_DISTRO_YELLOW}[WARNING]${_DISTRO_RESET} $1" >&2 || true
 }
 
 _distro_log_error() {
@@ -82,7 +82,7 @@ _distro_log_error() {
 }
 
 _distro_log_debug() {
-    [[ -n "${MLSTACK_DEBUG:-}" ]] && echo -e "${_DISTRO_CYAN}[DEBUG]${_DISTRO_RESET} $1" >&2
+    [[ -n "${MLSTACK_DEBUG:-}" ]] && echo -e "${_DISTRO_CYAN}[DEBUG]${_DISTRO_RESET} $1" >&2 || true
 }
 
 # =============================================================================
