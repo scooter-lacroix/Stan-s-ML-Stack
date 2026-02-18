@@ -839,21 +839,33 @@ fn detect_gpu() -> GPUInfo {
                     }
                 }
                 if line.contains("gfx") {
-                    // Collect all gfx architectures found
+                    // Only parse lines that have "Name:" followed by gfx (not generic architectures)
+                    // rocminfo output: "  Name:                    gfx1100"
+                    // Skip lines like: "Name: amdgcn-amd-amdhsa--gfx10-3-generic"
                     let trimmed = line.trim();
-                    if let Some(gfx_start) = trimmed.find("gfx") {
-                        let after_gfx = &trimmed[gfx_start + 3..];
-                        let gfx_num: String = after_gfx
-                            .chars()
-                            .take_while(|c| c.is_ascii_digit())
-                            .collect();
-                        if !gfx_num.is_empty() {
-                            let arch = format!("gfx{}", gfx_num);
-                            // Skip known iGPU architectures (Raphael: gfx1030, gfx1031)
-                            // and prefer dGPU architectures
-                            let is_igpu = matches!(gfx_num.as_str(), "1030" | "1031" | "1010" | "1012");
-                            if !is_igpu && info.architecture.is_empty() {
-                                info.architecture = arch;
+
+                    // Check if this is a "Name:" line with a clean gfx architecture
+                    if trimmed.starts_with("Name:") && trimmed.contains("gfx") {
+                        // Extract the value after "Name:"
+                        if let Some(name_value) = trimmed.strip_prefix("Name:") {
+                            let name_value = name_value.trim();
+                            // Only accept pure gfx architectures (e.g., "gfx1100", "gfx1030")
+                            // Reject generic ones like "amdgcn-amd-amdhsa--gfx10-3-generic"
+                            if name_value.starts_with("gfx") {
+                                let after_gfx = &name_value[3..];
+                                let gfx_num: String = after_gfx
+                                    .chars()
+                                    .take_while(|c| c.is_ascii_digit())
+                                    .collect();
+                                if !gfx_num.is_empty() && gfx_num.len() >= 3 {
+                                    // Valid architecture must have at least 3 digits (e.g., 1100, 1030)
+                                    let arch = format!("gfx{}", gfx_num);
+                                    // Skip known iGPU architectures (Raphael: gfx1030, gfx1031)
+                                    let is_igpu = matches!(gfx_num.as_str(), "1030" | "1031" | "1010" | "1012");
+                                    if !is_igpu && info.architecture.is_empty() {
+                                        info.architecture = arch;
+                                    }
+                                }
                             }
                         }
                     }

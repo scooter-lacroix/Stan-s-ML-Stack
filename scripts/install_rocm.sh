@@ -773,7 +773,18 @@ install_rocm() {
     fi
 
     # Check if ROCm is installed but rocminfo is missing
-    if ! command_exists rocminfo; then
+    # Check multiple locations for rocminfo (PATH, /opt/rocm/bin, /usr/bin)
+    rocminfo_found=false
+    if command_exists rocminfo; then
+        rocminfo_found=true
+    elif [ -x "/opt/rocm/bin/rocminfo" ]; then
+        rocminfo_found=true
+        export PATH="/opt/rocm/bin:$PATH"
+    elif [ -x "/usr/bin/rocminfo" ]; then
+        rocminfo_found=true
+    fi
+
+    if [ "$rocminfo_found" = "false" ]; then
         if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
             print_warning "ROCm is installed but rocminfo is missing"
             print_step "Installing rocminfo..."
@@ -807,7 +818,12 @@ install_rocm() {
                 esac
             fi
 
-            if command_exists rocminfo; then
+            # Re-check after installation (check multiple locations)
+            if command_exists rocminfo || [ -x "/opt/rocm/bin/rocminfo" ]; then
+                # Add to PATH if in /opt/rocm/bin
+                if [ -x "/opt/rocm/bin/rocminfo" ] && ! command_exists rocminfo; then
+                    export PATH="/opt/rocm/bin:$PATH"
+                fi
                 print_success "Installed rocminfo component"
                 # Continue to full installation to ensure all other components are present
             else
