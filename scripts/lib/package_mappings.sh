@@ -556,14 +556,17 @@ declare -gA PKG_MAP_COMBINED=()
 
 _pm_build_combined_map() {
     # Combine all mapping arrays
+    # Note: Using eval instead of nameref (local -n) to avoid bash 5.3.x pop_scope bug
+    local arr_name
     for arr_name in PKG_MAP_BUILD_ESSENTIALS PKG_MAP_PYTHON_DEV \
                     PKG_MAP_ROCM_TOOLS PKG_MAP_ROCM_LIBS PKG_MAP_MPI \
                     PKG_MAP_BUILD_TOOLS PKG_MAP_SYSTEM_UTILS \
                     PKG_MAP_VERSION_CONTROL PKG_MAP_NETWORK PKG_MAP_LIBS; do
-        # Get reference to the array
-        local -n arr_ref="$arr_name"
-        for key in "${!arr_ref[@]}"; do
-            PKG_MAP_COMBINED["$key"]="${arr_ref[$key]}"
+        # Use eval to iterate over array keys and values
+        eval "local -a keys=(\"\${!${arr_name}[@]}\")"
+        local key
+        for key in "${keys[@]}"; do
+            eval "PKG_MAP_COMBINED[\"\$key\"]=\"\${${arr_name}[\$key]}\""
         done
     done
 }
@@ -719,9 +722,11 @@ get_category_mappings() {
         return 1
     fi
 
-    local -n arr_ref="$arr_name"
-    for key in "${!arr_ref[@]}"; do
-        echo "$key=${arr_ref[$key]}"
+    # Use eval instead of nameref to avoid bash 5.3.x pop_scope bug
+    local key
+    eval "local -a keys=(\"\${!${arr_name}[@]}\")"
+    for key in "${keys[@]}"; do
+        eval "echo \"\$key=\${${arr_name}[\$key]}\""
     done
 }
 
