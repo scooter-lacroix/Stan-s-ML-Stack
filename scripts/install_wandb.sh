@@ -90,7 +90,7 @@ mlstack_rocm_python_preflight() {
         fi
     fi
 
-    if mlstack_assert_rocm_torch; then
+    if mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
         return 0
     fi
 
@@ -116,7 +116,7 @@ mlstack_rocm_python_preflight() {
         return 1
     fi
 
-    if ! mlstack_assert_rocm_torch; then
+    if ! mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
         mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
         return 1
     fi

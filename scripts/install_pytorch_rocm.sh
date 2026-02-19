@@ -150,6 +150,8 @@ PYTHON_BIN=${MLSTACK_PYTHON_BIN:-python3}
 MLSTACK_STRICT_ROCM="${MLSTACK_STRICT_ROCM:-1}"
 INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 METHOD_SET_BY_FLAG=false
+TORCH_CHANNEL="${MLSTACK_TORCH_CHANNEL:-latest}"
+CHANNEL_SET_BY_FLAG=false
 python3() {
     command "$PYTHON_BIN" "$@"
 }
@@ -243,21 +245,7 @@ PY
 
 strict_install_rocm_torch_stack() {
     local py_cmd="$1"
-    local rocm_mm
-    rocm_mm="$(strict_detect_rocm_mm)"
-    local rocm_index
-    rocm_index="$(strict_rocm_index_url "$rocm_mm")"
-
-    strict_purge_nvidia_packages "$py_cmd"
-    "$py_cmd" -m pip uninstall -y torch torchvision torchaudio triton >/dev/null 2>&1 || true
-
-    if ! "$py_cmd" -m pip install --no-cache-dir --upgrade \
-        --index-url "$rocm_index" --extra-index-url https://pypi.org/simple \
-        torch torchvision torchaudio triton; then
-        "$py_cmd" -m pip install --no-cache-dir --upgrade \
-            --index-url "$rocm_index" --extra-index-url https://pypi.org/simple \
-            torch torchvision torchaudio
-    fi
+    mlstack_install_rocm_torch_stack "$py_cmd" "${ROCM_VERSION:-}" "$TORCH_CHANNEL" "pytorch"
 }
 
 strict_install_pytorch_rocm() {
@@ -275,8 +263,18 @@ strict_install_pytorch_rocm() {
         return 1
     fi
 
+    print_step "[strict] Requested channel: $TORCH_CHANNEL"
+
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
         strict_venv_dir="${MLSTACK_VENV_DIR:-$HOME/.mlstack/venvs/pytorch_rocm}"
+        local selected
+        selected="$(mlstack_select_torch_index "$base_python" "${ROCM_VERSION:-}" "$TORCH_CHANNEL" || true)"
+        if [ -n "$selected" ]; then
+            IFS='|' read -r dry_index dry_series dry_channel <<< "$selected"
+            print_step "[strict] Dry run: resolved index=${dry_index} (series=${dry_series}, effective_channel=${dry_channel})"
+        else
+            print_warning "[strict] Dry run: no compatible torch wheel index resolved."
+        fi
         case "$INSTALL_METHOD" in
             global) print_step "[strict] Dry run: would install ROCm torch stack globally with ${base_python}" ;;
             venv) print_step "[strict] Dry run: would install ROCm torch stack into ${strict_venv_dir}" ;;
@@ -317,6 +315,7 @@ strict_install_pytorch_rocm() {
 
     print_step "[strict] Installing common dependencies in same interpreter..."
     "$strict_python" -m pip install --no-cache-dir --upgrade torchsde sentencepiece || return 1
+    mlstack_guard_python_env "pytorch-common-deps" "$strict_python" --purge || return 1
 
     if ! "$strict_python" - <<'PY'
 import torch
@@ -427,6 +426,7 @@ OPTIONS:
     --force             Force reinstallation even if PyTorch is already installed
     --verbose           Enable verbose logging
     --method METHOD     Installation method: global, venv, auto (default: auto)
+    --channel CHANNEL   Torch channel: stable, latest, nightly (default: latest)
     --show-env          Show ROCm environment variables for manual setup
 
 EXAMPLES:
@@ -434,6 +434,7 @@ EXAMPLES:
     $0 --dry-run               # Preview installation
     $0 --force                 # Force reinstall
     $0 --method venv           # Install in virtual environment
+    $0 --channel nightly       # Install nightly ROCm torch wheels
     $0 --verbose               # Verbose output
     $0 --show-env              # Show environment variables
 
@@ -470,6 +471,15 @@ parse_args() {
                 METHOD_SET_BY_FLAG=true
                 shift 2
                 ;;
+            --channel)
+                if [[ -z "${2:-}" ]]; then
+                    print_error "--channel requires one value: stable, latest, nightly"
+                    exit 1
+                fi
+                TORCH_CHANNEL="$2"
+                CHANNEL_SET_BY_FLAG=true
+                shift 2
+                ;;
             --show-env)
                 show_env
                 exit 0
@@ -482,6 +492,7 @@ parse_args() {
         esac
     done
 
+    TORCH_CHANNEL="$(mlstack_torch_channel_normalize "$TORCH_CHANNEL")" || exit 1
     INSTALL_METHOD="$(echo "$INSTALL_METHOD" | tr '[:upper:]' '[:lower:]')"
     case "$INSTALL_METHOD" in
         global|venv|auto) ;;
@@ -500,6 +511,22 @@ install_pytorch_rocm() {
     parse_args "$@"
 
     if [[ "${MLSTACK_STRICT_ROCM}" != "0" ]]; then
+        if [[ "$CHANNEL_SET_BY_FLAG" != "true" ]] && [[ -t 0 ]] && [[ "${MLSTACK_BATCH_MODE:-0}" != "1" ]]; then
+            echo
+            echo -e "${CYAN}${BOLD}PyTorch ROCm Channel:${RESET}"
+            echo "1) Stable"
+            echo "2) Latest (stable fallback to nightly)"
+            echo "3) Nightly"
+            echo
+            read -r -p "Choose channel (1-3) [2]: " CHANNEL_CHOICE
+            CHANNEL_CHOICE="${CHANNEL_CHOICE:-2}"
+            case "$CHANNEL_CHOICE" in
+                1) TORCH_CHANNEL="stable" ;;
+                2) TORCH_CHANNEL="latest" ;;
+                3) TORCH_CHANNEL="nightly" ;;
+                *) TORCH_CHANNEL="latest" ;;
+            esac
+        fi
         if [[ "$METHOD_SET_BY_FLAG" != "true" ]] && [[ -t 0 ]] && [[ "${MLSTACK_BATCH_MODE:-0}" != "1" ]]; then
             echo
             echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
@@ -516,6 +543,43 @@ install_pytorch_rocm() {
             esac
         fi
         print_step "Strict ROCm mode enabled (MLSTACK_STRICT_ROCM=${MLSTACK_STRICT_ROCM})"
+        strict_install_pytorch_rocm
+        return $?
+    fi
+
+    if [[ "${MLSTACK_USE_LEGACY_PYTORCH_INSTALLER:-0}" != "1" ]]; then
+        if [[ "$CHANNEL_SET_BY_FLAG" != "true" ]] && [[ -t 0 ]] && [[ "${MLSTACK_BATCH_MODE:-0}" != "1" ]]; then
+            echo
+            echo -e "${CYAN}${BOLD}PyTorch ROCm Channel:${RESET}"
+            echo "1) Stable"
+            echo "2) Latest (stable fallback to nightly)"
+            echo "3) Nightly"
+            echo
+            read -r -p "Choose channel (1-3) [2]: " CHANNEL_CHOICE
+            CHANNEL_CHOICE="${CHANNEL_CHOICE:-2}"
+            case "$CHANNEL_CHOICE" in
+                1) TORCH_CHANNEL="stable" ;;
+                2) TORCH_CHANNEL="latest" ;;
+                3) TORCH_CHANNEL="nightly" ;;
+                *) TORCH_CHANNEL="latest" ;;
+            esac
+        fi
+        if [[ "$METHOD_SET_BY_FLAG" != "true" ]] && [[ -t 0 ]] && [[ "${MLSTACK_BATCH_MODE:-0}" != "1" ]]; then
+            echo
+            echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
+            echo "1) Global installation"
+            echo "2) Virtual environment installation"
+            echo "3) Auto-detect (try global, fallback to venv)"
+            echo
+            read -r -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+            INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+            case "$INSTALL_CHOICE" in
+                1) INSTALL_METHOD="global" ;;
+                2) INSTALL_METHOD="venv" ;;
+                3|*) INSTALL_METHOD="auto" ;;
+            esac
+        fi
+        print_step "Using guarded ROCm installer pipeline (set MLSTACK_USE_LEGACY_PYTORCH_INSTALLER=1 to use legacy path)."
         strict_install_pytorch_rocm
         return $?
     fi

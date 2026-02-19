@@ -16,6 +16,9 @@ source "$GUARD_LIB"
 DRY_RUN=false
 INSTALL_METHOD="${MLSTACK_INSTALL_METHOD:-auto}"
 METHOD_SET_BY_FLAG=false
+TORCH_CHANNEL="${MLSTACK_TORCH_CHANNEL:-latest}"
+CHANNEL_SET_BY_FLAG=false
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=true ;;
@@ -28,18 +31,55 @@ while [[ $# -gt 0 ]]; do
             METHOD_SET_BY_FLAG=true
             shift
             ;;
+        --channel)
+            if [ $# -lt 2 ]; then
+                mlstack_log_error "--channel requires one value: stable, latest, or nightly"
+                exit 1
+            fi
+            TORCH_CHANNEL="$2"
+            CHANNEL_SET_BY_FLAG=true
+            shift
+            ;;
         *) mlstack_log_warn "Ignoring unknown argument: $1" ;;
     esac
     shift
 done
 
-case "${INSTALL_METHOD,,}" in
-    global|venv|auto) INSTALL_METHOD="${INSTALL_METHOD,,}" ;;
+INSTALL_METHOD="${INSTALL_METHOD,,}"
+case "$INSTALL_METHOD" in
+    global|venv|auto) ;;
     *)
         mlstack_log_error "Invalid --method value: $INSTALL_METHOD (expected: global, venv, auto)"
         exit 1
         ;;
 esac
+
+TORCH_CHANNEL="$(mlstack_torch_channel_normalize "$TORCH_CHANNEL")"
+
+if [ -f "$HOME/.mlstack_env" ]; then
+    set +u
+    # shellcheck source=/dev/null
+    source "$HOME/.mlstack_env"
+    set -u
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+ROCM_VERSION="${ROCM_VERSION:-7.1.0}"
+
+if [ "$CHANNEL_SET_BY_FLAG" = false ] && [ -t 0 ] && [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+    printf '\nPyTorch ROCm channel:\n'
+    printf '  1) Stable\n'
+    printf '  2) Latest (stable fallback to nightly)\n'
+    printf '  3) Nightly\n'
+    read -r -p "Choose channel (1-3) [2]: " CHANNEL_CHOICE
+    CHANNEL_CHOICE="${CHANNEL_CHOICE:-2}"
+    case "$CHANNEL_CHOICE" in
+        1) TORCH_CHANNEL="stable" ;;
+        2) TORCH_CHANNEL="latest" ;;
+        3) TORCH_CHANNEL="nightly" ;;
+        *) TORCH_CHANNEL="latest" ;;
+    esac
+fi
 
 if [ "$METHOD_SET_BY_FLAG" = false ] && [ -t 0 ] && [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
     printf '\nPyTorch installation method:\n'
@@ -55,30 +95,6 @@ if [ "$METHOD_SET_BY_FLAG" = false ] && [ -t 0 ] && [ "${MLSTACK_BATCH_MODE:-0}"
     esac
 fi
 
-if [ -f "$HOME/.mlstack_env" ]; then
-    set +u
-    # shellcheck source=/dev/null
-    source "$HOME/.mlstack_env"
-    set -u
-fi
-
-PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
-ROCM_VERSION="${ROCM_VERSION:-7.2}"
-
-if [[ "$ROCM_VERSION" =~ ^([0-9]+)\.([0-9]+) ]]; then
-    ROCM_MM="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-else
-    ROCM_MM="7.2"
-fi
-
-case "$ROCM_VERSION" in
-    6.2*) INDEX_URL="https://download.pytorch.org/whl/rocm6.2" ;;
-    6.3*) INDEX_URL="https://download.pytorch.org/whl/rocm6.3" ;;
-    6.4*) INDEX_URL="https://download.pytorch.org/whl/rocm6.4" ;;
-    7.*) INDEX_URL="https://repo.radeon.com/rocm/manylinux/rocm-rel-${ROCM_MM}/" ;;
-    *) INDEX_URL="https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/" ;;
-esac
-
 if [ "$DRY_RUN" = true ]; then
     if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [ ! -x "$PYTHON_BIN" ]; then
         mlstack_log_error "Python interpreter not found: $PYTHON_BIN"
@@ -89,13 +105,23 @@ if [ "$DRY_RUN" = true ]; then
     else
         mlstack_log_info "Dry run: install method is '$INSTALL_METHOD'"
     fi
+    if [ "$CHANNEL_SET_BY_FLAG" = true ]; then
+        mlstack_log_info "Dry run: torch channel is '$TORCH_CHANNEL' (from --channel)"
+    else
+        mlstack_log_info "Dry run: torch channel is '$TORCH_CHANNEL'"
+    fi
     case "$INSTALL_METHOD" in
         global) mlstack_log_info "Dry run: would install with interpreter $PYTHON_BIN" ;;
         venv) mlstack_log_info "Dry run: would prepare venv $(mlstack_default_venv_base)/pytorch_rocm" ;;
         auto) mlstack_log_info "Dry run: would try global install with $PYTHON_BIN, then fallback to venv on failure" ;;
     esac
-    mlstack_log_info "Dry run: would install torch/torchvision/torchaudio/triton from $INDEX_URL"
-    mlstack_log_info "Dry run: would purge NVIDIA packages and verify ROCm torch"
+    selected="$(mlstack_select_torch_index "$PYTHON_BIN" "$ROCM_VERSION" "$TORCH_CHANNEL" || true)"
+    if [ -n "$selected" ]; then
+        IFS='|' read -r dry_index dry_series dry_channel <<< "$selected"
+        mlstack_log_info "Dry run: resolved index=$dry_index (series=$dry_series, effective_channel=$dry_channel)"
+    else
+        mlstack_log_warn "Dry run: no compatible wheel index resolved for current Python/ROCm."
+    fi
     mlstack_log_info "Dry run complete. No installation actions were performed."
     exit 0
 fi
@@ -114,12 +140,11 @@ elif [ "$INSTALL_METHOD" = "auto" ]; then
 fi
 
 mlstack_log_info "Using Python: $TARGET_PYTHON ($TARGET_DESC)"
-mlstack_log_info "Using ROCm package index: $INDEX_URL"
+mlstack_log_info "Requested torch channel: $TORCH_CHANNEL"
 
 install_torch_stack() {
     local python_bin="$1"
-    mlstack_pip_install "$python_bin" --upgrade pip setuptools wheel
-    mlstack_pip_install "$python_bin" --index-url "$INDEX_URL" --upgrade torch torchvision torchaudio triton
+    mlstack_install_rocm_torch_stack "$python_bin" "$ROCM_VERSION" "$TORCH_CHANNEL" "pytorch"
 }
 
 if [ "$INSTALL_METHOD" = "auto" ]; then
@@ -135,13 +160,7 @@ else
     install_torch_stack "$TARGET_PYTHON"
 fi
 
-mlstack_purge_nvidia_packages "$TARGET_PYTHON"
-if mlstack_has_nvidia_packages "$TARGET_PYTHON"; then
-    mlstack_log_error "NVIDIA Python packages are still present after cleanup."
-    "$TARGET_PYTHON" -m pip list --format=freeze | awk -F'==' 'BEGIN{IGNORECASE=1}$1 ~ /^nvidia-/ || $1 ~ /^pytorch-cuda$/ || $1 ~ /^cuda-python$/ || $1 ~ /^cupy-cuda/ {print $0}' >&2
-    exit 1
-fi
-
+mlstack_guard_python_env "pytorch" "$TARGET_PYTHON" --purge
 mlstack_assert_rocm_torch "$TARGET_PYTHON"
 
 "$TARGET_PYTHON" - <<'PY'

@@ -122,6 +122,10 @@ mlstack_pip_install() {
     fi
     shift
 
+    if ! mlstack_guard_install_request "pip" "$@"; then
+        return 1
+    fi
+
     if ! _mlstack_python_in_venv "$python_bin"; then
         if "$python_bin" -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'; then
             maybe_break=(--break-system-packages)
@@ -131,6 +135,50 @@ mlstack_pip_install() {
     PIP_DISABLE_PIP_VERSION_CHECK=1 "$python_bin" -m pip install "${maybe_break[@]}" "$@"
 }
 
+mlstack_normalize_pkg_name() {
+    local raw="${1:-}"
+    raw="${raw#./}"
+    raw="${raw%%[*}"
+    raw="${raw%%[<>=!~@; ]*}"
+    printf '%s\n' "${raw,,}"
+}
+
+mlstack_is_disallowed_pkg_name() {
+    local pkg
+    pkg="$(mlstack_normalize_pkg_name "${1:-}")"
+    [ -n "$pkg" ] || return 1
+    case "$pkg" in
+        nvidia-*|pytorch-cuda|torch-cuda|cuda-python|cuda-bindings|cuda-pathfinder|cupy-cuda*|cupy-cuda1*|cupy-cuda2*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+mlstack_guard_install_request() {
+    local component="${1:-unknown}"
+    shift || true
+    local arg pkg
+    local -a blocked=()
+
+    for arg in "$@"; do
+        [[ "$arg" == -* ]] && continue
+        pkg="$(mlstack_normalize_pkg_name "$arg")"
+        [ -n "$pkg" ] || continue
+        if mlstack_is_disallowed_pkg_name "$pkg"; then
+            blocked+=("$pkg")
+        fi
+    done
+
+    if [ "${#blocked[@]}" -gt 0 ]; then
+        mlstack_log_error "Blocked NVIDIA/CUDA package request in ${component}: ${blocked[*]}"
+        return 1
+    fi
+    return 0
+}
+
 _mlstack_list_nvidia_packages() {
     local python_bin="${1:-}"
 
@@ -138,9 +186,61 @@ _mlstack_list_nvidia_packages() {
 BEGIN { IGNORECASE=1 }
 $1 ~ /^nvidia-/ { print $1; next }
 $1 ~ /^pytorch-cuda$/ { print $1; next }
+$1 ~ /^torch-cuda$/ { print $1; next }
 $1 ~ /^cuda-python$/ { print $1; next }
+$1 ~ /^cuda-bindings$/ { print $1; next }
+$1 ~ /^cuda-pathfinder$/ { print $1; next }
 $1 ~ /^cupy-cuda/ { print $1; next }
 '
+}
+
+mlstack_collect_nvidia_contamination() {
+    local python_bin="${1:-}"
+    "$python_bin" - <<'PY'
+import re
+import subprocess
+import sys
+
+blocked = []
+try:
+    output = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+except Exception as exc:
+    print(f"pip-list-error:{exc}")
+    raise SystemExit(0)
+
+for line in output.splitlines():
+    name, _, version = line.partition("==")
+    n = name.strip().lower()
+    v = version.strip().lower()
+    if (
+        n.startswith("nvidia-")
+        or n in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or n.startswith("cupy-cuda")
+    ):
+        blocked.append(name.strip())
+        continue
+    if n == "triton" and "+rocm" not in v:
+        blocked.append(f"{name.strip()}=={version.strip()}")
+
+try:
+    import torch  # noqa: F401
+    cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
+    hip_tag = getattr(getattr(torch, "version", None), "hip", None)
+    version = getattr(torch, "__version__", "")
+    if cuda_tag:
+        blocked.append(f"torch.version.cuda={cuda_tag}")
+    if not hip_tag and "rocm" not in str(version).lower():
+        blocked.append("torch-not-rocm")
+except Exception as exc:
+    blocked.append(f"torch-import-error:{exc}")
+
+for item in blocked:
+    print(item)
+PY
 }
 
 mlstack_purge_nvidia_packages() {
@@ -157,6 +257,9 @@ mlstack_purge_nvidia_packages() {
         mlstack_log_warn "Removing NVIDIA Python packages: ${nvidia_pkgs[*]}"
         "$python_bin" -m pip uninstall -y "${nvidia_pkgs[@]}"
     fi
+
+    # Defensive cleanup for CUDA triton variants when present.
+    "$python_bin" -m pip uninstall -y triton >/dev/null 2>&1 || true
 }
 
 mlstack_has_nvidia_packages() {
@@ -203,6 +306,249 @@ PY
         mlstack_log_error "NVIDIA packages remain installed in the target Python environment."
         return 1
     fi
+}
+
+mlstack_guard_python_env() {
+    local component="${1:-unknown}"
+    local python_bin="${2:-}"
+    local purge_mode="${3:-}"
+    local contamination
+
+    if [ -z "$python_bin" ]; then
+        mlstack_log_error "Usage: mlstack_guard_python_env <component> <python_bin> [--purge]"
+        return 1
+    fi
+
+    contamination="$(mlstack_collect_nvidia_contamination "$python_bin" | sed '/^[[:space:]]*$/d' || true)"
+    if [ -n "$contamination" ]; then
+        mlstack_log_error "Detected CUDA/NVIDIA contamination after ${component}:"
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            mlstack_log_error "  - $line"
+        done <<< "$contamination"
+
+        if [ "$purge_mode" = "--purge" ]; then
+            mlstack_purge_nvidia_packages "$python_bin" || true
+            contamination="$(mlstack_collect_nvidia_contamination "$python_bin" | sed '/^[[:space:]]*$/d' || true)"
+            if [ -n "$contamination" ]; then
+                mlstack_log_error "Contamination remains after purge for ${component}."
+                return 1
+            fi
+        else
+            return 1
+        fi
+    fi
+    return 0
+}
+
+mlstack_torch_channel_normalize() {
+    local channel="${1:-${MLSTACK_TORCH_CHANNEL:-latest}}"
+    channel="${channel,,}"
+    case "$channel" in
+        stable|latest|nightly) printf '%s\n' "$channel" ;;
+        *)
+            mlstack_log_error "Invalid torch channel '$channel' (expected: stable, latest, nightly)"
+            return 1
+            ;;
+    esac
+}
+
+mlstack_rocm_mm_from_version() {
+    local rocm_version="${1:-${ROCM_VERSION:-7.1}}"
+    local mm
+    mm="$(printf '%s' "$rocm_version" | grep -oE '[0-9]+\.[0-9]+' | head -n1)"
+    if [ -z "$mm" ]; then
+        mm="7.1"
+    fi
+    printf '%s\n' "$mm"
+}
+
+mlstack_rocm_series_candidates() {
+    local detected_mm
+    detected_mm="$(mlstack_rocm_mm_from_version "${1:-}")"
+    {
+        printf '%s\n' "$detected_mm"
+        printf '%s\n' 7.2 7.1 7.0 6.4 6.3 6.2 6.1 6.0 5.7
+    } | awk '!seen[$0]++'
+}
+
+mlstack_torch_index_url() {
+    local channel="${1:-latest}"
+    local series="${2:-7.1}"
+    case "$channel" in
+        nightly) printf 'https://download.pytorch.org/whl/nightly/rocm%s\n' "$series" ;;
+        *) printf 'https://download.pytorch.org/whl/rocm%s\n' "$series" ;;
+    esac
+}
+
+mlstack_torch_index_has_compatible_wheel() {
+    local python_bin="${1:-}"
+    local index_url="${2:-}"
+    local package="${3:-torch}"
+    [ -n "$python_bin" ] && [ -n "$index_url" ] || return 1
+
+    "$python_bin" - "$index_url" "$package" <<'PY'
+import re
+import sys
+import urllib.request
+import urllib.parse
+
+index, package = sys.argv[1], sys.argv[2]
+major, minor = sys.version_info[:2]
+cp = f"cp{major}{minor}"
+url = index.rstrip("/") + f"/{package}/"
+try:
+    html = urllib.request.urlopen(url, timeout=15).read().decode("utf-8", "ignore")
+except Exception:
+    raise SystemExit(1)
+
+wheel_links = re.findall(r'href="([^"]+\.whl[^"]*)"', html)
+pattern = re.compile(rf"-{cp}-(?:{cp}|{cp}t)-.*linux", re.IGNORECASE)
+ok = any(pattern.search(urllib.parse.unquote(link)) for link in wheel_links)
+raise SystemExit(0 if ok else 1)
+PY
+}
+
+mlstack_select_torch_index() {
+    local python_bin="${1:-}"
+    local rocm_version="${2:-${ROCM_VERSION:-7.1}}"
+    local requested_channel
+    requested_channel="$(mlstack_torch_channel_normalize "${3:-${MLSTACK_TORCH_CHANNEL:-latest}}")" || return 1
+    local series channel index
+
+    _mlstack_try_channel() {
+        local ch="$1"
+        for series in $(mlstack_rocm_series_candidates "$rocm_version"); do
+            index="$(mlstack_torch_index_url "$ch" "$series")"
+            if mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torch &&
+               mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torchvision &&
+               mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torchaudio; then
+                printf '%s|%s|%s\n' "$index" "$series" "$ch"
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    case "$requested_channel" in
+        latest)
+            _mlstack_try_channel stable && return 0
+            _mlstack_try_channel nightly && return 0
+            ;;
+        stable|nightly)
+            _mlstack_try_channel "$requested_channel" && return 0
+            ;;
+    esac
+
+    mlstack_log_error "No compatible ROCm torch wheels found for $(mlstack_python_version "$python_bin") and channel '$requested_channel'"
+    return 1
+}
+
+mlstack_torch_index_latest_version() {
+    local python_bin="${1:-}"
+    local index_url="${2:-}"
+    local package="${3:-torch}"
+    local channel="${4:-stable}"
+    local out version
+    local -a cmd=("$python_bin" -m pip index versions "$package" --index-url "$index_url")
+    if [ "$channel" = "nightly" ]; then
+        cmd=( "$python_bin" -m pip index versions --pre "$package" --index-url "$index_url" )
+    fi
+    out="$("${cmd[@]}" 2>/dev/null || true)"
+    version="$(printf '%s\n' "$out" | awk -F'[()]' -v pkg="$package" '$1 ~ ("^" pkg " "){print $2; exit}')"
+    printf '%s\n' "$version"
+}
+
+mlstack_install_rocm_torch_stack() {
+    local python_bin="${1:-}"
+    local rocm_version="${2:-${ROCM_VERSION:-7.1}}"
+    local requested_channel="${3:-${MLSTACK_TORCH_CHANNEL:-latest}}"
+    local component="${4:-pytorch}"
+    local selected index_url series effective_channel
+    local torch_v vision_v audio_v triton_v
+
+    [ -n "$python_bin" ] || {
+        mlstack_log_error "Usage: mlstack_install_rocm_torch_stack <python_bin> [rocm_version] [channel] [component]"
+        return 1
+    }
+
+    selected="$(mlstack_select_torch_index "$python_bin" "$rocm_version" "$requested_channel")" || return 1
+    IFS='|' read -r index_url series effective_channel <<< "$selected"
+
+    torch_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torch "$effective_channel")"
+    vision_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torchvision "$effective_channel")"
+    audio_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torchaudio "$effective_channel")"
+    triton_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" pytorch-triton-rocm "$effective_channel")"
+
+    if [ -z "$torch_v" ] || [ -z "$vision_v" ] || [ -z "$audio_v" ]; then
+        mlstack_log_error "Unable to resolve ROCm package versions from $index_url"
+        return 1
+    fi
+
+    mlstack_log_info "Resolved ROCm torch channel=${effective_channel} series=${series} index=${index_url}"
+    mlstack_log_info "Resolved versions: torch=$torch_v torchvision=$vision_v torchaudio=$audio_v${triton_v:+ pytorch-triton-rocm=$triton_v}"
+
+    "$python_bin" -m pip uninstall -y torch torchvision torchaudio triton pytorch-triton-rocm >/dev/null 2>&1 || true
+    mlstack_purge_nvidia_packages "$python_bin" || true
+
+    mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
+        --upgrade "torch==$torch_v" "torchvision==$vision_v" "torchaudio==$audio_v" || return 1
+
+    if [ -n "$triton_v" ]; then
+        mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
+            --upgrade "pytorch-triton-rocm==$triton_v" || true
+    fi
+
+    mlstack_guard_python_env "$component" "$python_bin" --purge || return 1
+    mlstack_assert_rocm_torch "$python_bin"
+}
+
+mlstack_write_nvidia_constraint_file() {
+    local dest="${1:-}"
+    local dir
+    local stem suffix
+    [ -n "$dest" ] || return 1
+    dir="$(dirname "$dest")"
+    mkdir -p "$dir"
+    {
+        printf '# Auto-generated NVIDIA/CUDA blocker constraints for ROCm installs\n'
+        printf 'pytorch-cuda===0\n'
+        printf 'torch-cuda===0\n'
+        printf 'cuda-python===0\n'
+        printf 'cuda-bindings===0\n'
+        printf 'cuda-pathfinder===0\n'
+        printf 'cupy-cuda11x===0\n'
+        printf 'cupy-cuda12x===0\n'
+        for suffix in cu10 cu11 cu12 cu13 cu14; do
+            for stem in \
+                nvidia-cublas \
+                nvidia-cuda-cupti \
+                nvidia-cuda-nvrtc \
+                nvidia-cuda-runtime \
+                nvidia-cudnn \
+                nvidia-cufft \
+                nvidia-cufile \
+                nvidia-curand \
+                nvidia-cusolver \
+                nvidia-cusparse \
+                nvidia-cusparselt \
+                nvidia-nccl \
+                nvidia-nvjitlink \
+                nvidia-nvshmem \
+                nvidia-nvtx
+            do
+                printf '%s-%s===0\n' "$stem" "$suffix"
+            done
+        done
+    } > "$dest"
+}
+
+mlstack_activate_nvidia_dependency_blocker() {
+    local constraint_file="${MLSTACK_NVIDIA_CONSTRAINT_FILE:-$HOME/.mlstack/pip/no-nvidia-constraints.txt}"
+    mlstack_write_nvidia_constraint_file "$constraint_file" || return 1
+    export PIP_CONSTRAINT="$constraint_file"
+    export UV_CONSTRAINT="$constraint_file"
+    export MLSTACK_NVIDIA_BLOCKER_ACTIVE=1
 }
 
 mlstack_detect_pkg_manager() {
@@ -341,3 +687,7 @@ EOF
         mlstack_log_warn "$env_file does not exist yet; shell hooks were still installed."
     fi
 }
+
+if [ "${MLSTACK_ENABLE_NVIDIA_BLOCKER:-1}" = "1" ] && [ -z "${MLSTACK_NVIDIA_BLOCKER_ACTIVE:-}" ]; then
+    mlstack_activate_nvidia_dependency_blocker || mlstack_log_warn "Failed to activate NVIDIA dependency blocker constraints."
+fi
