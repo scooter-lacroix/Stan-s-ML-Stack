@@ -924,7 +924,7 @@ install_rocm() {
         if [ -n "${MLSTACK_ROCM_METHOD:-}" ]; then
             INSTALL_METHOD="$MLSTACK_ROCM_METHOD"
             print_step "Using pre-seeded installation method: $INSTALL_METHOD"
-        elif [ -t 0 ]; then
+        elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
             read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
             INSTALL_METHOD=${INSTALL_METHOD:-1}
         else
@@ -967,7 +967,7 @@ install_rocm() {
     if [ -n "${MLSTACK_VENV_METHOD:-}" ]; then
         VENV_METHOD="$MLSTACK_VENV_METHOD"
         print_step "Using pre-seeded venv method: $VENV_METHOD"
-    elif [ -t 0 ]; then
+    elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
         read -p "Choose virtual environment option (1-3) [2]: " VENV_METHOD
         VENV_METHOD=${VENV_METHOD:-2}
     else
@@ -1009,7 +1009,7 @@ install_rocm() {
         if [ -n "${INSTALL_ROCM_PRESEEDED_CHOICE:-}" ]; then
             ROCM_CHOICE="$INSTALL_ROCM_PRESEEDED_CHOICE"
             print_step "Using pre-seeded ROCm version choice: $ROCM_CHOICE"
-        elif [ -t 0 ]; then
+        elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
             # Interactive mode: prompt user
             echo
             echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
@@ -1098,7 +1098,7 @@ install_rocm() {
             if [ -n "${MLSTACK_INSTALL_FRAMEWORKS:-}" ]; then
                 INSTALL_FRAMEWORKS="$MLSTACK_INSTALL_FRAMEWORKS"
                 print_step "Using pre-seeded frameworks choice: $INSTALL_FRAMEWORKS"
-            elif [ -t 0 ]; then
+            elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
                 read -p "Install additional frameworks? (1-2) [1]: " INSTALL_FRAMEWORKS
                 INSTALL_FRAMEWORKS=${INSTALL_FRAMEWORKS:-1}
             else
@@ -1157,7 +1157,7 @@ install_rocm() {
             if [ -n "${MLSTACK_ARCH_ROCM_METHOD:-}" ]; then
                 ARCH_ROCM_METHOD="$MLSTACK_ARCH_ROCM_METHOD"
                 print_step "Using pre-seeded Arch method: $ARCH_ROCM_METHOD"
-            elif [ -t 0 ]; then
+            elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
                 read -p "Choose installation method (1-3) [1]: " ARCH_ROCM_METHOD
                 ARCH_ROCM_METHOD=${ARCH_ROCM_METHOD:-1}
             else
@@ -1213,7 +1213,7 @@ install_rocm() {
                     echo
 
                     # Check if running interactively (stdin is a terminal)
-                    if [ -t 0 ]; then
+                    if [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
                         read -p "Proceed with installation? (y/n) [y]: " CONFIRM_AUR
                         CONFIRM_AUR=${CONFIRM_AUR:-y}
                     else
@@ -1230,23 +1230,49 @@ install_rocm() {
                     # Install packages using AUR helper
                     # AUR helpers should NOT run as root - detect and run as regular user
                     AUR_RUN_CMD="$AUR_HELPER"
+                    AUR_SUDO_PREFIX=""
+
                     if [ "$(id -u)" -eq 0 ]; then
-                        # Running as root - use SUDO_USER if available
+                        # Running as root - need to run yay as regular user
                         if [ -n "$SUDO_USER" ]; then
                             print_step "Running $AUR_HELPER as user $SUDO_USER (AUR helpers should not run as root)..."
-                            AUR_RUN_CMD="sudo -u $SUDO_USER $AUR_HELPER"
+
+                            # Check if we have the password available (from TUI)
+                            # The password should be in MLSTACK_SUDO_PASSWORD env var or we need to cache sudo
+                            if [ -n "${MLSTACK_SUDO_PASSWORD:-}" ]; then
+                                # Password available - use it to extend sudo timestamp for the user
+                                print_step "Extending sudo timestamp for user $SUDO_USER..."
+                                echo "$MLSTACK_SUDO_PASSWORD" | sudo -S -v 2>/dev/null || true
+                            fi
+
+                            # Extend sudo timestamp before switching users
+                            # This ensures the user's sudo session is valid when yay calls sudo internally
+                            sudo -v 2>/dev/null || true
+
+                            # Run yay as the user, with sudo available
+                            AUR_RUN_CMD="sudo -u $SUDO_USER"
+                            # yay will use sudo internally - make sure it's non-interactive
+                            AUR_SUDO_PREFIX="sudo -n"  # -n means non-interactive, fail if password needed
                         elif [ -n "$PKEXEC_UID" ]; then
-                            AUR_RUN_CMD="sudo -u #$PKEXEC_UID $AUR_HELPER"
+                            AUR_RUN_CMD="sudo -u #$PKEXEC_UID"
                         fi
                     fi
 
                     for pkg in "${ROCM_AUR_PACKAGES[@]}"; do
                         print_step "Installing $pkg via $AUR_HELPER..."
                         if [ "$DRY_RUN" != true ]; then
-                            # Use --noconfirm --answeredit "" to avoid editor prompts
-                            # --mflags "--skipinteg" can help with some AUR packages
-                            if ! $AUR_RUN_CMD -S --needed --noconfirm --answerdiff None --answerclean None "$pkg" 2>&1; then
-                                print_warning "Failed to install $pkg, continuing..."
+                            # Run yay with --noconfirm and --sudoloop to keep sudo session alive
+                            # --sudoloop periodically runs sudo -v to keep the session active
+                            if [ -n "$AUR_RUN_CMD" ] && [ "$AUR_RUN_CMD" != "$AUR_HELPER" ]; then
+                                # Running as different user
+                                if ! $AUR_RUN_CMD $AUR_HELPER -S --needed --noconfirm --sudoloop --answerdiff None --answerclean None "$pkg" 2>&1; then
+                                    print_warning "Failed to install $pkg, continuing..."
+                                fi
+                            else
+                                # Running directly
+                                if ! $AUR_HELPER -S --needed --noconfirm --answerdiff None --answerclean None "$pkg" 2>&1; then
+                                    print_warning "Failed to install $pkg, continuing..."
+                                fi
                             fi
                         fi
                     done

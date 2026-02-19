@@ -804,6 +804,80 @@ fn validate_rocm_path(path: &Path) -> bool {
         || path.join("rocminfo").exists() || path.join("rocm-smi").exists()
 }
 
+/// Map GPU marketing name to correct gfx architecture.
+/// This corrects rocminfo bugs where RDNA3 cards report gfx1030 instead of gfx1100/gfx1101.
+fn get_correct_gfx_from_marketing_name(marketing_name: &str, rocminfo_gfx: &str) -> String {
+    let name_lower = marketing_name.to_lowercase();
+
+    // RDNA 3 (Navi 3x) - gfx1100/gfx1101
+    // These are commonly misreported as gfx1030 by buggy ROCm versions
+    if name_lower.contains("7900 xtx") || name_lower.contains("7900xtx") {
+        return "gfx1100".to_string();
+    }
+    if name_lower.contains("7900 xt") || name_lower.contains("7900xt") {
+        // Could be XT (not XTX), still gfx1100
+        return "gfx1100".to_string();
+    }
+    if name_lower.contains("7900 gre") || name_lower.contains("7900gre") {
+        return "gfx1100".to_string();
+    }
+    if name_lower.contains("7800 xt") || name_lower.contains("7800xt") {
+        return "gfx1101".to_string();
+    }
+    if name_lower.contains("7800 gre") || name_lower.contains("7800gre") {
+        return "gfx1101".to_string();
+    }
+    if name_lower.contains("7700 xt") || name_lower.contains("7700xt") {
+        return "gfx1101".to_string();
+    }
+    if name_lower.contains("7600 xt") || name_lower.contains("7600xt")
+        || name_lower.contains("7600") {
+        return "gfx1102".to_string();
+    }
+
+    // RDNA 4 (Navi 4x) - gfx1200
+    if name_lower.contains("9070 xt") || name_lower.contains("9070xt")
+        || name_lower.contains("9070 gre") || name_lower.contains("9070gre") {
+        return "gfx1200".to_string();
+    }
+    if name_lower.contains("9060") {
+        return "gfx1201".to_string();
+    }
+
+    // RDNA 2 (Navi 2x) - gfx1030/gfx1031/gfx1032
+    // These are correctly reported by rocminfo, but we verify
+    if name_lower.contains("6900 xt") || name_lower.contains("6900xt")
+        || name_lower.contains("6950 xt") || name_lower.contains("6950xt") {
+        return "gfx1030".to_string();
+    }
+    if name_lower.contains("6800 xt") || name_lower.contains("6800xt")
+        || name_lower.contains("6800") || name_lower.contains("6900") {
+        return "gfx1030".to_string();
+    }
+    if name_lower.contains("6700 xt") || name_lower.contains("6700xt")
+        || name_lower.contains("6750 xt") || name_lower.contains("6750xt") {
+        return "gfx1031".to_string();
+    }
+    if name_lower.contains("6600 xt") || name_lower.contains("6600xt")
+        || name_lower.contains("6600") || name_lower.contains("6650") {
+        return "gfx1032".to_string();
+    }
+    if name_lower.contains("6500 xt") || name_lower.contains("6500xt") {
+        return "gfx1034".to_string();
+    }
+
+    // CDNA (MI accelerators) - trust rocminfo for these
+    if name_lower.contains("instinct") || name_lower.contains("mi60")
+        || name_lower.contains("mi100") || name_lower.contains("mi200")
+        || name_lower.contains("mi250") || name_lower.contains("mi300") {
+        return format!("gfx{}", rocminfo_gfx);
+    }
+
+    // Default: use rocminfo value if it looks valid (gfx10xx, gfx11xx, gfx12xx)
+    // But if it's gfx1030 from a known RDNA3 card, we should have caught it above
+    format!("gfx{}", rocminfo_gfx)
+}
+
 fn detect_gpu() -> GPUInfo {
     let mut info = GPUInfo::default();
 
@@ -862,7 +936,6 @@ fn detect_gpu() -> GPUInfo {
                                 .take_while(|c| c.is_ascii_digit())
                                 .collect();
                             if !gfx_num.is_empty() && gfx_num.len() >= 3 {
-                                let arch = format!("gfx{}", gfx_num);
                                 // Detect iGPU by marketing name containing "Ryzen" or device being APU
                                 let is_igpu = current_marketing_name.to_lowercase().contains("ryzen")
                                     || current_marketing_name.to_lowercase().contains("apu")
@@ -872,7 +945,10 @@ fn detect_gpu() -> GPUInfo {
                                     && current_device_type == "GPU"
                                     && info.architecture.is_empty()
                                 {
-                                    info.architecture = arch;
+                                    // Use marketing name to get correct architecture
+                                    // rocminfo may report wrong gfx on some ROCm versions
+                                    let corrected_arch = get_correct_gfx_from_marketing_name(&current_marketing_name, &gfx_num);
+                                    info.architecture = corrected_arch;
                                 }
                             }
                         }

@@ -898,6 +898,107 @@ create_environment_file() {
     # Create environment file
     print_step "Creating environment file..."
 
+    # Handle force reinstall - clear GPU-related variables if force reinstall is enabled
+    if [ "${MLSTACK_FORCE_REINSTALL:-}" = "true" ] || [ "${FORCE:-}" = "true" ]; then
+        print_step "Force reinstall enabled - clearing GPU-related environment variables..."
+
+        # Clear existing GPU-related env vars from current session
+        unset GPU_ARCH
+        unset HSA_OVERRIDE_GFX_VERSION
+        unset HIP_VISIBLE_DEVICES
+        unset CUDA_VISIBLE_DEVICES
+        unset PYTORCH_ROCM_DEVICE
+        unset TORCH_CUDA_ARCH_LIST
+
+        # Remove existing env file to ensure fresh creation
+        if [ -f "$HOME/.mlstack_env" ]; then
+            print_step "Removing existing .mlstack_env for fresh creation..."
+            rm -f "$HOME/.mlstack_env"
+        fi
+
+        print_success "Cleared existing GPU environment variables"
+    fi
+
+    # Detect correct GPU architecture using marketing name mapping
+    # This fixes rocminfo bugs where RDNA3 cards report gfx1030 instead of gfx1100
+    detect_correct_gpu_arch() {
+        local marketing_name=""
+        local detected_gfx=""
+
+        # Get marketing name and gfx from rocminfo
+        if command -v rocminfo &>/dev/null || [ -x "/opt/rocm/bin/rocminfo" ]; then
+            local rocminfo_cmd="rocminfo"
+            [ -x "/opt/rocm/bin/rocminfo" ] && rocminfo_cmd="/opt/rocm/bin/rocminfo"
+
+            while IFS= read -r line; do
+                if [[ "$line" =~ "Marketing Name:" ]]; then
+                    marketing_name=$(echo "$line" | sed 's/.*Marketing Name:[[:space:]]*//' | xargs)
+                elif [[ "$line" =~ "Name:" ]] && [[ "$line" =~ gfx ]]; then
+                    detected_gfx=$(echo "$line" | grep -o 'gfx[0-9]*' | head -1)
+                fi
+
+                # Check if we have both and it's a dGPU (not Ryzen/iGPU)
+                if [ -n "$marketing_name" ] && [ -n "$detected_gfx" ]; then
+                    local name_lower=$(echo "$marketing_name" | tr '[:upper:]' '[:lower:]')
+
+                    # Skip iGPUs
+                    if [[ "$name_lower" =~ "ryzen" ]] || [[ "$name_lower" =~ "apu" ]] || [[ "$name_lower" =~ "integrated" ]]; then
+                        marketing_name=""
+                        detected_gfx=""
+                        continue
+                    fi
+
+                    # Map marketing names to correct architectures
+                    # RDNA3 cards are commonly misreported as gfx1030
+                    case "$name_lower" in
+                        *"7900 xtx"*) echo "gfx1100"; return ;;
+                        *"7900xtx"*)  echo "gfx1100"; return ;;
+                        *"7900 xt"*)  echo "gfx1100"; return ;;
+                        *"7900xt"*)   echo "gfx1100"; return ;;
+                        *"7900 gre"*) echo "gfx1100"; return ;;
+                        *"7900gre"*)  echo "gfx1100"; return ;;
+                        *"7800 xt"*)  echo "gfx1101"; return ;;
+                        *"7800xt"*)   echo "gfx1101"; return ;;
+                        *"7800 gre"*) echo "gfx1101"; return ;;
+                        *"7800gre"*)  echo "gfx1101"; return ;;
+                        *"7700 xt"*)  echo "gfx1101"; return ;;
+                        *"7700xt"*)   echo "gfx1101"; return ;;
+                        *"7600 xt"*)  echo "gfx1102"; return ;;
+                        *"7600xt"*)   echo "gfx1102"; return ;;
+                        *"7600"*)     echo "gfx1102"; return ;;
+                        *"9070 xt"*)  echo "gfx1200"; return ;;
+                        *"9070xt"*)   echo "gfx1200"; return ;;
+                    esac
+
+                    marketing_name=""
+                    detected_gfx=""
+                fi
+            done < <($rocminfo_cmd 2>/dev/null)
+        fi
+
+        # Fallback to rocminfo's reported gfx or default
+        echo "${detected_gfx:-gfx1100}"
+    }
+
+    # Get correct GPU architecture
+    if [ -z "${GPU_ARCH:-}" ] || [ "${MLSTACK_FORCE_REINSTALL:-}" = "true" ]; then
+        GPU_ARCH=$(detect_correct_gpu_arch)
+        print_step "Detected GPU architecture: $GPU_ARCH"
+    fi
+
+    # Set HSA_OVERRIDE_GFX_VERSION based on GPU_ARCH
+    case "$GPU_ARCH" in
+        gfx1100) HSA_OVERRIDE_GFX_VERSION="11.0.0" ;;
+        gfx1101) HSA_OVERRIDE_GFX_VERSION="11.0.1" ;;
+        gfx1102) HSA_OVERRIDE_GFX_VERSION="11.0.2" ;;
+        gfx1200) HSA_OVERRIDE_GFX_VERSION="12.0.0" ;;
+        gfx1201) HSA_OVERRIDE_GFX_VERSION="12.0.1" ;;
+        gfx1030) HSA_OVERRIDE_GFX_VERSION="10.3.0" ;;
+        gfx1031) HSA_OVERRIDE_GFX_VERSION="10.3.1" ;;
+        gfx1032) HSA_OVERRIDE_GFX_VERSION="10.3.2" ;;
+        *)       HSA_OVERRIDE_GFX_VERSION="11.0.0" ;;
+    esac
+
     # Create .mlstack_env file in home directory
     cat > $HOME/.mlstack_env << EOF
 # ML Stack Environment File
@@ -916,15 +1017,16 @@ if [ -z "\${ROCM_HOME:-}" ]; then export ROCM_HOME=${ROCM_HOME:-/opt/rocm}; fi
 if [ -z "\${CUDA_HOME:-}" ]; then export CUDA_HOME=${CUDA_HOME:-/opt/rocm}; fi
 if [ -z "\${ROCM_VERSION:-}" ]; then export ROCM_VERSION=${ROCM_VERSION:-7.2.0}; fi
 if [ -z "\${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=${ROCM_CHANNEL:-latest}; fi
-if [ -z "\${GPU_ARCH:-}" ]; then export GPU_ARCH=${GPU_ARCH:-gfx1100}; fi
+# GPU_ARCH is set based on detected hardware (corrected for rocminfo bugs)
+export GPU_ARCH=${GPU_ARCH:-gfx1100}
 
 # Path Settings - Hardcoded safe paths to prevent "command not found" errors
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:${ROCM_PATH:-/opt/rocm}/bin:${ROCM_PATH:-/opt/rocm}/hip/bin:\$PATH"
 export LD_LIBRARY_PATH="${ROCM_PATH:-/opt/rocm}/lib:${ROCM_PATH:-/opt/rocm}/hip/lib:${ROCM_PATH:-/opt/rocm}/opencl/lib:\${LD_LIBRARY_PATH:-}"
 
 # Performance Settings
-# Only set if not already set
-if [ -z "\${HSA_OVERRIDE_GFX_VERSION:-}" ]; then export HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.0.0}; fi
+# HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
+export HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.0.0}
 if [ -z "\${HSA_ENABLE_SDMA:-}" ]; then export HSA_ENABLE_SDMA=${HSA_ENABLE_SDMA:-0}; fi
 if [ -z "\${GPU_MAX_HEAP_SIZE:-}" ]; then export GPU_MAX_HEAP_SIZE=${GPU_MAX_HEAP_SIZE:-100}; fi
 if [ -z "\${GPU_MAX_ALLOC_PERCENT:-}" ]; then export GPU_MAX_ALLOC_PERCENT=${GPU_MAX_ALLOC_PERCENT:-100}; fi

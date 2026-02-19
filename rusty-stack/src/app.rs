@@ -1849,9 +1849,11 @@ impl App {
         if self.config.force_reinstall {
             std::env::set_var("FORCE", "true");
             std::env::set_var("PYTORCH_REINSTALL", "true");
+            std::env::set_var("MLSTACK_FORCE_REINSTALL", "true");
         } else {
             std::env::remove_var("FORCE");
             std::env::remove_var("PYTORCH_REINSTALL");
+            std::env::remove_var("MLSTACK_FORCE_REINSTALL");
         }
 
         self.stage = Stage::Installing;
