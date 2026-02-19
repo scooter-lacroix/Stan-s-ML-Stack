@@ -6,6 +6,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common_utils.sh"
+if [ -f "$SCRIPT_DIR/lib/installer_guard.sh" ]; then
+    # shellcheck source=/dev/null
+    source "$SCRIPT_DIR/lib/installer_guard.sh"
+fi
 
 print_header "Permanent ROCm Environment Setup (Python 3.12)"
 
@@ -126,14 +130,12 @@ fi
 
 print_success "Environment file created at $ENV_FILE"
 
-# 4. Final Shell check
-for shell_rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-    if [ -f "$shell_rc" ]; then
-        if ! grep -q "source \$HOME/.mlstack_env" "$shell_rc"; then
-            print_step "Injecting source into $shell_rc..."
-            echo -e "\n# Source ML Stack Environment\nif [ -f \"\$HOME/.mlstack_env\" ]; then source \"\$HOME/.mlstack_env\"; fi" >> "$shell_rc"
-        fi
-    fi
-done
+# 4. Patch shell startup files for bash/zsh/fish
+if type mlstack_patch_shell_env_for_mlstack >/dev/null 2>&1; then
+    print_step "Patching shell startup files for ML Stack environment..."
+    mlstack_patch_shell_env_for_mlstack
+else
+    print_warning "installer_guard.sh not available; skipped shell startup patching."
+fi
 
 print_success "Permanent ROCm environment configured for Python 3.12!"

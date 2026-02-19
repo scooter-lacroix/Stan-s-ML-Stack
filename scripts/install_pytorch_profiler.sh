@@ -16,6 +16,119 @@
 # of PyTorch models on AMD GPUs with enhanced ROCm support.
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10+; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: printf '2\\n' | MLSTACK_BATCH_MODE=1 bash $pytorch_installer --method venv"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with venv method..."
+    if ! printf '2\n' | MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" bash "$pytorch_installer" --method venv; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if ! mlstack_assert_rocm_torch; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
 # ASCII Art Banner
 cat << "EOF"
    ██████╗ ██╗   ██╗████████╗ ██████╗ ██████╗  ██████╗██╗  ██╗    ██████╗ ██████╗  ██████╗ ███████╗██╗██╗     ███████╗██████╗
@@ -118,7 +231,7 @@ command_exists() {
 
 # Function to check if Python package is installed
 package_installed() {
-    python3 -c "import $1" &>/dev/null
+    "$MLSTACK_PYTHON_BIN" -c "import $1" &>/dev/null
 }
 
 # Function to detect package manager
@@ -142,14 +255,14 @@ detect_package_manager() {
 install_python_package() {
     local package="$1"
     shift
-    local extra_args="$@"
+    local extra_args=("$@")
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --python "$MLSTACK_PYTHON_BIN" "${extra_args[@]}" "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        "$MLSTACK_PYTHON_BIN" -m pip install "${extra_args[@]}" "$package"
     fi
 }
 
@@ -322,11 +435,17 @@ setup_rocm_environment() {
 
 # Function to check for dry run mode
 is_dry_run() {
+    if [ "${DRY_RUN:-false}" = "true" ]; then
+        return 0
+    fi
     [[ "$*" == *"--dry-run"* ]]
 }
 
 # Function to check for force flag
 is_force() {
+    if [ "${FORCE:-false}" = "true" ]; then
+        return 0
+    fi
     [[ "$*" == *"--force"* ]]
 }
 
@@ -394,11 +513,15 @@ install_pytorch_profiler() {
         print_step "WSL environment detected"
     fi
 
+    if ! mlstack_rocm_python_preflight "$DRY_RUN"; then
+        return 1
+    fi
+
     # Check if PyTorch is installed
     print_section "Checking PyTorch Installation"
 
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
+    # Use venv Python if available, otherwise selected python
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-$MLSTACK_PYTHON_BIN}
 
     if $PYTHON_CMD -c "import torch" &>/dev/null; then
         pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
@@ -477,7 +600,7 @@ install_pytorch_profiler() {
     if ! command_exists uv; then
         if ! is_dry_run "$@"; then
             print_step "Installing uv package manager..."
-            python3 -m pip install uv
+            "$MLSTACK_PYTHON_BIN" -m pip install uv
 
             # Add uv to PATH if it was installed in a user directory
             if [ -f "$HOME/.local/bin/uv" ]; then
@@ -527,109 +650,75 @@ install_pytorch_profiler() {
             ;;
     esac
 
-    # Create a function to handle uv commands properly with venv fallback
-    uv_pip_install() {
-        local args="$@"
-
-        # Check if uv is available as a command
-        if command_exists uv; then
-            case $INSTALL_METHOD in
-                "global")
-                    if ! is_dry_run "$@"; then
-                        print_step "Installing globally with pip..."
-                        python3 -m pip install --break-system-packages $args
-                    else
-                        print_step "[DRY RUN] Would install globally with pip: $args"
-                    fi
-                    PYTORCH_VENV_PYTHON=""
-                    ;;
-                "venv")
-                    if ! is_dry_run "$@"; then
-                        print_step "Creating uv virtual environment..."
-                        VENV_DIR="./pytorch_profiler_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-                        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    else
-                        print_step "[DRY RUN] Would create virtual environment and install: $args"
-                    fi
-                    ;;
-                "auto")
-                    if ! is_dry_run "$@"; then
-                        # Try global install first
-                        print_step "Attempting global installation with uv..."
-                        local install_output
-                        install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                        local install_exit_code=$?
-
-                        if echo "$install_output" | grep -q "externally managed"; then
-                            print_warning "Global installation failed due to externally managed environment"
-                            print_step "Creating uv virtual environment for installation..."
-
-                            # Create uv venv in project directory
-                            VENV_DIR="./pytorch_profiler_venv"
-                            if [ ! -d "$VENV_DIR" ]; then
-                                uv venv "$VENV_DIR"
-                            fi
-
-                            # Activate venv and install
-                            source "$VENV_DIR/bin/activate"
-                            print_step "Installing in virtual environment..."
-                            uv pip install $args
-
-                            # Store venv path for verification
-                            PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                            print_success "Installed in virtual environment: $VENV_DIR"
-                        elif [ $install_exit_code -eq 0 ]; then
-                            print_success "Global installation successful"
-                            PYTORCH_VENV_PYTHON=""
-                        else
-                            print_error "Global installation failed with unknown error:"
-                            echo "$install_output"
-                            print_step "Falling back to virtual environment..."
-
-                            # Create uv venv in project directory
-                            VENV_DIR="./pytorch_profiler_venv"
-                            if [ ! -d "$VENV_DIR" ]; then
-                                uv venv "$VENV_DIR"
-                            fi
-
-                            # Activate venv and install
-                            source "$VENV_DIR/bin/activate"
-                            print_step "Installing in virtual environment..."
-                            uv pip install $args
-
-                            # Store venv path for verification
-                            PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
-                            print_success "Installed in virtual environment: $VENV_DIR"
-                        fi
-                    else
-                        print_step "[DRY RUN] Would attempt auto-detect installation: $args"
-                    fi
-                    ;;
-            esac
-        else
-            # Fall back to pip
-            if ! is_dry_run "$@"; then
-                print_step "Installing with pip..."
-                python3 -m pip install $args
-            else
-                print_step "[DRY RUN] Would install with pip: $args"
-            fi
-            PYTORCH_VENV_PYTHON=""
+    ensure_profiler_venv() {
+        VENV_DIR="./pytorch_profiler_venv"
+        if [ ! -d "$VENV_DIR" ]; then
+            print_step "Creating virtual environment..."
+            "$MLSTACK_PYTHON_BIN" -m venv "$VENV_DIR"
         fi
+        if [ ! -x "$VENV_DIR/bin/python" ]; then
+            print_error "Virtual environment Python not found: $VENV_DIR/bin/python"
+            return 1
+        fi
+        PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+    }
+
+    # Create a function to handle installation with venv fallback
+    uv_pip_install() {
+        local args=("$@")
+
+        if [ "$DRY_RUN" = true ]; then
+            print_step "[DRY RUN] Would install profiler dependencies: ${args[*]}"
+            return 0
+        fi
+
+        case $INSTALL_METHOD in
+            "global")
+                print_step "Installing globally with pip..."
+                "$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages "${args[@]}"
+                PYTORCH_VENV_PYTHON=""
+                ;;
+            "venv")
+                ensure_profiler_venv || return 1
+                print_step "Installing in virtual environment..."
+                "$PYTORCH_VENV_PYTHON" -m pip install "${args[@]}"
+                print_success "Installed in virtual environment: ./pytorch_profiler_venv"
+                ;;
+            "auto")
+                if mlstack_is_strict_rocm; then
+                    print_step "Strict ROCm mode: preferring virtual environment install."
+                    ensure_profiler_venv || return 1
+                    if "$PYTORCH_VENV_PYTHON" -m pip install "${args[@]}"; then
+                        print_success "Installed in virtual environment: ./pytorch_profiler_venv"
+                        return 0
+                    fi
+                    print_warning "Virtual environment install failed, trying global fallback."
+                fi
+
+                print_step "Attempting global installation..."
+                local install_output
+                install_output=$("$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages "${args[@]}" 2>&1)
+                local install_exit_code=$?
+                if [ $install_exit_code -eq 0 ]; then
+                    print_success "Global installation successful"
+                    PYTORCH_VENV_PYTHON=""
+                else
+                    print_warning "Global installation failed, falling back to virtual environment..."
+                    echo "$install_output"
+                    ensure_profiler_venv || return 1
+                    "$PYTORCH_VENV_PYTHON" -m pip install "${args[@]}"
+                    print_success "Installed in virtual environment: ./pytorch_profiler_venv"
+                fi
+                ;;
+        esac
     }
 
     # Install PyTorch Profiler dependencies
     print_step "Installing PyTorch Profiler dependencies..."
-    install_python_package "torch-tb-profiler" "tensorboard" || true
+    uv_pip_install torch-tb-profiler tensorboard || true
     
     # Final verification
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-$MLSTACK_PYTHON_BIN}
     if $PYTHON_CMD -c "from torch.profiler import profile; print('✓ Profiler module found')" 2>/dev/null; then
         print_success "PyTorch Profiler is functional"
     fi
@@ -639,6 +728,7 @@ install_pytorch_profiler() {
 DRY_RUN=false
 FORCE=false
 INSTALL_METHOD="auto"
+ORIGINAL_ARGS=("$@")
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -669,6 +759,5 @@ if [ "$DRY_RUN" = false ]; then
 fi
 
 # Run the installation function with all script arguments
-install_pytorch_profiler "$@"
-
-exit 0
+install_pytorch_profiler "${ORIGINAL_ARGS[@]}"
+exit $?

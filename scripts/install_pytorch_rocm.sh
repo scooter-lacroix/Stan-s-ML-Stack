@@ -39,6 +39,12 @@ if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
     source "$SCRIPT_LIB_DIR/rocm_env.sh"
 fi
 
+# Source installer guard helpers when available
+if [[ -f "$SCRIPT_LIB_DIR/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_LIB_DIR/installer_guard.sh"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
   ██████╗ ██╗   ██╗████████╗ ██████╗ ██████╗  ██████╗██╗  ██╗    ██████╗  ██████╗  ██████╗███╗   ███╗
@@ -141,8 +147,195 @@ command_exists() {
 
 # Prefer explicit Python binary when provided
 PYTHON_BIN=${MLSTACK_PYTHON_BIN:-python3}
+MLSTACK_STRICT_ROCM="${MLSTACK_STRICT_ROCM:-1}"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
+METHOD_SET_BY_FLAG=false
 python3() {
     command "$PYTHON_BIN" "$@"
+}
+
+strict_validate_python_version() {
+    local py_cmd="$1"
+    "$py_cmd" - <<'PY'
+import sys
+major, minor = sys.version_info[:2]
+if major != 3 or minor < 10:
+    raise SystemExit(f"Unsupported Python {major}.{minor}; strict ROCm mode requires Python 3.10+")
+PY
+}
+
+strict_detect_rocm_mm() {
+    local rocm_raw
+    rocm_raw="${ROCM_VERSION:-}"
+    if [[ -z "$rocm_raw" ]] && [[ -f /opt/rocm/.info/version ]]; then
+        rocm_raw="$(head -n1 /opt/rocm/.info/version 2>/dev/null || true)"
+    fi
+    rocm_raw="$(echo "$rocm_raw" | grep -oE '[0-9]+\.[0-9]+' | head -n1)"
+    case "$rocm_raw" in
+        5.7|6.0|6.1|6.2|6.3|6.4|7.0|7.1|7.2) echo "$rocm_raw" ;;
+        *) echo "7.2" ;;
+    esac
+}
+
+strict_rocm_index_url() {
+    local rocm_mm="$1"
+    echo "https://repo.radeon.com/rocm/manylinux/rocm-rel-${rocm_mm}/"
+}
+
+strict_venv_python() {
+    local component="$1"
+    local base_python="$2"
+    local venv_dir="${MLSTACK_VENV_DIR:-$HOME/.mlstack/venvs/$component}"
+    mkdir -p "$(dirname "$venv_dir")"
+    if [[ ! -x "$venv_dir/bin/python" ]]; then
+        "$base_python" -m venv "$venv_dir"
+    fi
+    "$venv_dir/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
+    printf '%s\n' "$venv_dir/bin/python"
+}
+
+strict_purge_nvidia_packages() {
+    local py_cmd="$1"
+    local nvidia_pkgs
+    nvidia_pkgs="$("$py_cmd" -m pip list --format=freeze 2>/dev/null \
+        | awk -F== 'BEGIN{IGNORECASE=1}{name=tolower($1); if (name ~ /^nvidia-/ || name ~ /(^|-)cuda([_-]|$)/ || name ~ /^pytorch-cuda$/ || name ~ /^torch-cuda$/) print $1}' \
+        | xargs || true)"
+    if [[ -n "${nvidia_pkgs:-}" ]]; then
+        "$py_cmd" -m pip uninstall -y $nvidia_pkgs >/dev/null || true
+    fi
+}
+
+strict_verify_no_cuda_contamination() {
+    local py_cmd="$1"
+    "$py_cmd" - <<'PY'
+import re
+import subprocess
+import sys
+
+errors = []
+try:
+    import torch
+    if getattr(torch.version, "cuda", None):
+        errors.append(f"torch.version.cuda={torch.version.cuda}")
+    if not getattr(torch.version, "hip", None):
+        errors.append("torch.version.hip missing")
+    version = getattr(torch, "__version__", "").lower()
+    if "cu" in version and "rocm" not in version:
+        errors.append(f"CUDA-looking torch version: {version}")
+except Exception as exc:
+    errors.append(f"torch validation failed: {exc}")
+
+pip_out = subprocess.check_output(
+    [sys.executable, "-m", "pip", "list", "--format=freeze"],
+    text=True,
+    stderr=subprocess.DEVNULL,
+)
+for line in pip_out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if name.startswith("nvidia-") or re.search(r"(^|-)cuda([_-]|$)", name) or name in {"pytorch-cuda", "torch-cuda"}:
+        errors.append(f"disallowed package: {name}")
+
+if errors:
+    print("\n".join(errors))
+    raise SystemExit(1)
+PY
+}
+
+strict_install_rocm_torch_stack() {
+    local py_cmd="$1"
+    local rocm_mm
+    rocm_mm="$(strict_detect_rocm_mm)"
+    local rocm_index
+    rocm_index="$(strict_rocm_index_url "$rocm_mm")"
+
+    strict_purge_nvidia_packages "$py_cmd"
+    "$py_cmd" -m pip uninstall -y torch torchvision torchaudio triton >/dev/null 2>&1 || true
+
+    if ! "$py_cmd" -m pip install --no-cache-dir --upgrade \
+        --index-url "$rocm_index" --extra-index-url https://pypi.org/simple \
+        torch torchvision torchaudio triton; then
+        "$py_cmd" -m pip install --no-cache-dir --upgrade \
+            --index-url "$rocm_index" --extra-index-url https://pypi.org/simple \
+            torch torchvision torchaudio
+    fi
+}
+
+strict_install_pytorch_rocm() {
+    local base_python="$PYTHON_BIN"
+    local strict_python=""
+    local strict_venv_dir=""
+
+    if ! command -v "$base_python" >/dev/null 2>&1; then
+        print_error "Python interpreter not found: $base_python"
+        return 1
+    fi
+
+    if ! strict_validate_python_version "$base_python"; then
+        print_error "Strict ROCm mode requires Python 3.10+"
+        return 1
+    fi
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        strict_venv_dir="${MLSTACK_VENV_DIR:-$HOME/.mlstack/venvs/pytorch_rocm}"
+        case "$INSTALL_METHOD" in
+            global) print_step "[strict] Dry run: would install ROCm torch stack globally with ${base_python}" ;;
+            venv) print_step "[strict] Dry run: would install ROCm torch stack into ${strict_venv_dir}" ;;
+            auto) print_step "[strict] Dry run: would try global install with ${base_python}, then fallback to ${strict_venv_dir}" ;;
+        esac
+        return 0
+    fi
+
+    case "$INSTALL_METHOD" in
+        global)
+            strict_python="$base_python"
+            PYTORCH_VENV_PYTHON=""
+            print_step "[strict] Installing ROCm PyTorch stack in global interpreter..."
+            strict_install_rocm_torch_stack "$strict_python" || return 1
+            ;;
+        venv)
+            strict_python="$(strict_venv_python "pytorch_rocm" "$base_python")" || return 1
+            PYTORCH_VENV_PYTHON="$strict_python"
+            print_step "[strict] Installing ROCm PyTorch stack in deterministic venv..."
+            strict_install_rocm_torch_stack "$strict_python" || return 1
+            ;;
+        auto)
+            strict_python="$base_python"
+            PYTORCH_VENV_PYTHON=""
+            print_step "[strict] Auto mode: trying global interpreter first..."
+            if ! strict_install_rocm_torch_stack "$strict_python"; then
+                print_warning "[strict] Global install failed, falling back to deterministic venv..."
+                strict_python="$(strict_venv_python "pytorch_rocm" "$base_python")" || return 1
+                PYTORCH_VENV_PYTHON="$strict_python"
+                strict_install_rocm_torch_stack "$strict_python" || return 1
+            fi
+            ;;
+        *)
+            print_error "Invalid install method: $INSTALL_METHOD (expected global, venv, auto)"
+            return 1
+            ;;
+    esac
+
+    print_step "[strict] Installing common dependencies in same interpreter..."
+    "$strict_python" -m pip install --no-cache-dir --upgrade torchsde sentencepiece || return 1
+
+    if ! "$strict_python" - <<'PY'
+import torch
+assert torch.__version__
+assert getattr(torch.version, "hip", None), "torch.version.hip missing"
+print(torch.__version__)
+PY
+    then
+        print_error "Strict ROCm validation failed for torch import/hip"
+        return 1
+    fi
+
+    if ! strict_verify_no_cuda_contamination "$strict_python"; then
+        print_error "CUDA/NVIDIA contamination detected in strict ROCm environment"
+        return 1
+    fi
+
+    print_success "Strict ROCm PyTorch installation completed in ${strict_python%/bin/python}"
+    return 0
 }
 
 # Function to check if Python package is installed
@@ -269,7 +462,12 @@ parse_args() {
                 shift
                 ;;
             --method)
+                if [[ -z "${2:-}" ]]; then
+                    print_error "--method requires one value: global, venv, or auto"
+                    exit 1
+                fi
                 INSTALL_METHOD="$2"
+                METHOD_SET_BY_FLAG=true
                 shift 2
                 ;;
             --show-env)
@@ -283,6 +481,15 @@ parse_args() {
                 ;;
         esac
     done
+
+    INSTALL_METHOD="$(echo "$INSTALL_METHOD" | tr '[:upper:]' '[:lower:]')"
+    case "$INSTALL_METHOD" in
+        global|venv|auto) ;;
+        *)
+            print_error "Invalid --method value: $INSTALL_METHOD (expected global, venv, auto)"
+            exit 1
+            ;;
+    esac
 }
 
 # Main installation function
@@ -292,9 +499,39 @@ install_pytorch_rocm() {
     # Parse command line arguments
     parse_args "$@"
 
+    if [[ "${MLSTACK_STRICT_ROCM}" != "0" ]]; then
+        if [[ "$METHOD_SET_BY_FLAG" != "true" ]] && [[ -t 0 ]] && [[ "${MLSTACK_BATCH_MODE:-0}" != "1" ]]; then
+            echo
+            echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
+            echo "1) Global installation"
+            echo "2) Virtual environment installation"
+            echo "3) Auto-detect (try global, fallback to venv)"
+            echo
+            read -r -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+            INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+            case "$INSTALL_CHOICE" in
+                1) INSTALL_METHOD="global" ;;
+                2) INSTALL_METHOD="venv" ;;
+                3|*) INSTALL_METHOD="auto" ;;
+            esac
+        fi
+        print_step "Strict ROCm mode enabled (MLSTACK_STRICT_ROCM=${MLSTACK_STRICT_ROCM})"
+        strict_install_pytorch_rocm
+        return $?
+    fi
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        print_warning "DRY RUN MODE - No installation actions will be performed."
+        print_step "[DRY RUN] Would validate ROCm runtime and environment variables"
+        print_step "[DRY RUN] Would purge existing torch/NVIDIA packages"
+        print_step "[DRY RUN] Would install ROCm-compatible torch stack and shared dependencies"
+        print_step "[DRY RUN] Would verify HIP-capable torch and GPU availability"
+        return 0
+    fi
+
     # Check if PyTorch is already installed
     # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-$PYTHON_BIN}
 
     if $PYTHON_CMD -c "import torch" &>/dev/null; then
         pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
@@ -511,11 +748,8 @@ install_pytorch_rocm() {
             IFS=':' read -ra ADDR <<< "$sp_dirs"
             for sp_dir in "${ADDR[@]}"; do
                 if [ -d "$sp_dir" ]; then
+                    # Avoid destructive site-packages deletion; only remove known broken temp leftovers.
                     find "$sp_dir" -maxdepth 1 -name "~orch*" -exec rm -rf {} + 2>/dev/null || true
-                    find "$sp_dir" -maxdepth 1 -name "torch*" -exec rm -rf {} + 2>/dev/null || true
-                    find "$sp_dir" -maxdepth 1 -name "*nvidia*" -exec rm -rf {} + 2>/dev/null || true
-                    find "$sp_dir" -maxdepth 1 -name "*cuda*" -exec rm -rf {} + 2>/dev/null || true
-                    find "$sp_dir" -maxdepth 1 -name "*triton*" -exec rm -rf {} + 2>/dev/null || true
                 fi
             done
         done
@@ -532,40 +766,37 @@ install_pytorch_rocm() {
         }
     fi
 
-    # Clean up any potential egg-info or broken links in common locations
+    # Avoid deleting site-packages trees directly; rely on pip uninstall above.
     print_step "Cleaning up residual files..."
-    find "$HOME/.local/lib" -maxdepth 4 -name "*torch*" -exec rm -rf {} + 2>/dev/null || true
-    if [ -d "$HOME/anaconda3/lib/python3.13/site-packages" ]; then
-        find "$HOME/anaconda3/lib/python3.13/site-packages" -maxdepth 1 -name "*torch*" -exec rm -rf {} + 2>/dev/null || true
-    fi
+    find "$HOME/.cache/pip" -maxdepth 2 -type f -name "*torch*" -delete 2>/dev/null || true
     
     # Install PyTorch with ROCm support
     print_step "Installing PyTorch with ROCm support..."
 
-    # Ask user for installation preference
-    echo
-    echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
-    echo "1) Global installation (recommended for system-wide use)"
-    echo "2) Virtual environment (isolated installation)"
-    echo "3) Auto-detect (try global, fallback to venv if needed)"
-    echo
-    read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
-    INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+    # Ask user for installation preference only when not explicitly set
+    if [[ "$METHOD_SET_BY_FLAG" != "true" ]]; then
+        echo
+        echo -e "${CYAN}${BOLD}PyTorch Installation Options:${RESET}"
+        echo "1) Global installation (recommended for system-wide use)"
+        echo "2) Virtual environment (isolated installation)"
+        echo "3) Auto-detect (try global, fallback to venv if needed)"
+        echo
+        read -r -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+        INSTALL_CHOICE=${INSTALL_CHOICE:-3}
 
-    case $INSTALL_CHOICE in
-        1)
-            INSTALL_METHOD="global"
-            print_step "Using global installation method"
-            ;;
-        2)
-            INSTALL_METHOD="venv"
-            print_step "Using virtual environment method"
-            ;;
-        3|*)
-            INSTALL_METHOD="auto"
-            print_step "Using auto-detect method"
-            ;;
-    esac
+        case $INSTALL_CHOICE in
+            1)
+                INSTALL_METHOD="global"
+                ;;
+            2)
+                INSTALL_METHOD="venv"
+                ;;
+            3|*)
+                INSTALL_METHOD="auto"
+                ;;
+        esac
+    fi
+    print_step "Using installation method: $INSTALL_METHOD"
 
     # Create a function to handle uv commands properly with venv fallback
     uv_pip_install() {
@@ -584,7 +815,7 @@ install_pytorch_rocm() {
                     ;;
                 "venv")
                     print_step "Creating uv virtual environment..."
-                    VENV_DIR="$HOME/Documents/Stan-s-ML-Stack/pytorch_rocm_venv"
+                    VENV_DIR="${PYTORCH_VENV_DIR:-$HOME/.mlstack/venvs/pytorch_rocm_legacy}"
                     if [ ! -d "$VENV_DIR" ]; then
                         uv venv --python "$current_py" "$VENV_DIR"
                     fi
@@ -592,6 +823,7 @@ install_pytorch_rocm() {
                     print_step "Installing in virtual environment..."
                     uv pip install --no-cache --index-url https://download.pytorch.org/whl/rocm7.2 $args
                     PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                    PYTORCH_VENV_DIR_USED="$VENV_DIR"
                     print_success "Installed in virtual environment: $VENV_DIR"
                     ;;
                 "auto")
@@ -603,7 +835,7 @@ install_pytorch_rocm() {
                     else
                         print_warning "Global installation failed, attempting virtual environment fallback..."
                         # Create uv venv in project directory
-                        VENV_DIR="$HOME/Documents/Stan-s-ML-Stack/pytorch_rocm_venv"
+                        VENV_DIR="${PYTORCH_VENV_DIR:-$HOME/.mlstack/venvs/pytorch_rocm_legacy}"
                         if [ ! -d "$VENV_DIR" ]; then
                             uv venv --python "$current_py" "$VENV_DIR"
                         fi
@@ -615,6 +847,7 @@ install_pytorch_rocm() {
 
                         # Store venv path for verification
                         PYTORCH_VENV_PYTHON="$VENV_DIR/bin/python"
+                        PYTORCH_VENV_DIR_USED="$VENV_DIR"
                         print_success "Installed in virtual environment: $VENV_DIR"
                     fi
                     ;;
@@ -705,7 +938,7 @@ install_pytorch_rocm() {
     print_section "Verifying Installation"
 
     # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-python3}
+    PYTHON_CMD=${PYTORCH_VENV_PYTHON:-$PYTHON_BIN}
 
     if $PYTHON_CMD -c "import torch" 2>&1 | tee /tmp/torch_verify_err; then
         pytorch_version=$($PYTHON_CMD -c "import torch; print(torch.__version__)" 2>/dev/null)
@@ -777,7 +1010,8 @@ EOF
     echo
     echo -e "${CYAN}${BOLD}Quick Start Example:${RESET}"
     if [ -n "$PYTORCH_VENV_PYTHON" ]; then
-        echo -e "${GREEN}source ./pytorch_rocm_venv/bin/activate${RESET}"
+        venv_activate="$(dirname "$PYTORCH_VENV_PYTHON")/activate"
+        echo -e "${GREEN}source \"$venv_activate\"${RESET}"
         echo -e "${GREEN}python -c \"import torch; print('PyTorch version:', torch.__version__); print('ROCm version:', torch.version.hip if hasattr(torch.version, 'hip') else 'N/A'); print('GPU available:', torch.cuda.is_available())\"${RESET}"
     else
         echo -e "${GREEN}python3 -c \"import torch; print('PyTorch version:', torch.__version__); print('ROCm version:', torch.version.hip if hasattr(torch.version, 'hip') else 'N/A'); print('GPU available:', torch.cuda.is_available())\"${RESET}"
@@ -821,4 +1055,3 @@ fi
 
 # Run the installation function with all script arguments
 install_pytorch_rocm "$@"
-

@@ -1,5 +1,118 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10+; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: printf '2\\n' | MLSTACK_BATCH_MODE=1 bash $pytorch_installer --method venv"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with venv method..."
+    if ! printf '2\n' | MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" bash "$pytorch_installer" --method venv; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if ! mlstack_assert_rocm_torch; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
 # Set up colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -10,7 +123,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-$PYTHON_BIN}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
@@ -631,6 +744,20 @@ install_megatron() {
     log_message "INFO" "Force reinstall: $FORCE_REINSTALL"
     log_message "INFO" "Install method: $INSTALL_METHOD"
 
+    if [ "$DRY_RUN" = true ]; then
+        print_warning "DRY RUN MODE - No installation actions will be performed."
+        print_step "[DRY RUN] Would validate ROCm/PyTorch prerequisites and compiler/MPI availability"
+        print_step "[DRY RUN] Would clone/update Megatron-LM repository under $HOME/Megatron-LM"
+        print_step "[DRY RUN] Would install Megatron-LM with ROCm-compatible Python dependencies"
+        print_step "[DRY RUN] Would run post-install import and GPU checks"
+        return 0
+    fi
+
+    if ! mlstack_rocm_python_preflight "$DRY_RUN"; then
+        print_error "ROCm/Python preflight failed"
+        return 1
+    fi
+
     # Detect execution environment
     detect_environment
     log_message "INFO" "Environment detection: WSL=$IS_WSL, Container=$IS_CONTAINER, Sudo=$HAS_SUDO"
@@ -928,21 +1055,22 @@ except ImportError:
         print_success "tensorstore is already installed"
     fi
 
-    # Install nvidia-modelopt with compatibility fix
-    print_step "Installing nvidia-modelopt..."
+    # Keep ROCm path NVIDIA-free: provide a lightweight compatibility stub instead
+    print_step "Ensuring nvidia_modelopt compatibility shim (ROCm-safe)..."
     if ! python_module_exists "nvidia_modelopt"; then
-        if ! python3 -m pip install nvidia-modelopt; then
-            print_warning "Failed to install nvidia-modelopt, trying alternative approach..."
-            # Create a dummy nvidia_modelopt package to satisfy the import
+        if [ "$DRY_RUN" = true ]; then
+            print_step "[DRY RUN] Would create nvidia_modelopt compatibility shim in site-packages"
+        else
             SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
             mkdir -p "$SITE_PACKAGES/nvidia_modelopt"
-            echo "# Dummy nvidia_modelopt package for compatibility" > "$SITE_PACKAGES/nvidia_modelopt/__init__.py"
-            print_success "Created dummy nvidia_modelopt package for compatibility"
-        else
-            print_success "nvidia-modelopt installed successfully"
+            cat > "$SITE_PACKAGES/nvidia_modelopt/__init__.py" <<'PY'
+# ROCm compatibility shim for optional NVIDIA-only dependency.
+__all__ = []
+PY
+            print_success "Created ROCm-safe nvidia_modelopt compatibility shim"
         fi
     else
-        print_success "nvidia-modelopt is already installed"
+        print_success "nvidia_modelopt module already present"
     fi
 
     # Use command-line specified installation method or ask user

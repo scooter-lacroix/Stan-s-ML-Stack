@@ -3,8 +3,16 @@
 
 set -euo pipefail
 
-# Source utility scripts if available
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_LIB="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ ! -f "$GUARD_LIB" ]; then
+    printf '[mlstack][ERROR] Missing installer guard library: %s\n' "$GUARD_LIB" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$GUARD_LIB"
+
+# Source utility scripts if available
 if [ -f "$SCRIPT_DIR/common_utils.sh" ]; then
     source "$SCRIPT_DIR/common_utils.sh"
 fi
@@ -35,11 +43,16 @@ fi
 
 print_section "Installing MIGraphX for ROCm ${ROCM_VERSION}"
 
-# Update package list
-execute_command "sudo apt-get update" "Updating package repositories"
+if [ "$DRY_RUN" = "true" ]; then
+    print_step "[DRY RUN] Would refresh package manager metadata"
+    print_step "[DRY RUN] Would install system packages: migraphx migraphx-dev half python3-migraphx"
+else
+    # Update package list
+    mlstack_pm_update
 
-# Install MIGraphX packages
-execute_command "sudo apt-get install -y migraphx migraphx-dev half python3-migraphx || sudo apt-get install -y migraphx migraphx-dev half" "Installing MIGraphX packages"
+    # Install MIGraphX packages
+    mlstack_pm_install migraphx migraphx-dev half python3-migraphx || mlstack_pm_install migraphx migraphx-dev half
+fi
 
 # Ensure no CUDA PyTorch is installed during MIGraphX setup
 if [ "${MLSTACK_SKIP_TORCH_INSTALL:-0}" = "1" ]; then

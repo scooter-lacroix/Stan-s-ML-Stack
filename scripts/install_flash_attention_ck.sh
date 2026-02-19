@@ -25,6 +25,119 @@
 # Date: $(date +"%Y-%m-%d")
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10+; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: printf '2\\n' | MLSTACK_BATCH_MODE=1 bash $pytorch_installer --method venv"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with venv method..."
+    if ! printf '2\n' | MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" bash "$pytorch_installer" --method venv; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if ! mlstack_assert_rocm_torch; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
 # Check if terminal supports colors
 if [ -t 1 ]; then
     # Check if NO_COLOR environment variable is set
@@ -70,7 +183,7 @@ else
     RESET=''
 fi
 
-PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-$PYTHON_BIN}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
@@ -256,6 +369,10 @@ install_flash_attention_ck() {
 
     local total_steps=10
     local current_step=0
+
+    if ! mlstack_rocm_python_preflight false; then
+        return 1
+    fi
 
     show_progress $current_step $total_steps "Initializing installation..."
     sleep 0.5
@@ -1317,5 +1434,3 @@ fi
 
 # Run the installation function
 install_flash_attention_ck "$@"
-
-

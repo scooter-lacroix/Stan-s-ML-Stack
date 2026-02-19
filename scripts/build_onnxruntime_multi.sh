@@ -3,6 +3,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_LIB="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ ! -f "$GUARD_LIB" ]; then
+    printf '[mlstack][ERROR] Missing installer guard library: %s\n' "$GUARD_LIB" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$GUARD_LIB"
+
 if [ -f "$HOME/.mlstack_env" ]; then
     set +u 2>/dev/null || true
     source "$HOME/.mlstack_env"
@@ -23,9 +32,9 @@ echo "Building ONNX Runtime with ROCm version: ${ROCM_VERSION}"
 ROCM_PATH=${ROCM_PATH:-/opt/rocm}
 GPU_ARCH=${GPU_ARCH:-$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1 || echo gfx1100)}
 
-sudo apt-get update
-sudo apt-get install -y cmake libprotobuf-dev protobuf-compiler
-sudo apt-get install -y migraphx migraphx-dev half || true
+mlstack_pm_update
+mlstack_pm_install cmake libprotobuf-dev protobuf-compiler
+mlstack_pm_install migraphx migraphx-dev half || true
 
 WORKDIR=${TMPDIR:-/tmp}/onnxruntime-rocm
 sudo rm -rf "$WORKDIR"
