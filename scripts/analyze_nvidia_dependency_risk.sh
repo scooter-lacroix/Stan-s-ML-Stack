@@ -22,8 +22,43 @@ else
 fi
 echo
 
+echo "## 2) Guard coverage scan for install commands"
+mapfile -t install_scripts < <(
+    grep -RIlE "(^|[[:space:]])(uv[[:space:]]+pip[[:space:]]+install|pip[[:space:]]+install|python[0-9.]*[[:space:]]+-m[[:space:]]+pip[[:space:]]+install)" \
+        "$ROOT_DIR/scripts" --include='*.sh' || true
+)
+
+missing_guard=0
+for script in "${install_scripts[@]}"; do
+    if [[ "$script" == "$ROOT_DIR/scripts/lib/installer_guard.sh" ]]; then
+        continue
+    fi
+
+    has_direct_guard_source=0
+    has_variable_guard_source=0
+
+    if grep -Eq "(^|[[:space:]])(source|\\.)[[:space:]]+.*installer_guard\\.sh" "$script"; then
+        has_direct_guard_source=1
+    fi
+
+    if grep -Eq "installer_guard\\.sh" "$script" \
+        && grep -Eq "(^|[[:space:]])(source|\\.)[[:space:]]+[\"']?\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?[\"']?" "$script"; then
+        has_variable_guard_source=1
+    fi
+
+    if [ "$has_direct_guard_source" -eq 0 ] && [ "$has_variable_guard_source" -eq 0 ]; then
+        echo "Missing installer_guard sourcing: ${script#$ROOT_DIR/}"
+        missing_guard=1
+    fi
+done
+
+if [ "$missing_guard" -eq 0 ]; then
+    echo "All install-command scripts appear to source installer_guard.sh."
+fi
+echo
+
 if [ -f "$LOG_FILE" ]; then
-    echo "## 2) Runtime log contamination scan"
+    echo "## 3) Runtime log contamination scan"
     if grep -nEi "$PATTERN" "$LOG_FILE" | tail -n 80; then
         echo
         echo "Contamination evidence detected in runtime log."
@@ -31,12 +66,12 @@ if [ -f "$LOG_FILE" ]; then
         echo "No runtime contamination lines detected."
     fi
 else
-    echo "## 2) Runtime log contamination scan"
+    echo "## 3) Runtime log contamination scan"
     echo "Log file not found: $LOG_FILE"
 fi
 echo
 
-echo "## 3) Active Python environment contamination check (best effort)"
+echo "## 4) Active Python environment contamination check (best effort)"
 if command -v python3 >/dev/null 2>&1; then
     python3 - <<'PY'
 import re

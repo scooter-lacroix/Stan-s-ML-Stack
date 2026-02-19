@@ -42,6 +42,12 @@ if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
     source "$SCRIPT_LIB_DIR/rocm_env.sh"
 fi
 
+# Source installer guard library
+if [[ -f "$SCRIPT_LIB_DIR/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_LIB_DIR/installer_guard.sh"
+fi
+
 # Trap to ensure we exit properly
 trap 'echo "Forced exit"; kill -9 $$' EXIT
 
@@ -50,7 +56,7 @@ PYTHON_INTERPRETER="${MLSTACK_PYTHON_BIN:-python3}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_INTERPRETER" "$@"
+    command "$PYTHON_INTERPRETER" "$@"
 }
 
 # Check for virtual environment
@@ -197,12 +203,16 @@ detect_package_manager() {
 install_python_package() {
     local package="$1"
     shift
-    local extra_args="$@"
+    local extra_args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_ml_stack.sh:install_python_package" "${extra_args[@]}" "$package" || return 1
+    fi
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
         # Use --progress bar for uv
-        uv pip install --python $(which python3) $extra_args "$package" 2>&1 | while read -r line; do
+        uv pip install --python "$(command -v python3)" "${extra_args[@]}" "$package" 2>&1 | while read -r line; do
             if [[ "$line" == *"["*"]"* ]]; then
                 # Extract progress and send as transient log
                 echo -ne "$line\r"
@@ -214,7 +224,11 @@ install_python_package() {
         print_step "Installing $package with pip..."
         # pip doesn't have a great machine-readable progress bar for scripts without a TTY, 
         # but we can at least show what it's doing
-        python3 -m pip install $extra_args "$package"
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install "$PYTHON_INTERPRETER" "${extra_args[@]}" "$package"
+        else
+            python3 -m pip install "${extra_args[@]}" "$package"
+        fi
     fi
 }
 
@@ -1852,4 +1866,3 @@ main
 echo "Installation complete. Forcing exit to prevent hanging..."
 kill -9 $$ 2>/dev/null
 exit 0
-

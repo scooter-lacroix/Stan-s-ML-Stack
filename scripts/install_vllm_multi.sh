@@ -52,7 +52,7 @@ MLSTACK_STRICT_ROCM="${MLSTACK_STRICT_ROCM:-1}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
 }
 
 strict_validate_python_version() {

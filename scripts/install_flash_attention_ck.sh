@@ -187,7 +187,7 @@ PYTHON_BIN="${MLSTACK_PYTHON_BIN:-$PYTHON_BIN}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
 }
 
 # Function definitions

@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 # Stan's ML Stack - Triton (ROCm) multi-channel installer
 
 set -euo pipefail
@@ -78,7 +84,7 @@ export TRITON_ROCM=1
 
 PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
 }
 
 if [ "$DRY_RUN" = "false" ]; then

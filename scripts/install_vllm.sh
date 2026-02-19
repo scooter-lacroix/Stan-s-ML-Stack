@@ -32,6 +32,10 @@ fi
 if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
     source "$SCRIPT_LIB_DIR/rocm_env.sh"
 fi
+if [[ -f "$SCRIPT_LIB_DIR/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_LIB_DIR/installer_guard.sh"
+fi
 
 # ASCII Art Banner
 cat << "EOF"
@@ -161,14 +165,22 @@ detect_package_manager() {
 install_python_package() {
     local package="$1"
     shift
-    local extra_args="$@"
+    local extra_args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_vllm.sh:install_python_package" "${extra_args[@]}" "$package" || return 1
+    fi
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --python "$(command -v python3)" "${extra_args[@]}" "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install python3 "${extra_args[@]}" "$package"
+        else
+            python3 -m pip install "${extra_args[@]}" "$package"
+        fi
     fi
 }
 
@@ -618,14 +630,22 @@ esac
 
 # Create a function to handle uv commands properly with venv fallback
 uv_pip_install() {
-    local args="$@"
+    local args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_vllm.sh:uv_pip_install" "${args[@]}" || return 1
+    fi
 
     # Check if uv is available as a command
     if command_exists uv; then
         case $INSTALL_METHOD in
             "global")
                 print_step "Installing globally with pip..."
-                python3 -m pip install --break-system-packages $args
+                if declare -f mlstack_pip_install >/dev/null 2>&1; then
+                    mlstack_pip_install python3 --break-system-packages "${args[@]}"
+                else
+                    python3 -m pip install --break-system-packages "${args[@]}"
+                fi
                 VLLM_VENV_PYTHON=""
                 ;;
             "venv")
@@ -636,7 +656,7 @@ uv_pip_install() {
                 fi
                 source "$VENV_DIR/bin/activate"
                 print_step "Installing in virtual environment..."
-                uv pip install $args
+                uv pip install "${args[@]}"
                 VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
                 print_success "Installed in virtual environment: $VENV_DIR"
                 ;;
@@ -644,7 +664,7 @@ uv_pip_install() {
                 # Try global install first
                 print_step "Attempting global installation with uv..."
                 local install_output
-                install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                install_output=$(uv pip install --python "$(command -v python3)" "${args[@]}" 2>&1)
                 local install_exit_code=$?
 
                 if echo "$install_output" | grep -q "externally managed"; then
@@ -660,7 +680,7 @@ uv_pip_install() {
                     # Activate venv and install
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install "${args[@]}"
 
                     # Store venv path for verification
                     VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -682,7 +702,7 @@ uv_pip_install() {
                     # Activate venv and install
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install "${args[@]}"
 
                     # Store venv path for verification
                     VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -693,7 +713,11 @@ uv_pip_install() {
     else
         # Fall back to pip
         print_step "Installing with pip..."
-        python3 -m pip install $args
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install python3 "${args[@]}"
+        else
+            python3 -m pip install "${args[@]}"
+        fi
         VLLM_VENV_PYTHON=""
     fi
 }
@@ -2210,4 +2234,3 @@ if [[ "$FORCE" == "true" ]]; then
 fi
 
 install_vllm "$@"
-

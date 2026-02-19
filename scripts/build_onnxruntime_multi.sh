@@ -22,7 +22,7 @@ PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
 }
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
