@@ -28,21 +28,43 @@ print_step() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+RUSTY_STACK_DIR="$PROJECT_ROOT/rusty-stack"
 
-BUILD_MODE=${1:-release}
+BUILD_MODE="release"
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        debug|release)
+            BUILD_MODE="$1"
+            shift
+            ;;
+    esac
+fi
+BINARY_ARGS=("$@")
 
 print_header "ML Stack TUI Installer"
 print_step "Build mode: $BUILD_MODE"
 
-cd "$PROJECT_ROOT"
-
-if [ "$BUILD_MODE" = "debug" ]; then
-    cargo build -p rusty-stack
-    EXEC_PATH="target/debug/rusty-stack"
-else
-    cargo build -p rusty-stack --release
-    EXEC_PATH="target/release/rusty-stack"
+if [ ! -d "$RUSTY_STACK_DIR" ]; then
+    echo -e "${RED}${BOLD}✗ Rust project directory not found: $RUSTY_STACK_DIR${RESET}" >&2
+    exit 1
 fi
 
+cd "$RUSTY_STACK_DIR"
+
+case "$BUILD_MODE" in
+    debug)
+        cargo build
+        EXEC_PATH="target/debug/rusty-stack"
+        ;;
+    release)
+        cargo build --release
+        EXEC_PATH="target/release/rusty-stack"
+        ;;
+    *)
+        echo -e "${RED}${BOLD}✗ Invalid build mode: $BUILD_MODE (expected: debug|release)${RESET}" >&2
+        exit 1
+        ;;
+esac
+
 print_step "Launching $EXEC_PATH"
-"$EXEC_PATH"
+exec "./$EXEC_PATH" "${BINARY_ARGS[@]}"
