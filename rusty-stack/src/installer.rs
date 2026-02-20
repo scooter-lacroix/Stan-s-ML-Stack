@@ -182,7 +182,6 @@ pub fn run_installation(
             &sender,
             Arc::clone(&input_rx),
         ) {
-            overall_success = false;
             install_success = false;
             error_msg = err.to_string();
         }
@@ -204,16 +203,37 @@ pub fn run_installation(
             overall_success = false;
         }
 
+        // Treat verification as source of truth for component readiness.
+        // A script can fail late/non-critically while the component is still fully functional.
+        let recovered_by_verification = !install_success && verification_outcome.success;
+        if recovered_by_verification {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "{} installer reported an error, but verification passed; marking component as successful",
+                    component.name
+                ),
+                false,
+            ));
+        }
+
+        let final_success = verification_outcome.success;
+        if !final_success {
+            overall_success = false;
+        }
+
         // Debug logging for environment components
-        let final_success = install_success && verification_outcome.success;
         if component.id == "permanent-env"
             || component.id == "enhanced-env"
             || component.id == "basic-env"
         {
             let _ = sender.send(InstallerEvent::Log(
                 format!(
-                    "[DEBUG] Component {}: install_success={}, verification_success={}, final={}",
-                    component.id, install_success, verification_outcome.success, final_success
+                    "[DEBUG] Component {}: install_success={}, verification_success={}, recovered_by_verification={}, final={}",
+                    component.id,
+                    install_success,
+                    verification_outcome.success,
+                    recovered_by_verification,
+                    final_success
                 ),
                 false,
             ));
@@ -228,7 +248,12 @@ pub fn run_installation(
         let _ = sender.send(InstallerEvent::ComponentComplete {
             component_id: component.id.clone(),
             success: final_success,
-            message: if !install_success {
+            message: if !install_success && verification_outcome.success {
+                format!(
+                    "{} verified after installer error: {}",
+                    component.name, error_msg
+                )
+            } else if !install_success {
                 error_msg
             } else if verification_outcome.success {
                 format!("{} completed", component.name)
