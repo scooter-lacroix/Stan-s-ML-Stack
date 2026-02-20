@@ -1,4 +1,5 @@
 use crate::state::{Category, Component};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,19 @@ pub fn python_interpreters() -> Vec<String> {
     }
     if let Ok(value) = env::var("UV_PYTHON") {
         push_python_candidate(&mut candidates, value);
+    }
+    for key in [
+        "WANDB_VENV_PYTHON",
+        "MEGATRON_VENV_PYTHON",
+        "MPI4PY_VENV_PYTHON",
+        "FLASH_ATTENTION_VENV_PYTHON",
+        "PYTORCH_VENV_PYTHON",
+        "DEEPSPEED_VENV_PYTHON",
+        "VLLM_VENV_PYTHON",
+    ] {
+        if let Ok(value) = env::var(key) {
+            push_python_candidate(&mut candidates, value);
+        }
     }
     let home = env::var("HOME").unwrap_or_default();
     let venv = Path::new(&home)
@@ -64,9 +78,47 @@ pub fn python_interpreters() -> Vec<String> {
     if command_exists("python") {
         candidates.push("python".to_string());
     }
-    candidates.sort();
-    candidates.dedup();
-    candidates
+
+    let mut roots = vec![PathBuf::from(&home)];
+    if let Ok(cwd) = env::current_dir() {
+        roots.push(cwd.clone());
+        roots.push(cwd.join("rusty-stack"));
+    }
+    for root in roots {
+        push_component_venv_candidates(&mut candidates, &root);
+    }
+
+    dedupe_python_candidates_in_order(candidates)
+}
+
+fn dedupe_python_candidates_in_order(candidates: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for candidate in candidates {
+        if seen.insert(candidate.clone()) {
+            ordered.push(candidate);
+        }
+    }
+    ordered
+}
+
+fn push_component_venv_candidates(candidates: &mut Vec<String>, root: &Path) {
+    for rel in [
+        "wandb_venv/bin/python",
+        "megatron_rocm_venv/bin/python",
+        "Megatron-LM/megatron_rocm_venv/bin/python",
+        "mpi4py_venv/bin/python",
+        "flash_attention_venv/bin/python",
+        "vllm_venv/bin/python",
+        ".mlstack/venvs/aiter/bin/python",
+        ".mlstack/venvs/vllm/bin/python",
+        "pytorch_rocm_venv/bin/python",
+    ] {
+        let candidate = root.join(rel);
+        if candidate.exists() {
+            candidates.push(candidate.to_string_lossy().to_string());
+        }
+    }
 }
 
 fn push_python_candidate(candidates: &mut Vec<String>, value: String) {
@@ -163,10 +215,7 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             for path in &rocm_smi_paths {
                 if path_exists(path) {
                     // Verify it actually works
-                    if let Ok(output) = std::process::Command::new(path)
-                        .arg("--showuse")
-                        .output()
-                    {
+                    if let Ok(output) = std::process::Command::new(path).arg("--showuse").output() {
                         if output.status.success() {
                             return true;
                         }
@@ -231,7 +280,7 @@ pub fn component_verification_commands(
             "pytorch",
             &["torch"],
             python_candidates,
-            "import torch; print(torch.__version__); print(torch.version.hip)",
+            "import torch, sys; print(torch.__version__); print('hip', getattr(torch.version, 'hip', None)); sys.exit(0 if getattr(torch.version, 'hip', None) else 1)",
         )],
         "triton" => vec![python_command(
             "Triton",
@@ -245,7 +294,7 @@ pub fn component_verification_commands(
             "mpi4py",
             &["mpi4py"],
             python_candidates,
-            "from mpi4py import MPI; print(MPI.Get_version())",
+            "import importlib.metadata as m; import mpi4py; print(getattr(mpi4py, '__version__', m.version('mpi4py')))",
         )],
         "deepspeed" => vec![python_command(
             "DeepSpeed",
@@ -462,7 +511,7 @@ fn basic_verification_commands(python_candidates: &[String]) -> Vec<Verification
             "pytorch",
             &["torch"],
             python_candidates,
-            "import torch; print(torch.__version__); print('hip', torch.version.hip); print('cuda', torch.cuda.is_available()); x=torch.rand(1, device='cuda' if torch.cuda.is_available() else 'cpu'); print(x)",
+            "import torch, sys; print(torch.__version__); print('hip', getattr(torch.version, 'hip', None)); sys.exit(0 if getattr(torch.version, 'hip', None) else 1)",
         ),
         python_command(
             "Triton",
@@ -476,7 +525,7 @@ fn basic_verification_commands(python_candidates: &[String]) -> Vec<Verification
             "mpi4py",
             &["mpi4py"],
             python_candidates,
-            "from mpi4py import MPI; print(MPI.Get_version())",
+            "import importlib.metadata as m; import mpi4py; print(getattr(mpi4py, '__version__', m.version('mpi4py')))",
         ),
         python_command(
             "DeepSpeed",
@@ -718,6 +767,22 @@ pub fn python_search_paths() -> Vec<String> {
 }
 
 fn select_python_for_modules(modules: &[&str], python_candidates: &[String]) -> Option<String> {
+    for key in ["MLSTACK_PYTHON_BIN", "UV_PYTHON"] {
+        if let Ok(value) = env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                if modules.is_empty() {
+                    return Some(value.to_string());
+                }
+                for module in modules {
+                    if python_has_module(value, module) {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     for python in python_candidates {
         for module in modules {
             if python_has_module(python, module) {

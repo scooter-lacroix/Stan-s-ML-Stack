@@ -3,6 +3,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_DIR/lib/installer_guard.sh"
+fi
+
 PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
@@ -10,7 +16,6 @@ python3() {
     command "$PYTHON_BIN" "$@"
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Source common utilities if available

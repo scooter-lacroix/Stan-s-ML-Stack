@@ -209,7 +209,7 @@ log() {
 DRY_RUN=false
 FORCE=false
 SHOW_ENV=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -1431,4 +1431,3 @@ fi
 
 # Run the installation function with all script arguments
 install_rocm_smi "$@"
-

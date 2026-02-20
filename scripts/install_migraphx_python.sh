@@ -274,6 +274,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found at $config_file, using defaults"

@@ -13,6 +13,33 @@ mlstack_log_error() {
     printf '[mlstack][ERROR] %s\n' "$*" >&2
 }
 
+mlstack_load_persistent_env_file() {
+    local env_file="${MLSTACK_PERSISTENT_ENV_FILE:-$HOME/.mlstack_env}"
+    [ -f "$env_file" ] || return 0
+
+    # shellcheck disable=SC1090
+    set +u 2>/dev/null || true
+    . "$env_file" >/dev/null 2>&1 || true
+    set -u 2>/dev/null || true
+}
+
+mlstack_enforce_global_install_contract() {
+    local method="${MLSTACK_INSTALL_METHOD:-${INSTALL_METHOD:-auto}}"
+    method="$(printf '%s' "$method" | tr '[:upper:]' '[:lower:]')"
+    [ "$method" = "global" ] || return 0
+
+    export MLSTACK_INSTALL_METHOD="global"
+    export INSTALL_METHOD="global"
+
+    if [ -n "${MLSTACK_PYTHON_BIN:-}" ]; then
+        export UV_PYTHON="${UV_PYTHON:-$MLSTACK_PYTHON_BIN}"
+    fi
+
+    export PIP_BREAK_SYSTEM_PACKAGES="${PIP_BREAK_SYSTEM_PACKAGES:-1}"
+    export UV_PIP_BREAK_SYSTEM_PACKAGES="${UV_PIP_BREAK_SYSTEM_PACKAGES:-1}"
+    export UV_SYSTEM_PYTHON="${UV_SYSTEM_PYTHON:-1}"
+}
+
 mlstack_python_version() {
     local python_bin="${1:-python3}"
     "$python_bin" - <<'PY'
@@ -32,6 +59,113 @@ mlstack_python_supported() {
     if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
         return 0
     fi
+    return 1
+}
+
+mlstack_python_supported_for_rocm_torch() {
+    local version="${1:-}"
+    local major="${version%%.*}"
+    local minor="${version#*.}"
+
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    [[ "$minor" =~ ^[0-9]+$ ]] || return 1
+
+    # ROCm wheel availability is currently bounded to Python 3.10-3.13.
+    if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ] && [ "$minor" -le 13 ]; then
+        return 0
+    fi
+    return 1
+}
+
+mlstack_python_candidates() {
+    local preferred="${1:-python3}"
+    local cand resolved
+    local -a raw=()
+
+    raw+=("$preferred")
+    raw+=(python3.12 python3.11 python3.10 python3.13 python3)
+
+    for cand in "${raw[@]}"; do
+        [ -n "$cand" ] || continue
+        if [ -x "$cand" ]; then
+            resolved="$cand"
+        else
+            resolved="$(command -v "$cand" 2>/dev/null || true)"
+        fi
+        [ -n "$resolved" ] || continue
+        printf '%s\n' "$resolved"
+    done | awk '!seen[$0]++'
+}
+
+mlstack_select_python_for_rocm_torch() {
+    local preferred="${1:-${MLSTACK_PYTHON_BIN:-python3}}"
+    local rocm_version="${2:-${ROCM_VERSION:-7.2}}"
+    local channel="${3:-${MLSTACK_TORCH_CHANNEL:-latest}}"
+    local cand version fallback=""
+
+    while IFS= read -r cand; do
+        version="$(mlstack_python_version "$cand" 2>/dev/null || true)"
+        [ -n "$version" ] || continue
+
+        if ! mlstack_python_supported_for_rocm_torch "$version"; then
+            continue
+        fi
+
+        [ -n "$fallback" ] || fallback="$cand"
+        if mlstack_select_torch_index "$cand" "$rocm_version" "$channel" >/dev/null 2>&1; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done < <(mlstack_python_candidates "$preferred")
+
+    if [ -n "$fallback" ]; then
+        mlstack_log_warn "No wheel-index probe succeeded; falling back to compatible Python interpreter: $fallback"
+        printf '%s\n' "$fallback"
+        return 0
+    fi
+
+    mlstack_log_error "No Python 3.10-3.13 interpreter found for ROCm torch installation."
+    return 1
+}
+
+mlstack_ensure_python_for_rocm_torch() {
+    local preferred="${1:-${MLSTACK_PYTHON_BIN:-python3}}"
+    local rocm_version="${2:-${ROCM_VERSION:-7.2}}"
+    local channel="${3:-${MLSTACK_TORCH_CHANNEL:-latest}}"
+    local dry_run="${4:-false}"
+    local selected=""
+    local uv_python=""
+    local uv_cache_dir=""
+
+    selected="$(mlstack_select_python_for_rocm_torch "$preferred" "$rocm_version" "$channel" || true)"
+    if [ -n "$selected" ]; then
+        printf '%s\n' "$selected"
+        return 0
+    fi
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_log_warn "Dry run: would provision Python 3.12 for ROCm torch compatibility (via uv)."
+        return 1
+    fi
+
+    if command -v uv >/dev/null 2>&1; then
+        mlstack_log_warn "Provisioning Python 3.12 via uv for ROCm torch compatibility..."
+        uv_cache_dir="${MLSTACK_UV_CACHE_DIR:-${TMPDIR:-/tmp}/mlstack-uv-cache}"
+        mkdir -p "$uv_cache_dir" >/dev/null 2>&1 || true
+        if UV_CACHE_DIR="$uv_cache_dir" uv python install 3.12 >/dev/null 2>&1 \
+            || UV_CACHE_DIR="$uv_cache_dir" uv python install 3.12; then
+            uv_python="$(UV_CACHE_DIR="$uv_cache_dir" uv python find 3.12 2>/dev/null | head -n1 || true)"
+            if [ -n "$uv_python" ] && [ -x "$uv_python" ]; then
+                selected="$(mlstack_select_python_for_rocm_torch "$uv_python" "$rocm_version" "$channel" || true)"
+                if [ -n "$selected" ]; then
+                    printf '%s\n' "$selected"
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    mlstack_log_error "Unable to provision a compatible Python interpreter (3.10-3.13) for ROCm torch."
     return 1
 }
 
@@ -122,6 +256,15 @@ mlstack_pip_install() {
     fi
     shift
 
+    if ! "$python_bin" -m pip --version >/dev/null 2>&1; then
+        mlstack_log_warn "pip not found for ${python_bin}; attempting bootstrap via ensurepip"
+        if ! "$python_bin" -m ensurepip --upgrade >/dev/null 2>&1 &&
+           ! "$python_bin" -m ensurepip >/dev/null 2>&1; then
+            mlstack_log_error "Unable to bootstrap pip for ${python_bin}"
+            return 1
+        fi
+    fi
+
     if ! mlstack_guard_install_request "pip" "$@"; then
         return 1
     fi
@@ -132,7 +275,14 @@ mlstack_pip_install() {
         fi
     fi
 
-    PIP_DISABLE_PIP_VERSION_CHECK=1 "$python_bin" -m pip install "${maybe_break[@]}" "$@"
+    # Prevent host-level pip hash requirement settings from breaking direct package installs.
+    if env -u PIP_REQUIRE_HASHES true >/dev/null 2>&1; then
+        env -u PIP_REQUIRE_HASHES -u PIP_REQUIREMENT -u PIP_REQUIREMENTS_FILE \
+            PIP_DISABLE_PIP_VERSION_CHECK=1 "$python_bin" -m pip install "${maybe_break[@]}" "$@"
+    else
+        PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_REQUIRE_HASHES=0 PIP_REQUIREMENT= \
+            "$python_bin" -m pip install "${maybe_break[@]}" "$@"
+    fi
 }
 
 mlstack_normalize_pkg_name() {
@@ -148,7 +298,7 @@ mlstack_is_disallowed_pkg_name() {
     pkg="$(mlstack_normalize_pkg_name "${1:-}")"
     [ -n "$pkg" ] || return 1
     case "$pkg" in
-        nvidia-*|pytorch-cuda|torch-cuda|cuda-python|cuda-bindings|cuda-pathfinder|cupy-cuda*|cupy-cuda1*|cupy-cuda2*)
+        nvidia-*|pytorch-cuda|torch-cuda|cuda-python|cuda-bindings|cuda-pathfinder|cupy-cuda*|cupy-cuda1*|cupy-cuda2*|triton)
             return 0
             ;;
         *)
@@ -283,9 +433,13 @@ mlstack_assert_rocm_torch() {
         return 1
     fi
 
-    "$python_bin" - <<'PY'
+    if ! "$python_bin" - <<'PY'
 import sys
-import torch
+
+try:
+    import torch
+except Exception as exc:
+    raise SystemExit(f"Unable to import torch: {exc}")
 
 print("PyTorch version:", torch.__version__)
 print("HIP version:", torch.version.hip)
@@ -301,11 +455,16 @@ if not torch.cuda.is_available():
 
 print("Device:", torch.cuda.get_device_name(0))
 PY
+    then
+        return 1
+    fi
 
     if mlstack_has_nvidia_packages "$python_bin"; then
         mlstack_log_error "NVIDIA packages remain installed in the target Python environment."
         return 1
     fi
+
+    return 0
 }
 
 mlstack_guard_python_env() {
@@ -381,6 +540,11 @@ mlstack_torch_index_url() {
     esac
 }
 
+mlstack_torch_radeon_index_url() {
+    local series="${1:-7.1}"
+    printf 'https://repo.radeon.com/rocm/manylinux/rocm-rel-%s/\n' "$series"
+}
+
 mlstack_torch_index_has_compatible_wheel() {
     local python_bin="${1:-}"
     local index_url="${2:-}"
@@ -413,35 +577,49 @@ mlstack_select_torch_index() {
     local python_bin="${1:-}"
     local rocm_version="${2:-${ROCM_VERSION:-7.1}}"
     local requested_channel
+    local selected
+    selected="$(mlstack_torch_index_candidates "$python_bin" "$rocm_version" "${3:-${MLSTACK_TORCH_CHANNEL:-latest}}" | head -n1)"
+    if [ -n "$selected" ]; then
+        printf '%s\n' "$selected"
+        return 0
+    fi
     requested_channel="$(mlstack_torch_channel_normalize "${3:-${MLSTACK_TORCH_CHANNEL:-latest}}")" || return 1
-    local series channel index
+    mlstack_log_error "No compatible ROCm torch wheels found for $(mlstack_python_version "$python_bin") and channel '$requested_channel'"
+    return 1
+}
 
-    _mlstack_try_channel() {
-        local ch="$1"
+mlstack_torch_index_candidates() {
+    local python_bin="${1:-}"
+    local rocm_version="${2:-${ROCM_VERSION:-7.1}}"
+    local requested_channel
+    local ch series index
+    local -a channels=()
+
+    requested_channel="$(mlstack_torch_channel_normalize "${3:-${MLSTACK_TORCH_CHANNEL:-latest}}")" || return 1
+
+    case "$requested_channel" in
+        latest) channels=(stable nightly) ;;
+        stable|nightly) channels=("$requested_channel") ;;
+    esac
+
+    for ch in "${channels[@]}"; do
         for series in $(mlstack_rocm_series_candidates "$rocm_version"); do
+            if [ "$ch" != "nightly" ]; then
+                index="$(mlstack_torch_radeon_index_url "$series")"
+                if mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torch &&
+                   mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torchvision &&
+                   mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torchaudio; then
+                    printf '%s|%s|stable\n' "$index" "$series"
+                fi
+            fi
             index="$(mlstack_torch_index_url "$ch" "$series")"
             if mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torch &&
                mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torchvision &&
                mlstack_torch_index_has_compatible_wheel "$python_bin" "$index" torchaudio; then
                 printf '%s|%s|%s\n' "$index" "$series" "$ch"
-                return 0
             fi
         done
-        return 1
-    }
-
-    case "$requested_channel" in
-        latest)
-            _mlstack_try_channel stable && return 0
-            _mlstack_try_channel nightly && return 0
-            ;;
-        stable|nightly)
-            _mlstack_try_channel "$requested_channel" && return 0
-            ;;
-    esac
-
-    mlstack_log_error "No compatible ROCm torch wheels found for $(mlstack_python_version "$python_bin") and channel '$requested_channel'"
-    return 1
+    done | awk '!seen[$0]++'
 }
 
 mlstack_torch_index_latest_version() {
@@ -464,43 +642,73 @@ mlstack_install_rocm_torch_stack() {
     local rocm_version="${2:-${ROCM_VERSION:-7.1}}"
     local requested_channel="${3:-${MLSTACK_TORCH_CHANNEL:-latest}}"
     local component="${4:-pytorch}"
-    local selected index_url series effective_channel
+    local index_url series effective_channel
     local torch_v vision_v audio_v triton_v
+    local use_pinned=1
+    local tried_any=0
 
     [ -n "$python_bin" ] || {
         mlstack_log_error "Usage: mlstack_install_rocm_torch_stack <python_bin> [rocm_version] [channel] [component]"
         return 1
     }
 
-    selected="$(mlstack_select_torch_index "$python_bin" "$rocm_version" "$requested_channel")" || return 1
-    IFS='|' read -r index_url series effective_channel <<< "$selected"
+    while IFS='|' read -r index_url series effective_channel; do
+        tried_any=1
+        torch_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torch "$effective_channel")"
+        vision_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torchvision "$effective_channel")"
+        audio_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torchaudio "$effective_channel")"
+        triton_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" pytorch-triton-rocm "$effective_channel")"
 
-    torch_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torch "$effective_channel")"
-    vision_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torchvision "$effective_channel")"
-    audio_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" torchaudio "$effective_channel")"
-    triton_v="$(mlstack_torch_index_latest_version "$python_bin" "$index_url" pytorch-triton-rocm "$effective_channel")"
+        use_pinned=1
+        if [ -z "$torch_v" ] || [ -z "$vision_v" ] || [ -z "$audio_v" ]; then
+            use_pinned=0
+            mlstack_log_warn "Unable to resolve exact versions for ${index_url}; falling back to latest compatible wheels from index."
+        fi
 
-    if [ -z "$torch_v" ] || [ -z "$vision_v" ] || [ -z "$audio_v" ]; then
-        mlstack_log_error "Unable to resolve ROCm package versions from $index_url"
-        return 1
+        mlstack_log_info "Resolved ROCm torch channel=${effective_channel} series=${series} index=${index_url}"
+        if [ "$use_pinned" -eq 1 ]; then
+            mlstack_log_info "Resolved versions: torch=$torch_v torchvision=$vision_v torchaudio=$audio_v${triton_v:+ pytorch-triton-rocm=$triton_v}"
+        fi
+
+        mlstack_purge_nvidia_packages "$python_bin" || true
+
+        if [ "$use_pinned" -eq 1 ]; then
+            if ! mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
+                --upgrade --force-reinstall "torch==$torch_v" "torchvision==$vision_v" "torchaudio==$audio_v"; then
+                mlstack_log_warn "ROCm torch install failed for ${index_url}; trying next compatible candidate."
+                continue
+            fi
+        else
+            if ! mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
+                --upgrade --force-reinstall torch torchvision torchaudio; then
+                mlstack_log_warn "ROCm torch fallback install failed for ${index_url}; trying next compatible candidate."
+                continue
+            fi
+        fi
+
+        if [ -n "$triton_v" ]; then
+            mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
+                --upgrade "pytorch-triton-rocm==$triton_v" || true
+        fi
+
+        if ! mlstack_guard_python_env "$component" "$python_bin" --purge; then
+            mlstack_log_warn "Python environment guard failed for ${index_url}; trying next compatible candidate."
+            continue
+        fi
+
+        if mlstack_assert_rocm_torch "$python_bin"; then
+            return 0
+        fi
+
+        mlstack_log_warn "ROCm torch validation failed for ${index_url}; trying next compatible candidate."
+    done < <(mlstack_torch_index_candidates "$python_bin" "$rocm_version" "$requested_channel")
+
+    if [ "$tried_any" -eq 0 ]; then
+        mlstack_log_error "No compatible ROCm torch index candidates available."
+    else
+        mlstack_log_error "Failed to install ROCm torch stack across all compatible index candidates."
     fi
-
-    mlstack_log_info "Resolved ROCm torch channel=${effective_channel} series=${series} index=${index_url}"
-    mlstack_log_info "Resolved versions: torch=$torch_v torchvision=$vision_v torchaudio=$audio_v${triton_v:+ pytorch-triton-rocm=$triton_v}"
-
-    "$python_bin" -m pip uninstall -y torch torchvision torchaudio triton pytorch-triton-rocm >/dev/null 2>&1 || true
-    mlstack_purge_nvidia_packages "$python_bin" || true
-
-    mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
-        --upgrade "torch==$torch_v" "torchvision==$vision_v" "torchaudio==$audio_v" || return 1
-
-    if [ -n "$triton_v" ]; then
-        mlstack_pip_install "$python_bin" --index-url "$index_url" --extra-index-url https://pypi.org/simple \
-            --upgrade "pytorch-triton-rocm==$triton_v" || true
-    fi
-
-    mlstack_guard_python_env "$component" "$python_bin" --purge || return 1
-    mlstack_assert_rocm_torch "$python_bin"
+    return 1
 }
 
 mlstack_write_nvidia_constraint_file() {
@@ -514,6 +722,7 @@ mlstack_write_nvidia_constraint_file() {
         printf '# Auto-generated NVIDIA/CUDA blocker constraints for ROCm installs\n'
         printf 'pytorch-cuda===0\n'
         printf 'torch-cuda===0\n'
+        printf 'triton===0\n'
         printf 'cuda-python===0\n'
         printf 'cuda-bindings===0\n'
         printf 'cuda-pathfinder===0\n'
@@ -545,7 +754,12 @@ mlstack_write_nvidia_constraint_file() {
 
 mlstack_activate_nvidia_dependency_blocker() {
     local constraint_file="${MLSTACK_NVIDIA_CONSTRAINT_FILE:-$HOME/.mlstack/pip/no-nvidia-constraints.txt}"
-    mlstack_write_nvidia_constraint_file "$constraint_file" || return 1
+    if ! mlstack_write_nvidia_constraint_file "$constraint_file"; then
+        local fallback_file="${TMPDIR:-/tmp}/mlstack-no-nvidia-constraints.txt"
+        mlstack_log_warn "Failed to write constraint file at $constraint_file; falling back to $fallback_file"
+        mlstack_write_nvidia_constraint_file "$fallback_file" || return 1
+        constraint_file="$fallback_file"
+    fi
     export PIP_CONSTRAINT="$constraint_file"
     export UV_CONSTRAINT="$constraint_file"
     export MLSTACK_NVIDIA_BLOCKER_ACTIVE=1
@@ -615,9 +829,48 @@ _mlstack_map_pkg_name() {
                 pacman|apk) printf 'protobuf\n' ;;
             esac
             ;;
+        migraphx-dev)
+            case "$pm" in
+                apt) printf 'migraphx-dev\n' ;;
+                dnf|yum|zypper) printf 'migraphx-devel\n' ;;
+                pacman|apk) printf 'migraphx\n' ;;
+            esac
+            ;;
+        python3-migraphx)
+            case "$pm" in
+                apt|dnf|yum|zypper) printf 'python3-migraphx\n' ;;
+                pacman) printf 'python-migraphx\n' ;;
+                apk) printf '\n' ;;
+            esac
+            ;;
         *)
             printf '%s\n' "$pkg"
             ;;
+    esac
+}
+
+mlstack_pm_has_package() {
+    local pm
+    local pkg="${1:-}"
+    local mapped_pkg
+
+    if [ -z "$pkg" ]; then
+        mlstack_log_error "Usage: mlstack_pm_has_package <pkg>"
+        return 1
+    fi
+
+    pm="$(mlstack_detect_pkg_manager)"
+    mapped_pkg="$(_mlstack_map_pkg_name "$pm" "$pkg")"
+    [ -n "$mapped_pkg" ] || return 1
+
+    case "$pm" in
+        apt) apt-cache show "$mapped_pkg" >/dev/null 2>&1 ;;
+        dnf) dnf -q list --available "$mapped_pkg" >/dev/null 2>&1 || dnf -q list "$mapped_pkg" >/dev/null 2>&1 ;;
+        yum) yum -q list available "$mapped_pkg" >/dev/null 2>&1 || yum -q list "$mapped_pkg" >/dev/null 2>&1 ;;
+        zypper) zypper --quiet search --match-exact "$mapped_pkg" 2>/dev/null | grep -Eq '(^v |^\|)' ;;
+        pacman) pacman -Si "$mapped_pkg" >/dev/null 2>&1 ;;
+        apk) apk search -x "$mapped_pkg" 2>/dev/null | grep -Fxq "$mapped_pkg" ;;
+        *) return 1 ;;
     esac
 }
 
@@ -677,6 +930,10 @@ if test -f "$HOME/.mlstack_env"
         set -l key (string split -m1 '=' -- $line)[1]
         set -l val (string split -m1 '=' -- $line)[2]
         if string match -rq '^[A-Za-z_][A-Za-z0-9_]*$' -- $key
+            # Skip read-only/shell-managed vars in fish.
+            if test "$key" = "PWD"; or test "$key" = "SHLVL"; or test "$key" = "_"; or test "$key" = "pipestatus"; or test "$key" = "status"; or test "$key" = "fish_pid"
+                continue
+            end
             set -gx $key $val
         end
     end
@@ -687,6 +944,9 @@ EOF
         mlstack_log_warn "$env_file does not exist yet; shell hooks were still installed."
     fi
 }
+
+mlstack_load_persistent_env_file
+mlstack_enforce_global_install_contract
 
 if [ "${MLSTACK_ENABLE_NVIDIA_BLOCKER:-1}" = "1" ] && [ -z "${MLSTACK_NVIDIA_BLOCKER_ACTIVE:-}" ]; then
     mlstack_activate_nvidia_dependency_blocker || mlstack_log_warn "Failed to activate NVIDIA dependency blocker constraints."

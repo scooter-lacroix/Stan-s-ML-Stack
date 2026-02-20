@@ -8,6 +8,13 @@
 # If this code saved you time, consider buying me a coffee! ☕
 # "Code is like humor. When you have to explain it, it's bad!" - Cory House
 #
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
+
 install_all_core() {
     print_section "Installing all core components"
     

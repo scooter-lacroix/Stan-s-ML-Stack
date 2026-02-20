@@ -107,18 +107,26 @@ mlstack_rocm_python_preflight() {
     fi
 
     local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    local torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-${INSTALL_METHOD:-auto}}}"
+    torch_method="$(echo "$torch_method" | tr '[:upper:]' '[:lower:]')"
+    case "$torch_method" in
+        global|venv|auto) ;;
+        *) torch_method="auto" ;;
+    esac
     if [ ! -f "$pytorch_installer" ]; then
         mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
         return 1
     fi
 
     if [ "$dry_run" = "true" ]; then
-        mlstack_preflight_msg warning "[DRY RUN] Would run: printf '2\\n' | MLSTACK_BATCH_MODE=1 bash $pytorch_installer --method venv"
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_BATCH_MODE=1 MLSTACK_INSTALL_METHOD=$torch_method bash $pytorch_installer --method $torch_method"
         return 0
     fi
 
-    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with venv method..."
-    if ! printf '2\n' | MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" bash "$pytorch_installer" --method venv; then
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with $torch_method method..."
+    if ! MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" INSTALL_METHOD="$torch_method" \
+        bash "$pytorch_installer" --method "$torch_method"; then
         mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
         return 1
     fi
@@ -225,6 +233,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found at $config_file, using defaults"
@@ -278,6 +289,40 @@ command_exists() {
 # Function to check if Python package is installed
 package_installed() {
     "$MLSTACK_PYTHON_BIN" -c "import $1" &>/dev/null
+}
+
+python_supports_break_system_packages() {
+    local py_cmd="$1"
+    "$py_cmd" -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'
+}
+
+mlstack_pip_install_for_python() {
+    local py_cmd="$1"
+    shift
+
+    if declare -f mlstack_pip_install >/dev/null 2>&1; then
+        mlstack_pip_install "$py_cmd" "$@"
+        return $?
+    fi
+
+    if python_supports_break_system_packages "$py_cmd"; then
+        "$py_cmd" -m pip install --break-system-packages "$@"
+    else
+        "$py_cmd" -m pip install "$@"
+    fi
+}
+
+ensure_deepspeed_in_stack_python() {
+    local stack_python="${MLSTACK_PYTHON_BIN:-python3}"
+    if "$stack_python" -c "import deepspeed" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    print_warning "DeepSpeed missing in stack Python ($stack_python); installing for benchmark/runtime compatibility"
+    if ! mlstack_pip_install_for_python "$stack_python" deepspeed einops; then
+        return 1
+    fi
+    "$stack_python" -c "import deepspeed" >/dev/null 2>&1
 }
 
 # Function to detect package manager
@@ -343,6 +388,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found at $config_file, using defaults"
@@ -490,17 +538,18 @@ complete_progress_bar() {
 
 # Function to handle pip installation with venv fallback
 uv_pip_install() {
-    local args="$@"
+    local -a args=("$@")
+    local target_python="$MLSTACK_PYTHON_BIN"
 
     if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}[DRY RUN]${RESET} Would install: $args"
+        echo -e "${BLUE}[DRY RUN]${RESET} Would install: ${args[*]}"
         return 0
     fi
 
     case $INSTALL_METHOD in
         "global")
             print_step "Installing globally with pip..."
-            "$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages $args
+            mlstack_pip_install_for_python "$target_python" "${args[@]}"
             local install_exit_code=$?
             if [ $install_exit_code -eq 0 ]; then
                 DEEPSPEED_VENV_PYTHON=""
@@ -513,30 +562,30 @@ uv_pip_install() {
             print_step "Creating virtual environment..."
             VENV_DIR="./deepspeed_rocm_venv"
             if [ ! -d "$VENV_DIR" ]; then
-                python3 -m venv "$VENV_DIR"
+                "$MLSTACK_PYTHON_BIN" -m venv "$VENV_DIR"
             fi
-            source "$VENV_DIR/bin/activate"
+            target_python="$VENV_DIR/bin/python"
             print_step "Installing in virtual environment..."
-            "$MLSTACK_PYTHON_BIN" -m pip install $args
-            DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
+            mlstack_pip_install_for_python "$target_python" "${args[@]}"
+            DEEPSPEED_VENV_PYTHON="$target_python"
             print_success "Installed in virtual environment: $VENV_DIR"
             ;;
         "auto")
             # Try global install first
             print_step "Attempting global installation..."
-            if "$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages $args; then
+            if mlstack_pip_install_for_python "$target_python" "${args[@]}"; then
                 print_success "Global installation successful"
                 DEEPSPEED_VENV_PYTHON=""
             else
                 print_warning "Global installation failed, creating virtual environment..."
                 VENV_DIR="./deepspeed_rocm_venv"
                 if [ ! -d "$VENV_DIR" ]; then
-                    python3 -m venv "$VENV_DIR"
+                    "$MLSTACK_PYTHON_BIN" -m venv "$VENV_DIR"
                 fi
-                source "$VENV_DIR/bin/activate"
+                target_python="$VENV_DIR/bin/python"
                 print_step "Installing in virtual environment..."
-                "$MLSTACK_PYTHON_BIN" -m pip install $args
-                DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
+                mlstack_pip_install_for_python "$target_python" "${args[@]}"
+                DEEPSPEED_VENV_PYTHON="$target_python"
                 print_success "Installed in virtual environment: $VENV_DIR"
             fi
             ;;
@@ -823,8 +872,7 @@ install_deepspeed() {
     print_step "Installing required dependencies first..."
 
     # Ensure einops is installed in the correct environment
-    "$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages packaging ninja pydantic jsonschema einops
-    "$MLSTACK_PYTHON_BIN" -m pip install --user --break-system-packages einops || true
+    mlstack_pip_install_for_python "$MLSTACK_PYTHON_BIN" packaging ninja pydantic jsonschema einops
     
     # Check for anaconda
     if [ -d "$HOME/anaconda3" ]; then
@@ -852,7 +900,7 @@ install_deepspeed() {
     unset DS_ACCELERATOR
     export ROCM_HOME=/opt/rocm
     export HIP_PATH=/opt/rocm
-    "$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages deepspeed einops
+    mlstack_pip_install_for_python "$MLSTACK_PYTHON_BIN" deepspeed einops
     install_result=$?
 
     if [ $install_result -ne 0 ]; then
@@ -890,6 +938,12 @@ install_deepspeed() {
         deepspeed_version=$(timeout 10s $PYTHON_CMD -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null)
         print_success "DeepSpeed is installed (version: $deepspeed_version)"
         log_message "INFO" "DeepSpeed installed successfully (version: $deepspeed_version)"
+
+        if ! ensure_deepspeed_in_stack_python; then
+            print_error "DeepSpeed could not be made importable in stack Python: $MLSTACK_PYTHON_BIN"
+            complete_progress_bar
+            return 1
+        fi
 
         # Check if DeepSpeed can detect GPUs
         update_progress_bar 10

@@ -107,18 +107,26 @@ mlstack_rocm_python_preflight() {
     fi
 
     local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    local torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-${INSTALL_METHOD:-auto}}}"
+    torch_method="$(echo "$torch_method" | tr '[:upper:]' '[:lower:]')"
+    case "$torch_method" in
+        global|venv|auto) ;;
+        *) torch_method="auto" ;;
+    esac
     if [ ! -f "$pytorch_installer" ]; then
         mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
         return 1
     fi
 
     if [ "$dry_run" = "true" ]; then
-        mlstack_preflight_msg warning "[DRY RUN] Would run: printf '2\\n' | MLSTACK_BATCH_MODE=1 bash $pytorch_installer --method venv"
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_BATCH_MODE=1 MLSTACK_INSTALL_METHOD=$torch_method bash $pytorch_installer --method $torch_method"
         return 0
     fi
 
-    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with venv method..."
-    if ! printf '2\n' | MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" bash "$pytorch_installer" --method venv; then
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with $torch_method method..."
+    if ! MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" INSTALL_METHOD="$torch_method" \
+        bash "$pytorch_installer" --method "$torch_method"; then
         mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
         return 1
     fi
@@ -727,7 +735,7 @@ install_pytorch_profiler() {
 # Set script options
 DRY_RUN=false
 FORCE=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 ORIGINAL_ARGS=("$@")
 
 # Parse command line arguments

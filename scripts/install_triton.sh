@@ -100,7 +100,7 @@ CONFIG_FILE="$HOME/.ml-stack/triton_config.sh"
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 TRITON_VENV_PYTHON=""
 ORIGINAL_PWD="$PWD"
 
@@ -987,6 +987,9 @@ load_config() {
         print_step "Loading configuration from $CONFIG_FILE"
         log "INFO" "Loading configuration from $CONFIG_FILE"
         source "$CONFIG_FILE"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
     else
         print_step "No configuration file found, using defaults"
         log "INFO" "No configuration file found, using defaults"

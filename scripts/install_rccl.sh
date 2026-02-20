@@ -1,5 +1,11 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_DIR/lib/installer_guard.sh"
+fi
+
 # RCCL Installation Script
 echo "Installing RCCL..."
 

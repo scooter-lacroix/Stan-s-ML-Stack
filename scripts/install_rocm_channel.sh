@@ -5,6 +5,12 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_DIR/lib/installer_guard.sh"
+fi
+
 CHANNEL="${1:-}" # optional positional argument
 
 usage() {
@@ -70,7 +76,7 @@ esac
 export ROCM_CHANNEL="$CHANNEL"
 
 dirname "${BASH_SOURCE[0]}" | {
-    read -r SCRIPT_DIR
-    SCRIPT_DIR=${SCRIPT_DIR:-.}
-    "${SCRIPT_DIR}/install_rocm.sh"
+    read -r RUN_SCRIPT_DIR
+    RUN_SCRIPT_DIR=${RUN_SCRIPT_DIR:-.}
+    "${RUN_SCRIPT_DIR}/install_rocm.sh"
 }

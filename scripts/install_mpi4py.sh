@@ -91,18 +91,26 @@ mlstack_rocm_python_preflight() {
     fi
 
     local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    local torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-${INSTALL_METHOD:-auto}}}"
+    torch_method="$(echo "$torch_method" | tr '[:upper:]' '[:lower:]')"
+    case "$torch_method" in
+        global|venv|auto) ;;
+        *) torch_method="auto" ;;
+    esac
     if [ ! -f "$pytorch_installer" ]; then
         mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
         return 1
     fi
 
     if [ "$dry_run" = "true" ]; then
-        mlstack_preflight_msg warning "[DRY RUN] Would run: printf '2\\n' | MLSTACK_BATCH_MODE=1 bash $pytorch_installer --method venv"
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_BATCH_MODE=1 MLSTACK_INSTALL_METHOD=$torch_method bash $pytorch_installer --method $torch_method"
         return 0
     fi
 
-    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with venv method..."
-    if ! printf '2\n' | MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" bash "$pytorch_installer" --method venv; then
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with $torch_method method..."
+    if ! MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" INSTALL_METHOD="$torch_method" \
+        bash "$pytorch_installer" --method "$torch_method"; then
         mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
         return 1
     fi
@@ -367,6 +375,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found, using defaults"
