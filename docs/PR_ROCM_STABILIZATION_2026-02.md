@@ -2,124 +2,142 @@
 
 ## Proposed Title
 
-`stabilization: harden ROCm reinstall flow, benchmark runtime, and vLLM/DeepSpeed/Megatron reliability`
+`stabilization: pre-Anagami ROCm/runtime/benchmark hardening (no release tag)`
 
-## Summary
+## **Release Positioning**
 
-This PR delivers a full ROCm and benchmark stabilization wave across installer scripts, runtime environment setup, and Rusty-Stack benchmark UX/reporting.
+- <u>**No new release is cut by this PR.**</u>
+- This is the **Sotapanna (0.1.4) -> Anagami transition stabilization update** tracked under `Unreleased`.
+- *Anagami release gate*: installer/backend migration to Rust as a single package publishable to crates.io.
 
-Primary outcomes:
+## **Executive Summary**
 
-- ROCm force reinstall now follows a strict purge/reboot/resume/reboot lifecycle.
-- Cross-distro package handling was hardened for Debian/Ubuntu, Arch, Fedora/RHEL, and openSUSE.
-- Mixed iGPU+dGPU systems now consistently filter iGPU indices from visible-device runtime exports.
-- vLLM runtime dependency reconciliation is applied in installer and benchmark preflight paths.
-- DeepSpeed and Megatron benchmark paths were stabilized and integrated.
-- HTML benchmark export now includes actionable charts/tables and user-facing export notifications.
+This PR consolidates a full reliability pass over ROCm installation/reinstallation, runtime environment generation, and benchmark execution/reporting.
 
-## Problem Statement
+**Key outcomes**:
 
-Before this PR, users encountered:
+- **ROCm force reinstall** now follows strict purge/reboot/resume/reboot sequencing.
+- **Cross-distro reliability** improved for Debian/Ubuntu, Arch/CachyOS, Fedora/RHEL, and openSUSE.
+- **Mixed GPU hygiene** improved by filtering iGPU visibility from runtime device exports.
+- **vLLM/DeepSpeed/Megatron** benchmark/install reliability was hardened with dependency and runtime preflight work.
+- **Benchmark UX/reporting** now provides export notifications plus a comprehensive HTML report.
 
-- ROCm reinstall flows that exited early and did not perform complete purge/reinstall cycles.
-- Repeated vLLM benchmark failures due to missing runtime dependencies and runtime init issues.
-- DeepSpeed benchmark empty/no-data or runtime failures.
-- Mixed GPU visibility where integrated GPUs leaked into runtime device variables.
-- HTML export lacking enough context (axes/tables/notification) for report usability.
+## **Problem Statement**
 
-## Scope
+Before this PR, the stack could fail or degrade in several recurring ways:
 
-### ROCm Installer and Reinstall Flow
+- force reinstall flows that terminated before complete ROCm purge/reinstall lifecycle;
+- `yay`/sudo ticket timeout issues in long AUR workflows;
+- missing vLLM dependency cascades and engine-core failures;
+- DeepSpeed benchmark null/empty result scenarios;
+- integrated GPUs leaking into visible device environment variables;
+- benchmark export behavior lacking enough end-user feedback/context.
+
+## **Scope**
+
+### **1) ROCm Installer and Force-Reinstall Lifecycle**
 
 - `scripts/install_rocm.sh`
-  - Added forced purge engines for package-manager families (`apt/dpkg`, `dnf/yum`, `zypper`, `pacman`).
-  - Added force-reinstall state handling and reboot choreography.
-  - Added resume-after-reboot launcher/autostart support.
-  - Added second reboot finalization after successful reinstall.
-  - Hardened Arch ROCm flow:
-    - repo package install through `pacman`,
-    - AUR package install through non-root helper,
-    - AUR availability checks,
-    - user sudo ticket prime + keepalive.
+  - forced purge engines per package family (`apt/dpkg`, `dnf/yum`, `zypper`, `pacman`);
+  - force-reinstall state machine with reboot choreography;
+  - resume-after-reboot launcher/autostart handling;
+  - mandatory second reboot finalization.
 
-### Runtime Environment and iGPU Filtering
+### **2) Arch/CachyOS AUR Flow Hardening**
+
+- `scripts/install_rocm.sh`
+  - AUR helper executes as non-root user;
+  - repo packages install through `pacman`;
+  - AUR package availability checks before install;
+  - sudo ticket prime + keepalive for extended helper runtime.
+
+### **3) Runtime Environment, Multi-GPU, and iGPU Filtering**
 
 - `scripts/setup_permanent_rocm_env.sh`
-- `scripts/lib/benchmark_common.sh`
+- `scripts/lib/benchmark_common.sh` (new shared benchmark runtime layer)
 - `rusty-stack/src/benchmarks/mod.rs`
 - `rusty-stack/src/widgets/benchmarks_page.rs`
-  - Strengthened integrated GPU detection heuristics.
-  - Enforced discrete-only visible-device exports in persistent and benchmark runtime setup.
-  - Added fish-compatible environment generation and startup integration.
-  - Added managed Triton cache environment setup for writable cache paths.
+  - strengthened iGPU detection heuristics;
+  - discrete-only visible device export for mixed systems;
+  - fish/bash/zsh-compatible environment integration;
+  - managed writable Triton cache paths.
 
-### vLLM Installer and Benchmark Reliability
+### **4) vLLM/DeepSpeed/Megatron Reliability**
 
 - `scripts/install_vllm_multi.sh`
 - `scripts/run_vllm_benchmarks.sh`
-- `scripts/lib/benchmark_common.sh`
-  - Normalized ROCm target-device environment.
-  - Added/expanded missing-module reconciliation for common vLLM dependency gaps.
-  - Added runtime preflight and repair behavior before benchmark execution.
-  - Improved benchmark logging context (visible devices, target device, cache path, tiny model selection).
-
-### DeepSpeed and Megatron
-
 - `scripts/run_deepspeed_benchmarks.sh`
 - `scripts/install_megatron.sh`
 - `scripts/run_megatron_benchmarks.sh` (new)
 - `scripts/run_all_benchmarks_suite.sh`
-  - DeepSpeed benchmark preflight and output handling improved.
-  - Megatron install path hardened with runtime dependency reconciliation and verification handling.
-  - Added dedicated Megatron benchmark runner and full-suite integration.
+  - runtime preflight and missing-dependency reconciliation;
+  - safer benchmark execution and output capture;
+  - Megatron benchmark integration into suite flow.
 
-### Rusty-Stack Benchmark UX and Reporting
+### **5) Rusty-Stack Benchmark Parsing and UX**
 
-- `rusty-stack/src/app.rs`
-- `rusty-stack/src/widgets/benchmarks_page.rs`
 - `rusty-stack/src/benchmark_logs.rs` (new)
 - `rusty-stack/src/installer.rs`
-  - Added robust benchmark JSON extraction/parsing from mixed logs.
-  - Added benchmark HTML export feedback in UI.
-  - Expanded exported HTML report with labeled axes, plotted data points, and summary/detail tables.
+- `rusty-stack/src/app.rs`
+- `rusty-stack/src/widgets/benchmarks_page.rs`
+  - robust JSON extraction from mixed benchmark logs;
+  - benchmark screen export feedback;
+  - richer HTML report generation (charts + tables + details).
 
-## Documentation Updates in This PR
+## **Benchmark `E` Export (User-Facing Detail)**
 
-- `CHANGELOG.md` (`Unreleased` -> `Platform Stabilization (2026-02)`)
+On the benchmark screen, pressing `E` now:
+
+- exports a full HTML benchmark report;
+- emits **success/failure notification** in the TUI;
+- includes the output path for immediate user retrieval;
+- renders detailed visuals:
+  - animated line charts,
+  - axis labels/ticks,
+  - plotted data points,
+  - summary/metrics/samples/GPU tables.
+
+Default report output: `~/.mlstack/reports/benchmark_report_<timestamp>.html`.
+
+## **Documentation Updated**
+
+- `README.md` (benchmark export workflow and report details)
+- `CHANGELOG.md` (Unreleased release-track status + stabilization details)
 - `docs/core/rocm_installation_guide.md`
 - `docs/extensions/vllm_guide.md`
 - `docs/rusty_stack_guide.md`
 - `docs/guides/troubleshooting_guide.md`
 - `docs/INSTALLER_STATUS.md`
+- `docs/PR_ROCM_STABILIZATION_2026-02.md` (this PR specification)
 
-## Validation Evidence
+## **Validation Evidence**
 
 Executed:
 
 - `cargo check --manifest-path rusty-stack/Cargo.toml -q`
 - `bash -n scripts/install_rocm.sh scripts/setup_permanent_rocm_env.sh scripts/lib/benchmark_common.sh scripts/install_vllm_multi.sh scripts/run_vllm_benchmarks.sh scripts/run_deepspeed_benchmarks.sh scripts/run_megatron_benchmarks.sh`
 
-Observed benchmark evidence:
+Observed runtime evidence:
 
-- vLLM benchmark success log with throughput metrics and discrete-only visible devices (example payload fields: `success=true`, `throughput_tokens_per_sec`, `visible_devices=0,1`).
+- vLLM benchmark JSON success with throughput and discrete-only visible devices (`visible_devices=0,1`) in latest validated run logs.
 
-## Risk Assessment
+## **Risk Assessment**
 
-- Medium: ROCm reinstall path changes are broad and system-level.
-- Low-to-medium: runtime env filtering may affect edge-case mixed-GPU enumeration.
-- Low: HTML/reporting and parser changes are additive and isolated.
+- **Medium**: ROCm reinstall flow is system-level and broad in impact.
+- **Low-to-medium**: iGPU filtering heuristics may require edge-case tuning on unusual mixed-GPU topologies.
+- **Low**: benchmark parser/export UX changes are additive.
 
-## Rollback Plan
+## **Rollback Plan**
 
-1. Revert this PR commit range.
-2. Re-run prior installer flow without `--force`.
-3. Regenerate `~/.mlstack_env` if necessary.
-4. Revalidate with baseline benchmark commands.
+1. Revert PR commit range.
+2. Re-run prior installer paths without force reinstall.
+3. Regenerate `~/.mlstack_env`.
+4. Re-run baseline verification/benchmark commands.
 
-## Merge Checklist
+## **Merge Checklist**
 
 - [ ] CI/build checks pass.
-- [ ] Maintainer spot-tests ROCm force reinstall on one distro per package family.
-- [ ] Maintainer confirms benchmark HTML export content and UI notification behavior.
-- [ ] Maintainer verifies vLLM/DeepSpeed/Megatron benchmark commands produce parseable outputs.
-- [ ] Docs reviewed for consistency with implemented behavior.
+- [ ] Maintainer spot-tests force reinstall on at least one distro per package family.
+- [ ] Maintainer validates benchmark `E` export notification and output file path behavior.
+- [ ] Maintainer validates vLLM/DeepSpeed/Megatron benchmark output parsing.
+- [ ] Maintainer confirms docs/changelog alignment with implemented behavior.

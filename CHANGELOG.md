@@ -4,6 +4,11 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+### Release Track Status
+- **Transition Track**: This `Unreleased` section represents the current stabilization phase from **Sotapanna (0.1.4)** toward **Anagami**.
+- **No New Release Tag in This PR**: These changes are intentionally tracked as unreleased stabilization work.
+- **Planned Anagami Release Gate**: Anagami release cut remains reserved for the milestone where installer/backend scripts are fully migrated to Rust and packaged as a single crates.io deliverable.
+
 ### Added
 - **ComfyUI**: Node-based AI image generation UI with full ROCm GPU acceleration support
 - **UI/UX Category**: New component category in Rusty-Stack installer for user-facing applications
@@ -41,6 +46,7 @@ All notable changes to Stan's ML Stack will be documented in this file.
   - Data point rendering and animated plot transitions.
   - Summary/metrics/samples/GPU tables for textual context.
   - Export target path generation under `~/.mlstack/reports`.
+  - Explicit `E` key export workflow in Rusty-Stack benchmark UI with success/failure notification and report path visibility.
 - **Persistent Triton Cache Environment**: Added MLStack-managed Triton cache directories and exports to reduce runtime permission failures.
 
 #### Changed
