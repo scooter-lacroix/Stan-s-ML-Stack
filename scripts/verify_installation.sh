@@ -41,6 +41,16 @@ set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${MLSTACK_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+EXPLICIT_MLSTACK_PYTHON_BIN="${MLSTACK_PYTHON_BIN:-}"
+
+if [ -f "$HOME/.mlstack_env" ]; then
+    # shellcheck source=/dev/null
+    source "$HOME/.mlstack_env"
+fi
+if [ -n "$EXPLICIT_MLSTACK_PYTHON_BIN" ]; then
+    MLSTACK_PYTHON_BIN="$EXPLICIT_MLSTACK_PYTHON_BIN"
+    export MLSTACK_PYTHON_BIN
+fi
 
 # Create log directory
 LOG_DIR="${MLSTACK_LOG_DIR:-$HOME/.mlstack/logs}"
@@ -52,11 +62,20 @@ LOG_FILE="$LOG_DIR/ml_stack_verify_$(date +"%Y%m%d_%H%M%S").log"
 # Set up environment variables for ROCm and ONNX Runtime
 export PATH="/opt/rocm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/rocm/lib:$HOME/.local/lib:$LD_LIBRARY_PATH"
+if [ -f "/usr/share/libdrm/amdgpu.ids" ]; then
+    export AMDGPU_ASIC_ID_TABLE_PATH="/usr/share/libdrm/amdgpu.ids"
+    export AMDGPU_ASIC_ID_TABLE_PATHS="/usr/share/libdrm"
+fi
 
 # Suppress HIP logs by setting environment variables
 export HIP_TRACE_API=0
-export HIP_VISIBLE_DEVICES=0,1,2
-export ROCR_VISIBLE_DEVICES=0,1,2
+MLSTACK_GPU_VISIBLE="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"
+if [ -z "$MLSTACK_GPU_VISIBLE" ]; then
+    MLSTACK_GPU_VISIBLE="0"
+fi
+export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$MLSTACK_GPU_VISIBLE}"
+export ROCR_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-$MLSTACK_GPU_VISIBLE}"
 export HSA_ENABLE_SDMA=0
 if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
     export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
@@ -72,7 +91,7 @@ export MIOPEN_ENABLE_LOGGING_IMPL=0
 export AMD_LOG_LEVEL=0
 
 # Select Python interpreter (prefer installer-selected venvs)
-PYTHON_CMD="${MLSTACK_PYTHON_BIN:-${AITER_VENV_PYTHON:-${UV_PYTHON:-}}}"
+PYTHON_CMD="${EXPLICIT_MLSTACK_PYTHON_BIN:-${MLSTACK_PYTHON_BIN:-${AITER_VENV_PYTHON:-${UV_PYTHON:-}}}}"
 if [ -z "$PYTHON_CMD" ]; then
     if [ -f "$HOME/rocm_venv/bin/python" ]; then
         PYTHON_CMD="$HOME/rocm_venv/bin/python"
@@ -214,6 +233,54 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+rocm_tool_ok() {
+    local output=""
+    local rc=0
+    output="$("$@" 2>&1 >/dev/null)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if printf '%s' "$output" | grep -Eqi 'amdgpu\.ids'; then
+        return 0
+    fi
+    return "$rc"
+}
+
+print_rocm_diagnostics_summary() {
+    if command_exists rocminfo; then
+        rocminfo_summary="$(rocminfo 2>&1 | grep -Ev 'amdgpu\.ids|No such file or directory' | awk '
+            /ROCm Version/ && !seen[$0]++ { print; next }
+            /Marketing Name:/ && !seen[$0]++ { print; next }
+        ' | head -n 3 || true)"
+        if [ -n "$rocminfo_summary" ]; then
+            printf '%s\n' "$rocminfo_summary" | tee -a "$LOG_FILE"
+        elif rocm_tool_ok rocminfo; then
+            echo "rocminfo: available" | tee -a "$LOG_FILE"
+        else
+            print_warning "rocminfo available but summary data could not be parsed"
+        fi
+    else
+        print_warning "rocminfo command not found"
+    fi
+
+    if command_exists rocm-smi; then
+        rocmsmi_summary="$(rocm-smi --showproductname --showdriverversion 2>&1 | grep -Ev 'amdgpu\.ids|No such file or directory' | awk '
+            /Driver version/ && !seen[$0]++ { print; next }
+            /Card series/ && !seen[$0]++ { print; next }
+            /Card model/ && !seen[$0]++ { print; next }
+        ' | head -n 4 || true)"
+        if [ -n "$rocmsmi_summary" ]; then
+            printf '%s\n' "$rocmsmi_summary" | tee -a "$LOG_FILE"
+        elif rocm_tool_ok rocm-smi; then
+            echo "rocm-smi: available" | tee -a "$LOG_FILE"
+        else
+            print_warning "rocm-smi available but summary data could not be parsed"
+        fi
+    else
+        print_warning "rocm-smi command not found"
+    fi
+}
+
 python_has_module() {
     $PYTHON_CMD - <<PY
 import importlib.util
@@ -236,14 +303,13 @@ print_step "Python Version: $($PYTHON_CMD --version)"
 print_section "Verifying ROCm"
 if command_exists hipcc; then
     print_success "ROCm is installed: $(hipcc --version 2>&1 | head -n 1)"
-    print_step "ROCm Info:"
+    print_step "ROCm diagnostics summary:"
     # Suppress HIP logs by setting environment variable
     export HIP_TRACE_API=0
-    export HIP_VISIBLE_DEVICES=0,1,2
-    export ROCR_VISIBLE_DEVICES=0,1,2
+    export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+    export ROCR_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-$MLSTACK_GPU_VISIBLE}"
     export HSA_ENABLE_SDMA=0
-    # Filter out HIP logs and only show relevant information
-    rocminfo 2>/dev/null | grep -E "Name:|Marketing|ROCm Version" | tee -a $LOG_FILE
+    print_rocm_diagnostics_summary
 else
     print_error "ROCm is not installed."
 fi
@@ -413,11 +479,10 @@ EOF
                     print_step "Checking ROCm devices:"
                     # Suppress HIP logs by setting environment variable
                     export HIP_TRACE_API=0
-                    export HIP_VISIBLE_DEVICES=0,1,2
-                    export ROCR_VISIBLE_DEVICES=0,1,2
+                    export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+                    export ROCR_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-$MLSTACK_GPU_VISIBLE}"
                     export HSA_ENABLE_SDMA=0
-                    # Filter out HIP logs and only show relevant information
-                    /opt/rocm/bin/rocminfo 2>/dev/null | grep -E "Name:|Marketing|ROCm Version"
+                    print_rocm_diagnostics_summary
                 fi
 
                 # Check ONNX Runtime version

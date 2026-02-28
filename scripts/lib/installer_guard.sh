@@ -722,7 +722,6 @@ mlstack_write_nvidia_constraint_file() {
         printf '# Auto-generated NVIDIA/CUDA blocker constraints for ROCm installs\n'
         printf 'pytorch-cuda===0\n'
         printf 'torch-cuda===0\n'
-        printf 'triton===0\n'
         printf 'cuda-python===0\n'
         printf 'cuda-bindings===0\n'
         printf 'cuda-pathfinder===0\n'

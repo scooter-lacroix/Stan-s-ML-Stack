@@ -8,6 +8,14 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 list(APPEND CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
+list(APPEND CMAKE_PREFIX_PATH /opt/rocm)
+
+# Some ROCm distributions ship PyTorch that references roc::hipsparselt
+# without installing hipsparselt CMake config files. Provide a no-op imported
+# target so Torch package configuration can complete.
+if(NOT TARGET roc::hipsparselt)
+    add_library(roc::hipsparselt INTERFACE IMPORTED)
+endif()
 
 # Disable kineto warning
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)

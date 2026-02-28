@@ -1,3 +1,4 @@
+use crate::benchmark_logs;
 use crate::state::{Category, Component};
 use std::collections::HashSet;
 use std::env;
@@ -38,7 +39,7 @@ pub fn python_interpreters() -> Vec<String> {
             push_python_candidate(&mut candidates, value);
         }
     }
-    let home = env::var("HOME").unwrap_or_default();
+    let home = resolve_component_user_home();
     let venv = Path::new(&home)
         .join("rocm_venv")
         .join("bin")
@@ -140,7 +141,8 @@ pub fn is_component_installed(component: &Component, python_candidates: &[String
 }
 
 pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[String]) -> bool {
-    let home = env::var("HOME").unwrap_or_default();
+    let home = resolve_component_user_home();
+    let has_benchmark_logs = has_benchmark_log_dirs();
     match component_id {
         // ROCm requires BOTH version file AND functional rocminfo (not just binary existence)
         // This prevents false positives from partial downloads
@@ -189,7 +191,9 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
                 || python_any(python_candidates, &["megatron"])
         }
         "vllm" => {
-            python_any(python_candidates, &["vllm"])
+            python_candidates
+                .iter()
+                .any(|python| python_exec(python, vllm_runtime_check_snippet()))
                 || path_exists(home_path(&home, &["vllm_build"]))
                 || path_exists(home_path(&home, &["vllm_py313"]))
         }
@@ -242,9 +246,10 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "permanent-env" => env_file_has_permanent(&home_path(&home, &[".mlstack_env"])),
         "basic-env" => path_exists(home_path(&home, &[".mlstack_env"])),
         "enhanced-env" => env_file_has_enhanced(&home_path(&home, &[".mlstack_env"])),
-        "vllm-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
-        "deepspeed-performance" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
-        "all-benchmarks" => path_exists(home_path(&home, &[".rusty-stack", "logs"])),
+        "vllm-performance" => has_benchmark_logs,
+        "deepspeed-performance" => has_benchmark_logs,
+        "megatron-performance" => has_benchmark_logs,
+        "all-benchmarks" => has_benchmark_logs,
         "comfyui" => {
             // Check for ComfyUI installation
             // Default location: $HOME/ComfyUI
@@ -329,7 +334,7 @@ pub fn component_verification_commands(
             "vllm",
             &["vllm"],
             python_candidates,
-            "import vllm; print(vllm.__version__)",
+            vllm_runtime_check_snippet(),
         )],
         "aiter" => vec![python_command(
             "AITER",
@@ -413,77 +418,68 @@ pub fn component_verification_commands(
             ],
         )],
         // Benchmark components - verify by checking log files exist
-        "mlperf-inference" => vec![shell_command(
+        "mlperf-inference" => vec![benchmark_log_check_command(
             "MLPerf benchmark logs",
             "mlperf-inference",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"mlperf_inference\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "mlperf_inference",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "rocm-benchmarks" => vec![shell_command(
+        "rocm-benchmarks" => vec![benchmark_log_check_command(
             "ROCm benchmark logs",
             "rocm-benchmarks",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"rocm_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "rocm_benchmarks",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "gpu-memory-bandwidth" => vec![shell_command(
+        "gpu-memory-bandwidth" => vec![benchmark_log_check_command(
             "Memory bandwidth logs",
             "gpu-memory-bandwidth",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"gpu_memory_bandwidth\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "gpu_memory_bandwidth",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "rocm-smi-bench" => vec![shell_command(
+        "rocm-smi-bench" => vec![benchmark_log_check_command(
             "ROCm SMI logs",
             "rocm-smi-bench",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"rocm_smi_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "rocm_smi_benchmarks",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "pytorch-performance" => vec![shell_command(
+        "pytorch-performance" => vec![benchmark_log_check_command(
             "PyTorch benchmark logs",
             "pytorch-performance",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"pytorch_performance\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "pytorch_performance",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "vllm-performance" => vec![shell_command(
+        "vllm-performance" => vec![benchmark_log_check_command(
             "vLLM benchmark logs",
             "vllm-performance",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"vllm_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "vllm_benchmarks",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "deepspeed-performance" => vec![shell_command(
+        "deepspeed-performance" => vec![benchmark_log_check_command(
             "DeepSpeed benchmark logs",
             "deepspeed-performance",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"deepspeed_benchmarks\" && echo \"Benchmark logs found\" || echo \"No benchmark logs yet\"",
-            ],
+            "deepspeed_benchmarks",
+            "Benchmark logs found",
+            "No benchmark logs yet",
         )],
-        "all-benchmarks" => vec![shell_command(
+        "megatron-performance" => vec![benchmark_log_check_command(
+            "Megatron benchmark logs",
+            "megatron-performance",
+            "megatron_benchmarks",
+            "Benchmark logs found",
+            "No benchmark logs yet",
+        )],
+        "all-benchmarks" => vec![benchmark_log_check_command(
             "Full suite logs",
             "all-benchmarks",
-            "bash",
-            &[
-                "-c",
-                "test -d \"$HOME/.rusty-stack/logs\" && ls \"$HOME/.rusty-stack/logs\" | grep -q \"full_benchmarks\" && echo \"Suite logs found\" || echo \"No suite logs yet\"",
-            ],
+            "full_benchmarks",
+            "Suite logs found",
+            "No suite logs yet",
         )],
         "comfyui" => vec![shell_command(
             "ComfyUI",
@@ -552,7 +548,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "vllm",
             &["vllm"],
             python_candidates,
-            "import vllm; print(vllm.__version__)",
+            vllm_runtime_check_snippet(),
         ),
         python_command(
             "AITER",
@@ -650,6 +646,32 @@ fn python_command(
     }
 }
 
+fn vllm_runtime_check_snippet() -> &'static str {
+    r#"import importlib
+import vllm
+import cachetools
+import cbor2
+import gguf
+import pybase64
+import ijson
+import mistral_common
+import openai_harmony
+
+loaded = []
+errs = []
+for name in ("vllm._C", "vllm._rocm_C"):
+    try:
+        importlib.import_module(name)
+        loaded.append(name)
+    except Exception as exc:
+        errs.append(f"{name}: {exc}")
+
+if not loaded:
+    raise SystemExit("vLLM native extension load failure: " + " | ".join(errs))
+
+print(vllm.__version__)"#
+}
+
 fn shell_command(
     label: &str,
     target_id: &str,
@@ -663,6 +685,52 @@ fn shell_command(
         args: args.iter().map(|s| s.to_string()).collect(),
         modules: Vec::new(),
     }
+}
+
+fn has_benchmark_log_dirs() -> bool {
+    benchmark_logs::benchmark_log_directories()
+        .iter()
+        .any(|dir| {
+            fs::read_dir(dir)
+                .ok()
+                .map(|entries| entries.filter_map(|entry| entry.ok()).any(|entry| entry.path().is_file()))
+                .unwrap_or(false)
+        })
+}
+
+fn benchmark_log_check_command(
+    label: &str,
+    target_id: &str,
+    pattern: &str,
+    success_message: &str,
+    failure_message: &str,
+) -> VerificationCommand {
+    let script = benchmark_log_check_script(pattern, success_message, failure_message);
+    shell_command(label, target_id, "bash", &["-c", &script])
+}
+
+fn benchmark_log_check_script(
+    pattern: &str,
+    success_message: &str,
+    failure_message: &str,
+) -> String {
+    format!(
+        "dirs=(\"${{MLSTACK_LOG_DIR:-}}\" \"$HOME/.rusty-stack/logs\" \"${{TMPDIR:-/tmp}}/rusty-stack/logs\")\n\
+         found=0\n\
+         for dir in \"${{dirs[@]}}\"; do\n\
+             if [ -n \"$dir\" ] && [ -d \"$dir\" ]; then\n\
+                 if ls \"$dir\" | grep -q \"{}\"; then\n\
+                     echo \"{}\"\n\
+                     found=1\n\
+                     break\n\
+                 fi\n\
+             fi\n\
+         done\n\
+         if [ \"$found\" -ne 1 ]; then\n\
+             echo \"{}\"\n\
+         fi",
+        pattern, success_message, failure_message
+    )
 }
 
 fn python_any(python_candidates: &[String], modules: &[&str]) -> bool {
@@ -706,7 +774,170 @@ fn python_exec(python: &str, code: &str) -> bool {
         }
     }
 
+    let home = resolve_component_user_home();
+    let ld_path = component_status_ld_library_path(&home);
+    if !ld_path.is_empty() {
+        cmd.env("LD_LIBRARY_PATH", ld_path);
+    }
+
     cmd.status().map(|status| status.success()).unwrap_or(false)
+}
+
+fn push_unique_path(paths: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    if paths.iter().any(|existing| existing == value) {
+        return;
+    }
+    paths.push(value.to_string());
+}
+
+fn component_user_home_from_passwd(user_name: &str) -> Option<String> {
+    let target = user_name.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        if line.trim().is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 6 || fields[0] != target {
+            return None;
+        }
+        let home = fields[5].trim();
+        if home.is_empty() {
+            None
+        } else {
+            Some(home.to_string())
+        }
+    })
+}
+
+fn component_passwd_homes_with_mlstack() -> Vec<String> {
+    let mut homes = Vec::new();
+    let Ok(passwd) = fs::read_to_string("/etc/passwd") else {
+        return homes;
+    };
+
+    for line in passwd.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let home = fields[5].trim();
+        if home.is_empty() {
+            continue;
+        }
+        if Path::new(home).join(".mlstack").is_dir() || Path::new(home).join(".mlstack_env").is_file()
+        {
+            push_unique_path(&mut homes, home);
+        }
+    }
+
+    homes
+}
+
+fn component_candidate_homes(preferred_home: &str) -> Vec<String> {
+    let mut homes = Vec::new();
+    push_unique_path(&mut homes, preferred_home);
+
+    if let Ok(value) = env::var("MLSTACK_USER_HOME") {
+        push_unique_path(&mut homes, &value);
+    }
+    if let Ok(value) = env::var("HOME") {
+        push_unique_path(&mut homes, &value);
+    }
+
+    for key in ["SUDO_USER", "USER", "LOGNAME"] {
+        if let Ok(user_name) = env::var(key) {
+            if let Some(home) = component_user_home_from_passwd(&user_name) {
+                push_unique_path(&mut homes, &home);
+            }
+        }
+    }
+
+    for home in component_passwd_homes_with_mlstack() {
+        push_unique_path(&mut homes, &home);
+    }
+
+    homes
+}
+
+fn resolve_component_user_home() -> String {
+    let fallback = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let candidates = component_candidate_homes(&fallback);
+
+    for home in &candidates {
+        if Path::new(home).join(".mlstack_env").is_file() {
+            return home.clone();
+        }
+    }
+    for home in &candidates {
+        if Path::new(home).join(".mlstack").is_dir() {
+            return home.clone();
+        }
+    }
+
+    candidates.into_iter().next().unwrap_or(fallback)
+}
+
+fn component_status_mpi_compat_dirs(home: &str) -> Vec<String> {
+    let mut dirs = Vec::new();
+    for home in component_candidate_homes(home) {
+        let mlstack_dir = Path::new(&home).join(".mlstack");
+        let primary = mlstack_dir.join("libmpi-compat");
+        if primary.is_dir() {
+            dirs.push(primary.to_string_lossy().to_string());
+        }
+
+        if let Ok(entries) = fs::read_dir(&mlstack_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if name.starts_with("libmpi-compat-user-") {
+                    dirs.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn component_status_ld_library_path(home: &str) -> String {
+    let mut paths = Vec::new();
+
+    for dir in component_status_mpi_compat_dirs(home) {
+        push_unique_path(&mut paths, &dir);
+    }
+
+    for rocm_path in ["/opt/rocm/lib", "/opt/rocm/hip/lib", "/opt/rocm/opencl/lib"] {
+        if Path::new(rocm_path).exists() {
+            push_unique_path(&mut paths, rocm_path);
+        }
+    }
+
+    if let Ok(existing) = env::var("LD_LIBRARY_PATH") {
+        for part in existing.split(':') {
+            push_unique_path(&mut paths, part);
+        }
+    }
+
+    paths.join(":")
 }
 
 fn command_exists(command: &str) -> bool {
@@ -721,7 +952,7 @@ fn command_exists(command: &str) -> bool {
 }
 
 pub fn python_search_paths() -> Vec<String> {
-    let home = env::var("HOME").unwrap_or_default();
+    let home = resolve_component_user_home();
     let mut paths = vec![
         format!("{}/pytorch", home),
         format!("{}/ml_stack/flash_attn_amd_direct", home),

@@ -26,8 +26,42 @@ fn assign(output: &mut BenchmarkOutput, result: benchmarks::BenchmarkResult) {
 
 fn assign_value(target: &mut Value, key: &str, result: benchmarks::BenchmarkResult) {
     if let Value::Object(map) = target {
-        map.insert(key.to_string(), serde_json::to_value(result).unwrap_or_default());
+        map.insert(
+            key.to_string(),
+            serde_json::to_value(result).unwrap_or_default(),
+        );
     }
+}
+
+fn run_and_collect(
+    all_results: &mut Value,
+    key: &str,
+    output: &mut BenchmarkOutput,
+    result: benchmarks::BenchmarkResult,
+    required: bool,
+) {
+    if !result.success {
+        if required {
+            output.success = false;
+        }
+        if result.errors.is_empty() {
+            output.errors.push(format!(
+                "{}: benchmark failed ({})",
+                key,
+                if required { "required" } else { "optional" }
+            ));
+        }
+    }
+    output.execution_time_ms += result.execution_time_ms;
+    for err in &result.errors {
+        output.errors.push(format!(
+            "{} ({}): {}",
+            key,
+            if required { "required" } else { "optional" },
+            err
+        ));
+    }
+    assign_value(all_results, key, result);
 }
 
 fn run_benchmark(name: &str) -> BenchmarkOutput {
@@ -48,53 +82,99 @@ fn run_benchmark(name: &str) -> BenchmarkOutput {
         "flash-attention" => assign(&mut output, benchmarks::run_flash_attention_benchmark()),
         "vllm" => assign(&mut output, benchmarks::run_vllm_benchmark()),
         "deepspeed" => assign(&mut output, benchmarks::run_deepspeed_benchmark()),
+        "megatron" => assign(&mut output, benchmarks::run_megatron_benchmark()),
         "all-pre" => {
             let mut all_results = Value::Object(serde_json::Map::new());
-            assign_value(
+            output.success = true;
+            run_and_collect(
                 &mut all_results,
                 "gpu_capability",
+                &mut output,
                 benchmarks::run_gpu_capability_benchmark(),
+                true,
             );
-            assign_value(
+            run_and_collect(
                 &mut all_results,
                 "memory_bandwidth",
+                &mut output,
                 benchmarks::run_memory_bandwidth_benchmark(),
+                true,
             );
-            assign_value(
+            run_and_collect(
                 &mut all_results,
                 "tensor_core",
+                &mut output,
                 benchmarks::run_tensor_core_benchmark(),
+                true,
             );
-            output.success = true;
             output.results = all_results;
         }
         "all" => {
             let mut all_results = Value::Object(serde_json::Map::new());
-            assign_value(
+            output.success = true;
+            run_and_collect(
                 &mut all_results,
                 "gpu_capability",
+                &mut output,
                 benchmarks::run_gpu_capability_benchmark(),
+                true,
             );
-            assign_value(
+            run_and_collect(
                 &mut all_results,
                 "memory_bandwidth",
+                &mut output,
                 benchmarks::run_memory_bandwidth_benchmark(),
+                true,
             );
-            assign_value(
+            run_and_collect(
                 &mut all_results,
                 "tensor_core",
+                &mut output,
                 benchmarks::run_tensor_core_benchmark(),
+                true,
             );
-            assign_value(&mut all_results, "gemm", benchmarks::run_gemm_benchmark());
-            assign_value(&mut all_results, "pytorch", benchmarks::run_pytorch_benchmark());
-            assign_value(
+            run_and_collect(
+                &mut all_results,
+                "gemm",
+                &mut output,
+                benchmarks::run_gemm_benchmark(),
+                true,
+            );
+            run_and_collect(
+                &mut all_results,
+                "pytorch",
+                &mut output,
+                benchmarks::run_pytorch_benchmark(),
+                true,
+            );
+            run_and_collect(
                 &mut all_results,
                 "flash_attention",
+                &mut output,
                 benchmarks::run_flash_attention_benchmark(),
+                false,
             );
-            assign_value(&mut all_results, "vllm", benchmarks::run_vllm_benchmark());
-            assign_value(&mut all_results, "deepspeed", benchmarks::run_deepspeed_benchmark());
-            output.success = true;
+            run_and_collect(
+                &mut all_results,
+                "vllm",
+                &mut output,
+                benchmarks::run_vllm_benchmark(),
+                false,
+            );
+            run_and_collect(
+                &mut all_results,
+                "deepspeed",
+                &mut output,
+                benchmarks::run_deepspeed_benchmark(),
+                false,
+            );
+            run_and_collect(
+                &mut all_results,
+                "megatron",
+                &mut output,
+                benchmarks::run_megatron_benchmark(),
+                false,
+            );
             output.results = all_results;
         }
         _ => {
@@ -123,10 +203,11 @@ fn print_help() {
     println!("  flash-attention      - Flash Attention vs standard");
     println!("  vllm                 - vLLM throughput benchmark");
     println!("  deepspeed            - DeepSpeed ZeRO performance");
+    println!("  megatron             - Megatron-LM throughput/import benchmark");
     println!();
     println!("Combined Benchmarks:");
     println!("  all-pre              - All pre-installation benchmarks");
-    println!("  all                  - All benchmarks");
+    println!("  all                  - All benchmarks (optional component failures are non-fatal)");
     println!();
     println!("Options:");
     println!("  --json               - Output in JSON format");
@@ -168,7 +249,28 @@ fn main() {
             if let Some(map) = result.results.as_object() {
                 println!("\nResults:");
                 for (key, value) in map {
-                    println!("  {}: {}", key, value);
+                    if let Some(obj) = value.as_object() {
+                        let status = obj
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .map(|ok| if ok { "SUCCESS" } else { "FAILED" })
+                            .unwrap_or("UNKNOWN");
+                        let time_ms = obj
+                            .get("execution_time_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        println!("  {} [{} | {} ms]", key, status, time_ms);
+                        if let Some(metrics) = obj.get("metrics").and_then(|m| m.as_object()) {
+                            for (metric_key, metric_val) in metrics.iter().take(4) {
+                                println!("    - {}: {}", metric_key, metric_val);
+                            }
+                            if metrics.len() > 4 {
+                                println!("    - ... {} more metrics", metrics.len() - 4);
+                            }
+                        }
+                    } else {
+                        println!("  {}: {}", key, value);
+                    }
                 }
             }
         }

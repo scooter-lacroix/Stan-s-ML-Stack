@@ -118,6 +118,42 @@ The shell scripts handle:
 - Triton, BITSANDBYTES
 - Environment setup and verification
 
+## 2026-02 Stabilization Status
+
+This release cycle focused on ROCm reinstall reliability, multi-distro behavior, and benchmark/runtime correctness.
+
+### Implemented
+
+- Cross-distro ROCm force reinstall with:
+  - hard purge,
+  - reboot,
+  - resume install,
+  - mandatory second reboot.
+- Arch/CachyOS ROCm install hardening:
+  - AUR availability checks,
+  - `pacman` for repo packages,
+  - non-root `yay/paru`,
+  - sudo ticket keepalive.
+- Shared benchmark runtime preflight (`scripts/lib/benchmark_common.sh`) used by benchmark scripts.
+- vLLM dependency reconciliation for commonly missing modules in runtime and benchmark paths.
+- Megatron benchmark command integration (`scripts/run_megatron_benchmarks.sh`).
+- DeepSpeed benchmark stabilization and improved output capture.
+- Persistent environment hardening:
+  - iGPU filtering for visible-device exports,
+  - bash/zsh/fish support,
+  - managed Triton cache environment.
+- Benchmark HTML report export enhancements:
+  - chart axes/labels,
+  - data points and animations,
+  - summary/detail table views,
+  - export path notifications in TUI.
+
+### Verification Snapshot
+
+- Rust crate build check passes: `cargo check --manifest-path rusty-stack/Cargo.toml -q`
+- Shell syntax checks pass for updated install/benchmark/env scripts via `bash -n`
+- vLLM benchmark run recorded with successful JSON payload including throughput and discrete-only visible devices (`0,1`) in latest validated log set.
+
 ## Troubleshooting
 
 ### Rusty-Stack Won't Build

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # DeepSpeed Performance Benchmark Wrapper
 #
@@ -6,45 +6,36 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_ROOT"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/benchmark_common.sh"
 
-# Setup logging
-LOG_DIR="${HOME}/.rusty-stack/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/deepspeed_benchmarks_$(date +%Y%m%d_%H%M%S).log"
+benchmark_enable_colors
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+PROJECT_ROOT="$(benchmark_resolve_project_root "$SCRIPT_DIR")"
+MANIFEST_PATH="$(benchmark_discover_manifest_path "$PROJECT_ROOT")"
 
-log "Starting DeepSpeed benchmarks..."
-log "Log file: $LOG_FILE"
+LOG_DIR="$(benchmark_resolve_log_dir)"
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="$LOG_DIR/deepspeed_benchmarks_${RUN_TS}.log"
+RESULT_JSON="$LOG_DIR/deepspeed_benchmarks_${RUN_TS}.json"
+benchmark_set_log_file "$LOG_FILE"
 
-# Ensure cargo is available
-if ! command -v cargo &> /dev/null; then
-    if [ -f "$HOME/.cargo/env" ]; then
-        source "$HOME/.cargo/env"
-    fi
-fi
+benchmark_log "Starting DeepSpeed benchmarks..."
+benchmark_log "Log file: $LOG_FILE"
 
-# Ensure ROCm variables
-export DS_ACCELERATOR=rocm
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
+benchmark_require_cargo
+benchmark_prepare_rocm_runtime
+benchmark_ensure_deepspeed_runtime_basics || benchmark_warn "DeepSpeed runtime preflight could not fully repair dependencies; benchmark will continue and report details"
+benchmark_info "Ensuring benchmark binary is ready..."
+benchmark_build_rusty_stack_bench "$MANIFEST_PATH" "$LOG_FILE"
 
-# Build the benchmark binary if needed
-log "Ensuring benchmark binary is ready..."
-if ! cargo build --manifest-path="rusty-stack/Cargo.toml" --bin rusty-stack-bench &> /dev/null; then
-    log "ERROR: Failed to build benchmark binary"
-    exit 1
-fi
+: "${DS_ACCELERATOR:=rocm}"
+export DS_ACCELERATOR
 
-# Run DeepSpeed benchmark
-log "Running DeepSpeed ZeRO throughput benchmark..."
-if ! "./target/debug/rusty-stack-bench" deepspeed --json 2>&1 | tee -a "$LOG_FILE"; then
-    log "ERROR: DeepSpeed Benchmark execution failed"
-    exit 1
-fi
+benchmark_info "Running DeepSpeed ZeRO throughput benchmark..."
+benchmark_run_named_json_to_file "$MANIFEST_PATH" "$LOG_FILE" "$RESULT_JSON" deepspeed
 
-log "DeepSpeed benchmarks completed successfully"
+benchmark_log "Benchmark JSON results: $RESULT_JSON"
+
+benchmark_success "DeepSpeed benchmarks completed successfully"
 exit 0

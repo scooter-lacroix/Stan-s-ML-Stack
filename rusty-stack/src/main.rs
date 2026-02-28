@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 mod app;
+mod benchmark_logs;
 mod component_status;
 mod config;
 mod hardware;

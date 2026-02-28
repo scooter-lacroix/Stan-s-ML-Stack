@@ -666,8 +666,9 @@ install_migraphx_python() {
 
     # Suppress HIP logs
     export AMD_LOG_LEVEL=0
-    export HIP_VISIBLE_DEVICES=0,1,2
-    export ROCR_VISIBLE_DEVICES=0,1,2
+    MLSTACK_GPU_VISIBLE="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}"
+    export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+    export ROCR_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
 
     # Install MIGraphX Python module
     print_section "Installing MIGraphX Python Module"

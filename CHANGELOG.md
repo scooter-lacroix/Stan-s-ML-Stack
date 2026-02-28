@@ -23,6 +23,60 @@ All notable changes to Stan's ML Stack will be documented in this file.
 - **Category Count**: Fixed off-by-one error in category navigation (was 6, now 7 categories)
 - **Missing ComfyUI Detection**: ComfyUI installations are now properly detected and verified
 
+### Platform Stabilization (2026-02)
+
+#### Added
+- **Benchmark Log Parsing Core**: Added `rusty-stack/src/benchmark_logs.rs` and integrated it across installer and benchmark UI flows to reliably extract JSON payloads from mixed logs.
+- **Cross-Distro ROCm Force-Reinstall Flow**: Added explicit purge-then-reboot-then-resume-then-second-reboot workflow for ROCm `--force` reinstalls.
+- **ROCm Purge Engines by Package Family**:
+  - Debian/Ubuntu: multi-pass `apt/dpkg` forced purge and dependency-break cleanup.
+  - Fedora/RHEL/openSUSE: multi-pass `dnf/yum/zypper` removal with forced cleanup fallback.
+  - Arch/CachyOS: multi-pass `pacman -Rns` with `-Rdd` dependency-break fallback.
+- **Reboot Resume Artifacts**: Added state/autostart/launcher helpers for automatic installer resume after purge reboot.
+- **Arch ROCm Install Validation**: Added per-package AUR/repo availability checks before installation and split repo package installs (`pacman`) from AUR package installs (`yay/paru`).
+- **Megatron Benchmark Runner**: Added `scripts/run_megatron_benchmarks.sh` and full-suite integration.
+- **Shared Benchmark Runtime Library**: Added `scripts/lib/benchmark_common.sh` and centralized runtime prep for benchmark scripts.
+- **Benchmark HTML Report Upgrade**:
+  - Axes and labels for all line charts.
+  - Data point rendering and animated plot transitions.
+  - Summary/metrics/samples/GPU tables for textual context.
+  - Export target path generation under `~/.mlstack/reports`.
+- **Persistent Triton Cache Environment**: Added MLStack-managed Triton cache directories and exports to reduce runtime permission failures.
+
+#### Changed
+- **ROCm AUR Install Strategy**:
+  - Keep AUR helpers running as regular user.
+  - Prime and keep alive user sudo ticket for helper `sudo` subcommands.
+  - Avoid root-run helper paths that caused prompt placement/timeouts.
+- **Persistent Environment Generation**:
+  - Expanded integrated GPU filtering heuristics by GPU series labels and PCI bus hints.
+  - Added bash/zsh/fish-safe export handling from a single generated `~/.mlstack_env`.
+- **Benchmark Runtime Defaults**:
+  - Normalize `VLLM_TARGET_DEVICE=rocm`.
+  - Normalize visible device list and propagate to HIP/CUDA compatibility vars.
+  - Prefer tiny safetensors benchmark model defaults for fast validation passes.
+- **vLLM Runtime Reconciliation**:
+  - Installer and benchmark preflight now auto-repair missing runtime modules when detected at import/runtime.
+  - Dependency remediation is applied to the MLStack runtime environment, not benchmark-only subshell state.
+- **Installer/Benchmark Logging**:
+  - Added more explicit runtime env summaries in benchmark logs (visible devices, target device, Triton cache path, model choices).
+
+#### Fixed
+- **Dead Code Warnings**: Resolved benchmark parser warnings by wiring parser functions/constants into active runtime paths.
+- **iGPU Leakage into Runtime Vars**: Fixed scenarios where integrated GPUs appeared in `HIP_VISIBLE_DEVICES` / `CUDA_VISIBLE_DEVICES` on mixed iGPU+dGPU systems.
+- **Fish Shell Source Errors**: Fixed incompatible shell syntax emitted into `~/.mlstack_env` for fish users.
+- **vLLM Missing-Module Failures**:
+  - `No module named 'cbor2'`
+  - `No module named 'pybase64'`
+  - `No module named 'openai_harmony'`
+  - `No module named 'mistral_common'`
+- **vLLM Device Init Failure**: Fixed `Device string must not be empty` by enforcing normalized ROCm target-device/runtime setup.
+- **Triton Cache Permission Errors**: Fixed unwritable default cache path failures by switching to managed writable cache roots.
+- **DeepSpeed Benchmark Crash**: Fixed benchmark failure path surfacing as `integer modulo by zero`.
+- **DeepSpeed "No Data" Result Cases**: Improved runtime preflight and logging so successful runs produce parseable benchmark output.
+- **Megatron Install Reliability**: Hardened import dependency reconciliation and post-install validation handling.
+- **Benchmark Export Feedback**: Added explicit UI notifications for successful/failed HTML export operations and output path visibility.
+
 ## [0.1.5] - 2025-09-16 (Anagami)
 
 ### Added

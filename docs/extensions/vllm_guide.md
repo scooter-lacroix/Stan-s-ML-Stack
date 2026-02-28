@@ -896,6 +896,50 @@ outputs = llm.generate(
 print(f"Generated text: {outputs[0].outputs[0].text}")
 ```
 
+## Rusty-Stack ROCm Runtime Hardening (2026-02)
+
+Rusty-Stack now enforces vLLM ROCm runtime compatibility in both installer and benchmark flows.
+
+### What Is Automatically Enforced
+
+- `VLLM_TARGET_DEVICE=rocm` runtime normalization.
+- Shared ROCm runtime environment preparation before benchmark/install execution.
+- Managed Triton cache path setup to avoid permission failures.
+- Tiny-model benchmark defaults for fast deterministic checks:
+  - safetensors: `HuggingFaceTB/SmolLM2-135M-Instruct`
+
+### Missing Dependency Auto-Repair
+
+If vLLM import/runtime reports missing modules, the stack now attempts targeted repair in the MLStack runtime environment (not benchmark-only process state).
+
+Commonly remediated packages include:
+
+- `cbor2`
+- `pybase64`
+- `openai-harmony>=0.0.3`
+- `mistral-common[image]>=1.9.0`
+- `gguf`
+- `llguidance`
+- `outlines-core`
+- `xgrammar`
+- `triton-kernels`
+
+### Verification Path
+
+```bash
+./scripts/run_vllm_benchmarks.sh
+```
+
+Expected successful output characteristics:
+
+- JSON payload in logs with `"success": true`
+- non-empty `throughput_tokens_per_sec`
+- visible devices containing discrete GPUs only (for mixed iGPU+dGPU systems)
+
+### Notes on Multi-GPU
+
+The runtime is designed for multi-GPU use. Do not force single-GPU mode unless debugging a specific hardware fault. Device visibility is derived from filtered discrete GPU detection and propagated through HIP/CUDA compatibility variables.
+
 ## References
 
 1. [vLLM GitHub Repository](https://github.com/vllm-project/vllm)
@@ -921,4 +965,3 @@ print(f"Generated text: {outputs[0].outputs[0].text}")
 > If this code saved you time, consider buying me a coffee! ☕
 > 
 > "Code is like humor. When you have to explain it, it's bad!" - Cory House
-

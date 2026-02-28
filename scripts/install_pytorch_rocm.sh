@@ -161,8 +161,8 @@ strict_validate_python_version() {
     "$py_cmd" - <<'PY'
 import sys
 major, minor = sys.version_info[:2]
-if major != 3 or minor < 10:
-    raise SystemExit(f"Unsupported Python {major}.{minor}; strict ROCm mode requires Python 3.10+")
+if major != 3 or minor < 10 or minor > 13:
+    raise SystemExit(f"Unsupported Python {major}.{minor}; strict ROCm mode requires Python 3.10-3.13")
 PY
 }
 
@@ -245,21 +245,45 @@ PY
 
 strict_install_rocm_torch_stack() {
     local py_cmd="$1"
-    mlstack_install_rocm_torch_stack "$py_cmd" "${ROCM_VERSION:-}" "$TORCH_CHANNEL" "pytorch"
+    local rocm_mm
+    rocm_mm="$(strict_detect_rocm_mm)"
+    mlstack_install_rocm_torch_stack "$py_cmd" "$rocm_mm" "$TORCH_CHANNEL" "pytorch"
 }
 
 strict_install_pytorch_rocm() {
     local base_python="$PYTHON_BIN"
     local strict_python=""
     local strict_venv_dir=""
+    local selected_python=""
+    local rocm_mm=""
 
     if ! command -v "$base_python" >/dev/null 2>&1; then
         print_error "Python interpreter not found: $base_python"
         return 1
     fi
 
+    rocm_mm="$(strict_detect_rocm_mm)"
+    if declare -f mlstack_ensure_python_for_rocm_torch >/dev/null 2>&1; then
+        selected_python="$(mlstack_ensure_python_for_rocm_torch "$base_python" "$rocm_mm" "$TORCH_CHANNEL" "${DRY_RUN:-false}" || true)"
+    elif declare -f mlstack_select_python_for_rocm_torch >/dev/null 2>&1; then
+        selected_python="$(mlstack_select_python_for_rocm_torch "$base_python" "$rocm_mm" "$TORCH_CHANNEL" || true)"
+    fi
+
+    if [ -n "$selected_python" ] && [ "$selected_python" != "$base_python" ]; then
+        print_warning "[strict] Switching Python interpreter for ROCm wheel compatibility: ${base_python} -> ${selected_python}"
+        base_python="$selected_python"
+        PYTHON_BIN="$selected_python"
+        MLSTACK_PYTHON_BIN="$selected_python"
+        export PYTHON_BIN MLSTACK_PYTHON_BIN
+    fi
+
     if ! strict_validate_python_version "$base_python"; then
-        print_error "Strict ROCm mode requires Python 3.10+"
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+            print_warning "[strict] Dry run: no compatible Python 3.10-3.13 interpreter is currently available."
+            print_warning "[strict] Dry run: real install would attempt to provision Python 3.12 via uv."
+            return 0
+        fi
+        print_error "Strict ROCm mode requires Python 3.10-3.13"
         return 1
     fi
 
@@ -268,7 +292,7 @@ strict_install_pytorch_rocm() {
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
         strict_venv_dir="${MLSTACK_VENV_DIR:-$HOME/.mlstack/venvs/pytorch_rocm}"
         local selected
-        selected="$(mlstack_select_torch_index "$base_python" "${ROCM_VERSION:-}" "$TORCH_CHANNEL" || true)"
+        selected="$(mlstack_select_torch_index "$base_python" "$rocm_mm" "$TORCH_CHANNEL" || true)"
         if [ -n "$selected" ]; then
             IFS='|' read -r dry_index dry_series dry_channel <<< "$selected"
             print_step "[strict] Dry run: resolved index=${dry_index} (series=${dry_series}, effective_channel=${dry_channel})"
@@ -314,7 +338,11 @@ strict_install_pytorch_rocm() {
     esac
 
     print_step "[strict] Installing common dependencies in same interpreter..."
-    "$strict_python" -m pip install --no-cache-dir --upgrade torchsde sentencepiece || return 1
+    if declare -f mlstack_pip_install >/dev/null 2>&1; then
+        mlstack_pip_install "$strict_python" --no-cache-dir --upgrade torchsde sentencepiece || return 1
+    else
+        "$strict_python" -m pip install --break-system-packages --no-cache-dir --upgrade torchsde sentencepiece || return 1
+    fi
     mlstack_guard_python_env "pytorch-common-deps" "$strict_python" --purge || return 1
 
     if ! "$strict_python" - <<'PY'

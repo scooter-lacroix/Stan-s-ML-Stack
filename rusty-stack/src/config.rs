@@ -10,6 +10,7 @@ pub struct InstallerConfig {
     pub log_dir: String,
     pub install_path: String,
     pub batch_mode: bool,
+    pub install_method: String,
     pub auto_confirm: bool,
     pub star_repos: bool,
     pub force_reinstall: bool,
@@ -55,6 +56,7 @@ impl InstallerConfig {
         value["scripts_dir"] = json!(self.scripts_dir);
         value["log_dir"] = json!(self.log_dir);
         value["batch_mode"] = json!(self.batch_mode);
+        value["install_method"] = json!(self.install_method);
 
         let user_prefs = value
             .get("user_preferences")
@@ -62,6 +64,7 @@ impl InstallerConfig {
             .unwrap_or_else(|| json!({}));
         let mut user_prefs = user_prefs;
         user_prefs["installation_path"] = json!(self.install_path);
+        user_prefs["install_method"] = json!(self.install_method);
         user_prefs["auto_confirm"] = json!(self.auto_confirm);
         user_prefs["star_repos"] = json!(self.star_repos);
         user_prefs["force_reinstall"] = json!(self.force_reinstall);
@@ -85,10 +88,16 @@ impl InstallerConfig {
         if let Some(batch) = value.get("batch_mode").and_then(|v| v.as_bool()) {
             self.batch_mode = batch;
         }
+        if let Some(method) = value.get("install_method").and_then(|v| v.as_str()) {
+            self.install_method = normalize_install_method(method);
+        }
 
         if let Some(prefs) = value.get("user_preferences") {
             if let Some(path) = prefs.get("installation_path").and_then(|v| v.as_str()) {
                 self.install_path = path.to_string();
+            }
+            if let Some(method) = prefs.get("install_method").and_then(|v| v.as_str()) {
+                self.install_method = normalize_install_method(method);
             }
             if let Some(auto) = prefs.get("auto_confirm").and_then(|v| v.as_bool()) {
                 self.auto_confirm = auto;
@@ -114,6 +123,9 @@ impl InstallerConfig {
             log_dir,
             install_path: "/opt/rocm".into(),
             batch_mode: std::env::var("MLSTACK_BATCH_MODE").unwrap_or_default() == "1",
+            install_method: normalize_install_method(
+                &std::env::var("MLSTACK_INSTALL_METHOD").unwrap_or_else(|_| "auto".into()),
+            ),
             auto_confirm: false,
             star_repos: true,
             force_reinstall: false,
@@ -121,6 +133,14 @@ impl InstallerConfig {
             performance_profile: "balanced".into(),
             config_path,
         }
+    }
+}
+
+fn normalize_install_method(input: &str) -> String {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "global" => "global".into(),
+        "venv" => "venv".into(),
+        _ => "auto".into(),
     }
 }
 

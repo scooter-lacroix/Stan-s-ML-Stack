@@ -6,7 +6,8 @@ set -euo pipefail
 LOG_FILE="${1:-$HOME/.mlstack/logs/rusty-stack.log}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-PATTERN='(nvidia-|pytorch-cuda|torch-cuda|cuda-bindings|cuda-pathfinder|cuda-python|cupy-cuda)'
+TRITON_TOKEN='(^|[^[:alnum:]_-])triton([^[:alnum:]_-]|$)'
+PATTERN="(nvidia-|pytorch-cuda|torch-cuda|cuda-bindings|cuda-pathfinder|cuda-python|cupy-cuda|${TRITON_TOKEN})"
 
 echo "== NVIDIA dependency risk analyzer =="
 echo "Project root: $ROOT_DIR"
@@ -90,10 +91,15 @@ except Exception:
 flagged = []
 for line in out.splitlines():
     name = line.split("==", 1)[0].lower()
+    version = ""
+    if "==" in line:
+        version = line.split("==", 1)[1].lower()
+
     if (
         name.startswith("nvidia-")
         or name in {"pytorch-cuda", "torch-cuda", "cuda-bindings", "cuda-pathfinder", "cuda-python"}
         or name.startswith("cupy-cuda")
+        or (name == "triton" and "+rocm" not in version)
     ):
         flagged.append(line)
 

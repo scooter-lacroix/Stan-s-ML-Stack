@@ -37,6 +37,13 @@ if [[ -f "$SCRIPT_LIB_DIR/installer_guard.sh" ]]; then
     source "$SCRIPT_LIB_DIR/installer_guard.sh"
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MLSTACK_STRICT_ROCM="${MLSTACK_STRICT_ROCM:-1}"
+if [[ "$MLSTACK_STRICT_ROCM" == "1" && -f "$SCRIPT_DIR/install_vllm_multi.sh" ]]; then
+    echo "[mlstack][INFO] Strict ROCm mode enabled; delegating to install_vllm_multi.sh"
+    exec bash "$SCRIPT_DIR/install_vllm_multi.sh" "$@"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
 
@@ -182,6 +189,106 @@ install_python_package() {
             python3 -m pip install "${extra_args[@]}" "$package"
         fi
     fi
+}
+
+install_python_package_for_interpreter() {
+    local py_cmd="$1"
+    shift
+    local -a args=("$@")
+
+    if "$py_cmd" -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'; then
+        "$py_cmd" -m pip install --no-cache-dir --break-system-packages "${args[@]}"
+    else
+        "$py_cmd" -m pip install --no-cache-dir "${args[@]}"
+    fi
+}
+
+vllm_requirement_base_name() {
+    local req="${1:-}"
+    req="${req%%;*}"
+    req="${req%%,*}"
+    req="${req%% *}"
+    req="${req%%[*}"
+    req="${req%%<*}"
+    req="${req%%>*}"
+    req="${req%%=*}"
+    req="${req%%!*}"
+    req="${req%%~*}"
+    req="${req%%(*}"
+    req="${req//_/-}"
+    req="${req// /}"
+    printf '%s\n' "${req,,}"
+}
+
+vllm_pkg_requires_no_deps() {
+    local req="${1:-}"
+    local base
+    base="$(vllm_requirement_base_name "$req")"
+    case "$base" in
+        xgrammar|triton-kernels|conch-triton-kernels)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+install_vllm_python_package_for_interpreter() {
+    local py_cmd="$1"
+    local package="${2:-}"
+    [ -n "$package" ] || return 0
+
+    if vllm_pkg_requires_no_deps "$package"; then
+        install_python_package_for_interpreter "$py_cmd" --no-deps --extra-index-url https://wheels.vllm.ai/rocm/ "$package"
+        return $?
+    fi
+
+    install_python_package_for_interpreter "$py_cmd" --extra-index-url https://wheels.vllm.ai/rocm/ "$package"
+}
+
+ensure_vllm_runtime_deps() {
+    local py_cmd="${1:-python3}"
+    local req module package
+
+    for req in \
+        "cachetools:cachetools" \
+        "cbor2:cbor2" \
+        "gguf:gguf" \
+        "pybase64:pybase64" \
+        "ijson:ijson" \
+        "lark:lark" \
+        "setproctitle:setproctitle" \
+        "watchfiles:watchfiles" \
+        "amdsmi:amdsmi" \
+        "llguidance:llguidance>=1.3.0,<1.4.0" \
+        "mistral_common:mistral-common[image]>=1.9.0" \
+        "openai_harmony:openai-harmony>=0.0.3" \
+        "outlines_core:outlines-core==0.2.11" \
+        "xgrammar:xgrammar==0.1.29" \
+        "triton_kernels:triton-kernels==1.0.0" \
+        "pythonjsonlogger:python-json-logger" \
+        "partial_json_parser:partial-json-parser" \
+        "lmformatenforcer:lm-format-enforcer" \
+        "prometheus_fastapi_instrumentator:prometheus-fastapi-instrumentator"; do
+        module="${req%%:*}"
+        package="${req##*:}"
+        if ! "$py_cmd" -c "import ${module}" >/dev/null 2>&1; then
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+                print_warning "[DRY-RUN] Missing vLLM dependency would be installed: ${package}"
+                continue
+            fi
+            print_step "Installing missing vLLM runtime dependency: ${package}"
+            if ! install_vllm_python_package_for_interpreter "$py_cmd" "$package"; then
+                print_error "Failed to install required vLLM dependency: ${package}"
+                return 1
+            fi
+            if ! "$py_cmd" -c "import ${module}" >/dev/null 2>&1; then
+                print_error "Required vLLM dependency still missing after install: ${module}"
+                return 1
+            fi
+        fi
+    done
+
+    return 0
 }
 
 # Function to show environment variables
@@ -382,6 +489,10 @@ install_vllm() {
             print_step "Will reinstall vLLM despite working installation"
         else
             print_success "vLLM is already installed (version: $vllm_version)"
+            if ! ensure_vllm_runtime_deps "$PYTHON_CMD"; then
+                print_error "vLLM is installed but required runtime dependencies are missing."
+                return 1
+            fi
             print_step "vLLM installation is complete. Use --force to reinstall anyway."
             return 0
         fi
@@ -1073,8 +1184,8 @@ EOF
             SKIP_CUDA_BUILD=1 FORCE_CMAKE=1 uv pip install -e "." --no-build-isolation
 
             # Install additional dependencies
-            log "Installing additional dependencies..."
-            uv pip install triton --no-build-isolation
+            log "Installing additional ROCm dependencies..."
+            uv pip install pytorch-triton-rocm --no-build-isolation || true
         fi
 
         # Check if installation worked
@@ -1212,8 +1323,8 @@ EOF
         SKIP_CUDA_BUILD=1 FORCE_CMAKE=1 uv pip install -e . --no-build-isolation
 
         # Install additional dependencies
-        log "Installing additional dependencies..."
-        uv pip install triton --no-build-isolation
+        log "Installing additional ROCm dependencies..."
+        uv pip install pytorch-triton-rocm --no-build-isolation || true
     fi
 
     # Check if that worked

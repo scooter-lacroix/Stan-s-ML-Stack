@@ -1891,8 +1891,9 @@ fix_ml_stack_core() {
         # Set environment variables
         export USE_UV=1
         export AMD_LOG_LEVEL=0
-        export HIP_VISIBLE_DEVICES=0,1,2
-        export ROCR_VISIBLE_DEVICES=0,1,2
+        MLSTACK_GPU_VISIBLE="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}"
+        export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+        export ROCR_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
         export NONINTERACTIVE=1
 
         # Run the script with a timeout to prevent hanging

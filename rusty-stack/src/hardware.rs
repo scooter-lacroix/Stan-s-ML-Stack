@@ -732,8 +732,14 @@ fn detect_rocm_path() -> Option<PathBuf> {
 
         // Sort by version (descending)
         versioned_paths.sort_by(|a, b| {
-            let a_parts: Vec<i32> = a.0.split('.').filter_map(|s: &str| s.parse().ok()).collect();
-            let b_parts: Vec<i32> = b.0.split('.').filter_map(|s: &str| s.parse().ok()).collect();
+            let a_parts: Vec<i32> =
+                a.0.split('.')
+                    .filter_map(|s: &str| s.parse().ok())
+                    .collect();
+            let b_parts: Vec<i32> =
+                b.0.split('.')
+                    .filter_map(|s: &str| s.parse().ok())
+                    .collect();
             for i in 0..std::cmp::max(a_parts.len(), b_parts.len()) {
                 let a_val = *a_parts.get(i).unwrap_or(&0);
                 let b_val = *b_parts.get(i).unwrap_or(&0);
@@ -752,10 +758,7 @@ fn detect_rocm_path() -> Option<PathBuf> {
     }
 
     // 4. Check for Arch AUR package locations
-    let arch_paths = [
-        "/usr/lib/rocm",
-        "/usr/local/rocm",
-    ];
+    let arch_paths = ["/usr/lib/rocm", "/usr/local/rocm"];
     for path_str in &arch_paths {
         let path = PathBuf::from(path_str);
         if validate_rocm_path(&path) {
@@ -830,14 +833,19 @@ fn get_correct_gfx_from_marketing_name(marketing_name: &str, rocminfo_gfx: &str)
     if name_lower.contains("7700 xt") || name_lower.contains("7700xt") {
         return "gfx1101".to_string();
     }
-    if name_lower.contains("7600 xt") || name_lower.contains("7600xt")
-        || name_lower.contains("7600") {
+    if name_lower.contains("7600 xt")
+        || name_lower.contains("7600xt")
+        || name_lower.contains("7600")
+    {
         return "gfx1102".to_string();
     }
 
     // RDNA 4 (Navi 4x) - gfx1200
-    if name_lower.contains("9070 xt") || name_lower.contains("9070xt")
-        || name_lower.contains("9070 gre") || name_lower.contains("9070gre") {
+    if name_lower.contains("9070 xt")
+        || name_lower.contains("9070xt")
+        || name_lower.contains("9070 gre")
+        || name_lower.contains("9070gre")
+    {
         return "gfx1200".to_string();
     }
     if name_lower.contains("9060") {
@@ -846,20 +854,32 @@ fn get_correct_gfx_from_marketing_name(marketing_name: &str, rocminfo_gfx: &str)
 
     // RDNA 2 (Navi 2x) - gfx1030/gfx1031/gfx1032
     // These are correctly reported by rocminfo, but we verify
-    if name_lower.contains("6900 xt") || name_lower.contains("6900xt")
-        || name_lower.contains("6950 xt") || name_lower.contains("6950xt") {
+    if name_lower.contains("6900 xt")
+        || name_lower.contains("6900xt")
+        || name_lower.contains("6950 xt")
+        || name_lower.contains("6950xt")
+    {
         return "gfx1030".to_string();
     }
-    if name_lower.contains("6800 xt") || name_lower.contains("6800xt")
-        || name_lower.contains("6800") || name_lower.contains("6900") {
+    if name_lower.contains("6800 xt")
+        || name_lower.contains("6800xt")
+        || name_lower.contains("6800")
+        || name_lower.contains("6900")
+    {
         return "gfx1030".to_string();
     }
-    if name_lower.contains("6700 xt") || name_lower.contains("6700xt")
-        || name_lower.contains("6750 xt") || name_lower.contains("6750xt") {
+    if name_lower.contains("6700 xt")
+        || name_lower.contains("6700xt")
+        || name_lower.contains("6750 xt")
+        || name_lower.contains("6750xt")
+    {
         return "gfx1031".to_string();
     }
-    if name_lower.contains("6600 xt") || name_lower.contains("6600xt")
-        || name_lower.contains("6600") || name_lower.contains("6650") {
+    if name_lower.contains("6600 xt")
+        || name_lower.contains("6600xt")
+        || name_lower.contains("6600")
+        || name_lower.contains("6650")
+    {
         return "gfx1032".to_string();
     }
     if name_lower.contains("6500 xt") || name_lower.contains("6500xt") {
@@ -867,9 +887,13 @@ fn get_correct_gfx_from_marketing_name(marketing_name: &str, rocminfo_gfx: &str)
     }
 
     // CDNA (MI accelerators) - trust rocminfo for these
-    if name_lower.contains("instinct") || name_lower.contains("mi60")
-        || name_lower.contains("mi100") || name_lower.contains("mi200")
-        || name_lower.contains("mi250") || name_lower.contains("mi300") {
+    if name_lower.contains("instinct")
+        || name_lower.contains("mi60")
+        || name_lower.contains("mi100")
+        || name_lower.contains("mi200")
+        || name_lower.contains("mi250")
+        || name_lower.contains("mi300")
+    {
         return format!("gfx{}", rocminfo_gfx);
     }
 
@@ -909,11 +933,19 @@ fn detect_gpu() -> GPUInfo {
                 let trimmed = line.trim();
                 // Track marketing name to detect iGPUs (Agent section)
                 if trimmed.starts_with("Marketing Name:") {
-                    current_marketing_name = trimmed.strip_prefix("Marketing Name:").unwrap_or("").trim().to_string();
+                    current_marketing_name = trimmed
+                        .strip_prefix("Marketing Name:")
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
                 }
                 // Track device type to distinguish GPU from CPU
                 if trimmed.starts_with("Device Type:") {
-                    current_device_type = trimmed.strip_prefix("Device Type:").unwrap_or("").trim().to_string();
+                    current_device_type = trimmed
+                        .strip_prefix("Device Type:")
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
                 }
                 if line.contains("Name:") {
                     let name = line.replace("Name:", "").trim().to_string();
@@ -937,7 +969,9 @@ fn detect_gpu() -> GPUInfo {
                                 .collect();
                             if !gfx_num.is_empty() && gfx_num.len() >= 3 {
                                 // Detect iGPU by marketing name containing "Ryzen" or device being APU
-                                let is_igpu = current_marketing_name.to_lowercase().contains("ryzen")
+                                let is_igpu = current_marketing_name
+                                    .to_lowercase()
+                                    .contains("ryzen")
                                     || current_marketing_name.to_lowercase().contains("apu")
                                     || current_marketing_name.to_lowercase().contains("integrated");
                                 // Only set architecture for dGPUs (not iGPUs, not CPUs)
@@ -947,7 +981,10 @@ fn detect_gpu() -> GPUInfo {
                                 {
                                     // Use marketing name to get correct architecture
                                     // rocminfo may report wrong gfx on some ROCm versions
-                                    let corrected_arch = get_correct_gfx_from_marketing_name(&current_marketing_name, &gfx_num);
+                                    let corrected_arch = get_correct_gfx_from_marketing_name(
+                                        &current_marketing_name,
+                                        &gfx_num,
+                                    );
                                     info.architecture = corrected_arch;
                                 }
                             }

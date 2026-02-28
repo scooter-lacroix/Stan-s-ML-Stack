@@ -198,6 +198,53 @@ if errors:
 PY
 }
 
+verify_rocm_component_contract() {
+    local py_cmd="$1"
+    local component="${2:-aiter}"
+
+    "$py_cmd" - <<'PY'
+import subprocess
+import sys
+
+blocked = []
+try:
+    out = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+except Exception:
+    out = ""
+
+for line in out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if (
+        name.startswith("nvidia-")
+        or name in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or name.startswith("cupy-cuda")
+    ):
+        blocked.append(name)
+
+if blocked:
+    print("Detected disallowed CUDA/NVIDIA packages:", ", ".join(sorted(set(blocked))))
+    raise SystemExit(1)
+
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+cuda = getattr(getattr(torch, "version", None), "cuda", None)
+if not hip:
+    raise SystemExit("torch.version.hip missing (expected ROCm torch)")
+if cuda:
+    raise SystemExit(f"torch.version.cuda={cuda} (expected ROCm-only torch)")
+if not torch.cuda.is_available():
+    raise SystemExit("torch.cuda.is_available() is False")
+PY
+
+    if declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+        mlstack_assert_rocm_torch "$py_cmd"
+    fi
+}
+
 strict_ensure_rocm_torch() {
     local py_cmd="$1"
 
@@ -293,6 +340,10 @@ PY
 
     if ! strict_verify_no_cuda_contamination "$strict_python"; then
         print_error "CUDA/NVIDIA contamination detected after AITER install"
+        return 1
+    fi
+    if ! verify_rocm_component_contract "$strict_python" "aiter strict post-install"; then
+        print_error "ROCm contract verification failed after strict AITER install"
         return 1
     fi
 
@@ -2298,6 +2349,11 @@ EOF
         echo -e "${GREEN}✓ Verified AITER is properly installed and importable${RESET}"
     else
         echo -e "${YELLOW}⚠ AITER may not be properly installed. Please check the installation logs.${RESET}"
+    fi
+
+    if ! verify_rocm_component_contract "$PYTHON_CMD" "aiter post-install"; then
+        print_error "ROCm compatibility contract failed after AITER installation."
+        return 1
     fi
 
     echo

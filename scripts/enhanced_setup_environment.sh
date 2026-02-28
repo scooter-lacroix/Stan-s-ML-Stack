@@ -900,6 +900,28 @@ configure_environment_variables() {
 # Function to create environment file
 create_environment_file() {
     print_section "Creating Environment File"
+    local setup_script_dir
+    local permanent_env_script
+
+    setup_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    permanent_env_script="$setup_script_dir/setup_permanent_rocm_env.sh"
+
+    # Canonical path: always use the permanent env generator, which now emits
+    # shell-compatible .mlstack_env for Bash/Zsh/Fish and patches startup hooks.
+    if [ -x "$permanent_env_script" ]; then
+        print_step "Delegating environment generation to setup_permanent_rocm_env.sh..."
+        if bash "$permanent_env_script"; then
+            if [ -f "$HOME/.mlstack_env" ]; then
+                # shellcheck disable=SC1090
+                source "$HOME/.mlstack_env" || true
+            fi
+            print_success "Environment file created successfully"
+            print_step "Environment file: $HOME/.mlstack_env"
+            print_step "Startup hooks refreshed for Bash/Zsh/Fish."
+            return 0
+        fi
+        print_warning "Delegated environment generation failed; using legacy template fallback."
+    fi
 
     # Create environment file
     print_step "Creating environment file..."
@@ -1028,7 +1050,7 @@ export GPU_ARCH=${GPU_ARCH:-gfx1100}
 
 # Path Settings - Hardcoded safe paths to prevent "command not found" errors
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:${ROCM_PATH:-/opt/rocm}/bin:${ROCM_PATH:-/opt/rocm}/hip/bin:\$PATH"
-export LD_LIBRARY_PATH="${ROCM_PATH:-/opt/rocm}/lib:${ROCM_PATH:-/opt/rocm}/hip/lib:${ROCM_PATH:-/opt/rocm}/opencl/lib:\${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="\$HOME/.mlstack/libmpi-compat:\$HOME/.mlstack/libmpi-compat-user-\$(id -u):${ROCM_PATH:-/opt/rocm}/lib:${ROCM_PATH:-/opt/rocm}/hip/lib:${ROCM_PATH:-/opt/rocm}/opencl/lib:\${LD_LIBRARY_PATH:-}"
 
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
@@ -1057,6 +1079,14 @@ if [ -z "\${TORCH_CUDA_ARCH_LIST:-}" ]; then export TORCH_CUDA_ARCH_LIST="${TORC
 # Use PYTORCH_ALLOC_CONF instead of deprecated PYTORCH_CUDA_ALLOC_CONF
 if [ -z "\${PYTORCH_ALLOC_CONF:-}" ]; then export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-max_split_size_mb:512}"; fi
 if [ -z "\${PYTORCH_HIP_ALLOC_CONF:-}" ]; then export PYTORCH_HIP_ALLOC_CONF=${PYTORCH_HIP_ALLOC_CONF:-"max_split_size_mb:512"}; fi
+if [ -z "\${VLLM_WORKER_MULTIPROC_METHOD:-}" ]; then export VLLM_WORKER_MULTIPROC_METHOD=spawn; fi
+if [ -z "\${VLLM_ROCM_USE_AITER:-}" ]; then export VLLM_ROCM_USE_AITER=0; fi
+if [ -z "\${MLSTACK_TRITON_HOME:-}" ]; then export MLSTACK_TRITON_HOME="\$HOME/.cache/mlstack/triton"; fi
+if [ -z "\${TRITON_HOME:-}" ]; then export TRITON_HOME="\$MLSTACK_TRITON_HOME"; fi
+if [ -z "\${TRITON_CACHE_DIR:-}" ]; then export TRITON_CACHE_DIR="\$TRITON_HOME/cache"; fi
+if [ -z "\${TRITON_DUMP_DIR:-}" ]; then export TRITON_DUMP_DIR="\$TRITON_HOME/dump"; fi
+if [ -z "\${TRITON_OVERRIDE_DIR:-}" ]; then export TRITON_OVERRIDE_DIR="\$TRITON_HOME/override"; fi
+mkdir -p "\$TRITON_CACHE_DIR" "\$TRITON_DUMP_DIR" "\$TRITON_OVERRIDE_DIR" 2>/dev/null || true
 
 # MPI Settings
 # Only set if not already set

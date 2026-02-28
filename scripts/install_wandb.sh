@@ -130,6 +130,50 @@ mlstack_rocm_python_preflight() {
     fi
 }
 
+mlstack_verify_rocm_component_contract() {
+    local py_cmd="$1"
+    local component="${2:-wandb}"
+
+    "$py_cmd" - <<'PY'
+import subprocess
+import sys
+
+blocked = []
+try:
+    out = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+except Exception as exc:
+    raise SystemExit(f"Unable to inspect pip packages: {exc}")
+
+for line in out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if (
+        name.startswith("nvidia-")
+        or name in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or name.startswith("cupy-cuda")
+    ):
+        blocked.append(name)
+
+if blocked:
+    raise SystemExit("Detected disallowed CUDA/NVIDIA packages: " + ", ".join(sorted(set(blocked))))
+
+try:
+    import torch
+except Exception:
+    raise SystemExit(0)
+
+hip = getattr(getattr(torch, "version", None), "hip", None)
+cuda = getattr(getattr(torch, "version", None), "cuda", None)
+if cuda:
+    raise SystemExit(f"torch.version.cuda={cuda} (expected ROCm-only torch)")
+if hip is None:
+    raise SystemExit("torch.version.hip is missing (expected ROCm torch)")
+PY
+}
+
 # ASCII Art Banner
 cat << "EOF"
 ██╗    ██╗ █████╗ ███╗   ██╗██████╗ ██████╗
@@ -144,7 +188,7 @@ echo
 # Check if terminal supports colors
 if [ -t 1 ]; then
     # Check if NO_COLOR environment variable is set
-    if [ -z "$NO_COLOR" ]; then
+    if [ -z "${NO_COLOR:-}" ]; then
         # Terminal supports colors
         RED='\033[0;31m'
         GREEN='\033[0;32m'
@@ -275,7 +319,7 @@ show_env() {
     PYTORCH_ROCM_ARCH="gfx1100"
     ROCM_PATH="/opt/rocm"
     PATH="/opt/rocm/bin:$PATH"
-    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
 
     # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
     if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -283,13 +327,13 @@ show_env() {
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
-        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
+        PYTORCH_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}"
     fi
 
     echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
     echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
-    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_ALLOC_CONF:-}" ]; then
         echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
     fi
     echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
@@ -311,7 +355,7 @@ detect_rocm() {
         export PYTORCH_ROCM_ARCH="gfx1100"
         export ROCM_PATH="/opt/rocm"
         export PATH="/opt/rocm/bin:$PATH"
-        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
 
         # Set HSA_TOOLS_LIB if rocprofiler library exists
         if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -336,8 +380,8 @@ detect_rocm() {
         fi
 
         # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
-        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
-            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+        if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
+            export PYTORCH_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}"
             unset PYTORCH_CUDA_ALLOC_CONF
             print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
         fi
@@ -646,6 +690,7 @@ install_wandb() {
     # Parse command line arguments
     DRY_RUN=false
     FORCE=false
+    WANDB_VENV_PYTHON=""
     while [[ $# -gt 0 ]]; do
         case $1 in
             --dry-run)
@@ -710,6 +755,10 @@ install_wandb() {
         if [[ "$FORCE" == "true" ]]; then
             print_warning "Force reinstall requested - proceeding with reinstallation"
         else
+            if ! mlstack_verify_rocm_component_contract "$PYTHON_CMD" "wandb existing install"; then
+                print_error "WandB exists but ROCm compatibility contract failed."
+                return 1
+            fi
             print_step "WandB installation is complete. Use --force to reinstall anyway."
             return 0
         fi
@@ -789,6 +838,9 @@ install_wandb() {
     # Create a function to handle installation with venv fallback
     uv_pip_install() {
         local args=("$@")
+        if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+            mlstack_guard_install_request "install_wandb.sh:uv_pip_install" "${args[@]}" || return 1
+        fi
 
         if [[ "$DRY_RUN" == "true" ]]; then
             print_step "[DRY RUN] Would install with pip: ${args[*]}"
@@ -862,6 +914,11 @@ install_wandb() {
         return 1
     fi
 
+    if ! mlstack_verify_rocm_component_contract "$PYTHON_CMD" "wandb post-install"; then
+        print_error "ROCm compatibility contract failed after WandB installation."
+        return 1
+    fi
+
     # Create installation directory
     INSTALL_DIR="$HOME/ml_stack/wandb"
     if [[ "$DRY_RUN" == "false" ]]; then
@@ -924,7 +981,7 @@ EOF
         # Provide usage examples
         echo
         echo -e "${CYAN}${BOLD}Quick Start Examples:${RESET}"
-        if [ -n "$WANDB_VENV_PYTHON" ]; then
+        if [ -n "${WANDB_VENV_PYTHON:-}" ]; then
             echo -e "${GREEN}source ./wandb_venv/bin/activate${RESET}"
             echo -e "${GREEN}python -c \"import wandb; print('WandB version:', wandb.__version__)\"${RESET}"
         else
@@ -938,7 +995,7 @@ EOF
         # Output the actual environment variables that were set
         echo -e "${GREEN}export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\"${RESET}"
         echo -e "${GREEN}export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\"${RESET}"
-        if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        if [ -n "${PYTORCH_ALLOC_CONF:-}" ]; then
             echo -e "${GREEN}export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\"${RESET}"
         fi
         echo -e "${GREEN}export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\"${RESET}"

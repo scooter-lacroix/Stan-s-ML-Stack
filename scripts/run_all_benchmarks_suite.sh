@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Full Performance Benchmark Suite
 #
@@ -6,39 +6,35 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_ROOT"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/benchmark_common.sh"
 
-# Setup logging
-LOG_DIR="${HOME}/.rusty-stack/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/full_benchmarks_$(date +%Y%m%d_%H%M%S).log"
+benchmark_enable_colors
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+PROJECT_ROOT="$(benchmark_resolve_project_root "$SCRIPT_DIR")"
+MANIFEST_PATH="$(benchmark_discover_manifest_path "$PROJECT_ROOT")"
 
-log "Starting Full Benchmark Suite..."
+LOG_DIR="$(benchmark_resolve_log_dir)"
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="$LOG_DIR/full_benchmarks_${RUN_TS}.log"
+RESULT_JSON="$LOG_DIR/full_benchmarks_${RUN_TS}.json"
+benchmark_set_log_file "$LOG_FILE"
 
-# Ensure cargo is available
-if ! command -v cargo &> /dev/null; then
-    if [ -f "$HOME/.cargo/env" ]; then
-        source "$HOME/.cargo/env"
-    fi
-fi
+benchmark_log "Starting Full Benchmark Suite..."
+benchmark_log "Log file: $LOG_FILE"
 
-# Run all benchmarks
-log "Running all benchmarks (pre and post install)..."
-export VLLM_TARGET_DEVICE=rocm
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
-if ! cargo build --manifest-path="rusty-stack/Cargo.toml" --bin rusty-stack-bench &> /dev/null; then
-    log "ERROR: Failed to build benchmark binary"
-    exit 1
-fi
-if ! "./target/debug/rusty-stack-bench" all --json 2>&1 | tee -a "$LOG_FILE"; then
-    log "ERROR: Full Benchmark execution failed"
-    exit 1
-fi
+benchmark_require_cargo
+benchmark_prepare_rocm_runtime
+benchmark_ensure_vllm_runtime_basics || benchmark_warn "vLLM runtime preflight could not fully repair dependencies; full suite will continue and report details"
+benchmark_ensure_deepspeed_runtime_basics || benchmark_warn "DeepSpeed runtime preflight could not fully repair dependencies; full suite will continue and report details"
+benchmark_info "Ensuring benchmark binary is ready..."
+benchmark_build_rusty_stack_bench "$MANIFEST_PATH" "$LOG_FILE"
+: "${VLLM_TARGET_DEVICE:=rocm}"
+export VLLM_TARGET_DEVICE
 
-log "Full Benchmark Suite completed successfully"
+benchmark_info "Running all benchmarks (pre and post install)..."
+benchmark_run_named_json_to_file "$MANIFEST_PATH" "$LOG_FILE" "$RESULT_JSON" all
+
+benchmark_log "Benchmark JSON results: $RESULT_JSON"
+benchmark_success "Full Benchmark Suite completed successfully"
 exit 0

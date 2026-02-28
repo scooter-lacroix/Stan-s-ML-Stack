@@ -445,7 +445,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "30-60 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
         },
         Component {
             id: "rocm-benchmarks".into(),
@@ -458,7 +458,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "20-40 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
         },
         Component {
             id: "gpu-memory-bandwidth".into(),
@@ -471,7 +471,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
         },
         Component {
             id: "rocm-smi-bench".into(),
@@ -484,7 +484,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-25 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
         },
         Component {
             id: "vllm-performance".into(),
@@ -497,7 +497,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-25 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
         },
         Component {
             id: "deepspeed-performance".into(),
@@ -510,7 +510,20 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-20 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
+        },
+        Component {
+            id: "megatron-performance".into(),
+            name: "Megatron-LM Performance".into(),
+            description: "Megatron-LM import and throughput benchmark".into(),
+            script: "run_megatron_benchmarks.sh".into(),
+            category: Performance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-20 min".into(),
+            needs_sudo: false,
         },
         Component {
             id: "all-benchmarks".into(),
@@ -523,7 +536,7 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "45-90 min".into(),
-            needs_sudo: true,
+            needs_sudo: false,
         },
     ]
 }

@@ -519,7 +519,7 @@ verify_component() {
             fi
             ;;
         "vllm")
-            if $python_cmd -c "import vllm" &>/dev/null; then
+            if $python_cmd -c "import vllm, cachetools, cbor2, gguf, pybase64, llguidance, mistral_common, openai_harmony, outlines_core, xgrammar" &>/dev/null; then
                 print_success "vLLM verification passed"
                 return 0
             fi
