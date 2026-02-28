@@ -759,7 +759,8 @@ check_requirements() {
 }
 
 # Good: Check OS compatibility
-if [[ "$OSTYPE" != "linux-gnu"* ]] && [[ "$OSTYPE" != "darwin"* ]]; then
+# Keep glob patterns unquoted; quoted patterns become literal strings in [[ ]].
+if [[ "$OSTYPE" != linux-gnu* ]] && [[ "$OSTYPE" != darwin* ]]; then
   echo "Error: Unsupported OS: $OSTYPE" >&2
   exit 1
 fi

@@ -300,7 +300,7 @@ if ! check_command git; then
     case "$PKG_MANAGER" in
         pacman|apt|dnf|yum|zypper)
             echo ""
-            read -p "Would you like to install git now? [Y/n] " -n 1 -r
+            read -p "Would you like to install git now? [Y/n] " -n 1 -r </dev/tty
             echo ""
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 if ! install_dependency "git" "git"; then
@@ -333,7 +333,7 @@ if ! check_command curl; then
     case "$PKG_MANAGER" in
         pacman|apt|dnf|yum|zypper)
             echo ""
-            read -p "Would you like to install curl now? [Y/n] " -n 1 -r
+            read -p "Would you like to install curl now? [Y/n] " -n 1 -r </dev/tty
             echo ""
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 if ! install_dependency "curl" "curl"; then
@@ -362,7 +362,7 @@ fi
 if ! check_command rustc || ! check_command cargo; then
     log_warning "Rust toolchain not found"
     echo ""
-    read -p "Would you like to install Rust now? [Y/n] " -n 1 -r
+    read -p "Would you like to install Rust now? [Y/n] " -n 1 -r </dev/tty
     echo ""
     
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
