@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 #
 # Author: Stanley Chisango (Scooter Lacroix)
 # Email: scooterlacroix@gmail.com
@@ -16,6 +22,20 @@
 # Enhanced with modern installation standards, multiple package managers,
 # virtual environment support, and comprehensive error handling.
 # =============================================================================
+
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
 
 # ASCII Art Banner
 cat << "EOF"
@@ -80,7 +100,7 @@ CONFIG_FILE="$HOME/.ml-stack/triton_config.sh"
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 TRITON_VENV_PYTHON=""
 ORIGINAL_PWD="$PWD"
 
@@ -198,6 +218,18 @@ detect_container() {
 # Function to install system packages
 install_system_package() {
     local package="$1"
+
+    # Use multi-distro abstraction layer if available
+    if declare -f pm_install &>/dev/null; then
+        if [ "$DRY_RUN" = true ]; then
+            print_step "[DRY RUN] Would install $package using pm_install"
+            return 0
+        fi
+        pm_install "$package"
+        return $?
+    fi
+
+    # Fallback to original implementation
     local package_manager=$(detect_package_manager)
 
     case $package_manager in
@@ -955,6 +987,9 @@ load_config() {
         print_step "Loading configuration from $CONFIG_FILE"
         log "INFO" "Loading configuration from $CONFIG_FILE"
         source "$CONFIG_FILE"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
     else
         print_step "No configuration file found, using defaults"
         log "INFO" "No configuration file found, using defaults"

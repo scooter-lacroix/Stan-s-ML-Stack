@@ -1,119 +1,171 @@
-#!/bin/bash
-# Stan's ML Stack - PyTorch ROCm Installer (channel-aware)
+#!/usr/bin/env bash
+# Stan's ML Stack - PyTorch ROCm Installer
 
 set -euo pipefail
 
-# Source utility scripts if available
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/common_utils.sh" ]; then
-    source "$SCRIPT_DIR/common_utils.sh"
-fi
-if [ -f "$SCRIPT_DIR/env_validation_utils.sh" ]; then
-    source "$SCRIPT_DIR/env_validation_utils.sh"
-fi
-if [ -f "$SCRIPT_DIR/gpu_detection_utils.sh" ]; then
-    source "$SCRIPT_DIR/gpu_detection_utils.sh"
-fi
+GUARD_LIB="$SCRIPT_DIR/lib/installer_guard.sh"
 
-# Dry run flag check
-DRY_RUN=${DRY_RUN:-false}
+if [ ! -f "$GUARD_LIB" ]; then
+    printf '[mlstack][ERROR] Missing installer guard library: %s\n' "$GUARD_LIB" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$GUARD_LIB"
+
+DRY_RUN=false
+INSTALL_METHOD="${MLSTACK_INSTALL_METHOD:-auto}"
+METHOD_SET_BY_FLAG=false
+TORCH_CHANNEL="${MLSTACK_TORCH_CHANNEL:-latest}"
+CHANNEL_SET_BY_FLAG=false
+
 while [[ $# -gt 0 ]]; do
-    case $1 in
-        --dry-run) DRY_RUN=true; shift ;;
-        *) shift ;;
+    case "$1" in
+        --dry-run) DRY_RUN=true ;;
+        --method)
+            if [ $# -lt 2 ]; then
+                mlstack_log_error "--method requires one value: global, venv, or auto"
+                exit 1
+            fi
+            INSTALL_METHOD="$2"
+            METHOD_SET_BY_FLAG=true
+            shift
+            ;;
+        --channel)
+            if [ $# -lt 2 ]; then
+                mlstack_log_error "--channel requires one value: stable, latest, or nightly"
+                exit 1
+            fi
+            TORCH_CHANNEL="$2"
+            CHANNEL_SET_BY_FLAG=true
+            shift
+            ;;
+        *) mlstack_log_warn "Ignoring unknown argument: $1" ;;
     esac
+    shift
 done
 
-# Require and validate .mlstack_env
-if type require_mlstack_env >/dev/null 2>&1; then
-    require_mlstack_env "$(basename "$0")" || true
-else
-    # Fallback validation if utils not available
-    if [ -f "$HOME/.mlstack_env" ]; then
-        # shellcheck source=/dev/null
-        source "$HOME/.mlstack_env"
-    fi
-fi
-
-ROCM_VERSION=${ROCM_VERSION:-7.2}
-ROCM_CHANNEL=${ROCM_CHANNEL:-latest}
-
-# Detect GPU architecture with validation
-if [ -z "${GPU_ARCH:-}" ]; then
-    if type detect_gpu_architecture >/dev/null 2>&1; then
-        GPU_ARCH=$(detect_gpu_architecture) || exit 1
-    else
-        # Fallback to old method if utils not available
-        GPU_ARCH=$(rocminfo 2>/dev/null | grep -o "gfx[0-9]*" | head -n1)
-        if [ -z "$GPU_ARCH" ]; then
-            print_error "Unable to detect GPU architecture"
-            print_step "Please ensure ROCm is installed and GPU is properly configured."
-            exit 1
-        fi
-    fi
-fi
-
-# Validate GPU detection
-if type validate_gpu_detection >/dev/null 2>&1; then
-    validate_gpu_detection "$GPU_ARCH" "$(basename "$0")" || exit 1
-fi
-
-case "$GPU_ARCH" in
-    gfx1030|gfx1031|gfx1032|gfx1034|gfx1035|gfx1036)
-        export PYTORCH_ROCM_ARCH=gfx1030
-        ;;
+INSTALL_METHOD="${INSTALL_METHOD,,}"
+case "$INSTALL_METHOD" in
+    global|venv|auto) ;;
     *)
-        export PYTORCH_ROCM_ARCH="$GPU_ARCH"
+        mlstack_log_error "Invalid --method value: $INSTALL_METHOD (expected: global, venv, auto)"
+        exit 1
         ;;
 esac
 
-if [ "${ROCM_CHANNEL:-}" = "preview" ]; then
-    INDEX_URL="https://rocm.nightlies.amd.com/v2/${GPU_ARCH:-gfx1100}/"
-    EXTRA_FLAGS=(--pre --index-url "$INDEX_URL")
-else
-    # ROCm 7.x uses AMD's radeon repo for official wheels
-    # PyTorch nightly wheels often have issues with MPI dependencies
-    case "${ROCM_VERSION:-7.2}" in
-        6.2*) INDEX_URL="https://download.pytorch.org/whl/rocm6.2" ; EXTRA_FLAGS=(--index-url "$INDEX_URL") ;;
-        6.3*) INDEX_URL="https://download.pytorch.org/whl/rocm6.3" ; EXTRA_FLAGS=(--index-url "$INDEX_URL") ;;
-        6.4*) INDEX_URL="https://download.pytorch.org/whl/rocm6.4" ; EXTRA_FLAGS=(--index-url "$INDEX_URL") ;;
-        7.0*|7.1*|7.2*)
-            # Use AMD's official ROCm 7.2 wheels - these are properly built
-            INDEX_URL="https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/"
-            EXTRA_FLAGS=(--index-url "$INDEX_URL")
-            ;;
-        *) INDEX_URL="https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/" ; EXTRA_FLAGS=(--index-url "$INDEX_URL") ;;
+TORCH_CHANNEL="$(mlstack_torch_channel_normalize "$TORCH_CHANNEL")"
+
+if [ -f "$HOME/.mlstack_env" ]; then
+    set +u
+    # shellcheck source=/dev/null
+    source "$HOME/.mlstack_env"
+    set -u
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+ROCM_VERSION="${ROCM_VERSION:-7.1.0}"
+
+if [ "$CHANNEL_SET_BY_FLAG" = false ] && [ -t 0 ] && [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+    printf '\nPyTorch ROCm channel:\n'
+    printf '  1) Stable\n'
+    printf '  2) Latest (stable fallback to nightly)\n'
+    printf '  3) Nightly\n'
+    read -r -p "Choose channel (1-3) [2]: " CHANNEL_CHOICE
+    CHANNEL_CHOICE="${CHANNEL_CHOICE:-2}"
+    case "$CHANNEL_CHOICE" in
+        1) TORCH_CHANNEL="stable" ;;
+        2) TORCH_CHANNEL="latest" ;;
+        3) TORCH_CHANNEL="nightly" ;;
+        *) TORCH_CHANNEL="latest" ;;
     esac
 fi
 
-# Check for required ROCm packages before installing PyTorch
-print_section "Checking ROCm dependencies"
-MISSING_PKGS=""
-if ! dpkg -l rocm-libs >/dev/null 2>&1; then
-    MISSING_PKGS="$MISSING_PKGS rocm-libs"
-fi
-if ! dpkg -l rocm-dev >/dev/null 2>&1; then
-    MISSING_PKGS="$MISSING_PKGS rocm-dev"
-fi
-
-if [ -n "$MISSING_PKGS" ]; then
-    echo "⚠ Missing required ROCm packages:$MISSING_PKGS"
-    echo "➤ Installing missing packages..."
-    sudo apt-get update && sudo apt-get install -y $MISSING_PKGS
+if [ "$METHOD_SET_BY_FLAG" = false ] && [ -t 0 ] && [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+    printf '\nPyTorch installation method:\n'
+    printf '  1) Global installation\n'
+    printf '  2) Virtual environment installation\n'
+    printf '  3) Auto (try global then fallback to venv)\n'
+    read -r -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+    INSTALL_CHOICE="${INSTALL_CHOICE:-3}"
+    case "$INSTALL_CHOICE" in
+        1) INSTALL_METHOD="global" ;;
+        2) INSTALL_METHOD="venv" ;;
+        3|*) INSTALL_METHOD="auto" ;;
+    esac
 fi
 
-print_section "Installing PyTorch for ROCm $ROCM_VERSION ($ROCM_CHANNEL)"
-execute_command "pip3 install --break-system-packages torch torchvision torchaudio ${EXTRA_FLAGS[*]}" "Installing PyTorch components"
+if [ "$DRY_RUN" = true ]; then
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [ ! -x "$PYTHON_BIN" ]; then
+        mlstack_log_error "Python interpreter not found: $PYTHON_BIN"
+        exit 1
+    fi
+    if [ "$METHOD_SET_BY_FLAG" = true ]; then
+        mlstack_log_info "Dry run: install method is '$INSTALL_METHOD' (from --method)"
+    else
+        mlstack_log_info "Dry run: install method is '$INSTALL_METHOD'"
+    fi
+    if [ "$CHANNEL_SET_BY_FLAG" = true ]; then
+        mlstack_log_info "Dry run: torch channel is '$TORCH_CHANNEL' (from --channel)"
+    else
+        mlstack_log_info "Dry run: torch channel is '$TORCH_CHANNEL'"
+    fi
+    case "$INSTALL_METHOD" in
+        global) mlstack_log_info "Dry run: would install with interpreter $PYTHON_BIN" ;;
+        venv) mlstack_log_info "Dry run: would prepare venv $(mlstack_default_venv_base)/pytorch_rocm" ;;
+        auto) mlstack_log_info "Dry run: would try global install with $PYTHON_BIN, then fallback to venv on failure" ;;
+    esac
+    selected="$(mlstack_select_torch_index "$PYTHON_BIN" "$ROCM_VERSION" "$TORCH_CHANNEL" || true)"
+    if [ -n "$selected" ]; then
+        IFS='|' read -r dry_index dry_series dry_channel <<< "$selected"
+        mlstack_log_info "Dry run: resolved index=$dry_index (series=$dry_series, effective_channel=$dry_channel)"
+    else
+        mlstack_log_warn "Dry run: no compatible wheel index resolved for current Python/ROCm."
+    fi
+    mlstack_log_info "Dry run complete. No installation actions were performed."
+    exit 0
+fi
 
-if [ "$DRY_RUN" = "false" ]; then
-    print_section "Verifying installation"
-    python3 <<'PY'
+mlstack_assert_python_supported "$PYTHON_BIN"
+TARGET_PYTHON="$PYTHON_BIN"
+TARGET_DESC="global interpreter"
+VENV_NAME="pytorch_rocm"
+
+if [ "$INSTALL_METHOD" = "venv" ]; then
+    VENV_DIR="$(mlstack_prepare_venv "$VENV_NAME" "$PYTHON_BIN")"
+    TARGET_PYTHON="$(mlstack_venv_python "$VENV_NAME")"
+    TARGET_DESC="virtualenv $VENV_DIR"
+elif [ "$INSTALL_METHOD" = "auto" ]; then
+    TARGET_DESC="global interpreter (auto mode)"
+fi
+
+mlstack_log_info "Using Python: $TARGET_PYTHON ($TARGET_DESC)"
+mlstack_log_info "Requested torch channel: $TORCH_CHANNEL"
+
+install_torch_stack() {
+    local python_bin="$1"
+    mlstack_install_rocm_torch_stack "$python_bin" "$ROCM_VERSION" "$TORCH_CHANNEL" "pytorch"
+}
+
+if [ "$INSTALL_METHOD" = "auto" ]; then
+    if ! install_torch_stack "$TARGET_PYTHON"; then
+        mlstack_log_warn "Auto mode global install failed; falling back to venv."
+        VENV_DIR="$(mlstack_prepare_venv "$VENV_NAME" "$PYTHON_BIN")"
+        TARGET_PYTHON="$(mlstack_venv_python "$VENV_NAME")"
+        TARGET_DESC="virtualenv $VENV_DIR (auto fallback)"
+        mlstack_log_info "Using Python: $TARGET_PYTHON ($TARGET_DESC)"
+        install_torch_stack "$TARGET_PYTHON"
+    fi
+else
+    install_torch_stack "$TARGET_PYTHON"
+fi
+
+mlstack_guard_python_env "pytorch" "$TARGET_PYTHON" --purge
+mlstack_assert_rocm_torch "$TARGET_PYTHON"
+
+"$TARGET_PYTHON" - <<'PY'
 import torch
-print("PyTorch version:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-if torch.cuda.is_available():
-    print("Device:", torch.cuda.get_device_name(0))
-    x = torch.ones(128, device='cuda')
-    print("Sanity sum:", x.sum().item())
+x = torch.ones(128, device="cuda")
+print("Device:", torch.cuda.get_device_name(0))
+print("Sanity sum:", x.sum().item())
 PY
-fi

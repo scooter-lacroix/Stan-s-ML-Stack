@@ -1,3 +1,6 @@
+use crate::benchmark_logs::{
+    benchmark_log_directories, extract_benchmark_json_value, find_latest_log_in_dirs,
+};
 use crate::component_status::{
     component_verification_commands, is_component_installed_by_id, modules_available,
     python_interpreters, python_search_paths, verification_commands, VerificationCommand,
@@ -54,13 +57,14 @@ pub fn run_installation(
 ) {
     let scripts_dir = &config.scripts_dir;
     let batch_mode = config.batch_mode;
+    let install_method = config.install_method.clone();
     let total = components.len() as f32;
     let mut index = 0usize;
     let mut python_candidates = python_interpreters();
-    let user_home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let user_home = resolve_mlstack_user_home();
     let input_rx = Arc::new(Mutex::new(input_rx));
 
-    match ensure_mlstack_env(&user_home) {
+    match ensure_mlstack_env(&user_home, &install_method) {
         Ok(EnvUpdate::Created) => {
             let _ = sender.send(InstallerEvent::Log(
                 format!("Created .mlstack_env in {}", user_home),
@@ -106,10 +110,14 @@ pub fn run_installation(
     }
 
     let mut overall_success = true;
-    let python_bin = resolve_python_bin();
-    if !python_candidates.contains(&python_bin) {
-        python_candidates.insert(0, python_bin.clone());
-    }
+    let env_exports = load_mlstack_env_exports(&user_home);
+    let persistent_python = env_exports
+        .get("MLSTACK_PYTHON_BIN")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
+    python_candidates.retain(|candidate| candidate != &python_bin);
+    python_candidates.insert(0, python_bin.clone());
     let _ = sender.send(InstallerEvent::Log(
         format!("Selected python interpreter: {}", python_bin),
         false,
@@ -173,10 +181,10 @@ pub fn run_installation(
             &script_path,
             sudo_password.clone(),
             batch_mode,
+            &install_method,
             &sender,
             Arc::clone(&input_rx),
         ) {
-            overall_success = false;
             install_success = false;
             error_msg = err.to_string();
         }
@@ -198,13 +206,34 @@ pub fn run_installation(
             overall_success = false;
         }
 
-        // Debug logging for environment components
+        // Installation and verification must both succeed.
+        // A failed installer script must not be reported as successful.
         let final_success = install_success && verification_outcome.success;
-        if component.id == "permanent-env" || component.id == "enhanced-env" || component.id == "basic-env" {
+        if !install_success && verification_outcome.success {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "{} verification passed but installer script failed; keeping component status as failed",
+                    component.name
+                ),
+                false,
+            ));
+        }
+        if !final_success {
+            overall_success = false;
+        }
+
+        // Debug logging for environment components
+        if component.id == "permanent-env"
+            || component.id == "enhanced-env"
+            || component.id == "basic-env"
+        {
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "[DEBUG] Component {}: install_success={}, verification_success={}, final={}",
-                    component.id, install_success, verification_outcome.success, final_success
+                    component.id,
+                    install_success,
+                    verification_outcome.success,
+                    final_success
                 ),
                 false,
             ));
@@ -293,8 +322,20 @@ struct VerificationOutcome {
     report_lines: Vec<String>,
 }
 
-fn ensure_mlstack_env(user_home: &str) -> Result<EnvUpdate> {
+fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate> {
     let env_path = PathBuf::from(user_home).join(".mlstack_env");
+    let normalized_install_method = match install_method.trim().to_ascii_lowercase().as_str() {
+        "global" => "global",
+        "venv" => "venv",
+        "auto" => "auto",
+        _ => "auto",
+    };
+    let env_exports = load_mlstack_env_exports(&user_home);
+    let persistent_python = env_exports
+        .get("MLSTACK_PYTHON_BIN")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
     if env_path.exists() {
         let contents = fs::read_to_string(&env_path).context("Failed to read .mlstack_env")?;
         let rocm_version = detect_rocm_version();
@@ -303,22 +344,32 @@ fn ensure_mlstack_env(user_home: &str) -> Result<EnvUpdate> {
         let primary_gpu = first_gpu_index(&gpu_list);
         let rocm_home = "/opt/rocm";
         let rocm_lib = "/opt/rocm/lib";
-        let python_bin = "/usr/local/bin/python3";
         let defaults = [
             ("ROCM_VERSION", rocm_version.as_str()),
             ("ROCM_CHANNEL", "latest"),
             ("GPU_ARCH", gpu_arch.as_str()),
+            ("PYTORCH_ROCM_ARCH", gpu_arch.as_str()),
+            ("GPU_ARCHS", gpu_arch.as_str()),
             ("ROCM_HOME", rocm_home),
             ("ROCM_PATH", rocm_home),
             ("HIP_PATH", rocm_home),
             ("HIP_VISIBLE_DEVICES", gpu_list.as_str()),
             ("CUDA_VISIBLE_DEVICES", gpu_list.as_str()),
             ("PYTORCH_ROCM_DEVICE", primary_gpu.as_str()),
-            ("MLSTACK_PYTHON_BIN", python_bin),
+            ("MLSTACK_PYTHON_BIN", python_bin.as_str()),
+            ("UV_PYTHON", python_bin.as_str()),
+            ("MLSTACK_INSTALL_METHOD", normalized_install_method),
+            ("INSTALL_METHOD", normalized_install_method),
             ("PYTHONPATH", rocm_lib),
         ];
-        let (updated, changed) =
-            sanitize_mlstack_env(&contents, &defaults, gpu_list.as_str(), rocm_home);
+        let (updated, changed) = sanitize_mlstack_env(
+            &contents,
+            &defaults,
+            gpu_list.as_str(),
+            rocm_home,
+            python_bin.as_str(),
+            normalized_install_method,
+        );
         if changed {
             fs::write(&env_path, updated).context("Failed to update .mlstack_env")?;
             return Ok(EnvUpdate::Updated);
@@ -336,13 +387,14 @@ fn ensure_mlstack_env(user_home: &str) -> Result<EnvUpdate> {
     let primary_gpu = first_gpu_index(&gpu_list);
     let rocm_home = "/opt/rocm";
     let rocm_lib = "/opt/rocm/lib";
-    let python_bin = "/usr/local/bin/python3";  // Default, typically uv's python3
 
     let content = format!(
         "# ML Stack Environment File (generated by Rusty-Stack)\n\
 export ROCM_VERSION={}\n\
 export ROCM_CHANNEL=latest\n\
 export GPU_ARCH={}\n\
+export PYTORCH_ROCM_ARCH={}\n\
+export GPU_ARCHS={}\n\
 export ROCM_HOME={}\n\
 export ROCM_PATH={}\n\
 export HIP_PATH={}\n\
@@ -350,12 +402,17 @@ export HIP_VISIBLE_DEVICES={}\n\
 export CUDA_VISIBLE_DEVICES={}\n\
 export PYTORCH_ROCM_DEVICE={}\n\
 export MLSTACK_PYTHON_BIN={}\n\
+export UV_PYTHON={}\n\
+export MLSTACK_INSTALL_METHOD={}\n\
+export INSTALL_METHOD={}\n\
 export PYTHONPATH={}:$PYTHONPATH\n\
 export TORCH_CUDA_ARCH_LIST=\"7.0;8.0;9.0\"\n\
 export PYTORCH_CUDA_ALLOC_CONF=\"max_split_size_mb:512\"\n\
 export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{}/bin:{}/hip/bin:$PATH\"\n\
-export LD_LIBRARY_PATH=\"{}/lib:{}/hip/lib:{}/opencl/lib:${{LD_LIBRARY_PATH:-}}\"\n",
+export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{}/lib:{}/hip/lib:{}/opencl/lib:$LD_LIBRARY_PATH\"\n",
         rocm_version,
+        gpu_arch,
+        gpu_arch,
         gpu_arch,
         rocm_home,
         rocm_home,
@@ -364,6 +421,9 @@ export LD_LIBRARY_PATH=\"{}/lib:{}/hip/lib:{}/opencl/lib:${{LD_LIBRARY_PATH:-}}\
         gpu_list,
         primary_gpu,
         python_bin,
+        python_bin,
+        normalized_install_method,
+        normalized_install_method,
         rocm_lib,
         rocm_home,
         rocm_home,
@@ -381,6 +441,8 @@ fn sanitize_mlstack_env(
     defaults: &[(&str, &str)],
     gpu_list: &str,
     rocm_home: &str,
+    python_bin: &str,
+    install_method: &str,
 ) -> (String, bool) {
     let mut changed = false;
     let mut lines = Vec::new();
@@ -395,10 +457,26 @@ fn sanitize_mlstack_env(
         let (line, changed_alloc) = fix_env_assignment(&line, "PYTORCH_CUDA_ALLOC_CONF");
         let (line, changed_hip) = normalize_env_value(&line, "HIP_PATH", "/opt/rocm");
         let (line, changed_rocm) = normalize_env_value(&line, "ROCM_PATH", "/opt/rocm");
+        let (line, changed_python) = normalize_env_value(&line, "MLSTACK_PYTHON_BIN", python_bin);
+        let (line, changed_uv_python) = normalize_env_value(&line, "UV_PYTHON", python_bin);
+        let (line, changed_method) =
+            normalize_env_value(&line, "MLSTACK_INSTALL_METHOD", install_method);
+        let (line, changed_method_alias) =
+            normalize_env_value(&line, "INSTALL_METHOD", install_method);
         let (line, changed_hip_vis) =
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
         let (line, changed_cuda_vis) =
             normalize_visible_devices(&line, "CUDA_VISIBLE_DEVICES", gpu_list);
+        let (line, changed_pythonpath) = if line.starts_with("export PYTHONPATH=") {
+            let desired = format!("export PYTHONPATH={}/lib:$PYTHONPATH", rocm_home);
+            if line.trim() != desired {
+                (desired, true)
+            } else {
+                (line, false)
+            }
+        } else {
+            (line, false)
+        };
 
         // Enforce safe PATH and LD_LIBRARY_PATH
         let (line, changed_path) = if line.starts_with("export PATH=") {
@@ -414,7 +492,7 @@ fn sanitize_mlstack_env(
 
         let (line, changed_ld) = if line.starts_with("export LD_LIBRARY_PATH=") {
             let desired = format!(
-                "export LD_LIBRARY_PATH=\"{}/lib:{}/hip/lib:{}/opencl/lib:${{LD_LIBRARY_PATH:-}}\"",
+                "export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{}/lib:{}/hip/lib:{}/opencl/lib:$LD_LIBRARY_PATH\"",
                 rocm_home, rocm_home, rocm_home
             );
             if line.trim() != desired {
@@ -430,8 +508,13 @@ fn sanitize_mlstack_env(
             || changed_alloc
             || changed_hip
             || changed_rocm
+            || changed_python
+            || changed_uv_python
+            || changed_method
+            || changed_method_alias
             || changed_hip_vis
             || changed_cuda_vis
+            || changed_pythonpath
             || changed_path
             || changed_ld;
         lines.push(line);
@@ -482,8 +565,8 @@ fn normalize_env_value(line: &str, key: &str, desired: &str) -> (String, bool) {
 }
 
 fn normalize_visible_devices(line: &str, key: &str, desired: &str) -> (String, bool) {
-    // Skip if desired is just "0" (single GPU, no filtering needed)
-    if desired == "0" {
+    let desired = desired.trim();
+    if desired.is_empty() {
         return (line.to_string(), false);
     }
 
@@ -522,6 +605,33 @@ fn run_verification(
     let mut failed = 0usize;
 
     for step in &steps {
+        if let Some((benchmark_ok, benchmark_output)) = verify_benchmark_target(&step.target_id) {
+            executed += 1;
+            if benchmark_ok {
+                results.insert(
+                    step.target_id.clone(),
+                    VerificationCheckResult {
+                        status: VerificationResult::Verified,
+                        output: benchmark_output,
+                    },
+                );
+            } else {
+                failed += 1;
+                results.insert(
+                    step.target_id.clone(),
+                    VerificationCheckResult {
+                        status: VerificationResult::Failed,
+                        output: benchmark_output,
+                    },
+                );
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("Verification failed for {}", step.label),
+                    false,
+                ));
+            }
+            continue;
+        }
+
         if !is_component_installed_by_id(&step.target_id, python_candidates) {
             results.insert(
                 step.target_id.clone(),
@@ -669,6 +779,29 @@ fn run_component_verification(
     let mut failed = 0usize;
 
     for step in &steps {
+        if let Some((benchmark_ok, benchmark_output)) = verify_benchmark_target(&step.target_id) {
+            executed += 1;
+            if benchmark_ok {
+                results.insert(
+                    step.target_id.clone(),
+                    VerificationCheckResult {
+                        status: VerificationResult::Verified,
+                        output: benchmark_output,
+                    },
+                );
+            } else {
+                failed += 1;
+                results.insert(
+                    step.target_id.clone(),
+                    VerificationCheckResult {
+                        status: VerificationResult::Failed,
+                        output: benchmark_output,
+                    },
+                );
+            }
+            continue;
+        }
+
         if !modules_available(&step.modules, python_candidates) {
             results.insert(
                 step.target_id.clone(),
@@ -764,13 +897,8 @@ fn build_component_report(
 }
 
 fn extract_benchmark_results(component_id: &str) -> Option<Vec<String>> {
-    use std::path::PathBuf;
-
-    let log_dir = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".rusty-stack")
-        .join("logs");
-
-    if !log_dir.exists() {
+    let log_dirs = benchmark_log_directories();
+    if log_dirs.is_empty() {
         return None;
     }
 
@@ -781,114 +909,76 @@ fn extract_benchmark_results(component_id: &str) -> Option<Vec<String>> {
         "gpu-memory-bandwidth" => "gpu_memory_bandwidth",
         "rocm-smi-bench" => "rocm_smi_benchmarks",
         "pytorch-performance" => "pytorch_performance",
+        "vllm-performance" => "vllm_benchmarks",
+        "deepspeed-performance" => "deepspeed_benchmarks",
+        "megatron-performance" => "megatron_benchmarks",
+        "all-benchmarks" => "full_benchmarks",
         _ => return None,
     };
 
-    // Find the most recent log file
-    let mut log_files: Vec<_> = std::fs::read_dir(&log_dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .map(|name| name.contains(pattern))
-                .unwrap_or(false)
-        })
-        .collect();
-
-    log_files.sort_by(|a, b| {
-        let a_time = a.metadata().ok().and_then(|m| m.modified().ok());
-        let b_time = b.metadata().ok().and_then(|m| m.modified().ok());
-        a_time.cmp(&b_time)
-    });
-
-    let log_file = log_files.last()?;
-    let contents = std::fs::read_to_string(log_file.path()).ok()?;
+    let log_file = find_latest_log_in_dirs(&log_dirs, pattern)?;
+    let contents = std::fs::read_to_string(log_file).ok()?;
 
     // Initialize result_lines at the beginning
     let mut result_lines: Vec<String> = Vec::new();
 
-    // Find the complete JSON object (may span multiple lines)
-    // Look for "name": "all" or similar marker and extract the full JSON by counting braces
-    let mut json_str = String::new();
-    let mut found_json = false;
-    let mut depth = 0;
-    let mut in_json = false;
-
-    for (i, c) in contents.char_indices() {
-        if c == '{' {
-            if !in_json {
-                // Start of potential JSON object
-                if let Some(slice) = contents.get(i..) {
-                    if slice.starts_with("{\"name\"") || slice.starts_with("{\"success\"") {
-                        in_json = true;
-                        depth = 1;
-                        json_str.clear();
-                    }
-                }
-            }
-            if in_json {
-                json_str.push(c);
-                if depth == 1 && c == '{' {
-                    // This is the opening brace of the main object
-                }
-            }
-        } else if c == '}' && in_json {
-            json_str.push(c);
-            depth -= 1;
-            if depth == 0 {
-                // Found complete JSON
-                found_json = true;
-                break;
-            }
-        } else if in_json {
-            json_str.push(c);
-        }
-    }
-
-    if !found_json || json_str.is_empty() {
+    let Some(json) = extract_benchmark_json_value(&contents) else {
         result_lines.push("  No metrics found in log".to_string());
         return Some(result_lines);
-    }
+    };
 
-    // Parse the extracted JSON
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-        // Handle nested results object (for "all" benchmarks)
-        if let Some(results) = json.get("results").and_then(|r| r.as_object()) {
-            for (bench_name, bench_data) in results {
-                if bench_data.is_object() {
-                    result_lines.push(format!(
-                        "  === {} ===",
-                        bench_name.replace("_", " ").to_uppercase()
-                    ));
-                    if let Some(metrics) = bench_data.get("metrics").and_then(|m| m.as_object()) {
-                        for (key, value) in metrics {
-                            let value_str = match value {
-                                serde_json::Value::Number(n) => n.to_string(),
-                                serde_json::Value::String(s) => s.clone(),
-                                serde_json::Value::Bool(b) => b.to_string(),
-                                _ => continue,
-                            };
-                            let formatted_key = key.replace("_", " ").to_uppercase();
-                            result_lines.push(format!("    {}: {}", formatted_key, value_str));
-                        }
+    // Handle nested results object (for "all" benchmarks)
+    if let Some(results) = json.get("results").and_then(|r| r.as_object()) {
+        for (bench_name, bench_data) in results {
+            if bench_data.is_object() {
+                let status = bench_data
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .map(|ok| if ok { "SUCCESS" } else { "FAILED" })
+                    .unwrap_or("UNKNOWN");
+                let time_ms = bench_data
+                    .get("execution_time_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                result_lines.push(format!(
+                    "  === {} ({}, {} ms) ===",
+                    bench_name.replace('_', " ").to_uppercase(),
+                    status,
+                    time_ms
+                ));
+                if let Some(metrics) = bench_data.get("metrics").and_then(|m| m.as_object()) {
+                    for (key, value) in metrics {
+                        let value_str = match value {
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Array(arr) => format!("{} values", arr.len()),
+                            _ => continue,
+                        };
+                        let formatted_key = key.replace('_', " ").to_uppercase();
+                        result_lines.push(format!("    {}: {}", formatted_key, value_str));
                     }
-                    result_lines.push(String::new());
                 }
+                if let Some(errors) = bench_data.get("errors").and_then(|v| v.as_array()) {
+                    for err in errors.iter().filter_map(|v| v.as_str()).take(3) {
+                        result_lines.push(format!("    ERROR: {}", err));
+                    }
+                }
+                result_lines.push(String::new());
             }
-        } else if let Some(metrics) = json.get("metrics").and_then(|m| m.as_object()) {
-            // Handle single benchmark results
-            for (key, value) in metrics {
-                let value_str = match value {
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    _ => continue,
-                };
-                let formatted_key = key.replace("_", " ").to_uppercase();
-                result_lines.push(format!("  {}: {}", formatted_key, value_str));
-            }
+        }
+    } else if let Some(metrics) = json.get("metrics").and_then(|m| m.as_object()) {
+        // Handle single benchmark results
+        for (key, value) in metrics {
+            let value_str = match value {
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Array(arr) => format!("{} values", arr.len()),
+                _ => continue,
+            };
+            let formatted_key = key.replace('_', " ").to_uppercase();
+            result_lines.push(format!("  {}: {}", formatted_key, value_str));
         }
     }
 
@@ -899,28 +989,134 @@ fn extract_benchmark_results(component_id: &str) -> Option<Vec<String>> {
     Some(result_lines)
 }
 
-fn collect_env_info(user_home: &str) -> Vec<(String, String)> {
-    let mut values: HashMap<String, String> = HashMap::new();
-    let env_path = PathBuf::from(user_home).join(".mlstack_env");
+fn benchmark_pattern_for_target(target_id: &str) -> Option<&'static str> {
+    match target_id {
+        "mlperf-inference" => Some("mlperf_inference"),
+        "rocm-benchmarks" => Some("rocm_benchmarks"),
+        "gpu-memory-bandwidth" => Some("gpu_memory_bandwidth"),
+        "rocm-smi-bench" => Some("rocm_smi_benchmarks"),
+        "pytorch-performance" => Some("pytorch_performance"),
+        "vllm-performance" => Some("vllm_benchmarks"),
+        "deepspeed-performance" => Some("deepspeed_benchmarks"),
+        "megatron-performance" => Some("megatron_benchmarks"),
+        "all-benchmarks" => Some("full_benchmarks"),
+        _ => None,
+    }
+}
 
-    if let Ok(contents) = fs::read_to_string(&env_path) {
-        for line in contents.lines() {
-            if let Some((key, value)) = parse_env_export(line) {
-                values.entry(key).or_insert(value);
+fn benchmark_success_and_errors(value: &serde_json::Value) -> (bool, Vec<String>) {
+    if let Some(success) = value.get("success").and_then(|v| v.as_bool()) {
+        let mut details = Vec::new();
+        if !success {
+            if let Some(reason) = value.get("reason").and_then(|v| v.as_str()) {
+                let reason = reason.trim();
+                if !reason.is_empty() {
+                    details.push(reason.to_string());
+                }
+            }
+            if let Some(errors) = value.get("errors").and_then(|v| v.as_array()) {
+                for err in errors.iter().filter_map(|entry| entry.as_str()).take(4) {
+                    let trimmed = err.trim();
+                    if !trimmed.is_empty() {
+                        details.push(trimmed.to_string());
+                    }
+                }
+            }
+            if details.is_empty() {
+                details.push("Benchmark JSON reported success=false".to_string());
             }
         }
+        return (success, details);
     }
+
+    if let Some(results) = value.get("results").and_then(|v| v.as_object()) {
+        let mut failed = Vec::new();
+        let mut seen_result = false;
+        for (name, item) in results {
+            if let Some(item_success) = item.get("success").and_then(|v| v.as_bool()) {
+                seen_result = true;
+                if !item_success {
+                    let mut reason = item
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| format!("{name}: success=false"));
+                    if reason == format!("{name}: success=false") {
+                        if let Some(errors) = item.get("errors").and_then(|v| v.as_array()) {
+                            if let Some(first) = errors.iter().filter_map(|v| v.as_str()).next() {
+                                let first = first.trim();
+                                if !first.is_empty() {
+                                    reason = format!("{name}: {first}");
+                                }
+                            }
+                        }
+                    }
+                    failed.push(reason);
+                }
+            }
+        }
+        if seen_result {
+            return (failed.is_empty(), failed);
+        }
+    }
+
+    (
+        false,
+        vec!["Benchmark JSON does not contain a recognizable success field".to_string()],
+    )
+}
+
+fn verify_benchmark_target(target_id: &str) -> Option<(bool, Vec<String>)> {
+    let pattern = benchmark_pattern_for_target(target_id)?;
+    let log_dirs = benchmark_log_directories();
+    if log_dirs.is_empty() {
+        return Some((false, vec!["No benchmark log directories found".to_string()]));
+    }
+
+    let Some(log_file) = find_latest_log_in_dirs(&log_dirs, pattern) else {
+        return Some((
+            false,
+            vec![format!("No benchmark logs found for pattern '{pattern}'")],
+        ));
+    };
+
+    let mut output = vec![format!("Latest benchmark log: {}", log_file.display())];
+    let contents = match std::fs::read_to_string(&log_file) {
+        Ok(contents) => contents,
+        Err(err) => {
+            output.push(format!("Could not read benchmark log: {err}"));
+            return Some((false, output));
+        }
+    };
+
+    let Some(json) = extract_benchmark_json_value(&contents) else {
+        output.push("Could not parse benchmark JSON payload from log".to_string());
+        return Some((false, output));
+    };
+
+    let (success, mut details) = benchmark_success_and_errors(&json);
+    output.append(&mut details);
+    Some((success, output))
+}
+
+fn collect_env_info(user_home: &str) -> Vec<(String, String)> {
+    let mut values = load_mlstack_env_exports(user_home);
 
     let keys = [
         "ROCM_VERSION",
         "ROCM_CHANNEL",
         "GPU_ARCH",
+        "GPU_ARCHS",
+        "PYTORCH_ROCM_ARCH",
         "HIP_VISIBLE_DEVICES",
         "CUDA_VISIBLE_DEVICES",
         "PYTORCH_ROCM_DEVICE",
+        "HSA_OVERRIDE_GFX_VERSION",
         "ROCM_HOME",
         "ROCM_PATH",
         "HIP_PATH",
+        "MLSTACK_PYTHON_BIN",
         "PYTHONPATH",
     ];
 
@@ -945,6 +1141,22 @@ fn collect_env_info(user_home: &str) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+fn load_mlstack_env_exports(user_home: &str) -> HashMap<String, String> {
+    let mut values: HashMap<String, String> = HashMap::new();
+    for home in candidate_mlstack_homes(user_home) {
+        let env_path = PathBuf::from(home).join(".mlstack_env");
+        if let Ok(contents) = fs::read_to_string(&env_path) {
+            for line in contents.lines() {
+                if let Some((key, value)) = parse_env_export(line) {
+                    values.entry(key).or_insert(value);
+                }
+            }
+        }
+    }
+
+    values
 }
 
 fn parse_env_export(line: &str) -> Option<(String, String)> {
@@ -975,10 +1187,172 @@ fn detect_onnx_rocm_provider(python: &str) -> Option<String> {
     }
 }
 
+fn push_unique_env_path(paths: &mut Vec<String>, value: &str) {
+    let candidate = value.trim();
+    if candidate.is_empty() {
+        return;
+    }
+    if paths.iter().any(|existing| existing == candidate) {
+        return;
+    }
+    paths.push(candidate.to_string());
+}
+
+fn user_home_from_passwd(user_name: &str) -> Option<String> {
+    let target = user_name.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        if line.trim().is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 6 || fields[0] != target {
+            return None;
+        }
+        let home = fields[5].trim();
+        if home.is_empty() {
+            None
+        } else {
+            Some(home.to_string())
+        }
+    })
+}
+
+fn passwd_homes_with_mlstack() -> Vec<String> {
+    let mut homes = Vec::new();
+    let Ok(passwd) = fs::read_to_string("/etc/passwd") else {
+        return homes;
+    };
+
+    for line in passwd.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let home = fields[5].trim();
+        if home.is_empty() {
+            continue;
+        }
+        if Path::new(home).join(".mlstack").is_dir() || Path::new(home).join(".mlstack_env").is_file()
+        {
+            push_unique_env_path(&mut homes, home);
+        }
+    }
+
+    homes
+}
+
+fn candidate_mlstack_homes(preferred_home: &str) -> Vec<String> {
+    let mut homes = Vec::new();
+    push_unique_env_path(&mut homes, preferred_home);
+
+    if let Ok(value) = std::env::var("MLSTACK_USER_HOME") {
+        push_unique_env_path(&mut homes, &value);
+    }
+    if let Ok(value) = std::env::var("HOME") {
+        push_unique_env_path(&mut homes, &value);
+    }
+
+    for key in ["SUDO_USER", "USER", "LOGNAME"] {
+        if let Ok(user_name) = std::env::var(key) {
+            if let Some(home) = user_home_from_passwd(&user_name) {
+                push_unique_env_path(&mut homes, &home);
+            }
+        }
+    }
+
+    for home in passwd_homes_with_mlstack() {
+        push_unique_env_path(&mut homes, &home);
+    }
+
+    homes
+}
+
+fn resolve_mlstack_user_home() -> String {
+    let fallback = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let candidates = candidate_mlstack_homes(&fallback);
+
+    for home in &candidates {
+        if Path::new(home).join(".mlstack_env").is_file() {
+            return home.clone();
+        }
+    }
+    for home in &candidates {
+        if Path::new(home).join(".mlstack").is_dir() {
+            return home.clone();
+        }
+    }
+
+    candidates.into_iter().next().unwrap_or(fallback)
+}
+
+fn mlstack_mpi_compat_dirs(user_home: &str) -> Vec<String> {
+    let mut dirs = Vec::new();
+    for home in candidate_mlstack_homes(user_home) {
+        let mlstack_dir = PathBuf::from(home).join(".mlstack");
+
+        let primary = mlstack_dir.join("libmpi-compat");
+        if primary.is_dir() {
+            dirs.push(primary.to_string_lossy().to_string());
+        }
+
+        if let Ok(entries) = fs::read_dir(&mlstack_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if name.starts_with("libmpi-compat-user-") {
+                    dirs.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn build_verification_ld_library_path(user_home: &str) -> String {
+    let mut paths: Vec<String> = Vec::new();
+
+    for compat_dir in mlstack_mpi_compat_dirs(user_home) {
+        push_unique_env_path(&mut paths, &compat_dir);
+    }
+
+    for rocm_path in ["/opt/rocm/lib", "/opt/rocm/hip/lib", "/opt/rocm/opencl/lib"] {
+        if Path::new(rocm_path).exists() {
+            push_unique_env_path(&mut paths, rocm_path);
+        }
+    }
+
+    if let Ok(existing) = std::env::var("LD_LIBRARY_PATH") {
+        for part in existing.split(':') {
+            push_unique_env_path(&mut paths, part);
+        }
+    }
+
+    paths.join(":")
+}
+
 fn run_verification_command(
     step: &VerificationCommand,
     sender: &Sender<InstallerEvent>,
 ) -> Result<(bool, Vec<String>)> {
+    let user_home = resolve_mlstack_user_home();
+    let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    let env_exports = load_mlstack_env_exports(&user_home);
+
     let mut command = Command::new(&step.program);
     command.args(&step.args);
 
@@ -1002,46 +1376,125 @@ fn run_verification_command(
         command.env("PYTHONPATH", pythonpath);
     }
 
+    let verification_ld = build_verification_ld_library_path(&user_home);
+    if !verification_ld.is_empty() {
+        command.env("LD_LIBRARY_PATH", verification_ld);
+    }
+
     if step.target_id == "onnx" {
         if let Some(lib) = detect_onnx_rocm_provider(&step.program) {
             command.env("ORT_ROCM_EP_PROVIDER_PATH", lib);
         }
-        let mut ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-        if !ld_path.split(':').any(|entry| entry == "/opt/rocm/lib") {
-            if ld_path.is_empty() {
-                ld_path = "/opt/rocm/lib".into();
-            } else {
-                ld_path = format!("/opt/rocm/lib:{}", ld_path);
-            }
-        }
-        command.env("LD_LIBRARY_PATH", ld_path);
     }
 
-    let user_home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    let selected_python = if !step.modules.is_empty() {
+        step.program.clone()
+    } else {
+        resolve_python_bin()
+    };
+    let gpu_arch = env_exports
+        .get("GPU_ARCH")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(detect_gpu_arch);
+    let py_rocm_arch = env_exports
+        .get("PYTORCH_ROCM_ARCH")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| gpu_arch.clone());
+    let mut gpu_archs = env_exports
+        .get("GPU_ARCHS")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| gpu_arch.clone());
+    if step.target_id == "aiter" {
+        gpu_archs = py_rocm_arch
+            .split(';')
+            .next()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| gpu_arch.clone());
+    }
+    let mut hip_visible = env_exports
+        .get("HIP_VISIBLE_DEVICES")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let mut cuda_visible = env_exports
+        .get("CUDA_VISIBLE_DEVICES")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| hip_visible.clone());
+    if step.target_id == "aiter" {
+        let base_list = hip_visible
+            .clone()
+            .or_else(|| cuda_visible.clone())
+            .unwrap_or_else(detect_gpu_list);
+        let ordered = prioritize_gpu_list_for_arch(&base_list, &gpu_archs);
+        hip_visible = Some(ordered.clone());
+        cuda_visible = Some(ordered);
+    }
+    let hsa_override = env_exports
+        .get("HSA_OVERRIDE_GFX_VERSION")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
 
     command
         .env("HOME", &user_home)
         .env("USER", &user_name)
         .env("LOGNAME", &user_name)
         .env("MLSTACK_USER_HOME", &user_home)
+        .env("MLSTACK_PYTHON_BIN", &selected_python)
+        .env("UV_PYTHON", &selected_python)
         .env("PYTHONWARNINGS", "ignore")
         .env("PYTHONUNBUFFERED", "1")
         .env("ROCM_HOME", "/opt/rocm")
         .env("HIP_PATH", "/opt/rocm")
+        .env("GPU_ARCH", &gpu_arch)
+        .env("PYTORCH_ROCM_ARCH", &py_rocm_arch)
+        .env("GPU_ARCHS", &gpu_archs)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    if let Some(value) = hip_visible {
+        command.env("HIP_VISIBLE_DEVICES", value);
+    }
+    if let Some(value) = cuda_visible {
+        command.env("CUDA_VISIBLE_DEVICES", value);
+    }
+    if let Some(value) = hsa_override {
+        command.env("HSA_OVERRIDE_GFX_VERSION", value);
+    }
+    if step.target_id == "aiter" {
+        let aiter_jit_dir = PathBuf::from(&user_home)
+            .join(".mlstack")
+            .join("aiter")
+            .join("jit");
+        let _ = fs::create_dir_all(&aiter_jit_dir);
+        command.env("AITER_JIT_DIR", aiter_jit_dir);
+    }
+
+    if step.target_id == "mpi4py" {
+        // Verification imports should avoid GPU-aware OpenMPI accelerator paths that can segfault.
+        command
+            .env("OMPI_MCA_btl", "^smcuda")
+            .env("OMPI_MCA_opal_cuda_support", "0")
+            .env("OMPI_MCA_opal_accelerator_rocm_enable", "0");
+    }
 
     let output = command
         .output()
         .with_context(|| format!("Failed to run verification for {}", step.label))?;
 
     let mut captured_output = Vec::new();
+    const MAX_CAPTURED_OUTPUT_LINES: usize = 24;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for raw in stdout.replace('\r', "\n").lines() {
         let clean_line = sanitize_output_line(raw);
-        if !clean_line.trim().is_empty() {
+        if should_suppress_verification_line(&clean_line, &step.target_id) {
+            continue;
+        }
+        if !clean_line.trim().is_empty() && captured_output.len() < MAX_CAPTURED_OUTPUT_LINES {
             let line = format!("{}: {}", step.label, clean_line);
             let _ = sender.send(InstallerEvent::Log(line.clone(), false));
             captured_output.push(clean_line);
@@ -1051,11 +1504,18 @@ fn run_verification_command(
     let stderr = String::from_utf8_lossy(&output.stderr);
     for raw in stderr.replace('\r', "\n").lines() {
         let clean_line = sanitize_output_line(raw);
-        if !clean_line.trim().is_empty() {
+        if should_suppress_verification_line(&clean_line, &step.target_id) {
+            continue;
+        }
+        if !clean_line.trim().is_empty() && captured_output.len() < MAX_CAPTURED_OUTPUT_LINES {
             let line = format!("{}: {}", step.label, clean_line);
             let _ = sender.send(InstallerEvent::Log(line.clone(), false));
             captured_output.push(clean_line);
         }
+    }
+
+    if output.status.success() && captured_output.len() == MAX_CAPTURED_OUTPUT_LINES {
+        captured_output.push("Output truncated".to_string());
     }
 
     Ok((output.status.success(), captured_output))
@@ -1066,12 +1526,13 @@ fn run_script(
     script_path: &str,
     sudo_password: Option<String>,
     batch_mode: bool,
+    install_method: &str,
     sender: &Sender<InstallerEvent>,
     input_rx: Arc<Mutex<Receiver<String>>>,
 ) -> Result<()> {
-    let user_home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let user_home = resolve_mlstack_user_home();
     let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL";
+    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
 
     let venv_bin = PathBuf::from(&user_home).join("rocm_venv").join("bin");
     let local_bin = PathBuf::from(&user_home).join(".local").join("bin");
@@ -1100,7 +1561,34 @@ fn run_script(
         }
     }
 
-    let python_bin = resolve_python_bin();
+    let env_exports = load_mlstack_env_exports(&user_home);
+    let persistent_python = env_exports
+        .get("MLSTACK_PYTHON_BIN")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
+    let force_reinstall = std::env::var("MLSTACK_FORCE_REINSTALL")
+        .or_else(|_| std::env::var("FORCE"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false);
+    let force_env_value = if force_reinstall { "true" } else { "false" };
+    let sudo_password_env = sudo_password.clone();
+    let user_home_meta = fs::metadata(&user_home).ok();
+    #[cfg(unix)]
+    let (mlstack_target_uid, mlstack_target_gid) = {
+        use std::os::unix::fs::MetadataExt;
+        (
+            user_home_meta.as_ref().map(|meta| meta.uid().to_string()),
+            user_home_meta.as_ref().map(|meta| meta.gid().to_string()),
+        )
+    };
+    #[cfg(not(unix))]
+    let (mlstack_target_uid, mlstack_target_gid): (Option<String>, Option<String>) = (None, None);
 
     // Check if this specific component needs sudo
     let component_needs_sudo = component.needs_sudo && needs_sudo();
@@ -1137,8 +1625,62 @@ fn run_script(
         .collect::<Vec<_>>()
         .join(":");
 
-    let rocm_version = detect_rocm_version();
-    let gpu_arch = detect_gpu_arch();
+    let rocm_version = env_exports
+        .get("ROCM_VERSION")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(detect_rocm_version);
+    let gpu_arch = env_exports
+        .get("GPU_ARCH")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            env_exports
+                .get("PYTORCH_ROCM_ARCH")
+                .map(|v| v.split(';').next().unwrap_or("").trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(detect_gpu_arch);
+    let py_rocm_arch = env_exports
+        .get("PYTORCH_ROCM_ARCH")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| gpu_arch.clone());
+    let mut gpu_archs = env_exports
+        .get("GPU_ARCHS")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| gpu_arch.clone());
+    let mut gpu_list = env_exports
+        .get("HIP_VISIBLE_DEVICES")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            env_exports
+                .get("CUDA_VISIBLE_DEVICES")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(detect_gpu_list);
+    let hsa_override = env_exports
+        .get("HSA_OVERRIDE_GFX_VERSION")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let aiter_jit_dir = PathBuf::from(&user_home)
+        .join(".mlstack")
+        .join("aiter")
+        .join("jit");
+
+    if component.id == "aiter" {
+        gpu_archs = py_rocm_arch
+            .split(';')
+            .next()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| gpu_arch.clone());
+        gpu_list = prioritize_gpu_list_for_arch(&gpu_list, &gpu_archs);
+        let _ = fs::create_dir_all(&aiter_jit_dir);
+    }
 
     command
         .stdin(Stdio::piped())
@@ -1157,20 +1699,59 @@ fn run_script(
         .env("ROCM_VERSION", &rocm_version)
         .env("ROCM_CHANNEL", "latest")
         .env("GPU_ARCH", &gpu_arch)
+        .env("GPU_ARCHS", &gpu_archs)
+        .env("PYTORCH_ROCM_ARCH", &py_rocm_arch)
         .env("HIP_PATH", "/opt/rocm")
         .env("HIP_ROOT_DIR", "/opt/rocm")
         .env("ROCM_ROOT", "/opt/rocm")
         .env("HIPCC_BIN_DIR", "/opt/rocm/bin")
+        .env("HIP_VISIBLE_DEVICES", &gpu_list)
+        .env("CUDA_VISIBLE_DEVICES", &gpu_list)
         .env("MLSTACK_BATCH_MODE", if batch_mode { "1" } else { "0" })
+        .env("MLSTACK_INSTALL_METHOD", install_method)
+        .env("INSTALL_METHOD", install_method)
         .env("PIP_BREAK_SYSTEM_PACKAGES", "1")
         .env("PIP_ROOT_USER_ACTION", "ignore")
         .env("UV_PIP_BREAK_SYSTEM_PACKAGES", "1")
         .env("UV_SYSTEM_PYTHON", "1")
+        .env("FORCE", force_env_value)
+        .env("PYTORCH_REINSTALL", force_env_value)
+        .env("MLSTACK_FORCE_REINSTALL", force_env_value)
         .env(
             "MLSTACK_SKIP_TORCH_INSTALL",
             if component.id == "pytorch" { "0" } else { "1" },
         )
         .env("RUSTY_STACK", "true");
+
+    if let Some(uid) = mlstack_target_uid.as_deref() {
+        command.env("MLSTACK_TARGET_UID", uid);
+    }
+    if let Some(gid) = mlstack_target_gid.as_deref() {
+        command.env("MLSTACK_TARGET_GID", gid);
+    }
+
+    if let Some(password) = sudo_password_env {
+        command.env("MLSTACK_SUDO_PASSWORD", password);
+    }
+
+    if force_reinstall {
+        if let Ok(script_contents) = fs::read_to_string(script_path) {
+            let supports_force_flag = script_contents.contains("--force)")
+                || script_contents.contains("--force ")
+                || script_contents.contains("\"--force\"")
+                || script_contents.contains("'--force'");
+            if supports_force_flag {
+                command.arg("--force");
+            }
+        }
+    }
+
+    if let Some(value) = hsa_override {
+        command.env("HSA_OVERRIDE_GFX_VERSION", value);
+    }
+    if component.id == "aiter" {
+        command.env("AITER_JIT_DIR", aiter_jit_dir);
+    }
 
     let mut child = command
         .spawn()
@@ -1361,11 +1942,23 @@ fn component_name(comp: &Component) -> String {
 fn detect_gpu_arch() -> String {
     if let Ok(output) = Command::new("rocminfo").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut best_arch = String::new();
+        let mut best_value = 0u32;
         for token in stdout.split_whitespace() {
             let cleaned = token.trim_matches(|c: char| !c.is_alphanumeric());
-            if cleaned.starts_with("gfx") {
-                return cleaned.to_string();
+            if !cleaned.starts_with("gfx") {
+                continue;
             }
+            let raw = cleaned.trim_start_matches("gfx");
+            if let Ok(value) = raw.parse::<u32>() {
+                if value >= best_value {
+                    best_value = value;
+                    best_arch = cleaned.to_string();
+                }
+            }
+        }
+        if !best_arch.is_empty() {
+            return best_arch;
         }
     }
 
@@ -1439,7 +2032,7 @@ fn is_igpu_name(marketing_name: &str) -> bool {
         // Look for patterns like "5600G", "5700GE", "8600G", etc.
         if let Some(pos) = name_upper.find(" RYZEN ") {
             let after_ryzen = &name_upper[pos + 7..]; // Skip " RYZEN "
-            // Check if next word/number ends with G
+                                                      // Check if next word/number ends with G
             let words: Vec<&str> = after_ryzen.split_whitespace().collect();
             if !words.is_empty() {
                 let first_word = words[0];
@@ -1482,6 +2075,19 @@ fn detect_gpu_list() -> String {
         }
     }
 
+    // Fallback to rocm-smi JSON when rocminfo output is missing/incomplete
+    if let Ok(output) = Command::new("rocm-smi")
+        .args(["--showproductname", "--showbus", "--json"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let discrete_indices = parse_rocm_smi_for_discrete_gpus(&stdout);
+
+        if !discrete_indices.is_empty() {
+            return discrete_indices.join(",");
+        }
+    }
+
     // Fallback to lspci if rocminfo fails
     if let Ok(output) = Command::new("lspci").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1503,6 +2109,85 @@ fn detect_gpu_list() -> String {
     }
 
     "0".to_string()
+}
+
+/// Builds a map of ROCm GPU ID -> gfx architecture (e.g., "1" -> "gfx1100").
+fn detect_gpu_arch_by_id() -> HashMap<String, String> {
+    let mut mapping: HashMap<String, String> = HashMap::new();
+
+    let Ok(output) = Command::new("rocminfo").output() else {
+        return mapping;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut current_gpu_id: Option<String> = None;
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.contains("GPU ID:") {
+            if let Some(id_part) = line.split(':').nth(1) {
+                let id: String = id_part.chars().filter(|c| c.is_ascii_digit()).collect();
+                if !id.is_empty() {
+                    current_gpu_id = Some(id);
+                }
+            }
+            continue;
+        }
+
+        if !line.contains("Name:") || !line.contains("gfx") {
+            continue;
+        }
+
+        if let Some(id) = current_gpu_id.clone() {
+            for token in line.split_whitespace() {
+                let cleaned = token.trim_matches(|c: char| !c.is_alphanumeric());
+                if cleaned.starts_with("gfx") {
+                    mapping.entry(id).or_insert_with(|| cleaned.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    mapping
+}
+
+/// Reorders a comma-separated GPU list so the first GPU matches the requested arch when possible.
+/// It preserves all original indices and only changes ordering.
+fn prioritize_gpu_list_for_arch(gpu_list: &str, target_arch: &str) -> String {
+    let target_arch = target_arch.trim();
+    if target_arch.is_empty() {
+        return gpu_list.to_string();
+    }
+
+    let arch_by_id = detect_gpu_arch_by_id();
+    if arch_by_id.is_empty() {
+        return gpu_list.to_string();
+    }
+
+    let mut ids: Vec<String> = gpu_list
+        .split(',')
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect();
+    if ids.len() < 2 {
+        return gpu_list.to_string();
+    }
+
+    let preferred_pos = ids.iter().position(|id| {
+        arch_by_id
+            .get(id)
+            .map(|v| v == target_arch)
+            .unwrap_or(false)
+    });
+    if let Some(pos) = preferred_pos {
+        if pos > 0 {
+            let preferred = ids.remove(pos);
+            ids.insert(0, preferred);
+            return ids.join(",");
+        }
+    }
+
+    gpu_list.to_string()
 }
 
 /// Parses rocminfo output to find discrete GPU indices.
@@ -1530,10 +2215,7 @@ fn parse_rocminfo_for_discrete_gpus(rocminfo_output: &str) -> Vec<String> {
             // rocminfo format: "**  GPU ID:  0 **" or "GPU ID: 0"
             if let Some(id_part) = line.split(':').nth(1) {
                 // Extract first sequence of digits from the string
-                let id_str: String = id_part
-                    .chars()
-                    .filter(|c| c.is_ascii_digit())
-                    .collect();
+                let id_str: String = id_part.chars().filter(|c| c.is_ascii_digit()).collect();
                 current_gpu_id = id_str.parse().ok();
                 current_marketing_name.clear();
                 current_device_type.clear();
@@ -1574,20 +2256,241 @@ fn parse_rocminfo_for_discrete_gpus(rocminfo_output: &str) -> Vec<String> {
     discrete_indices
 }
 
+/// Parses rocm-smi --json output to find discrete AMD GPU indices.
+/// This keeps ROCm card indices aligned with HIP_VISIBLE_DEVICES.
+fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
+    fn card_index(key: &str) -> Option<usize> {
+        let digits_rev: String = key
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if digits_rev.is_empty() {
+            return None;
+        }
+        let digits: String = digits_rev.chars().rev().collect();
+        digits.parse().ok()
+    }
+
+    fn value_as_string(value: &serde_json::Value) -> Option<String> {
+        if let Some(s) = value.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(obj) = value.as_object() {
+            if let Some(v) = obj.get("value").and_then(|v| v.as_str()) {
+                return Some(v.to_string());
+            }
+        }
+        None
+    }
+
+    fn field_is_placeholder(raw: &str) -> bool {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "" | "n/a" | "na" | "none" | "unknown" | "not available" | "-"
+        )
+    }
+
+    fn meaningful_field(value: Option<String>) -> Option<String> {
+        let value = value?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() || field_is_placeholder(trimmed) {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn normalize_bus_id(raw: &str) -> Option<String> {
+        let mut normalized = raw.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return None;
+        }
+        if let Some(idx) = normalized.find(' ') {
+            normalized.truncate(idx);
+        }
+        normalized = normalized.trim_start_matches("0000:").to_string();
+        if normalized.len() == "00:00.0".len() {
+            Some(normalized)
+        } else {
+            None
+        }
+    }
+
+    fn descriptor_from_lspci_bus(bus: &str) -> Option<String> {
+        let bus = normalize_bus_id(bus)?;
+        let output = Command::new("lspci")
+            .args(["-s", &bus])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if line.is_empty() {
+            None
+        } else {
+            Some(line)
+        }
+    }
+
+    fn bus_looks_integrated(raw: &str) -> bool {
+        let Some(bus) = normalize_bus_id(raw) else {
+            return false;
+        };
+
+        if let Ok(output) = Command::new("lspci").args(["-s", &bus]).output() {
+            let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !line.is_empty() {
+                if is_igpu_name(&line) {
+                    return true;
+                }
+                let lower = line.to_ascii_lowercase();
+                if lower.contains("integrated")
+                    || lower.contains("ryzen")
+                    || lower.contains("apu")
+                    || lower.contains("raphael")
+                    || lower.contains("phoenix")
+                    || lower.contains("rembrandt")
+                    || lower.contains("renoir")
+                    || lower.contains("raven")
+                    || lower.contains("picasso")
+                    || lower.contains("cezanne")
+                    || lower.contains("mendocino")
+                    || lower.contains("hawk point")
+                    || lower.contains("strix")
+                {
+                    return true;
+                }
+            }
+        }
+
+        let sysfs_path = format!("/sys/bus/pci/devices/0000:{}/mem_info_vram_total", bus);
+        if let Ok(value) = fs::read_to_string(sysfs_path) {
+            if let Ok(vram_bytes) = value.trim().parse::<u64>() {
+                return vram_bytes < 4 * 1024 * 1024 * 1024;
+            }
+        }
+        false
+    }
+
+    fn parse_rocm_smi_json(raw: &str) -> Option<serde_json::Value> {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
+            return Some(parsed);
+        }
+        let start = raw.find('{')?;
+        let end = raw.rfind('}')?;
+        if end <= start {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(&raw[start..=end]).ok()
+    }
+
+    let mut cards: Vec<(usize, String)> = Vec::new();
+    let Some(parsed) = parse_rocm_smi_json(rocm_smi_output) else {
+        return Vec::new();
+    };
+    let Some(obj) = parsed.as_object() else {
+        return Vec::new();
+    };
+
+    for (card_key, payload) in obj {
+        let Some(index) = card_index(card_key) else {
+            continue;
+        };
+        let Some(payload_obj) = payload.as_object() else {
+            continue;
+        };
+
+        let series = meaningful_field(
+            payload_obj
+                .get("Card Series")
+                .and_then(value_as_string)
+                .or_else(|| payload_obj.get("Card series").and_then(value_as_string)),
+        );
+        let model = meaningful_field(
+            payload_obj
+                .get("Card Model")
+                .and_then(value_as_string)
+                .or_else(|| payload_obj.get("Card model").and_then(value_as_string)),
+        );
+        let sku = meaningful_field(
+            payload_obj
+                .get("Card SKU")
+                .and_then(value_as_string)
+                .or_else(|| payload_obj.get("Card Product Name").and_then(value_as_string)),
+        );
+        let bus = payload_obj
+            .get("PCI Bus")
+            .and_then(value_as_string)
+            .or_else(|| payload_obj.get("PCI Bus Address").and_then(value_as_string))
+            .or_else(|| payload_obj.get("PCIe Bus").and_then(value_as_string))
+            .or_else(|| payload_obj.get("Bus").and_then(value_as_string))
+            .unwrap_or_default();
+        let mut descriptor_parts = Vec::new();
+        if let Some(value) = series {
+            descriptor_parts.push(value);
+        }
+        if let Some(value) = model {
+            descriptor_parts.push(value);
+        }
+        if let Some(value) = sku {
+            descriptor_parts.push(value);
+        }
+        if let Some(value) = descriptor_from_lspci_bus(&bus) {
+            if !value.trim().is_empty() {
+                descriptor_parts.push(value);
+            }
+        }
+        let resolved_descriptor = descriptor_parts.join(" ");
+
+        if !resolved_descriptor.trim().is_empty()
+            && !is_igpu_name(&resolved_descriptor)
+            && !bus_looks_integrated(&bus)
+        {
+            cards.push((index, index.to_string()));
+        }
+    }
+
+    cards.sort_by_key(|(idx, _)| *idx);
+    cards.into_iter().map(|(_, idx)| idx).collect()
+}
+
 /// Parses lspci output to find discrete AMD GPUs.
 /// This is a fallback when rocminfo is not available.
 fn parse_lspci_for_discrete_gpus(lspci_output: &str) -> Vec<String> {
+    fn lspci_bus_looks_integrated(bus_id: &str) -> bool {
+        let bus_id = bus_id.trim().trim_start_matches("0000:");
+        if bus_id.len() != "00:00.0".len() {
+            return false;
+        }
+        let sysfs_path = format!("/sys/bus/pci/devices/0000:{}/mem_info_vram_total", bus_id);
+        if let Ok(value) = fs::read_to_string(sysfs_path) {
+            if let Ok(vram_bytes) = value.trim().parse::<u64>() {
+                return vram_bytes < 4 * 1024 * 1024 * 1024;
+            }
+        }
+        false
+    }
+
     let mut discrete_indices: Vec<String> = Vec::new();
     let mut gpu_index = 0usize;
 
     for line in lspci_output.lines() {
         let line_lower = line.to_lowercase();
+        let bus_id = line.split_whitespace().next().unwrap_or_default();
 
         // Look for AMD/ATI VGA/3D/display devices
-        if line_lower.contains("amd") || line_lower.contains("radeon") || line_lower.contains("advanced micro devices") {
-            if line_lower.contains("vga") || line_lower.contains("3d") || line_lower.contains("display") {
+        if line_lower.contains("amd")
+            || line_lower.contains("radeon")
+            || line_lower.contains("advanced micro devices")
+        {
+            if line_lower.contains("vga")
+                || line_lower.contains("3d")
+                || line_lower.contains("display")
+            {
                 // Check if this is an iGPU based on the description
-                if !is_igpu_name(line) {
+                if !is_igpu_name(line) && !lspci_bus_looks_integrated(bus_id) {
                     discrete_indices.push(gpu_index.to_string());
                 }
                 gpu_index += 1;
@@ -1645,21 +2548,17 @@ impl VerificationResult {
 }
 
 fn resolve_python_bin() -> String {
-    // 1. Check for the new global 3.12 priority link
-    let global_312 = "/usr/local/bin/python3";
-    if Path::new(global_312).exists() {
-        // Double check it's actually 3.12
-        if let Ok(output) = Command::new(global_312).arg("--version").output() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            if version.contains("3.12") {
-                return global_312.to_string();
-            }
+    if let Ok(value) = std::env::var("MLSTACK_PYTHON_BIN") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_string();
         }
     }
 
-    if let Ok(value) = std::env::var("MLSTACK_PYTHON_BIN") {
-        if !value.trim().is_empty() && python_has_rocm_torch(&value) {
-            return value;
+    if let Ok(value) = std::env::var("UV_PYTHON") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_string();
         }
     }
 
@@ -1671,6 +2570,7 @@ fn resolve_python_bin() -> String {
             .join("rocm_venv")
             .join("bin")
             .join("python"),
+        PathBuf::from("python3.13"),
         PathBuf::from("/usr/bin/python3"),
         PathBuf::from("python3"),
         PathBuf::from("python"),
@@ -1689,9 +2589,21 @@ fn resolve_python_bin() -> String {
         }
     }
 
-    if Path::new("/usr/bin/python3").exists() {
-        return "/usr/bin/python3".to_string();
+    for candidate in [
+        "/usr/local/bin/python3",
+        "python3.12",
+        "python3.13",
+        "/usr/bin/python3",
+        "python3",
+        "python",
+    ] {
+        let path = Path::new(candidate);
+        if path.is_absolute() && !path.exists() {
+            continue;
+        }
+        return candidate.to_string();
     }
+
     "python3".to_string()
 }
 
@@ -1771,6 +2683,54 @@ fn sanitize_output_line(line: &str) -> String {
     clean
 }
 
+fn should_suppress_verification_line(line: &str, target_id: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    let lower = trimmed.to_lowercase();
+    if is_exception_or_traceback_line(&lower) {
+        return false;
+    }
+
+    if lower.contains("amdgpu.ids")
+        || lower.contains("tool-lib")
+        || lower.contains("cannot load tool")
+        || lower.contains("libdrm/amdgpu.ids: no such file or directory")
+    {
+        return true;
+    }
+
+    if (target_id == "rocm" || target_id == "rocm-smi")
+        && (lower.starts_with("======")
+            || lower.starts_with("====")
+            || lower.starts_with("---")
+            || lower.contains("the info is not accurate")
+            || lower.contains("================================")
+            || lower.starts_with('{')
+            || lower.starts_with('[')
+            || lower.starts_with(']')
+            || lower.starts_with('}')
+            || lower.starts_with("\"card")
+            || lower.starts_with("device ")
+            || lower.starts_with("*****"))
+    {
+        return true;
+    }
+
+    false
+}
+
+fn is_exception_or_traceback_line(lowercase_line: &str) -> bool {
+    lowercase_line.contains("traceback")
+        || lowercase_line.contains("exception")
+        || lowercase_line.contains("segmentation fault")
+        || lowercase_line.contains("fatal:")
+        || lowercase_line.contains("error:")
+        || lowercase_line.starts_with("error ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1794,7 +2754,9 @@ mod tests {
     #[test]
     fn test_is_igpu_name_codenames() {
         // APU codenames should be detected
-        assert!(is_igpu_name("AMD Ryzen 9 7945HS with Radeon Graphics (Phoenix)"));
+        assert!(is_igpu_name(
+            "AMD Ryzen 9 7945HS with Radeon Graphics (Phoenix)"
+        ));
         assert!(is_igpu_name("Rembrandt"));
         assert!(is_igpu_name("Cezanne"));
     }
@@ -1878,6 +2840,68 @@ Kernel Version:        6.12.63+deb13-rt-amd64
 "#;
 
         let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
+        assert_eq!(result, vec!["0", "1"]);
+    }
+
+    #[test]
+    fn test_parse_rocm_smi_mixed_gpus() {
+        let rocm_smi_output = r#"
+{
+  "card0": {
+    "Card Series": "AMD Radeon RX 7900 XTX",
+    "Card Model": "Navi 31"
+  },
+  "card1": {
+    "Card Series": "AMD Radeon RX 7800 XT",
+    "Card Model": "Navi 32"
+  },
+  "card2": {
+    "Card Series": "AMD Radeon Graphics",
+    "Card Model": "Raphael"
+  }
+}
+"#;
+        let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
+        assert_eq!(result, vec!["0", "1"]);
+    }
+
+    #[test]
+    fn test_parse_rocm_smi_only_igpu() {
+        let rocm_smi_output = r#"
+{
+  "card0": {
+    "Card Series": "AMD Radeon Graphics",
+    "Card Model": "Raphael"
+  }
+}
+"#;
+        let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rocm_smi_with_prefix_and_na_fields() {
+        let rocm_smi_output = r#"
+****!****  The info is not accurate, please use it carefully !****
+{
+  "card0": {
+    "Card Series": "N/A",
+    "Card Model": "N/A",
+    "Card SKU": "AMD Radeon RX 7900 XTX"
+  },
+  "card1": {
+    "Card Series": "N/A",
+    "Card Model": "Navi 32",
+    "Card SKU": "AMD Radeon RX 7800 XT"
+  },
+  "card2": {
+    "Card Series": "N/A",
+    "Card Model": "N/A",
+    "Card SKU": "Raphael"
+  }
+}
+"#;
+        let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
         assert_eq!(result, vec!["0", "1"]);
     }
 }

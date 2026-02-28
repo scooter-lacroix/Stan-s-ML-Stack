@@ -5,7 +5,7 @@ use crate::state::{
 use anyhow::Result;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use sysinfo::{Disks, System};
 
@@ -660,7 +660,19 @@ fn check_system_dependencies() -> PreflightCheck {
 }
 
 fn check_distribution_compatibility(system: &SystemInfo) -> PreflightCheck {
-    let supported = ["ubuntu", "debian", "linux mint", "pop!_os", "fedora"];
+    // Supported distributions include major distros and Arch-based derivatives
+    let supported = [
+        "ubuntu",
+        "debian",
+        "linux mint",
+        "pop!_os",
+        "fedora",
+        "arch",
+        "cachyos",
+        "manjaro",
+        "endeavouros",
+        "garuda",
+    ];
     let dist = system.distribution.to_lowercase();
     let compatible = supported.iter().any(|name| dist.contains(name));
 
@@ -682,19 +694,259 @@ fn check_distribution_compatibility(system: &SystemInfo) -> PreflightCheck {
     }
 }
 
+/// Detect ROCm installation path by searching common locations
+/// Returns the first valid ROCm path found, or None if not found
+fn detect_rocm_path() -> Option<PathBuf> {
+    // Build search paths in priority order
+    let mut search_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Environment variable override (highest priority)
+    if let Ok(env_path) = std::env::var("ROCm_PATH") {
+        search_paths.push(PathBuf::from(env_path));
+    }
+
+    // 2. Standard location
+    search_paths.push(PathBuf::from("/opt/rocm"));
+
+    // First check explicit paths
+    for path in &search_paths {
+        if validate_rocm_path(path) {
+            return Some(path.clone());
+        }
+    }
+
+    // 3. Check for versioned ROCm directories in /opt (sorted by version, newest first)
+    if let Ok(entries) = fs::read_dir("/opt") {
+        let mut versioned_paths: Vec<(String, PathBuf)> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("rocm-") {
+                    let version = name.trim_start_matches("rocm-").to_string();
+                    Some((version, e.path()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by version (descending)
+        versioned_paths.sort_by(|a, b| {
+            let a_parts: Vec<i32> =
+                a.0.split('.')
+                    .filter_map(|s: &str| s.parse().ok())
+                    .collect();
+            let b_parts: Vec<i32> =
+                b.0.split('.')
+                    .filter_map(|s: &str| s.parse().ok())
+                    .collect();
+            for i in 0..std::cmp::max(a_parts.len(), b_parts.len()) {
+                let a_val = *a_parts.get(i).unwrap_or(&0);
+                let b_val = *b_parts.get(i).unwrap_or(&0);
+                if a_val != b_val {
+                    return b_val.cmp(&a_val); // Descending order
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        for (_version, path) in versioned_paths {
+            if validate_rocm_path(&path) {
+                return Some(path);
+            }
+        }
+    }
+
+    // 4. Check for Arch AUR package locations
+    let arch_paths = ["/usr/lib/rocm", "/usr/local/rocm"];
+    for path_str in &arch_paths {
+        let path = PathBuf::from(path_str);
+        if validate_rocm_path(&path) {
+            return Some(path);
+        }
+    }
+
+    // 5. Check for versioned paths in /usr/lib (Arch AUR)
+    if let Ok(entries) = fs::read_dir("/usr/lib") {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("rocm-") && validate_rocm_path(&entry.path()) {
+                return Some(entry.path());
+            }
+        }
+    }
+
+    // 6. Try to derive from rocminfo in PATH
+    if let Ok(output) = Command::new("which").arg("rocminfo").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                if let Some(parent) = Path::new(&path).parent() {
+                    if let Some(rocm_root) = parent.parent() {
+                        if validate_rocm_path(rocm_root) {
+                            return Some(rocm_root.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Validate that a path is a valid ROCm installation
+fn validate_rocm_path(path: &Path) -> bool {
+    if !path.exists() || !path.is_dir() {
+        return false;
+    }
+
+    // Should have at least bin or lib directory
+    path.join("bin").exists() || path.join("lib").exists()
+        // Or contain ROCm tools directly
+        || path.join("rocminfo").exists() || path.join("rocm-smi").exists()
+}
+
+/// Map GPU marketing name to correct gfx architecture.
+/// This corrects rocminfo bugs where RDNA3 cards report gfx1030 instead of gfx1100/gfx1101.
+fn get_correct_gfx_from_marketing_name(marketing_name: &str, rocminfo_gfx: &str) -> String {
+    let name_lower = marketing_name.to_lowercase();
+
+    // RDNA 3 (Navi 3x) - gfx1100/gfx1101
+    // These are commonly misreported as gfx1030 by buggy ROCm versions
+    if name_lower.contains("7900 xtx") || name_lower.contains("7900xtx") {
+        return "gfx1100".to_string();
+    }
+    if name_lower.contains("7900 xt") || name_lower.contains("7900xt") {
+        // Could be XT (not XTX), still gfx1100
+        return "gfx1100".to_string();
+    }
+    if name_lower.contains("7900 gre") || name_lower.contains("7900gre") {
+        return "gfx1100".to_string();
+    }
+    if name_lower.contains("7800 xt") || name_lower.contains("7800xt") {
+        return "gfx1101".to_string();
+    }
+    if name_lower.contains("7800 gre") || name_lower.contains("7800gre") {
+        return "gfx1101".to_string();
+    }
+    if name_lower.contains("7700 xt") || name_lower.contains("7700xt") {
+        return "gfx1101".to_string();
+    }
+    if name_lower.contains("7600 xt")
+        || name_lower.contains("7600xt")
+        || name_lower.contains("7600")
+    {
+        return "gfx1102".to_string();
+    }
+
+    // RDNA 4 (Navi 4x) - gfx1200
+    if name_lower.contains("9070 xt")
+        || name_lower.contains("9070xt")
+        || name_lower.contains("9070 gre")
+        || name_lower.contains("9070gre")
+    {
+        return "gfx1200".to_string();
+    }
+    if name_lower.contains("9060") {
+        return "gfx1201".to_string();
+    }
+
+    // RDNA 2 (Navi 2x) - gfx1030/gfx1031/gfx1032
+    // These are correctly reported by rocminfo, but we verify
+    if name_lower.contains("6900 xt")
+        || name_lower.contains("6900xt")
+        || name_lower.contains("6950 xt")
+        || name_lower.contains("6950xt")
+    {
+        return "gfx1030".to_string();
+    }
+    if name_lower.contains("6800 xt")
+        || name_lower.contains("6800xt")
+        || name_lower.contains("6800")
+        || name_lower.contains("6900")
+    {
+        return "gfx1030".to_string();
+    }
+    if name_lower.contains("6700 xt")
+        || name_lower.contains("6700xt")
+        || name_lower.contains("6750 xt")
+        || name_lower.contains("6750xt")
+    {
+        return "gfx1031".to_string();
+    }
+    if name_lower.contains("6600 xt")
+        || name_lower.contains("6600xt")
+        || name_lower.contains("6600")
+        || name_lower.contains("6650")
+    {
+        return "gfx1032".to_string();
+    }
+    if name_lower.contains("6500 xt") || name_lower.contains("6500xt") {
+        return "gfx1034".to_string();
+    }
+
+    // CDNA (MI accelerators) - trust rocminfo for these
+    if name_lower.contains("instinct")
+        || name_lower.contains("mi60")
+        || name_lower.contains("mi100")
+        || name_lower.contains("mi200")
+        || name_lower.contains("mi250")
+        || name_lower.contains("mi300")
+    {
+        return format!("gfx{}", rocminfo_gfx);
+    }
+
+    // Default: use rocminfo value if it looks valid (gfx10xx, gfx11xx, gfx12xx)
+    // But if it's gfx1030 from a known RDNA3 card, we should have caught it above
+    format!("gfx{}", rocminfo_gfx)
+}
+
 fn detect_gpu() -> GPUInfo {
     let mut info = GPUInfo::default();
-    let rocminfo_cmd = if Path::new("/opt/rocm/bin/rocminfo").exists() {
-        "/opt/rocm/bin/rocminfo"
+
+    // Detect ROCm path first
+    let rocm_path = detect_rocm_path();
+
+    // Determine rocminfo path
+    let rocminfo_cmd = if let Some(ref path) = rocm_path {
+        let rocminfo_path = path.join("bin/rocminfo");
+        if rocminfo_path.exists() {
+            rocminfo_path.to_string_lossy().to_string()
+        } else {
+            "rocminfo".to_string()
+        }
+    } else if Path::new("/opt/rocm/bin/rocminfo").exists() {
+        "/opt/rocm/bin/rocminfo".to_string()
     } else {
-        "rocminfo"
+        "rocminfo".to_string()
     };
 
     if let Ok(output) = Command::new(rocminfo_cmd).output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut gpu_count = 0usize;
+            // Track marketing name and device type to detect iGPUs
+            let mut current_marketing_name = String::new();
+            let mut current_device_type = String::new();
             for line in stdout.lines() {
+                let trimmed = line.trim();
+                // Track marketing name to detect iGPUs (Agent section)
+                if trimmed.starts_with("Marketing Name:") {
+                    current_marketing_name = trimmed
+                        .strip_prefix("Marketing Name:")
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                }
+                // Track device type to distinguish GPU from CPU
+                if trimmed.starts_with("Device Type:") {
+                    current_device_type = trimmed
+                        .strip_prefix("Device Type:")
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                }
                 if line.contains("Name:") {
                     let name = line.replace("Name:", "").trim().to_string();
                     if !name.is_empty() && !name.to_lowercase().contains("cpu") {
@@ -704,17 +956,38 @@ fn detect_gpu() -> GPUInfo {
                         }
                     }
                 }
-                if line.contains("gfx") && info.architecture.is_empty() {
-                    // Extract only the gfx architecture identifier (e.g., gfx1100, gfx906)
-                    let trimmed = line.trim();
-                    if let Some(gfx_start) = trimmed.find("gfx") {
-                        let after_gfx = &trimmed[gfx_start + 3..];
-                        let gfx_num: String = after_gfx
-                            .chars()
-                            .take_while(|c| c.is_ascii_digit())
-                            .collect();
-                        if !gfx_num.is_empty() {
-                            info.architecture = format!("gfx{}", gfx_num);
+                // Detect GPU architecture from Name field
+                if trimmed.starts_with("Name:") && trimmed.contains("gfx") {
+                    if let Some(name_value) = trimmed.strip_prefix("Name:") {
+                        let name_value = name_value.trim();
+                        // Only accept pure gfx architectures (e.g., "gfx1100", "gfx1030")
+                        if name_value.starts_with("gfx") {
+                            let after_gfx = &name_value[3..];
+                            let gfx_num: String = after_gfx
+                                .chars()
+                                .take_while(|c| c.is_ascii_digit())
+                                .collect();
+                            if !gfx_num.is_empty() && gfx_num.len() >= 3 {
+                                // Detect iGPU by marketing name containing "Ryzen" or device being APU
+                                let is_igpu = current_marketing_name
+                                    .to_lowercase()
+                                    .contains("ryzen")
+                                    || current_marketing_name.to_lowercase().contains("apu")
+                                    || current_marketing_name.to_lowercase().contains("integrated");
+                                // Only set architecture for dGPUs (not iGPUs, not CPUs)
+                                if !is_igpu
+                                    && current_device_type == "GPU"
+                                    && info.architecture.is_empty()
+                                {
+                                    // Use marketing name to get correct architecture
+                                    // rocminfo may report wrong gfx on some ROCm versions
+                                    let corrected_arch = get_correct_gfx_from_marketing_name(
+                                        &current_marketing_name,
+                                        &gfx_num,
+                                    );
+                                    info.architecture = corrected_arch;
+                                }
+                            }
                         }
                     }
                 }
@@ -726,9 +999,16 @@ fn detect_gpu() -> GPUInfo {
     }
 
     if info.rocm_version.is_empty() {
+        // Try detected ROCm path first
+        let version_path = if let Some(ref path) = rocm_path {
+            path.join(".info/version")
+        } else {
+            PathBuf::from("/opt/rocm/.info/version")
+        };
+
         if let Ok(output) = Command::new("bash")
             .arg("-c")
-            .arg("cat /opt/rocm/.info/version 2>/dev/null")
+            .arg(format!("cat {} 2>/dev/null", version_path.display()))
             .output()
         {
             if output.status.success() {
@@ -769,13 +1049,21 @@ fn detect_gpu() -> GPUInfo {
         info.gpu_count = 1;
     }
 
-    let rocm_smi_cmd = if Path::new("/opt/rocm/bin/rocm-smi").exists() {
-        "/opt/rocm/bin/rocm-smi"
+    // Determine rocm-smi path using detected ROCm path
+    let rocm_smi_cmd = if let Some(ref path) = rocm_path {
+        let rocm_smi_path = path.join("bin/rocm-smi");
+        if rocm_smi_path.exists() {
+            rocm_smi_path.to_string_lossy().to_string()
+        } else {
+            "rocm-smi".to_string()
+        }
+    } else if Path::new("/opt/rocm/bin/rocm-smi").exists() {
+        "/opt/rocm/bin/rocm-smi".to_string()
     } else {
-        "rocm-smi"
+        "rocm-smi".to_string()
     };
 
-    if let Ok(output) = Command::new(rocm_smi_cmd)
+    if let Ok(output) = Command::new(&rocm_smi_cmd)
         .arg("--showmeminfo")
         .arg("vram")
         .arg("--csv")
@@ -795,7 +1083,7 @@ fn detect_gpu() -> GPUInfo {
         }
     }
 
-    if let Ok(output) = Command::new(rocm_smi_cmd)
+    if let Ok(output) = Command::new(&rocm_smi_cmd)
         .arg("--showtemp")
         .arg("--csv")
         .output()
@@ -814,7 +1102,7 @@ fn detect_gpu() -> GPUInfo {
         }
     }
 
-    if let Ok(output) = Command::new(rocm_smi_cmd)
+    if let Ok(output) = Command::new(&rocm_smi_cmd)
         .arg("--showpower")
         .arg("--csv")
         .output()

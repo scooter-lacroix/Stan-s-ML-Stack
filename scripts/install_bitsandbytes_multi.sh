@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 # Stan's ML Stack - bitsandbytes ROCm installer (channel-aware)
 # Ensures ROCm support by building from ROCm fork when PyPI version lacks HIP binaries
 
@@ -8,7 +14,57 @@ PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
+}
+
+ensure_rocm_python_contract() {
+    local py_cmd="$1"
+    local component="${2:-bitsandbytes}"
+
+    if [ -x "$py_cmd" ]; then
+        :
+    else
+        py_cmd="$(command -v "$py_cmd" 2>/dev/null || true)"
+    fi
+    if [ -z "$py_cmd" ] || [ ! -x "$py_cmd" ]; then
+        echo "✗ Python interpreter not found for ${component}: ${1}"
+        return 1
+    fi
+
+    if declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+        if ! mlstack_assert_rocm_torch "$py_cmd"; then
+            echo "✗ ROCm PyTorch contract failed for ${component}"
+            return 1
+        fi
+    fi
+
+    "$py_cmd" - <<'PY'
+import subprocess
+import sys
+
+blocked = []
+try:
+    out = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+except Exception:
+    raise SystemExit(0)
+
+for line in out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if (
+        name.startswith("nvidia-")
+        or name in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or name.startswith("cupy-cuda")
+    ):
+        blocked.append(name)
+
+if blocked:
+    print("Detected disallowed CUDA/NVIDIA packages:", ", ".join(sorted(set(blocked))))
+    raise SystemExit(1)
+PY
 }
 
 # Source utility scripts if available
@@ -81,13 +137,17 @@ if [ "$DRY_RUN" = "true" ]; then
     exit 0
 fi
 
+if ! ensure_rocm_python_contract "$PYTHON_BIN" "bitsandbytes preflight"; then
+    exit 1
+fi
+
 # Uninstall previous bitsandbytes to avoid conflicts
 echo "➤ Removing existing bitsandbytes installation..."
 "$PYTHON_BIN" -m pip uninstall -y bitsandbytes 2>/dev/null || true
 
 # First, try installing from PyPI (newer versions may have ROCm support)
 echo "➤ Attempting to install bitsandbytes from PyPI..."
-if "$PYTHON_BIN" -m pip install bitsandbytes --break-system-packages --no-cache-dir 2>/dev/null; then
+if "$PYTHON_BIN" -m pip install bitsandbytes --break-system-packages --no-cache-dir --no-deps 2>/dev/null; then
     echo "✓ bitsandbytes installed from PyPI"
 
     # Check if ROCm binary is present
@@ -97,6 +157,9 @@ if "$PYTHON_BIN" -m pip install bitsandbytes --break-system-packages --no-cache-
         # Verify it works
         echo "➤ Verifying bitsandbytes import..."
         python3 -c "import bitsandbytes as bnb; print('bitsandbytes version:', bnb.__version__)"
+        if ! ensure_rocm_python_contract "$PYTHON_BIN" "bitsandbytes (PyPI)"; then
+            exit 1
+        fi
         exit 0
     else
         echo "⚠ PyPI version lacks ROCm binary, building from ROCm fork..."
@@ -151,7 +214,7 @@ echo "➤ Installing build dependencies..."
 # Build with HIP backend for ROCm
 echo "➤ Building with HIP backend..."
 if "$PYTHON_BIN" -m pip install . --no-build-isolation --break-system-packages \
-    -Ccmake.define.COMPUTE_BACKEND=hip \
+    -Ccmake.define.COMPUTE_BACKEND=hip --no-deps \
     -Ccmake.define.ROCM_PATH="$ROCM_PATH" 2>&1; then
     echo "✓ bitsandbytes built successfully from source"
 else
@@ -161,7 +224,7 @@ else
     # Alternative: use make directly
     if [ -f "Makefile" ]; then
         make hip
-        "$PYTHON_BIN" -m pip install . --break-system-packages
+        "$PYTHON_BIN" -m pip install . --break-system-packages --no-deps
     else
         echo "✗ No alternative build method available"
         exit 1
@@ -196,5 +259,9 @@ except Exception as e:
     print(f"✗ Failed to import bitsandbytes: {e}")
     exit(1)
 PY
+
+if ! ensure_rocm_python_contract "$PYTHON_BIN" "bitsandbytes post-install"; then
+    exit 1
+fi
 
 echo "✓ bitsandbytes installation complete"

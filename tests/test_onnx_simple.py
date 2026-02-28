@@ -2,7 +2,12 @@ import os
 import sys
 
 # Add the ONNX Runtime build directory to the Python path
-sys.path.insert(0, "/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release")
+onnx_build_path = os.environ.get(
+    "ONNX_BUILD_PATH",
+    os.path.expanduser("~/onnxruntime_build/onnxruntime/build/Linux/Release"),
+)
+if os.path.isdir(onnx_build_path):
+    sys.path.insert(0, onnx_build_path)
 
 # Set environment variables for ROCm
 os.environ["HIP_VISIBLE_DEVICES"] = "0,1"

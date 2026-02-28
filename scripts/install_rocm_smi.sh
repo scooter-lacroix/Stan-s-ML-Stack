@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 #
 # Author: Stanley Chisango (Scooter Lacroix)
 # Email: scooterlacroix@gmail.com
@@ -19,7 +25,7 @@
 # Check if terminal supports colors
 if [ -t 1 ]; then
     # Check if NO_COLOR environment variable is set
-    if [ -z "$NO_COLOR" ]; then
+    if [ -z "${NO_COLOR:-}" ]; then
         # Terminal supports colors
         RED='\033[0;31m'
         GREEN='\033[0;32m'
@@ -169,13 +175,13 @@ show_env() {
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
         PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
     fi
 
     echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
     echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
-    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_ALLOC_CONF:-}" ]; then
         echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
     fi
     echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
@@ -203,7 +209,7 @@ log() {
 DRY_RUN=false
 FORCE=false
 SHOW_ENV=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -242,7 +248,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Check for force reinstall from environment variable
-if [[ "$ROCM_SMI_REINSTALL" == "true" ]] || [[ "$FORCE" == "true" ]]; then
+if [[ "${ROCM_SMI_REINSTALL:-false}" == "true" ]] || [[ "$FORCE" == "true" ]]; then
     FORCE=true
 fi
 
@@ -302,7 +308,7 @@ install_rocm_smi() {
         fi
 
         # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
-        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+        if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
             export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
             unset PYTORCH_CUDA_ALLOC_CONF
             print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
@@ -1425,4 +1431,3 @@ fi
 
 # Run the installation function with all script arguments
 install_rocm_smi "$@"
-

@@ -25,6 +25,203 @@
 # Date: $(date +"%Y-%m-%d")
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    local selected=""
+    local rocm_mm=""
+
+    if mlstack_is_strict_rocm && declare -f mlstack_ensure_python_for_rocm_torch >/dev/null 2>&1; then
+        if declare -f strict_detect_rocm_mm >/dev/null 2>&1; then
+            rocm_mm="$(strict_detect_rocm_mm)"
+        else
+            rocm_mm="${ROCM_VERSION:-7.2}"
+        fi
+        selected="$(mlstack_ensure_python_for_rocm_torch "$candidate" "$rocm_mm" "${MLSTACK_TORCH_CHANNEL:-latest}" "${DRY_RUN:-false}" || true)"
+        [ -n "$selected" ] && candidate="$selected"
+    elif mlstack_is_strict_rocm && declare -f mlstack_select_python_for_rocm_torch >/dev/null 2>&1; then
+        if declare -f strict_detect_rocm_mm >/dev/null 2>&1; then
+            rocm_mm="$(strict_detect_rocm_mm)"
+        else
+            rocm_mm="${ROCM_VERSION:-7.2}"
+        fi
+        selected="$(mlstack_select_python_for_rocm_torch "$candidate" "$rocm_mm" "${MLSTACK_TORCH_CHANNEL:-latest}" || true)"
+        [ -n "$selected" ] && candidate="$selected"
+    fi
+
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ] || [ "${py_minor:-99}" -gt 13 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10-3.13; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    local torch_method torch_channel strict_venv_python verify_py
+    torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
+    torch_channel="${MLSTACK_TORCH_CHANNEL:-latest}"
+    strict_venv_python="$HOME/.mlstack/venvs/pytorch_rocm/bin/python"
+    verify_py="$MLSTACK_PYTHON_BIN"
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN=$MLSTACK_PYTHON_BIN bash $pytorch_installer --method $torch_method --channel $torch_channel"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling via strict ROCm installer..."
+    if ! MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" TORCH_CHANNEL="$torch_channel" \
+        bash "$pytorch_installer" --method "$torch_method" --channel "$torch_channel"; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if [ -x "$strict_venv_python" ] && "$strict_venv_python" -c "import torch" >/dev/null 2>&1; then
+        verify_py="$strict_venv_python"
+        MLSTACK_PYTHON_BIN="$strict_venv_python"
+        PYTHON_BIN="$strict_venv_python"
+        export MLSTACK_PYTHON_BIN PYTHON_BIN
+    fi
+
+    if ! mlstack_assert_rocm_torch "$verify_py"; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
+verify_rocm_component_contract() {
+    local py_cmd="$1"
+    local component="${2:-flash-attention-ck}"
+
+    "$py_cmd" - <<'PY'
+import subprocess
+import sys
+
+blocked = []
+try:
+    out = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+except Exception:
+    out = ""
+
+for line in out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if (
+        name.startswith("nvidia-")
+        or name in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or name.startswith("cupy-cuda")
+    ):
+        blocked.append(name)
+
+if blocked:
+    print("Detected disallowed CUDA/NVIDIA packages:", ", ".join(sorted(set(blocked))))
+    raise SystemExit(1)
+
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+cuda = getattr(getattr(torch, "version", None), "cuda", None)
+if not hip:
+    raise SystemExit("torch.version.hip missing (expected ROCm torch)")
+if cuda:
+    raise SystemExit(f"torch.version.cuda={cuda} (expected ROCm-only torch)")
+if not torch.cuda.is_available():
+    raise SystemExit("torch.cuda.is_available() is False")
+PY
+
+    if declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+        mlstack_assert_rocm_torch "$py_cmd"
+    fi
+}
+
 # Check if terminal supports colors
 if [ -t 1 ]; then
     # Check if NO_COLOR environment variable is set
@@ -70,11 +267,11 @@ else
     RESET=''
 fi
 
-PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-$PYTHON_BIN}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
 }
 
 # Function definitions
@@ -192,15 +389,21 @@ show_env() {
 set -e  # Exit on error
 
 # Create log directory
-LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
-mkdir -p $LOG_DIR
+LOG_DIR="${MLSTACK_LOG_DIR:-$PROJECT_ROOT/logs/extensions}"
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    LOG_DIR="${HOME}/.mlstack/logs/extensions"
+    if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+        LOG_DIR="${TMPDIR:-/tmp}/mlstack/logs/extensions"
+        mkdir -p "$LOG_DIR"
+    fi
+fi
 
 # Log file
 LOG_FILE="$LOG_DIR/flash_attention_ck_install_$(date +"%Y%m%d_%H%M%S").log"
 
 # Function to log messages
 log() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a $LOG_FILE
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" | tee -a "$LOG_FILE"
 }
 
 # Function to check if command exists
@@ -225,6 +428,10 @@ show_progress() {
     done
 
     echo -ne "\r${CYAN}Progress: [${progress_bar}] ${percentage}% - ${description}${RESET}"
+}
+
+is_non_interactive_mode() {
+    [ "${MLSTACK_BATCH_MODE:-0}" = "1" ] || [ -n "${RUSTY_STACK:-}" ] || [ ! -t 0 ]
 }
 
 # Function to complete progress
@@ -257,11 +464,15 @@ install_flash_attention_ck() {
     local total_steps=10
     local current_step=0
 
+    if ! mlstack_rocm_python_preflight false; then
+        return 1
+    fi
+
     show_progress $current_step $total_steps "Initializing installation..."
     sleep 0.5
 
     # Check if Flash Attention CK is already installed
-    ((current_step++))
+    current_step=$((current_step + 1))
     show_progress $current_step $total_steps "Checking existing installation..."
     # Use venv Python if available, otherwise installer-selected python
     PYTHON_CMD=${FLASH_ATTENTION_VENV_PYTHON:-$PYTHON_BIN}
@@ -288,7 +499,7 @@ install_flash_attention_ck() {
     fi
 
     # Check ROCm installation
-    ((current_step++))
+    current_step=$((current_step + 1))
     show_progress $current_step $total_steps "Checking ROCm installation..."
     print_section "Checking ROCm Installation"
 
@@ -390,7 +601,7 @@ install_flash_attention_ck() {
     print_step "PyTorch Version: $pytorch_version"
 
     # Check if uv is installed
-    ((current_step++))
+    current_step=$((current_step + 1))
     show_progress $current_step $total_steps "Installing dependencies..."
     print_section "Installing Dependencies"
 
@@ -526,7 +737,10 @@ install_flash_attention_ck() {
     # For virtual environments created with uv, we need to create a symlink to Python.h
     PYTHON_INCLUDE_DIR=$(python3 -c 'import sysconfig; print(sysconfig.get_path("include"))')
 
-    if [ -d "$SYSTEM_PYTHON_INCLUDE_DIR" ]; then
+    # Prefer interpreter-local headers first (works for uv-managed Python).
+    if [ -f "$PYTHON_INCLUDE_DIR/Python.h" ]; then
+        print_success "Found interpreter Python.h at: $PYTHON_INCLUDE_DIR/Python.h"
+    elif [ -d "$SYSTEM_PYTHON_INCLUDE_DIR" ]; then
         print_success "Found system Python include directory: $SYSTEM_PYTHON_INCLUDE_DIR"
 
         if [ ! -f "$PYTHON_INCLUDE_DIR/Python.h" ]; then
@@ -558,6 +772,12 @@ install_flash_attention_ck() {
     else
         print_warning "System Python include directory not found. Python development headers may be missing."
         print_step "Attempting to install Python development headers..."
+
+        if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+            print_error "Sudo access is required to install Python development headers automatically."
+            print_step "Use a Python interpreter that already provides headers (e.g. uv-managed Python 3.12), or install python${PYTHON_VERSION}-dev/devel manually."
+            return 1
+        fi
 
         package_manager=$(detect_package_manager)
         case $package_manager in
@@ -593,7 +813,7 @@ install_flash_attention_ck() {
     fi
 
     # Check if PyTorch is installed
-    ((current_step++))
+    current_step=$((current_step + 1))
     show_progress $current_step $total_steps "Checking PyTorch installation..."
     print_section "Checking PyTorch Installation"
 
@@ -608,8 +828,17 @@ install_flash_attention_ck() {
         echo "2) Virtual environment (isolated installation)"
         echo "3) Auto-detect (try global, fallback to venv if needed)"
         echo
-        read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
-        INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+        if is_non_interactive_mode; then
+            case "${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}" in
+                global) INSTALL_CHOICE=1 ;;
+                venv) INSTALL_CHOICE=2 ;;
+                *) INSTALL_CHOICE=3 ;;
+            esac
+            print_step "Non-interactive mode: honoring preset PyTorch install method (${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}})"
+        else
+            read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+            INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+        fi
 
         case $INSTALL_CHOICE in
             1)
@@ -708,30 +937,56 @@ install_flash_attention_ck() {
             fi
         }
 
-        # Use the appropriate PyTorch version based on ROCm version
-        rocm_major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
-        rocm_minor_version=$(echo "$rocm_version" | cut -d '.' -f 2)
+        if mlstack_is_strict_rocm && [ -f "$SCRIPT_DIR/install_pytorch_rocm.sh" ]; then
+            local torch_channel torch_method strict_venv_python
+            torch_channel="${ROCM_CHANNEL:-latest}"
+            torch_method="${PYTORCH_INSTALL_METHOD:-auto}"
+            print_step "Strict ROCm mode: delegating PyTorch install to install_pytorch_rocm.sh (${torch_method}, channel=${torch_channel})"
+            if ! MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+                 MLSTACK_INSTALL_METHOD="$torch_method" INSTALL_METHOD="$torch_method" \
+                 TORCH_CHANNEL="$torch_channel" \
+                 bash "$SCRIPT_DIR/install_pytorch_rocm.sh" --method "$torch_method" --channel "$torch_channel"; then
+                print_error "Failed to install PyTorch with strict ROCm installer"
+                return 1
+            fi
 
-        if [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
-            # For ROCm 6.4+, use nightly builds
-            print_step "Using PyTorch nightly build for ROCm 6.4..."
-            install_pytorch_with_method --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
-        elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 3 ]; then
-            # For ROCm 6.3, use stable builds
-            print_step "Using PyTorch stable build for ROCm 6.3..."
-            install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
-        elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 0 ]; then
-            # For ROCm 6.0-6.2, use stable builds for 6.2
-            print_step "Using PyTorch stable build for ROCm 6.2..."
-            install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
-        elif [ "$rocm_major_version" -eq 5 ]; then
-            # For ROCm 5.x, use stable builds for 5.7
-            print_step "Using PyTorch stable build for ROCm 5.7..."
-            install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.7
+            strict_venv_python="$HOME/.mlstack/venvs/pytorch_rocm/bin/python"
+            case "$torch_method" in
+                venv)
+                    if [ -x "$strict_venv_python" ]; then
+                        PYTORCH_VENV_PYTHON="$strict_venv_python"
+                    fi
+                    ;;
+                auto)
+                    if [ -x "$strict_venv_python" ] && "$strict_venv_python" -c "import torch" &>/dev/null; then
+                        PYTORCH_VENV_PYTHON="$strict_venv_python"
+                    fi
+                    ;;
+                global|*)
+                    PYTORCH_VENV_PYTHON=""
+                    ;;
+            esac
         else
-            # Fallback to the latest stable ROCm version
-            print_step "Using PyTorch stable build for ROCm 6.3 (fallback)..."
-            install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+            # Legacy non-strict fallback for older environments.
+            rocm_major_version=$(echo "$rocm_version" | cut -d '.' -f 1)
+            rocm_minor_version=$(echo "$rocm_version" | cut -d '.' -f 2)
+
+            if [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 4 ]; then
+                print_step "Using PyTorch nightly build for ROCm 6.4..."
+                install_pytorch_with_method --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.4
+            elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 3 ]; then
+                print_step "Using PyTorch stable build for ROCm 6.3..."
+                install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+            elif [ "$rocm_major_version" -eq 6 ] && [ "$rocm_minor_version" -ge 0 ]; then
+                print_step "Using PyTorch stable build for ROCm 6.2..."
+                install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
+            elif [ "$rocm_major_version" -eq 5 ]; then
+                print_step "Using PyTorch stable build for ROCm 5.7..."
+                install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.7
+            else
+                print_step "Using PyTorch stable build for ROCm 6.3 (fallback)..."
+                install_pytorch_with_method torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
+            fi
         fi
 
         # Verify PyTorch installation
@@ -758,7 +1013,7 @@ install_flash_attention_ck() {
     fi
 
     # Ask user for Flash Attention CK installation preference
-    ((current_step++))
+    current_step=$((current_step + 1))
     show_progress $current_step $total_steps "Setting up Flash Attention CK..."
     print_section "Flash Attention CK Installation Options"
 
@@ -768,8 +1023,17 @@ install_flash_attention_ck() {
     echo "2) Virtual environment (isolated installation)"
     echo "3) Auto-detect (try global, fallback to venv if needed)"
     echo
-    read -p "Choose installation method (1-3) [3]: " FLASH_ATTENTION_CHOICE
-    FLASH_ATTENTION_CHOICE=${FLASH_ATTENTION_CHOICE:-3}
+    if is_non_interactive_mode; then
+        case "${FLASH_ATTENTION_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}" in
+            global) FLASH_ATTENTION_CHOICE=1 ;;
+            venv) FLASH_ATTENTION_CHOICE=2 ;;
+            *) FLASH_ATTENTION_CHOICE=3 ;;
+        esac
+        print_step "Non-interactive mode: honoring preset Flash Attention install method (${FLASH_ATTENTION_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}})"
+    else
+        read -p "Choose installation method (1-3) [3]: " FLASH_ATTENTION_CHOICE
+        FLASH_ATTENTION_CHOICE=${FLASH_ATTENTION_CHOICE:-3}
+    fi
 
     case $FLASH_ATTENTION_CHOICE in
         1)
@@ -826,12 +1090,7 @@ fi
 log "Copying CK implementation files..."
 
 # Determine the core directory path
-if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
-    USER_HOME=$(eval echo ~$SUDO_USER)
-    CORE_DIR="$USER_HOME/Prod/Stan-s-ML-Stack/core/flash_attention"
-else
-    CORE_DIR="$HOME/Prod/Stan-s-ML-Stack/core/flash_attention"
-fi
+CORE_DIR="$PROJECT_ROOT/core/flash_attention"
 
 # Check if the core directory exists
 if [ ! -d "$CORE_DIR" ]; then
@@ -854,10 +1113,12 @@ cp -f $CORE_DIR/CMakeLists.txt $INSTALL_DIR/
 cp -f $CORE_DIR/flash_attention_amd.cpp $INSTALL_DIR/
 cp -f $CORE_DIR/flash_attention_amd_cuda.cpp $INSTALL_DIR/
 cp -f $CORE_DIR/flash_attention_amd.py $INSTALL_DIR/flash_attention_amd/
+# Keep a root-level copy for setup_flash_attn_amd.py compatibility.
+cp -f $CORE_DIR/flash_attention_amd.py $INSTALL_DIR/flash_attention_amd.py
 cp -f $CORE_DIR/setup_flash_attn_amd.py $INSTALL_DIR/
 
 # Build the CK implementation
-((current_step++))
+current_step=$((current_step + 1))
 show_progress $current_step $total_steps "Building Flash Attention CK..."
 print_step "Building Flash Attention CK implementation..."
 cd $INSTALL_DIR
@@ -935,8 +1196,10 @@ fi
     # Configure CMake with enhanced error handling
     print_step "Configuring CMake..."
 
+    local torch_cmake_prefix
+    torch_cmake_prefix="$($PYTHON_CMD -c "import torch; print(torch.utils.cmake_prefix_path)")"
     CMAKE_ARGS=(
-        -DCMAKE_PREFIX_PATH=$($PYTHON_CMD -c "import torch; print(torch.utils.cmake_prefix_path)")
+        -DCMAKE_PREFIX_PATH="${torch_cmake_prefix};${ROCM_PATH:-/opt/rocm};/opt/rocm"
         -DCMAKE_BUILD_TYPE=Release
         -DGPU_TARGETS="$GPU_ARCH"
         -DCMAKE_CXX_FLAGS="-Wno-error"
@@ -1102,7 +1365,7 @@ fi
     fi
 
     # Enhanced testing and verification
-    ((current_step++))
+    current_step=$((current_step + 1))
     show_progress $current_step $total_steps "Verifying installation..."
     print_section "Verifying Installation"
 
@@ -1144,6 +1407,11 @@ except Exception as e:
         print_success "Flash Attention CK verification completed successfully"
     else
         print_error "Flash Attention CK verification failed"
+        return 1
+    fi
+
+    if ! verify_rocm_component_contract "$PYTHON_CMD" "flash-attention-ck post-install"; then
+        print_error "ROCm compatibility contract failed after Flash Attention CK install"
         return 1
     fi
 
@@ -1194,7 +1462,7 @@ EOF
     echo -e "${YELLOW}ROCm Version: $rocm_version${RESET}"
     echo
     echo -e "${CYAN}${BOLD}Documentation:${RESET}"
-    echo -e "${CYAN}$HOME/Prod/Stan-s-ML-Stack/docs/extensions/flash_attention_ck_guide.md${RESET}"
+    echo -e "${CYAN}$PROJECT_ROOT/docs/extensions/flash_attention_ck_guide.md${RESET}"
     echo
     echo -e "${CYAN}${BOLD}Environment Variables:${RESET}"
     echo -e "${GREEN}To apply ROCm environment variables to your current shell, run:${RESET}"
@@ -1235,7 +1503,7 @@ EXAMPLES:
     ./install_flash_attention_ck.sh --global          # Force global install
 
 For more information, see:
-    $HOME/Prod/Stan-s-ML-Stack/docs/extensions/flash_attention_ck_guide.md
+    $PROJECT_ROOT/docs/extensions/flash_attention_ck_guide.md
 EOF
 }
 
@@ -1317,5 +1585,3 @@ fi
 
 # Run the installation function
 install_flash_attention_ck "$@"
-
-

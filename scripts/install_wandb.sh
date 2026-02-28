@@ -9,6 +9,171 @@
 # multiple installation methods, and comprehensive error handling.
 #
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10+; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    local torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-${INSTALL_METHOD:-auto}}}"
+    torch_method="$(echo "$torch_method" | tr '[:upper:]' '[:lower:]')"
+    case "$torch_method" in
+        global|venv|auto) ;;
+        *) torch_method="auto" ;;
+    esac
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_BATCH_MODE=1 MLSTACK_INSTALL_METHOD=$torch_method bash $pytorch_installer --method $torch_method"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with $torch_method method..."
+    if ! MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" INSTALL_METHOD="$torch_method" \
+        bash "$pytorch_installer" --method "$torch_method"; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if ! mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
+mlstack_verify_rocm_component_contract() {
+    local py_cmd="$1"
+    local component="${2:-wandb}"
+
+    "$py_cmd" - <<'PY'
+import subprocess
+import sys
+
+blocked = []
+try:
+    out = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+except Exception as exc:
+    raise SystemExit(f"Unable to inspect pip packages: {exc}")
+
+for line in out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if (
+        name.startswith("nvidia-")
+        or name in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or name.startswith("cupy-cuda")
+    ):
+        blocked.append(name)
+
+if blocked:
+    raise SystemExit("Detected disallowed CUDA/NVIDIA packages: " + ", ".join(sorted(set(blocked))))
+
+try:
+    import torch
+except Exception:
+    raise SystemExit(0)
+
+hip = getattr(getattr(torch, "version", None), "hip", None)
+cuda = getattr(getattr(torch, "version", None), "cuda", None)
+if cuda:
+    raise SystemExit(f"torch.version.cuda={cuda} (expected ROCm-only torch)")
+if hip is None:
+    raise SystemExit("torch.version.hip is missing (expected ROCm torch)")
+PY
+}
+
 # ASCII Art Banner
 cat << "EOF"
 ██╗    ██╗ █████╗ ███╗   ██╗██████╗ ██████╗
@@ -23,7 +188,7 @@ echo
 # Check if terminal supports colors
 if [ -t 1 ]; then
     # Check if NO_COLOR environment variable is set
-    if [ -z "$NO_COLOR" ]; then
+    if [ -z "${NO_COLOR:-}" ]; then
         # Terminal supports colors
         RED='\033[0;31m'
         GREEN='\033[0;32m'
@@ -111,7 +276,7 @@ command_exists() {
 
 # Function to check if Python package is installed
 package_installed() {
-    python3 -c "import $1" &>/dev/null
+    "$MLSTACK_PYTHON_BIN" -c "import $1" &>/dev/null
 }
 
 # Function to detect package manager
@@ -135,14 +300,14 @@ detect_package_manager() {
 install_python_package() {
     local package="$1"
     shift
-    local extra_args="$@"
+    local extra_args=("$@")
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --python "$MLSTACK_PYTHON_BIN" "${extra_args[@]}" "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        "$MLSTACK_PYTHON_BIN" -m pip install "${extra_args[@]}" "$package"
     fi
 }
 
@@ -154,7 +319,7 @@ show_env() {
     PYTORCH_ROCM_ARCH="gfx1100"
     ROCM_PATH="/opt/rocm"
     PATH="/opt/rocm/bin:$PATH"
-    LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+    LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
 
     # Check if rocprofiler library exists and update HSA_TOOLS_LIB accordingly
     if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -162,13 +327,13 @@ show_env() {
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
-        PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
+        PYTORCH_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}"
     fi
 
     echo "export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\""
     echo "export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\""
-    if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_ALLOC_CONF:-}" ]; then
         echo "export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\""
     fi
     echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
@@ -190,7 +355,7 @@ detect_rocm() {
         export PYTORCH_ROCM_ARCH="gfx1100"
         export ROCM_PATH="/opt/rocm"
         export PATH="/opt/rocm/bin:$PATH"
-        export LD_LIBRARY_PATH="/opt/rocm/lib:$LD_LIBRARY_PATH"
+        export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
 
         # Set HSA_TOOLS_LIB if rocprofiler library exists
         if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -215,8 +380,8 @@ detect_rocm() {
         fi
 
         # Fix deprecated PYTORCH_CUDA_ALLOC_CONF warning
-        if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
-            export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
+        if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
+            export PYTORCH_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}"
             unset PYTORCH_CUDA_ALLOC_CONF
             print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
         fi
@@ -525,6 +690,7 @@ install_wandb() {
     # Parse command line arguments
     DRY_RUN=false
     FORCE=false
+    WANDB_VENV_PYTHON=""
     while [[ $# -gt 0 ]]; do
         case $1 in
             --dry-run)
@@ -544,10 +710,19 @@ install_wandb() {
         esac
     done
 
+    if ! mlstack_rocm_python_preflight "$DRY_RUN"; then
+        return 1
+    fi
+
     # Check for required dependencies
     print_section "Checking Dependencies"
-    DEPS=("python3" "pip")
+    DEPS=("pip")
     MISSING_DEPS=()
+
+    if [ ! -x "$MLSTACK_PYTHON_BIN" ]; then
+        print_error "Python interpreter is not executable: $MLSTACK_PYTHON_BIN"
+        return 1
+    fi
 
     for dep in "${DEPS[@]}"; do
         if ! command_exists $dep; then
@@ -569,10 +744,10 @@ install_wandb() {
     # Check if WandB is already installed
     print_section "Checking Existing Installation"
 
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${WANDB_VENV_PYTHON:-python3}
+    # Use venv Python if available, otherwise selected python
+    PYTHON_CMD=${WANDB_VENV_PYTHON:-$MLSTACK_PYTHON_BIN}
 
-    if package_installed "wandb"; then
+    if $PYTHON_CMD -c "import wandb" &>/dev/null; then
         wandb_version=$($PYTHON_CMD -c "import wandb; print(wandb.__version__)" 2>/dev/null)
         print_success "WandB is already installed (version: $wandb_version)"
 
@@ -580,9 +755,19 @@ install_wandb() {
         if [[ "$FORCE" == "true" ]]; then
             print_warning "Force reinstall requested - proceeding with reinstallation"
         else
+            if ! mlstack_verify_rocm_component_contract "$PYTHON_CMD" "wandb existing install"; then
+                print_error "WandB exists but ROCm compatibility contract failed."
+                return 1
+            fi
             print_step "WandB installation is complete. Use --force to reinstall anyway."
             return 0
         fi
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_step "[DRY RUN] Would install/upgrade wandb and dependencies using $MLSTACK_PYTHON_BIN"
+        print_step "[DRY RUN] Would verify wandb import and generate helper test/docs files"
+        return 0
     fi
 
     # Check if uv is installed
@@ -590,7 +775,7 @@ install_wandb() {
 
     if ! command_exists uv; then
         print_step "Installing uv package manager..."
-        python3 -m pip install uv
+        "$MLSTACK_PYTHON_BIN" -m pip install uv
 
         # Add uv to PATH if it was installed in a user directory
         if [ -f "$HOME/.local/bin/uv" ]; then
@@ -637,91 +822,70 @@ install_wandb() {
             ;;
     esac
 
-    # Create a function to handle uv commands properly with venv fallback
+    ensure_wandb_venv() {
+        VENV_DIR="./wandb_venv"
+        if [ ! -d "$VENV_DIR" ]; then
+            print_step "Creating virtual environment..."
+            "$MLSTACK_PYTHON_BIN" -m venv "$VENV_DIR"
+        fi
+        if [ ! -x "$VENV_DIR/bin/python" ]; then
+            print_error "Virtual environment Python not found: $VENV_DIR/bin/python"
+            return 1
+        fi
+        WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
+    }
+
+    # Create a function to handle installation with venv fallback
     uv_pip_install() {
-        local args="$@"
+        local args=("$@")
+        if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+            mlstack_guard_install_request "install_wandb.sh:uv_pip_install" "${args[@]}" || return 1
+        fi
 
         if [[ "$DRY_RUN" == "true" ]]; then
-            print_step "[DRY RUN] Would install with: uv pip install $args"
+            print_step "[DRY RUN] Would install with pip: ${args[*]}"
             return 0
         fi
 
-        # Check if uv is available as a command
-        if command_exists uv; then
-            case $INSTALL_METHOD in
-                "global")
-                    print_step "Installing globally with pip..."
-                    python3 -m pip install --break-system-packages $args
+        case $INSTALL_METHOD in
+            "global")
+                print_step "Installing globally with pip..."
+                "$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages "${args[@]}"
+                WANDB_VENV_PYTHON=""
+                ;;
+            "venv")
+                ensure_wandb_venv || return 1
+                print_step "Installing in virtual environment..."
+                "$WANDB_VENV_PYTHON" -m pip install "${args[@]}"
+                print_success "Installed in virtual environment: ./wandb_venv"
+                ;;
+            "auto")
+                if mlstack_is_strict_rocm; then
+                    print_step "Strict ROCm mode: preferring virtual environment install."
+                    ensure_wandb_venv || return 1
+                    if "$WANDB_VENV_PYTHON" -m pip install "${args[@]}"; then
+                        print_success "Installed in virtual environment: ./wandb_venv"
+                        return 0
+                    fi
+                    print_warning "Virtual environment install failed, trying global fallback."
+                fi
+
+                print_step "Attempting global installation..."
+                local install_output
+                install_output=$("$MLSTACK_PYTHON_BIN" -m pip install --break-system-packages "${args[@]}" 2>&1)
+                local install_exit_code=$?
+                if [ $install_exit_code -eq 0 ]; then
+                    print_success "Global installation successful"
                     WANDB_VENV_PYTHON=""
-                    ;;
-                "venv")
-                    print_step "Creating uv virtual environment..."
-                    VENV_DIR="./wandb_venv"
-                    if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
-                    fi
-                    source "$VENV_DIR/bin/activate"
-                    print_step "Installing in virtual environment..."
-                    uv pip install $args
-                    WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
-                    print_success "Installed in virtual environment: $VENV_DIR"
-                    ;;
-                "auto")
-                    # Try global install first
-                    print_step "Attempting global installation with uv..."
-                    local install_output
-                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
-                    local install_exit_code=$?
-
-                    if echo "$install_output" | grep -q "externally managed"; then
-                        print_warning "Global installation failed due to externally managed environment"
-                        print_step "Creating uv virtual environment for installation..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./wandb_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    elif [ $install_exit_code -eq 0 ]; then
-                        print_success "Global installation successful"
-                        WANDB_VENV_PYTHON=""
-                    else
-                        print_error "Global installation failed with unknown error:"
-                        echo "$install_output"
-                        print_step "Falling back to virtual environment..."
-
-                        # Create uv venv in project directory
-                        VENV_DIR="./wandb_venv"
-                        if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
-                        fi
-
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
-                        print_step "Installing in virtual environment..."
-                        uv pip install $args
-
-                        # Store venv path for verification
-                        WANDB_VENV_PYTHON="$VENV_DIR/bin/python"
-                        print_success "Installed in virtual environment: $VENV_DIR"
-                    fi
-                    ;;
-            esac
-        else
-            # Fall back to pip
-            print_step "Installing with pip..."
-            python3 -m pip install $args
-            WANDB_VENV_PYTHON=""
-        fi
+                else
+                    print_warning "Global installation failed, falling back to virtual environment..."
+                    echo "$install_output"
+                    ensure_wandb_venv || return 1
+                    "$WANDB_VENV_PYTHON" -m pip install "${args[@]}"
+                    print_success "Installed in virtual environment: ./wandb_venv"
+                fi
+                ;;
+        esac
     }
 
     # Install WandB
@@ -731,8 +895,8 @@ install_wandb() {
     # Verify installation
     print_section "Verifying Installation"
 
-    # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${WANDB_VENV_PYTHON:-python3}
+    # Use venv Python if available, otherwise selected python
+    PYTHON_CMD=${WANDB_VENV_PYTHON:-$MLSTACK_PYTHON_BIN}
 
     if $PYTHON_CMD -c "import wandb" &>/dev/null; then
         wandb_version=$($PYTHON_CMD -c "import wandb; print(wandb.__version__)" 2>/dev/null)
@@ -747,6 +911,11 @@ install_wandb() {
         fi
     else
         print_error "WandB installation failed"
+        return 1
+    fi
+
+    if ! mlstack_verify_rocm_component_contract "$PYTHON_CMD" "wandb post-install"; then
+        print_error "ROCm compatibility contract failed after WandB installation."
         return 1
     fi
 
@@ -812,7 +981,7 @@ EOF
         # Provide usage examples
         echo
         echo -e "${CYAN}${BOLD}Quick Start Examples:${RESET}"
-        if [ -n "$WANDB_VENV_PYTHON" ]; then
+        if [ -n "${WANDB_VENV_PYTHON:-}" ]; then
             echo -e "${GREEN}source ./wandb_venv/bin/activate${RESET}"
             echo -e "${GREEN}python -c \"import wandb; print('WandB version:', wandb.__version__)\"${RESET}"
         else
@@ -826,7 +995,7 @@ EOF
         # Output the actual environment variables that were set
         echo -e "${GREEN}export HSA_TOOLS_LIB=\"$HSA_TOOLS_LIB\"${RESET}"
         echo -e "${GREEN}export HSA_OVERRIDE_GFX_VERSION=\"$HSA_OVERRIDE_GFX_VERSION\"${RESET}"
-        if [ -n "$PYTORCH_ALLOC_CONF" ]; then
+        if [ -n "${PYTORCH_ALLOC_CONF:-}" ]; then
             echo -e "${GREEN}export PYTORCH_ALLOC_CONF=\"$PYTORCH_ALLOC_CONF\"${RESET}"
         fi
         echo -e "${GREEN}export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\"${RESET}"

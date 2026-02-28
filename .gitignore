@@ -140,3 +140,6 @@ target/
 !tutorials/
 !troubleshooting/
 !reference/
+
+# Maestro developer files (local only, not pushed to remote)
+maestro/

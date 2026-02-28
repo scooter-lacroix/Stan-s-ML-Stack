@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # vLLM Performance Benchmark Wrapper
 #
@@ -6,46 +6,36 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_ROOT"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/benchmark_common.sh"
 
-# Setup logging
-LOG_DIR="${HOME}/.rusty-stack/logs"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/vllm_benchmarks_$(date +%Y%m%d_%H%M%S).log"
+benchmark_enable_colors
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+PROJECT_ROOT="$(benchmark_resolve_project_root "$SCRIPT_DIR")"
+MANIFEST_PATH="$(benchmark_discover_manifest_path "$PROJECT_ROOT")"
 
-log "Starting vLLM benchmarks..."
-log "Log file: $LOG_FILE"
+LOG_DIR="$(benchmark_resolve_log_dir)"
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="$LOG_DIR/vllm_benchmarks_${RUN_TS}.log"
+RESULT_JSON="$LOG_DIR/vllm_benchmarks_${RUN_TS}.json"
+benchmark_set_log_file "$LOG_FILE"
 
-# Ensure cargo is available
-if ! command -v cargo &> /dev/null; then
-    if [ -f "$HOME/.cargo/env" ]; then
-        source "$HOME/.cargo/env"
-    elif [ -f "$HOME/.rustup/env" ]; then
-        source "$HOME/.rustup/env"
-    fi
-fi
+benchmark_log "Starting vLLM benchmarks..."
+benchmark_log "Log file: $LOG_FILE"
 
-# Build the benchmark binary if needed
-log "Ensuring benchmark binary is ready..."
-if ! cargo build --manifest-path="rusty-stack/Cargo.toml" --bin rusty-stack-bench &> /tmp/bench_build.log; then
-    log "ERROR: Failed to build benchmark binary"
-    cat /tmp/bench_build.log | tee -a "$LOG_FILE"
-    exit 1
-fi
+benchmark_require_cargo
+benchmark_prepare_rocm_runtime
+benchmark_ensure_vllm_runtime_basics || benchmark_warn "vLLM runtime preflight could not fully repair dependencies; benchmark will continue and report details"
+benchmark_info "Ensuring benchmark binary is ready..."
+benchmark_build_rusty_stack_bench "$MANIFEST_PATH" "$LOG_FILE"
 
-# Run vLLM benchmark
-log "Running vLLM throughput benchmark..."
-export VLLM_TARGET_DEVICE=rocm
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
-if ! "./target/debug/rusty-stack-bench" vllm --json 2>&1 | tee -a "$LOG_FILE"; then
-    log "ERROR: vLLM Benchmark execution failed"
-    exit 1
-fi
+: "${VLLM_TARGET_DEVICE:=rocm}"
+export VLLM_TARGET_DEVICE
 
-log "vLLM benchmarks completed successfully"
+benchmark_info "Running vLLM throughput benchmark..."
+benchmark_run_named_json_to_file "$MANIFEST_PATH" "$LOG_FILE" "$RESULT_JSON" vllm
+
+benchmark_log "Benchmark JSON results: $RESULT_JSON"
+
+benchmark_success "vLLM benchmarks completed successfully"
 exit 0

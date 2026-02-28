@@ -1,0 +1,13 @@
+{
+  "workflow_mode": "autonomous",
+  "checkpoint_interval": null,
+  "review_agent": "codex-reviewer",
+  "review_criteria": {
+    "zero_tolerance": true,
+    "check_security": true,
+    "check_edge_cases": true,
+    "check_error_handling": true,
+    "check_performance": true,
+    "min_code_coverage": 95
+  }
+}

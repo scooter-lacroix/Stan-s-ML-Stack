@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 #
 # Author: Stanley Chisango (Scooter Lacroix)
 # Email: scooterlacroix@gmail.com
@@ -46,7 +52,7 @@ LOG_DIR="$HOME/Prod/Stan-s-ML-Stack/logs/extensions"
 LOG_FILE="$LOG_DIR/ml_stack_extensions_install_$(date +"%Y%m%d_%H%M%S").log"
 DRY_RUN=false
 FORCE_INSTALL=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
 PYTORCH_VENV_PYTHON=""
 VENV_DIR=""
 ROCM_DETECTED=false
@@ -513,7 +519,7 @@ verify_component() {
             fi
             ;;
         "vllm")
-            if $python_cmd -c "import vllm" &>/dev/null; then
+            if $python_cmd -c "import vllm, cachetools, cbor2, gguf, pybase64, llguidance, mistral_common, openai_harmony, outlines_core, xgrammar" &>/dev/null; then
                 print_success "vLLM verification passed"
                 return 0
             fi

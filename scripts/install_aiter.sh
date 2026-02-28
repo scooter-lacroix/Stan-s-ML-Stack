@@ -16,11 +16,339 @@
 # tensor operations on AMD GPUs.
 # =============================================================================
 
+# Load persistent env early so MLSTACK_PYTHON_BIN is honored even on direct script invocation.
+EARLY_ENV_FILE="${MLSTACK_PERSISTENT_ENV_FILE:-$HOME/.mlstack_env}"
+if [ -f "$EARLY_ENV_FILE" ]; then
+    set +u 2>/dev/null || true
+    # shellcheck disable=SC1090
+    source "$EARLY_ENV_FILE" >/dev/null 2>&1 || true
+    set -u 2>/dev/null || true
+fi
+
 PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+MLSTACK_STRICT_ROCM="${MLSTACK_STRICT_ROCM:-1}"
+
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_LIB_DIR/installer_guard.sh"
+fi
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
+}
+
+load_persistent_mlstack_env() {
+    local env_file="${MLSTACK_PERSISTENT_ENV_FILE:-$HOME/.mlstack_env}"
+    if [ -f "$env_file" ]; then
+        set +u 2>/dev/null || true
+        # shellcheck disable=SC1090
+        source "$env_file"
+        set -u 2>/dev/null || true
+    fi
+}
+
+resolve_aiter_primary_arch() {
+    local arch="${1:-}"
+    arch="$(printf '%s' "$arch" | cut -d';' -f1 | tr -d '[:space:]')"
+    if [ -n "$arch" ]; then
+        printf '%s\n' "$arch"
+    else
+        printf '%s\n' "gfx1100"
+    fi
+}
+
+configure_aiter_runtime_env() {
+    load_persistent_mlstack_env
+
+    local primary_arch=""
+    if [ -n "${PYTORCH_ROCM_ARCH:-}" ]; then
+        primary_arch="$(resolve_aiter_primary_arch "$PYTORCH_ROCM_ARCH")"
+    elif [ -n "${GPU_ARCH:-}" ]; then
+        primary_arch="$(resolve_aiter_primary_arch "$GPU_ARCH")"
+    else
+        primary_arch="gfx1100"
+    fi
+
+    local effective_gpu_archs
+    effective_gpu_archs="$(resolve_aiter_primary_arch "${GPU_ARCHS:-$primary_arch}")"
+
+    export GPU_ARCH="${GPU_ARCH:-$primary_arch}"
+    export PYTORCH_ROCM_ARCH="${PYTORCH_ROCM_ARCH:-$primary_arch}"
+    export GPU_ARCHS="$effective_gpu_archs"
+
+    if [ -n "${HIP_VISIBLE_DEVICES:-}" ] && [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+        export CUDA_VISIBLE_DEVICES="$HIP_VISIBLE_DEVICES"
+    elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ] && [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then
+        export HIP_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"
+    fi
+
+    export AITER_JIT_DIR="${AITER_JIT_DIR:-$HOME/.mlstack/aiter/jit}"
+    mkdir -p "$AITER_JIT_DIR" 2>/dev/null || true
+    chmod u+rwx "$AITER_JIT_DIR" 2>/dev/null || true
+}
+
+strict_validate_python_version() {
+    local py_cmd="$1"
+    "$py_cmd" - <<'PY'
+import sys
+major, minor = sys.version_info[:2]
+if major != 3 or minor < 10 or minor > 13:
+    raise SystemExit(
+        f"Unsupported Python {major}.{minor}; strict ROCm mode requires Python 3.10-3.13"
+    )
+PY
+}
+
+strict_detect_rocm_mm() {
+    local rocm_raw
+    rocm_raw="${ROCM_VERSION:-}"
+    if [[ -z "$rocm_raw" ]] && [[ -f /opt/rocm/.info/version ]]; then
+        rocm_raw="$(head -n1 /opt/rocm/.info/version 2>/dev/null || true)"
+    fi
+    rocm_raw="$(echo "$rocm_raw" | grep -oE '[0-9]+\.[0-9]+' | head -n1)"
+    case "$rocm_raw" in
+        5.7|6.0|6.1|6.2|6.3|6.4|7.0|7.1|7.2) echo "$rocm_raw" ;;
+        *) echo "7.2" ;;
+    esac
+}
+
+strict_rocm_index_url() {
+    local rocm_mm="$1"
+    echo "https://repo.radeon.com/rocm/manylinux/rocm-rel-${rocm_mm}/"
+}
+
+strict_venv_python() {
+    local component="$1"
+    local base_python="$2"
+    local venv_dir="${MLSTACK_VENV_DIR:-$HOME/.mlstack/venvs/$component}"
+    local base_mm venv_mm
+    mkdir -p "$(dirname "$venv_dir")"
+
+    base_mm="$("$base_python" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)"
+
+    if [[ -x "$venv_dir/bin/python" ]]; then
+        venv_mm="$("$venv_dir/bin/python" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)" || venv_mm=""
+        if [[ -n "$venv_mm" && "$venv_mm" != "$base_mm" ]]; then
+            print_warning "[strict] Rebuilding stale AITER venv ($venv_mm -> $base_mm)"
+            rm -rf "$venv_dir"
+        fi
+    fi
+
+    if [[ ! -x "$venv_dir/bin/python" ]]; then
+        "$base_python" -m venv "$venv_dir"
+    fi
+    "$venv_dir/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
+    printf '%s\n' "$venv_dir/bin/python"
+}
+
+strict_purge_nvidia_packages() {
+    local py_cmd="$1"
+    local nvidia_pkgs
+    nvidia_pkgs="$("$py_cmd" -m pip list --format=freeze 2>/dev/null \
+        | awk -F== 'BEGIN{IGNORECASE=1}{name=tolower($1); if (name ~ /^nvidia-/ || name ~ /(^|-)cuda([_-]|$)/ || name ~ /^pytorch-cuda$/ || name ~ /^torch-cuda$/) print $1}' \
+        | xargs || true)"
+    if [[ -n "${nvidia_pkgs:-}" ]]; then
+        "$py_cmd" -m pip uninstall -y $nvidia_pkgs >/dev/null || true
+    fi
+}
+
+strict_verify_no_cuda_contamination() {
+    local py_cmd="$1"
+    "$py_cmd" - <<'PY'
+import re
+import subprocess
+import sys
+
+errors = []
+try:
+    import torch
+    if getattr(torch.version, "cuda", None):
+        errors.append(f"torch.version.cuda={torch.version.cuda}")
+    if not getattr(torch.version, "hip", None):
+        errors.append("torch.version.hip missing")
+    version = getattr(torch, "__version__", "").lower()
+    if "cu" in version and "rocm" not in version:
+        errors.append(f"CUDA-looking torch version: {version}")
+except Exception as exc:
+    errors.append(f"torch validation failed: {exc}")
+
+pip_out = subprocess.check_output(
+    [sys.executable, "-m", "pip", "list", "--format=freeze"],
+    text=True,
+    stderr=subprocess.DEVNULL,
+)
+for line in pip_out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if name.startswith("nvidia-") or re.search(r"(^|-)cuda([_-]|$)", name) or name in {"pytorch-cuda", "torch-cuda"}:
+        errors.append(f"disallowed package: {name}")
+
+if errors:
+    print("\n".join(errors))
+    raise SystemExit(1)
+PY
+}
+
+verify_rocm_component_contract() {
+    local py_cmd="$1"
+    local component="${2:-aiter}"
+
+    "$py_cmd" - <<'PY'
+import subprocess
+import sys
+
+blocked = []
+try:
+    out = subprocess.check_output(
+        [sys.executable, "-m", "pip", "list", "--format=freeze"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+except Exception:
+    out = ""
+
+for line in out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if (
+        name.startswith("nvidia-")
+        or name in {"pytorch-cuda", "torch-cuda", "cuda-python", "cuda-bindings", "cuda-pathfinder"}
+        or name.startswith("cupy-cuda")
+    ):
+        blocked.append(name)
+
+if blocked:
+    print("Detected disallowed CUDA/NVIDIA packages:", ", ".join(sorted(set(blocked))))
+    raise SystemExit(1)
+
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+cuda = getattr(getattr(torch, "version", None), "cuda", None)
+if not hip:
+    raise SystemExit("torch.version.hip missing (expected ROCm torch)")
+if cuda:
+    raise SystemExit(f"torch.version.cuda={cuda} (expected ROCm-only torch)")
+if not torch.cuda.is_available():
+    raise SystemExit("torch.cuda.is_available() is False")
+PY
+
+    if declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+        mlstack_assert_rocm_torch "$py_cmd"
+    fi
+}
+
+strict_ensure_rocm_torch() {
+    local py_cmd="$1"
+
+    strict_purge_nvidia_packages "$py_cmd"
+    "$py_cmd" -m pip uninstall -y torch torchvision torchaudio triton >/dev/null 2>&1 || true
+
+    if type mlstack_install_rocm_torch_stack >/dev/null 2>&1; then
+        local requested_rocm requested_channel
+        requested_rocm="${ROCM_VERSION:-$(strict_detect_rocm_mm)}"
+        requested_channel="${ROCM_CHANNEL:-latest}"
+        if ! mlstack_install_rocm_torch_stack "$py_cmd" "$requested_rocm" "$requested_channel" "aiter"; then
+            print_error "Failed to install ROCm torch stack in strict mode"
+            return 1
+        fi
+    else
+        local rocm_mm
+        rocm_mm="$(strict_detect_rocm_mm)"
+        local rocm_index
+        rocm_index="$(strict_rocm_index_url "$rocm_mm")"
+        if ! "$py_cmd" -m pip install --no-cache-dir --upgrade \
+            --index-url "$rocm_index" --extra-index-url https://pypi.org/simple \
+            torch torchvision torchaudio; then
+            return 1
+        fi
+    fi
+
+    "$py_cmd" - <<'PY'
+import torch
+assert torch.__version__
+assert getattr(torch.version, "hip", None), "torch.version.hip missing"
+PY
+}
+
+strict_install_aiter() {
+    local base_python="$PYTHON_BIN"
+
+    if ! command -v "$base_python" >/dev/null 2>&1; then
+        print_error "Python interpreter not found: $base_python"
+        return 1
+    fi
+    if ! strict_validate_python_version "$base_python"; then
+        print_error "Strict ROCm mode requires Python 3.10-3.13"
+        return 1
+    fi
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        print_step "[strict] Dry run: would install AITER into shared global env via ${base_python}"
+        return 0
+    fi
+
+    local strict_python="$base_python"
+    AITER_VENV_PYTHON=""
+    export MLSTACK_PYTHON_BIN="$strict_python"
+    export UV_PYTHON="$strict_python"
+
+    print_step "[strict] Ensuring ROCm PyTorch in shared global env..."
+    strict_ensure_rocm_torch "$strict_python" || return 1
+
+    print_step "[strict] Installing AITER python build dependencies..."
+    "$strict_python" -m pip install --no-cache-dir --upgrade \
+        packaging pybind11 pandas einops psutil numpy setuptools wheel typing-extensions cmake ninja || return 1
+
+    local temp_dir
+    temp_dir="$(mktemp -d)"
+    TEMP_DIRS+=("$temp_dir")
+    local repo_url="${MLSTACK_AITER_REPO:-https://github.com/ROCm/aiter.git}"
+
+    print_step "[strict] Cloning AITER from ${repo_url}..."
+    if ! git clone --recursive "$repo_url" "$temp_dir/aiter"; then
+        print_error "Failed to clone AITER repository"
+        return 1
+    fi
+
+    print_step "[strict] Installing AITER with --no-deps to prevent CUDA torch pull..."
+    if ! (
+        cd "$temp_dir/aiter" && \
+        "$strict_python" -m pip install --no-cache-dir --no-build-isolation --no-deps .
+    ); then
+        print_error "AITER installation failed in strict mode"
+        return 1
+    fi
+
+    if ! "$strict_python" - <<'PY'
+import aiter
+import torch
+assert getattr(torch.version, "hip", None), "torch.version.hip missing"
+print(getattr(aiter, "__version__", "unknown"))
+PY
+    then
+        print_error "AITER strict verification failed"
+        return 1
+    fi
+
+    if ! strict_verify_no_cuda_contamination "$strict_python"; then
+        print_error "CUDA/NVIDIA contamination detected after AITER install"
+        return 1
+    fi
+    if ! verify_rocm_component_contract "$strict_python" "aiter strict post-install"; then
+        print_error "ROCm contract verification failed after strict AITER install"
+        return 1
+    fi
+
+    print_success "Strict ROCm AITER installation completed in ${strict_python%/bin/python}"
+    return 0
 }
 
 # ASCII Art Banner
@@ -374,6 +702,10 @@ load_config() {
             export "$key"="$value"
         done < "$config_file"
 
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
+
         # Override command line arguments if config specifies them
         if [ -n "$INSTALL_METHOD" ]; then
             case $INSTALL_METHOD in
@@ -510,6 +842,16 @@ load_config "$CONFIG_FILE"
 
 # Main installation function
 install_aiter() {
+    configure_aiter_runtime_env
+
+    if [[ "${MLSTACK_STRICT_ROCM}" != "0" ]]; then
+        print_header "AITER Installation"
+        print_step "Strict ROCm mode enabled (MLSTACK_STRICT_ROCM=${MLSTACK_STRICT_ROCM})"
+        print_step "Using GPU_ARCHS=${GPU_ARCHS}, HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-unset}, AITER_JIT_DIR=${AITER_JIT_DIR}"
+        strict_install_aiter
+        return $?
+    fi
+
     # Hide cursor during installation for cleaner output
     tput civis
 
@@ -518,7 +860,11 @@ install_aiter() {
     # Handle dry run
     if [ "$DRY_RUN" = true ]; then
         print_warning "DRY RUN MODE - No actual installation will be performed"
+        print_step "[DRY RUN] Would validate ROCm/PyTorch prerequisites"
+        print_step "[DRY RUN] Would clone/build/install AITER with ROCm-safe dependencies only"
+        print_step "[DRY RUN] Would run AITER import and GPU verification checks"
         echo
+        return 0
     fi
 
     # Detect environment
@@ -1300,6 +1646,7 @@ import os
 
 # Set environment variables for RDNA 3 GPUs
 os.environ["PYTORCH_ROCM_ARCH"] = os.environ.get("PYTORCH_ROCM_ARCH", "gfx1100;gfx1101;gfx1102")
+os.environ["GPU_ARCHS"] = os.environ.get("GPU_ARCHS", os.environ["PYTORCH_ROCM_ARCH"].split(";")[0])
 
 setup(
     name="aiter",
@@ -2002,6 +2349,11 @@ EOF
         echo -e "${GREEN}✓ Verified AITER is properly installed and importable${RESET}"
     else
         echo -e "${YELLOW}⚠ AITER may not be properly installed. Please check the installation logs.${RESET}"
+    fi
+
+    if ! verify_rocm_component_contract "$PYTHON_CMD" "aiter post-install"; then
+        print_error "ROCm compatibility contract failed after AITER installation."
+        return 1
     fi
 
     echo

@@ -19,6 +19,31 @@
 # Date: $(date +"%Y-%m-%d")
 # =============================================================================
 
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$SCRIPT_LIB_DIR/installer_guard.sh"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MLSTACK_STRICT_ROCM="${MLSTACK_STRICT_ROCM:-1}"
+if [[ "$MLSTACK_STRICT_ROCM" == "1" && -f "$SCRIPT_DIR/install_vllm_multi.sh" ]]; then
+    echo "[mlstack][INFO] Strict ROCm mode enabled; delegating to install_vllm_multi.sh"
+    exec bash "$SCRIPT_DIR/install_vllm_multi.sh" "$@"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
 
@@ -147,15 +172,123 @@ detect_package_manager() {
 install_python_package() {
     local package="$1"
     shift
-    local extra_args="$@"
+    local extra_args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_vllm.sh:install_python_package" "${extra_args[@]}" "$package" || return 1
+    fi
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --python "$(command -v python3)" "${extra_args[@]}" "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install python3 "${extra_args[@]}" "$package"
+        else
+            python3 -m pip install "${extra_args[@]}" "$package"
+        fi
     fi
+}
+
+install_python_package_for_interpreter() {
+    local py_cmd="$1"
+    shift
+    local -a args=("$@")
+
+    if "$py_cmd" -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'; then
+        "$py_cmd" -m pip install --no-cache-dir --break-system-packages "${args[@]}"
+    else
+        "$py_cmd" -m pip install --no-cache-dir "${args[@]}"
+    fi
+}
+
+vllm_requirement_base_name() {
+    local req="${1:-}"
+    req="${req%%;*}"
+    req="${req%%,*}"
+    req="${req%% *}"
+    req="${req%%[*}"
+    req="${req%%<*}"
+    req="${req%%>*}"
+    req="${req%%=*}"
+    req="${req%%!*}"
+    req="${req%%~*}"
+    req="${req%%(*}"
+    req="${req//_/-}"
+    req="${req// /}"
+    printf '%s\n' "${req,,}"
+}
+
+vllm_pkg_requires_no_deps() {
+    local req="${1:-}"
+    local base
+    base="$(vllm_requirement_base_name "$req")"
+    case "$base" in
+        xgrammar|triton-kernels|conch-triton-kernels)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+install_vllm_python_package_for_interpreter() {
+    local py_cmd="$1"
+    local package="${2:-}"
+    [ -n "$package" ] || return 0
+
+    if vllm_pkg_requires_no_deps "$package"; then
+        install_python_package_for_interpreter "$py_cmd" --no-deps --extra-index-url https://wheels.vllm.ai/rocm/ "$package"
+        return $?
+    fi
+
+    install_python_package_for_interpreter "$py_cmd" --extra-index-url https://wheels.vllm.ai/rocm/ "$package"
+}
+
+ensure_vllm_runtime_deps() {
+    local py_cmd="${1:-python3}"
+    local req module package
+
+    for req in \
+        "cachetools:cachetools" \
+        "cbor2:cbor2" \
+        "gguf:gguf" \
+        "pybase64:pybase64" \
+        "ijson:ijson" \
+        "lark:lark" \
+        "setproctitle:setproctitle" \
+        "watchfiles:watchfiles" \
+        "amdsmi:amdsmi" \
+        "llguidance:llguidance>=1.3.0,<1.4.0" \
+        "mistral_common:mistral-common[image]>=1.9.0" \
+        "openai_harmony:openai-harmony>=0.0.3" \
+        "outlines_core:outlines-core==0.2.11" \
+        "xgrammar:xgrammar==0.1.29" \
+        "triton_kernels:triton-kernels==1.0.0" \
+        "pythonjsonlogger:python-json-logger" \
+        "partial_json_parser:partial-json-parser" \
+        "lmformatenforcer:lm-format-enforcer" \
+        "prometheus_fastapi_instrumentator:prometheus-fastapi-instrumentator"; do
+        module="${req%%:*}"
+        package="${req##*:}"
+        if ! "$py_cmd" -c "import ${module}" >/dev/null 2>&1; then
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+                print_warning "[DRY-RUN] Missing vLLM dependency would be installed: ${package}"
+                continue
+            fi
+            print_step "Installing missing vLLM runtime dependency: ${package}"
+            if ! install_vllm_python_package_for_interpreter "$py_cmd" "$package"; then
+                print_error "Failed to install required vLLM dependency: ${package}"
+                return 1
+            fi
+            if ! "$py_cmd" -c "import ${module}" >/dev/null 2>&1; then
+                print_error "Required vLLM dependency still missing after install: ${module}"
+                return 1
+            fi
+        fi
+    done
+
+    return 0
 }
 
 # Function to show environment variables
@@ -328,8 +461,14 @@ fix_ninja_detection() {
         return 0
     else
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Installing ninja-build..."
-        sudo apt-get update && sudo apt-get install -y ninja-build
-        return $?
+        # Use multi-distro abstraction layer if available
+        if declare -f pm_install &>/dev/null; then
+            pm_install ninja-build
+            return $?
+        else
+            sudo apt-get update && sudo apt-get install -y ninja-build
+            return $?
+        fi
     fi
 }
 
@@ -350,6 +489,10 @@ install_vllm() {
             print_step "Will reinstall vLLM despite working installation"
         else
             print_success "vLLM is already installed (version: $vllm_version)"
+            if ! ensure_vllm_runtime_deps "$PYTHON_CMD"; then
+                print_error "vLLM is installed but required runtime dependencies are missing."
+                return 1
+            fi
             print_step "vLLM installation is complete. Use --force to reinstall anyway."
             return 0
         fi
@@ -374,8 +517,22 @@ install_vllm() {
             export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
             print_step "ROCm profiler library found and configured"
         else
-            # Check if we can install rocprofiler
-            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+            # Check if we can install rocprofiler using multi-distro abstraction layer
+            if declare -f pm_install &>/dev/null; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                if pm_install rocprofiler; then
+                    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                        print_success "ROCm profiler installed and configured"
+                    else
+                        export HSA_TOOLS_LIB=0
+                        print_warning "ROCm profiler installation failed, disabling HSA tools"
+                    fi
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+                fi
+            elif command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
                 print_step "Installing rocprofiler for HSA tools support..."
                 sudo apt-get update && sudo apt-get install -y rocprofiler
                 if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -403,33 +560,50 @@ install_vllm() {
         print_step "rocminfo not found in PATH, checking for ROCm installation..."
         if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
             print_step "ROCm directory found, attempting to install rocminfo..."
-            package_manager=$(detect_package_manager)
-            case $package_manager in
-                apt)
-                    sudo apt update && sudo apt install -y rocminfo
-                    ;;
-                dnf)
-                    sudo dnf install -y rocminfo
-                    ;;
-                yum)
-                    sudo yum install -y rocminfo
-                    ;;
-                pacman)
-                    sudo pacman -S rocminfo
-                    ;;
-                zypper)
-                    sudo zypper install -y rocminfo
-                    ;;
-                *)
-                    print_error "Unsupported package manager: $package_manager"
+
+            # Use multi-distro abstraction layer if available
+            if declare -f pm_install &>/dev/null; then
+                if pm_install rocminfo; then
+                    if command_exists rocminfo; then
+                        print_success "Installed rocminfo"
+                    else
+                        print_error "Failed to install rocminfo"
+                        return 1
+                    fi
+                else
+                    print_error "Failed to install rocminfo"
                     return 1
-                    ;;
-            esac
-            if command_exists rocminfo; then
-                print_success "Installed rocminfo"
+                fi
             else
-                print_error "Failed to install rocminfo"
-                return 1
+                # Fallback to original implementation
+                package_manager=$(detect_package_manager)
+                case $package_manager in
+                    apt)
+                        sudo apt update && sudo apt install -y rocminfo
+                        ;;
+                    dnf)
+                        sudo dnf install -y rocminfo
+                        ;;
+                    yum)
+                        sudo yum install -y rocminfo
+                        ;;
+                    pacman)
+                        sudo pacman -S --noconfirm rocminfo
+                        ;;
+                    zypper)
+                        sudo zypper install -y rocminfo
+                        ;;
+                    *)
+                        print_error "Unsupported package manager: $package_manager"
+                        return 1
+                        ;;
+                esac
+                if command_exists rocminfo; then
+                    print_success "Installed rocminfo"
+                else
+                    print_error "Failed to install rocminfo"
+                    return 1
+                fi
             fi
         else
             print_error "ROCm is not installed. Please install ROCm first."
@@ -567,14 +741,22 @@ esac
 
 # Create a function to handle uv commands properly with venv fallback
 uv_pip_install() {
-    local args="$@"
+    local args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_vllm.sh:uv_pip_install" "${args[@]}" || return 1
+    fi
 
     # Check if uv is available as a command
     if command_exists uv; then
         case $INSTALL_METHOD in
             "global")
                 print_step "Installing globally with pip..."
-                python3 -m pip install --break-system-packages $args
+                if declare -f mlstack_pip_install >/dev/null 2>&1; then
+                    mlstack_pip_install python3 --break-system-packages "${args[@]}"
+                else
+                    python3 -m pip install --break-system-packages "${args[@]}"
+                fi
                 VLLM_VENV_PYTHON=""
                 ;;
             "venv")
@@ -585,7 +767,7 @@ uv_pip_install() {
                 fi
                 source "$VENV_DIR/bin/activate"
                 print_step "Installing in virtual environment..."
-                uv pip install $args
+                uv pip install "${args[@]}"
                 VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
                 print_success "Installed in virtual environment: $VENV_DIR"
                 ;;
@@ -593,7 +775,7 @@ uv_pip_install() {
                 # Try global install first
                 print_step "Attempting global installation with uv..."
                 local install_output
-                install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                install_output=$(uv pip install --python "$(command -v python3)" "${args[@]}" 2>&1)
                 local install_exit_code=$?
 
                 if echo "$install_output" | grep -q "externally managed"; then
@@ -609,7 +791,7 @@ uv_pip_install() {
                     # Activate venv and install
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install "${args[@]}"
 
                     # Store venv path for verification
                     VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -631,7 +813,7 @@ uv_pip_install() {
                     # Activate venv and install
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install "${args[@]}"
 
                     # Store venv path for verification
                     VLLM_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -642,7 +824,11 @@ uv_pip_install() {
     else
         # Fall back to pip
         print_step "Installing with pip..."
-        python3 -m pip install $args
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install python3 "${args[@]}"
+        else
+            python3 -m pip install "${args[@]}"
+        fi
         VLLM_VENV_PYTHON=""
     fi
 }
@@ -998,8 +1184,8 @@ EOF
             SKIP_CUDA_BUILD=1 FORCE_CMAKE=1 uv pip install -e "." --no-build-isolation
 
             # Install additional dependencies
-            log "Installing additional dependencies..."
-            uv pip install triton --no-build-isolation
+            log "Installing additional ROCm dependencies..."
+            uv pip install pytorch-triton-rocm --no-build-isolation || true
         fi
 
         # Check if installation worked
@@ -1137,8 +1323,8 @@ EOF
         SKIP_CUDA_BUILD=1 FORCE_CMAKE=1 uv pip install -e . --no-build-isolation
 
         # Install additional dependencies
-        log "Installing additional dependencies..."
-        uv pip install triton --no-build-isolation
+        log "Installing additional ROCm dependencies..."
+        uv pip install pytorch-triton-rocm --no-build-isolation || true
     fi
 
     # Check if that worked
@@ -2159,4 +2345,3 @@ if [[ "$FORCE" == "true" ]]; then
 fi
 
 install_vllm "$@"
-

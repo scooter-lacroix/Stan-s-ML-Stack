@@ -43,38 +43,40 @@ print(f"PyTorch version: {pytorch_version}")
 # Build the C++ extension using CMake
 def build_cpp_extension():
     print("Building C++ extension using CMake...")
+    original_cwd = os.getcwd()
 
-    # Create build directory
-    os.makedirs("build", exist_ok=True)
-    os.chdir("build")
+    try:
+        # Create build directory
+        os.makedirs("build", exist_ok=True)
+        os.chdir("build")
 
-    # Configure CMake
-    cmake_cmd = [
-        "cmake", "..",
-        f"-DCMAKE_PREFIX_PATH={torch.utils.cmake_prefix_path}",
-        "-DCMAKE_BUILD_TYPE=Release"
-    ]
+        # Configure CMake
+        cmake_cmd = [
+            "cmake", "..",
+            f"-DCMAKE_PREFIX_PATH={torch.utils.cmake_prefix_path}",
+            "-DCMAKE_BUILD_TYPE=Release"
+        ]
 
-    # Set ROCm path if available
-    rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
-    cmake_cmd.append(f"-DROCM_PATH={rocm_path}")
+        # Set ROCm path if available
+        rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+        cmake_cmd.append(f"-DROCM_PATH={rocm_path}")
 
-    # Run CMake
-    print(f"Running: {' '.join(cmake_cmd)}")
-    subprocess.run(cmake_cmd, check=True)
+        # Run CMake
+        print(f"Running: {' '.join(cmake_cmd)}")
+        subprocess.run(cmake_cmd, check=True)
 
-    # Build
-    build_cmd = ["cmake", "--build", ".", "--config", "Release", "-j", str(os.cpu_count())]
-    print(f"Running: {' '.join(build_cmd)}")
-    subprocess.run(build_cmd, check=True)
+        # Build
+        build_cmd = ["cmake", "--build", ".", "--config", "Release", "-j", str(os.cpu_count())]
+        print(f"Running: {' '.join(build_cmd)}")
+        subprocess.run(build_cmd, check=True)
 
-    # Install
-    install_cmd = ["cmake", "--install", "."]
-    print(f"Running: {' '.join(install_cmd)}")
-    subprocess.run(install_cmd, check=True)
-
-    # Go back to the original directory
-    os.chdir("..")
+        # Install
+        install_cmd = ["cmake", "--install", "."]
+        print(f"Running: {' '.join(install_cmd)}")
+        subprocess.run(install_cmd, check=True)
+    finally:
+        # Ensure setup() runs from the project root even if CMake install fails.
+        os.chdir(original_cwd)
 
     # Copy the built extension to the package directory
     if os.path.exists('flash_attention_amd_cuda.so'):
@@ -113,8 +115,14 @@ __all__ = ['FlashAttention', 'flash_attn_func']
 
 # Copy the main module file
 import shutil
-if os.path.exists('flash_attention_amd.py'):
-    shutil.copy('flash_attention_amd.py', 'flash_attention_amd/flash_attention_amd.py')
+source_candidates = [
+    'flash_attention_amd.py',
+    os.path.join('flash_attention_amd', 'flash_attention_amd.py'),
+]
+for src in source_candidates:
+    if os.path.exists(src):
+        shutil.copy(src, 'flash_attention_amd/flash_attention_amd.py')
+        break
 
 # Define package metadata
 setup(

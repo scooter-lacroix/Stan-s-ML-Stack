@@ -5,10 +5,12 @@ use crate::installer::{run_installation, InstallerEvent};
 use crate::state::{
     default_components, Category, Component, HardwareState, InstallStatus, PreflightResult, Stage,
 };
-use crate::widgets::benchmarks_page::{load_benchmark_results, render_benchmark_page};
+use crate::widgets::benchmarks_page::{
+    export_benchmark_report_html, load_benchmark_results, render_benchmark_page,
+};
 use chrono::Local;
 use crossterm::event::KeyModifiers;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
@@ -42,6 +44,13 @@ enum TaskStatus {
     Done,
     Failed,
     Skipped,
+}
+
+#[derive(Debug, Clone)]
+struct UiNotice {
+    message: String,
+    color: Color,
+    expires_at_tick: u64,
 }
 
 impl TaskStatus {
@@ -91,6 +100,7 @@ pub struct App {
     pub install_status: InstallStatus,
     pub config: InstallerConfig,
     pub config_selection: usize,
+    pub confirm_selection: usize,
     pub config_dirty: bool,
     pub recovery_selection: usize,
     pub sudo_password: Option<String>,
@@ -103,6 +113,10 @@ pub struct App {
     pub last_line_transient: bool,
     pub summary_scroll: u16,
     pub benchmark_tab_index: usize,
+    benchmark_notice: Option<UiNotice>,
+    install_log_popup: bool,
+    install_log_scroll: usize,
+    install_log_file_path: Option<String>,
     install_input_sender: Option<Sender<String>>,
     install_receiver: Option<Receiver<InstallerEvent>>,
     hardware_receiver: Option<Receiver<anyhow::Result<HardwareState>>>,
@@ -134,6 +148,7 @@ impl App {
             install_status: InstallStatus::default(),
             config,
             config_selection: 0,
+            confirm_selection: 0,
             config_dirty: false,
             recovery_selection: 0,
             sudo_password: None,
@@ -146,6 +161,10 @@ impl App {
             last_line_transient: false,
             summary_scroll: 0,
             benchmark_tab_index: 0,
+            benchmark_notice: None,
+            install_log_popup: false,
+            install_log_scroll: 0,
+            install_log_file_path: None,
             install_input_sender: None,
             install_receiver: None,
             hardware_receiver: None,
@@ -154,6 +173,13 @@ impl App {
 
     pub fn on_tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
+        if self
+            .benchmark_notice
+            .as_ref()
+            .is_some_and(|notice| self.tick_count > notice.expires_at_tick)
+        {
+            self.benchmark_notice = None;
+        }
         self.poll_hardware();
         self.poll_installer();
     }
@@ -248,18 +274,46 @@ impl App {
                 KeyCode::Down => self.move_config_selection(1),
                 KeyCode::Enter => self.activate_config_selection(),
                 KeyCode::Char('s') => self.save_config(),
-                KeyCode::Char('n') => self.stage = Stage::Confirm,
+                KeyCode::Char('n') => {
+                    self.confirm_selection = 0;
+                    self.stage = Stage::Confirm;
+                }
                 KeyCode::Esc => self.stage = Stage::ComponentSelect,
                 KeyCode::Char('q') => self.stage = Stage::Recovery,
                 _ => {}
             },
             Stage::Confirm => match key.code {
-                KeyCode::Enter => self.start_installation(),
+                KeyCode::Up => self.move_confirm_selection(-1),
+                KeyCode::Down => self.move_confirm_selection(1),
+                KeyCode::Left => self.adjust_confirm_selection(-1),
+                KeyCode::Right => self.adjust_confirm_selection(1),
+                KeyCode::Enter => self.activate_confirm_selection(),
                 KeyCode::Esc => self.stage = Stage::Configuration,
                 KeyCode::Char('q') => self.stage = Stage::Recovery,
                 _ => {}
             },
             Stage::Installing => match key.code {
+                KeyCode::Char('l') | KeyCode::Char('L') => {
+                    self.install_log_popup = !self.install_log_popup;
+                }
+                KeyCode::Esc if self.install_log_popup => {
+                    self.install_log_popup = false;
+                }
+                KeyCode::Up if self.install_log_popup => {
+                    self.install_log_scroll = self.install_log_scroll.saturating_sub(1);
+                }
+                KeyCode::Down if self.install_log_popup => {
+                    self.install_log_scroll = self.install_log_scroll.saturating_add(1);
+                }
+                KeyCode::PageUp if self.install_log_popup => {
+                    self.install_log_scroll = self.install_log_scroll.saturating_sub(20);
+                }
+                KeyCode::PageDown if self.install_log_popup => {
+                    self.install_log_scroll = self.install_log_scroll.saturating_add(20);
+                }
+                KeyCode::Home if self.install_log_popup => {
+                    self.install_log_scroll = 0;
+                }
                 KeyCode::Char('q') => {
                     self.errors.push("Installation cancelled by user".into());
                     self.stage = Stage::Recovery;
@@ -271,13 +325,17 @@ impl App {
                     };
                 }
                 KeyCode::Backspace => {
-                    self.install_input_buffer.pop();
+                    if !self.install_log_popup {
+                        self.install_input_buffer.pop();
+                    }
                 }
                 KeyCode::Enter => {
-                    self.flush_install_input();
+                    if !self.install_log_popup {
+                        self.flush_install_input();
+                    }
                 }
                 KeyCode::Char(c) => {
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if !self.install_log_popup && !key.modifiers.contains(KeyModifiers::CONTROL) {
                         self.install_input_buffer.push(c);
                         if self.install_input_mode == InputMode::Raw {
                             self.send_install_input(c.to_string());
@@ -313,10 +371,11 @@ impl App {
                     }
                 }
                 KeyCode::Right => {
-                    if self.benchmark_tab_index < 6 {
+                    if self.benchmark_tab_index < 7 {
                         self.benchmark_tab_index += 1;
                     }
                 }
+                KeyCode::Char('e') | KeyCode::Char('E') => self.export_benchmark_report(),
                 KeyCode::Esc | KeyCode::Char('q') => self.stage = Stage::Complete,
                 _ => {}
             },
@@ -384,6 +443,7 @@ impl App {
             Stage::Benchmarks => self.draw_benchmarks(frame, chunks[1]),
             Stage::Recovery => self.draw_recovery(frame, chunks[1]),
         }
+        self.draw_notice(frame, chunks[1]);
 
         let footer = Paragraph::new(format!(
             "Stage: {:?} | Keys: {} | Logs: {} | {}",
@@ -405,10 +465,10 @@ impl App {
                 "↑/↓ select • ←/→ category • Space toggle • A toggle all • Enter config • Esc back"
             }
             Stage::Configuration => "↑/↓ select • Enter toggle • S save • N next • Esc back",
-            Stage::Confirm => "Enter install • Esc back • Q recovery",
-            Stage::Installing => "Q recovery",
+            Stage::Confirm => "↑/↓ select • ←/→ adjust • Enter choose • Esc back",
+            Stage::Installing => "L logs • Ctrl+R input mode • Enter send • Q recovery",
             Stage::Complete => "Esc recovery • B benchmarks",
-            Stage::Benchmarks => "←/→ tabs • Esc/B back • Q quit",
+            Stage::Benchmarks => "←/→ tabs • E export HTML • Esc/B back • Q quit",
             Stage::Recovery => "↑/↓ select • Enter apply • Q quit",
         }
     }
@@ -1074,6 +1134,17 @@ impl App {
 
     fn draw_confirm(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let selected = self.selected_components();
+        let execution_mode = if self.config.batch_mode {
+            "non-interactive"
+        } else {
+            "interactive"
+        };
+        let options = [
+            format!("Execution Mode: {}", execution_mode),
+            format!("Install Method: {}", self.config.install_method),
+            "Back to Configuration".into(),
+            "Start Installation".into(),
+        ];
         let mut lines = vec![
             Line::from(Span::styled(
                 "Review your selection",
@@ -1093,17 +1164,39 @@ impl App {
             "ROCm Install Path: {}",
             self.config.install_path
         )));
+        lines.push(Line::from(format!("Execution Mode: {}", execution_mode)));
         lines.push(Line::from(format!(
-            "Batch Mode: {}",
-            on_off(self.config.batch_mode)
+            "Install Method: {}",
+            self.config.install_method
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Press Enter to start installation",
+            "Pre-install options:",
             Style::default()
-                .fg(Color::Green)
+                .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )));
+        lines.push(Line::from(""));
+        for (idx, option) in options.iter().enumerate() {
+            let style = if idx == self.confirm_selection {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let prefix = if idx == self.confirm_selection {
+                "▶"
+            } else {
+                " "
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{} {}", prefix, option),
+                style,
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from("Use Back to update config before install."));
         let paragraph = Paragraph::new(Text::from(lines))
             .block(Block::default().borders(Borders::ALL).title("Confirm"))
             .wrap(Wrap { trim: true });
@@ -1212,6 +1305,10 @@ impl App {
             )),
             Line::from(format!("Input buffer: {}", self.install_input_buffer)),
             Line::from("Enter sends line; raw mode sends keystrokes"),
+            Line::from(Span::styled(
+                "Press L to open full logs",
+                Style::default().fg(Color::Cyan),
+            )),
             Line::from(""),
             Line::from(Span::styled(
                 "Press Q for recovery",
@@ -1235,6 +1332,66 @@ impl App {
             .block(Block::default().borders(Borders::ALL).title("Status"))
             .wrap(Wrap { trim: true });
         frame.render_widget(status_panel, body[1]);
+
+        if self.install_log_popup {
+            self.draw_install_log_popup(frame, area);
+        }
+    }
+
+    fn draw_install_log_popup(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let width = area.width.saturating_sub(4).max(40);
+        let height = area.height.saturating_sub(2).max(10);
+        let popup = Rect {
+            x: area.x + area.width.saturating_sub(width) / 2,
+            y: area.y + area.height.saturating_sub(height) / 2,
+            width,
+            height,
+        };
+
+        frame.render_widget(Clear, popup);
+        let file_hint = self
+            .latest_install_log_path()
+            .unwrap_or_else(|| "(not detected yet)".to_string());
+
+        let mut lines = Vec::new();
+        lines.push(Line::from(Span::styled(
+            "Full Installation Logs",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(format!("Log file: {}", file_hint)));
+        lines.push(Line::from(""));
+
+        let visible_lines = popup.height.saturating_sub(7) as usize;
+        if self.logs.is_empty() {
+            lines.push(Line::from("No logs captured yet."));
+        } else {
+            let max_scroll = self.logs.len().saturating_sub(visible_lines);
+            let start = self.install_log_scroll.min(max_scroll);
+            let end = (start + visible_lines).min(self.logs.len());
+            for entry in &self.logs[start..end] {
+                lines.push(Line::from(entry.clone()));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(format!(
+                "Showing lines {}-{} of {}",
+                start.saturating_add(1),
+                end,
+                self.logs.len()
+            )));
+        }
+        lines.push(Line::from("Up/Down/PageUp/PageDown scroll • Esc/L close"));
+
+        let widget = Paragraph::new(Text::from(lines))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Logs")
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(widget, popup);
     }
 
     fn draw_complete(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -1338,21 +1495,30 @@ impl App {
             for app in uiux_apps {
                 lines.push(Line::from(""));
                 if app.id == "vllm-studio" {
-                    lines.push(Line::from(vec![
-                        Span::styled("🎨 vLLM Studio:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "🎨 vLLM Studio:",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
                     lines.push(Line::from(vec![
                         Span::raw("   Run: "),
                         Span::styled("vllm-studio", Style::default().fg(Color::Green)),
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("   Tips: "),
-                        Span::styled("Start from $HOME/vllm-studio/controller", Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            "Start from $HOME/vllm-studio/controller",
+                            Style::default().fg(Color::Gray),
+                        ),
                     ]));
                 } else if app.id == "comfyui" {
-                    lines.push(Line::from(vec![
-                        Span::styled("🎨 ComfyUI:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "🎨 ComfyUI:",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
                     lines.push(Line::from(vec![
                         Span::raw("   Run: "),
                         Span::styled("comfy", Style::default().fg(Color::Green)),
@@ -1363,7 +1529,10 @@ impl App {
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("   Tips: "),
-                        Span::styled("Uses ROCm GPU acceleration", Style::default().fg(Color::Gray)),
+                        Span::styled(
+                            "Uses ROCm GPU acceleration",
+                            Style::default().fg(Color::Gray),
+                        ),
                     ]));
                 }
             }
@@ -1523,6 +1692,69 @@ impl App {
     fn draw_benchmarks(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let results = load_benchmark_results();
         render_benchmark_page(frame, area, &results, self.benchmark_tab_index);
+    }
+
+    fn export_benchmark_report(&mut self) {
+        let results = load_benchmark_results();
+        match export_benchmark_report_html(&results, None) {
+            Ok(path) => {
+                let msg = format!("Benchmark HTML report exported: {}", path.display());
+                self.logs
+                    .push(msg.clone());
+                self.benchmark_notice = Some(UiNotice {
+                    message: msg,
+                    color: Color::Green,
+                    expires_at_tick: self.tick_count.saturating_add(80),
+                });
+            }
+            Err(err) => {
+                let msg = format!("Failed to export benchmark HTML report: {}", err);
+                self.errors
+                    .push(msg.clone());
+                self.benchmark_notice = Some(UiNotice {
+                    message: msg,
+                    color: Color::Red,
+                    expires_at_tick: self.tick_count.saturating_add(120),
+                });
+            }
+        }
+    }
+
+    fn draw_notice(&self, frame: &mut Frame, area: Rect) {
+        let Some(notice) = &self.benchmark_notice else {
+            return;
+        };
+
+        let width = area.width.saturating_sub(4).min(110).max(20);
+        let height = 5u16;
+        let x = area.x + area.width.saturating_sub(width) / 2;
+        let y = area.y + 1;
+        let popup = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+
+        frame.render_widget(Clear, popup);
+        let text = vec![
+            Line::from(Span::styled(
+                "Benchmark Export",
+                Style::default()
+                    .fg(notice.color)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(notice.message.clone()),
+        ];
+        let notice_widget = Paragraph::new(Text::from(text))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(notice.color)),
+            );
+        frame.render_widget(notice_widget, popup);
     }
 
     fn draw_recovery(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -1711,6 +1943,58 @@ impl App {
         self.config_selection = idx as usize;
     }
 
+    fn move_confirm_selection(&mut self, delta: i32) {
+        let len = 4i32;
+        let mut idx = self.confirm_selection as i32 + delta;
+        if idx < 0 {
+            idx = len - 1;
+        }
+        if idx >= len {
+            idx = 0;
+        }
+        self.confirm_selection = idx as usize;
+    }
+
+    fn adjust_confirm_selection(&mut self, delta: i32) {
+        match self.confirm_selection {
+            0 => {
+                self.config.batch_mode = if delta < 0 {
+                    true
+                } else if delta > 0 {
+                    false
+                } else {
+                    !self.config.batch_mode
+                };
+                self.config_dirty = true;
+            }
+            1 => {
+                self.cycle_install_method(delta);
+                self.config_dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn activate_confirm_selection(&mut self) {
+        match self.confirm_selection {
+            0 => self.adjust_confirm_selection(0),
+            1 => self.adjust_confirm_selection(1),
+            2 => self.stage = Stage::Configuration,
+            3 => self.start_installation(),
+            _ => {}
+        }
+    }
+
+    fn cycle_install_method(&mut self, delta: i32) {
+        let methods = ["auto", "global", "venv"];
+        let current = methods
+            .iter()
+            .position(|m| *m == self.config.install_method)
+            .unwrap_or(0);
+        let next = (current as i32 + delta).rem_euclid(methods.len() as i32) as usize;
+        self.config.install_method = methods[next].into();
+    }
+
     fn move_preflight_selection(&mut self, delta: i32) {
         let len = self.preflight.checks.len() as i32;
         if len == 0 {
@@ -1849,9 +2133,11 @@ impl App {
         if self.config.force_reinstall {
             std::env::set_var("FORCE", "true");
             std::env::set_var("PYTORCH_REINSTALL", "true");
+            std::env::set_var("MLSTACK_FORCE_REINSTALL", "true");
         } else {
             std::env::remove_var("FORCE");
             std::env::remove_var("PYTORCH_REINSTALL");
+            std::env::remove_var("MLSTACK_FORCE_REINSTALL");
         }
 
         self.stage = Stage::Installing;
@@ -1863,6 +2149,9 @@ impl App {
         let config = self.config.clone();
         self.install_input_sender = Some(input_tx);
         self.install_input_buffer.clear();
+        self.install_log_popup = false;
+        self.install_log_scroll = 0;
+        self.install_log_file_path = None;
         thread::spawn(move || {
             run_installation(selected, config, sudo_password, tx, input_rx);
         });
@@ -2184,6 +2473,12 @@ impl App {
         if clean_line.trim().is_empty() {
             return;
         }
+        if let Some(path) = clean_line.split("Log file:").nth(1) {
+            let candidate = path.trim();
+            if !candidate.is_empty() {
+                self.install_log_file_path = Some(candidate.to_string());
+            }
+        }
         let entry = format!("[{}] {}", timestamp, clean_line);
 
         if is_transient && self.last_line_transient && !self.logs.is_empty() {
@@ -2215,6 +2510,21 @@ impl App {
                     });
             }
         }
+    }
+
+    fn latest_install_log_path(&self) -> Option<String> {
+        if let Some(path) = &self.install_log_file_path {
+            return Some(path.clone());
+        }
+        if self.config.log_dir.trim().is_empty() {
+            return None;
+        }
+        Some(
+            std::path::Path::new(&self.config.log_dir)
+                .join("rusty-stack.log")
+                .display()
+                .to_string(),
+        )
     }
 
     fn partition_categories(&self) -> (Vec<Component>, Vec<Component>) {

@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 #
 # Author: Stanley Chisango (Scooter Lacroix)
 # Email: scooterlacroix@gmail.com
@@ -17,13 +23,68 @@
 # Supports ROCm 7.1 and 7.2 with updated frameworks from manylinux repositories.
 # =============================================================================
 
-# Parse command line arguments first to handle --show-env
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+# Get the directory where this script is located
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+
+# Source distro detection library
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    # shellcheck source=lib/distro_detection.sh
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+
+# Source package manager library
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    # shellcheck source=lib/package_manager.sh
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+
+# Source ROCm environment library
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    # shellcheck source=lib/rocm_env.sh
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
+
+# Parse command line arguments first to handle --show-env and force workflow
 DRY_RUN=false
+FORCE_REINSTALL=false
+ROCM_FORCE_RESUME_INSTALL=false
+ROCM_FORCE_TWO_STAGE_ACTIVE=false
+INSTALL_ADDITIONAL=false
+
+if [[ "${MLSTACK_FORCE_REINSTALL:-}" == "true" ]] || [[ "${FORCE:-}" == "true" ]]; then
+    FORCE_REINSTALL=true
+fi
+
 for arg in "$@"; do
-    if [ "$arg" == "--dry-run" ]; then
-        DRY_RUN=true
-    fi
+    case "$arg" in
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        --force)
+            FORCE_REINSTALL=true
+            ;;
+        --resume-install)
+            ROCM_FORCE_RESUME_INSTALL=true
+            ;;
+    esac
 done
+
+if [ "$FORCE_REINSTALL" = true ]; then
+    export FORCE=true
+    export PYTORCH_REINSTALL=true
+    export MLSTACK_FORCE_REINSTALL=true
+fi
+
+ROCM_FORCE_OWNER="${SUDO_USER:-${USER:-$(id -un)}}"
+ROCM_FORCE_USER_HOME="${MLSTACK_USER_HOME:-$HOME}"
+ROCM_FORCE_STATE_DIR="${ROCM_FORCE_USER_HOME}/.mlstack/rocm-force-reinstall"
+ROCM_FORCE_STATE_FILE="${ROCM_FORCE_STATE_DIR}/state.env"
+ROCM_FORCE_AUTOSTART_DIR="${ROCM_FORCE_USER_HOME}/.config/autostart"
+ROCM_FORCE_AUTOSTART_FILE="${ROCM_FORCE_AUTOSTART_DIR}/rusty-stack-rocm-force-reinstall.desktop"
+ROCM_FORCE_LAUNCHER="${ROCM_FORCE_STATE_DIR}/resume_launcher.sh"
 
 # ASCII Art Banner (skip if --show-env is used)
 if [[ "$*" != *"--show-env"* ]]; then
@@ -41,7 +102,7 @@ fi
 # Check if terminal supports colors
 if [ -t 1 ]; then
     # Check if NO_COLOR environment variable is set
-    if [ -z "$NO_COLOR" ]; then
+    if [ -z "${NO_COLOR:-}" ]; then
         # Terminal supports colors
         RED='\033[0;31m'
         GREEN='\033[0;32m'
@@ -174,8 +235,15 @@ execute_command() {
     fi
 }
 
-# Function to detect package manager
+# Function to detect package manager (use library version if available)
 detect_package_manager() {
+    # Use library function if loaded
+    if declare -f detect_package_manager &>/dev/null && [[ -n "${PKG_MANAGER:-}" ]]; then
+        echo "$PKG_MANAGER"
+        return 0
+    fi
+
+    # Fallback implementation for when library is not loaded
     if command_exists dnf; then
         echo "dnf"
     elif command_exists apt-get; then
@@ -247,8 +315,14 @@ detect_gpu_architecture() {
     echo "$gpu_arch"
 }
 
-# Function to detect if running in WSL
+# Function to detect if running in WSL (use library version if available)
 detect_wsl() {
+    # Use library variable if loaded
+    if [[ -n "${IS_WSL:-}" ]]; then
+        echo "$IS_WSL"
+        return 0
+    fi
+
     if [ -f /proc/version ] && grep -qi "microsoft\|wsl" /proc/version; then
         echo "true"
     else
@@ -256,8 +330,14 @@ detect_wsl() {
     fi
 }
 
-# Function to detect if running in a container
+# Function to detect if running in a container (use library version if available)
 detect_container() {
+    # Use library variable if loaded
+    if [[ -n "${IS_CONTAINER:-}" ]]; then
+        echo "$IS_CONTAINER"
+        return 0
+    fi
+
     if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || grep -q "docker\|container" /proc/1/cgroup 2>/dev/null; then
         echo "true"
     else
@@ -265,8 +345,14 @@ detect_container() {
     fi
 }
 
-# Function to detect ROCm installation path
+# Function to detect ROCm installation path (use library version if available)
 detect_rocm_path() {
+    # Use library function if loaded
+    if [[ -n "${ROCm_PATH:-}" ]]; then
+        echo "$ROCm_PATH"
+        return 0
+    fi
+
     local rocm_path=""
 
     # Check common ROCm installation paths
@@ -367,7 +453,7 @@ EOF
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
         PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
     fi
 
@@ -378,6 +464,8 @@ EOF
     fi
     echo "export PYTORCH_ROCM_ARCH=\"$PYTORCH_ROCM_ARCH\""
     echo "export ROCM_PATH=\"$ROCM_PATH\""
+    echo "export AMDGPU_ASIC_ID_TABLE_PATH=\"/usr/share/libdrm/amdgpu.ids\""
+    echo "export AMDGPU_ASIC_ID_TABLE_PATHS=\"/usr/share/libdrm\""
     echo "export PATH=\"$PATH\""
     echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
 }
@@ -398,7 +486,7 @@ show_env_clean() {
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
         PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
     fi
 
@@ -413,59 +501,372 @@ show_env_clean() {
     if [ -n "$ROCM_CHANNEL" ]; then
         echo "export ROCM_CHANNEL=\"$ROCM_CHANNEL\""
     fi
+    echo "export AMDGPU_ASIC_ID_TABLE_PATH=\"/usr/share/libdrm/amdgpu.ids\""
+    echo "export AMDGPU_ASIC_ID_TABLE_PATHS=\"/usr/share/libdrm\""
     echo "export PATH=\"$PATH\""
     echo "export LD_LIBRARY_PATH=\"$LD_LIBRARY_PATH\""
+}
+
+DEBIAN_ROCM_PACKAGE_REGEX='^(amdgpu|rocm|hsa-|hip|rocblas|rocsolver|rocrand|rocfft|rocprim|rocsparse|rocalution|rocdecode|rocjpeg|rocm-core|rocm-dev|rocm-hip|rocm-libs|rccl|migraphx|miopen|comgr|rocminfo|rpp|mivisionx|half|libamdhip64|librocclr|libhsakmt|roctracer|rocprofiler|roct|hipsparselt)'
+RPM_ROCM_PACKAGE_REGEX='^(amdgpu|rocm|hsa-|hip|rocblas|rocsolver|rocrand|rocfft|rocprim|rocsparse|rocalution|rocdecode|rocjpeg|rocm-core|rocm-dev|rocm-hip|rocm-libs|rccl|migraphx|miopen|comgr|rocminfo|rpp|mivisionx|half|libamdhip64|librocclr|libhsakmt|roctracer|rocprofiler|roct|hipsparselt)'
+ARCH_ROCM_PACKAGE_REGEX='^(amdgpu|rocm|hsa-|hip|rocblas|rocsolver|rocrand|rocfft|rocprim|rocsparse|rocalution|rocdecode|rocjpeg|rocm-core|rocm-dev|rocm-hip|rocm-libs|rccl|migraphx|miopen|comgr|rocminfo|rpp|mivisionx|half|libamdhip64|librocclr|libhsakmt|roctracer|rocprofiler|roct|opencl-amd|hipsparselt)'
+
+list_debian_rocm_packages() {
+    dpkg -l 2>/dev/null \
+        | awk 'NR>5 {print $1" "$2}' \
+        | awk '$1 ~ /^(ii|rc|iF|iU|iH|iW|iT|hi)$/ {print $2}' \
+        | grep -E "$DEBIAN_ROCM_PACKAGE_REGEX" \
+        | sort -u || true
+}
+
+force_purge_debian_rocm_packages() {
+    local max_passes=6
+    local pass=1
+    local pkgs=""
+
+    while [ "$pass" -le "$max_passes" ]; do
+        pkgs="$(list_debian_rocm_packages)"
+        if [ -z "$pkgs" ]; then
+            print_success "No ROCm/AMDGPU packages remain in dpkg database."
+            return 0
+        fi
+
+        local pkg_count
+        pkg_count="$(echo "$pkgs" | wc -w | tr -d ' ')"
+        print_step "Debian purge pass ${pass}/${max_passes}: processing ${pkg_count} packages..."
+
+        # Unhold first so held packages cannot block purge.
+        echo "$pkgs" | xargs -r sudo apt-mark unhold >/dev/null 2>&1 || true
+
+        # Force remove and purge to break dependency cycles.
+        echo "$pkgs" | xargs -r sudo dpkg --remove \
+            --force-remove-reinstreq --force-depends --force-breaks >/dev/null 2>&1 || true
+        echo "$pkgs" | xargs -r sudo dpkg --purge --force-all >/dev/null 2>&1 || true
+
+        # Repair package database between passes.
+        sudo dpkg --configure -a >/dev/null 2>&1 || true
+        sudo apt-get install -f -y >/dev/null 2>&1 || true
+        sudo apt-get autoremove -y --purge >/dev/null 2>&1 || true
+
+        pass=$((pass + 1))
+    done
+
+    pkgs="$(list_debian_rocm_packages)"
+    if [ -n "$pkgs" ]; then
+        print_error "Forced purge could not remove all ROCm/AMDGPU packages."
+        echo "$pkgs" | while read -r pkg; do
+            [ -n "$pkg" ] && print_error "Remaining package: $pkg"
+        done
+        return 1
+    fi
+
+    return 0
+}
+
+list_rpm_rocm_packages() {
+    rpm -qa 2>/dev/null | grep -Ei "$RPM_ROCM_PACKAGE_REGEX" | sort -u || true
+}
+
+force_purge_rpm_rocm_packages() {
+    local pkg_manager="$1"
+    local max_passes=6
+    local pass=1
+    local pkgs=""
+
+    while [ "$pass" -le "$max_passes" ]; do
+        pkgs="$(list_rpm_rocm_packages)"
+        if [ -z "$pkgs" ]; then
+            print_success "No ROCm/AMDGPU RPM packages remain."
+            return 0
+        fi
+
+        local pkg_count
+        pkg_count="$(echo "$pkgs" | wc -w | tr -d ' ')"
+        print_step "RPM purge pass ${pass}/${max_passes}: processing ${pkg_count} packages..."
+
+        if [ "$pkg_manager" = "dnf" ]; then
+            echo "$pkgs" | xargs -r sudo dnf remove -y --setopt=clean_requirements_on_remove=1 >/dev/null 2>&1 || true
+            sudo dnf autoremove -y >/dev/null 2>&1 || true
+            sudo dnf clean all >/dev/null 2>&1 || true
+        elif [ "$pkg_manager" = "yum" ]; then
+            echo "$pkgs" | xargs -r sudo yum remove -y >/dev/null 2>&1 || true
+            sudo yum autoremove -y >/dev/null 2>&1 || true
+            sudo yum clean all >/dev/null 2>&1 || true
+        elif [ "$pkg_manager" = "zypper" ]; then
+            echo "$pkgs" | xargs -r sudo zypper --non-interactive remove -y >/dev/null 2>&1 || true
+        fi
+
+        # Fallback: force erase remaining packages to break cycles.
+        local remaining
+        remaining="$(list_rpm_rocm_packages)"
+        if [ -n "$remaining" ]; then
+            echo "$remaining" | xargs -r sudo rpm -e --nodeps >/dev/null 2>&1 || true
+        fi
+
+        pass=$((pass + 1))
+    done
+
+    pkgs="$(list_rpm_rocm_packages)"
+    if [ -n "$pkgs" ]; then
+        print_error "Forced RPM purge could not remove all ROCm/AMDGPU packages."
+        echo "$pkgs" | while read -r pkg; do
+            [ -n "$pkg" ] && print_error "Remaining package: $pkg"
+        done
+        return 1
+    fi
+
+    return 0
+}
+
+list_pacman_rocm_packages() {
+    pacman -Qq 2>/dev/null | grep -Ei "$ARCH_ROCM_PACKAGE_REGEX" | sort -u || true
+}
+
+force_purge_arch_rocm_packages() {
+    local max_passes=8
+    local pass=1
+    local pkgs=""
+
+    while [ "$pass" -le "$max_passes" ]; do
+        pkgs="$(list_pacman_rocm_packages)"
+        if [ -z "$pkgs" ]; then
+            print_success "No ROCm/AMDGPU pacman packages remain."
+            return 0
+        fi
+
+        local pkg_count
+        pkg_count="$(echo "$pkgs" | wc -w | tr -d ' ')"
+        print_step "Pacman purge pass ${pass}/${max_passes}: processing ${pkg_count} packages..."
+
+        # Try normal removal first.
+        echo "$pkgs" | xargs -r sudo pacman -Rns --noconfirm >/dev/null 2>&1 || true
+
+        # Fallback: remove while ignoring dependency checks.
+        local remaining
+        remaining="$(list_pacman_rocm_packages)"
+        if [ -n "$remaining" ]; then
+            echo "$remaining" | xargs -r sudo pacman -Rdd --noconfirm >/dev/null 2>&1 || true
+        fi
+
+        pass=$((pass + 1))
+    done
+
+    pkgs="$(list_pacman_rocm_packages)"
+    if [ -n "$pkgs" ]; then
+        print_error "Forced pacman purge could not remove all ROCm/AMDGPU packages."
+        echo "$pkgs" | while read -r pkg; do
+            [ -n "$pkg" ] && print_error "Remaining package: $pkg"
+        done
+        return 1
+    fi
+
+    return 0
 }
 
 # Function to purge ROCm and AMDGPU packages
 purge_rocm() {
     print_warning "Purging existing ROCm and AMDGPU packages to prevent dependency conflicts..."
-    
+
     local pkg_manager=$(detect_package_manager)
-    
-    if [ "$pkg_manager" = "apt" ]; then
-        # Use dpkg to find all ROCm and AMDGPU packages
-        print_step "Identifying all ROCm and AMDGPU packages..."
-        local all_pkgs=$(dpkg -l | grep -E "rocm|amdgpu|hsa-rocr|rocminfo|hip-runtime|miopen|rocblas|migraphx|rccl|comgr|mivisionx|rpp|half|librocclr|hsa-ext-rocr" | awk '{print $2}' || true)
-        
-        if [ -n "$all_pkgs" ]; then
-            print_step "Force-purging $(echo "$all_pkgs" | wc -w) packages..."
-            # Using dpkg directly avoids apt's dependency resolver which is currently stuck
-            # We use --force-all because we want to nuke everything and start over
-            sudo dpkg --purge --force-all $all_pkgs || true
+
+    # Use library function for distribution check if available
+    if is_debian_based 2>/dev/null || [ "$pkg_manager" = "apt" ]; then
+        print_step "Force-removing ROCm/AMDGPU packages with dependency-cycle handling..."
+        if ! force_purge_debian_rocm_packages; then
+            return 1
         fi
-        
-        # Clean up any broken package states
-        print_step "Fixing potential broken states..."
-        sudo dpkg --configure -a || true
-        sudo apt-get install -f -y || true
-        
+
         # Clean up the apt state
         print_step "Cleaning up apt state..."
         sudo apt-get autoremove -y --purge || true
         sudo apt-get clean
-        
+
         # Remove all possible ROCm and AMDGPU repository files
         print_step "Removing repository configurations..."
         sudo rm -f /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/amdgpu-proprietary.list /etc/apt/sources.list.d/amdgpu-install.list
         sudo rm -f /etc/apt/preferences.d/rocm-pin-600
-        
-        # Ensure no locks remain
-        sudo dpkg --configure -a || true
-        
+
         # Remove ROCm directories to prevent detection of partial installs
         print_step "Removing ROCm system directories..."
-        sudo rm -rf /opt/rocm*
-        
-        sudo apt-get update
-    elif [ "$pkg_manager" = "dnf" ] || [ "$pkg_manager" = "yum" ]; then
-        execute_command "sudo $pkg_manager remove -y rocm-* amdgpu-*" "Removing ROCm and AMDGPU packages"
-        execute_command "sudo $pkg_manager autoremove -y" "Removing unused dependencies"
-    elif [ "$pkg_manager" = "zypper" ]; then
-        execute_command "sudo zypper remove -y rocm-* amdgpu-*" "Removing ROCm and AMDGPU packages"
+        sudo rm -rf /opt/rocm /opt/rocm-* /usr/lib/rocm /etc/rocm /var/lib/rocm /var/lib/amdgpu-install
+
+        # Use pm_update if available, otherwise fallback
+        if declare -f pm_update &>/dev/null; then
+            pm_update || sudo apt-get update
+        else
+            sudo apt-get update
+        fi
+
+        # Final verification to guarantee clean uninstall
+        local remaining_pkgs
+        remaining_pkgs="$(list_debian_rocm_packages)"
+        if [ -n "$remaining_pkgs" ]; then
+            print_error "ROCm purge validation failed; packages are still present."
+            echo "$remaining_pkgs" | while read -r pkg; do
+                [ -n "$pkg" ] && print_error "Remaining package: $pkg"
+            done
+            return 1
+        fi
+    elif is_fedora_based 2>/dev/null || [ "$pkg_manager" = "dnf" ] || [ "$pkg_manager" = "yum" ]; then
+        print_step "Force-removing ROCm/AMDGPU RPM packages with dependency-cycle handling..."
+        if ! force_purge_rpm_rocm_packages "$pkg_manager"; then
+            return 1
+        fi
+    elif is_suse_based 2>/dev/null || [ "$pkg_manager" = "zypper" ]; then
+        print_step "Force-removing ROCm/AMDGPU RPM packages with dependency-cycle handling..."
+        if ! force_purge_rpm_rocm_packages "$pkg_manager"; then
+            return 1
+        fi
+    elif is_arch_based 2>/dev/null || [ "$pkg_manager" = "pacman" ]; then
+        print_step "Force-removing ROCm packages on Arch/CachyOS with dependency-cycle handling..."
+        if ! force_purge_arch_rocm_packages; then
+            return 1
+        fi
     fi
-    
+
+    # Remove ROCm directories and repo fragments regardless of distro.
+    print_step "Removing ROCm system directories and repository fragments..."
+    sudo rm -rf /opt/rocm /opt/rocm-* /usr/lib/rocm /etc/rocm /var/lib/rocm /var/lib/amdgpu-install
+    sudo rm -f /etc/apt/sources.list.d/rocm.list /etc/apt/sources.list.d/amdgpu.list /etc/apt/sources.list.d/amdgpu-proprietary.list /etc/apt/sources.list.d/amdgpu-install.list
+    sudo rm -f /etc/apt/preferences.d/rocm-pin-600
+    sudo rm -f /etc/yum.repos.d/rocm*.repo /etc/yum.repos.d/amdgpu*.repo
+    sudo rm -f /etc/zypp/repos.d/rocm*.repo /etc/zypp/repos.d/amdgpu*.repo
+
     print_success "System-wide ROCm purge completed."
+    return 0
+}
+
+has_existing_rocm_installation() {
+    if command_exists rocminfo || [ -x "/opt/rocm/bin/rocminfo" ] || [ -x "/usr/bin/rocminfo" ]; then
+        return 0
+    fi
+
+    if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local pkg_manager
+    pkg_manager=$(detect_package_manager)
+    case "$pkg_manager" in
+        apt)
+            dpkg -l 2>/dev/null | grep -Eq "^ii\s+(rocm|amdgpu|hsa-rocr|rocminfo|hip)"
+            ;;
+        dnf|yum|zypper)
+            rpm -qa 2>/dev/null | grep -Eiq "(rocm|amdgpu|hsa-rocr|rocminfo|hip)"
+            ;;
+        pacman)
+            pacman -Qq 2>/dev/null | grep -Eiq "(rocm|amdgpu|hsa-rocr|rocminfo|hip)"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ensure_amdgpu_ids_compat() {
+    local src="/usr/share/libdrm/amdgpu.ids"
+    local dst_dir="/opt/amdgpu/share/libdrm"
+    local dst="${dst_dir}/amdgpu.ids"
+
+    if [ ! -f "$src" ]; then
+        print_warning "libdrm amdgpu.ids not found at $src; skipping compatibility symlink."
+        return 0
+    fi
+
+    if [ -f "$dst" ] || [ -L "$dst" ]; then
+        return 0
+    fi
+
+    print_step "Creating libdrm amdgpu.ids compatibility path for ROCm tooling..."
+    execute_command "sudo mkdir -p '$dst_dir'" "Creating /opt/amdgpu libdrm directory" || return 1
+    execute_command "sudo ln -sf '$src' '$dst'" "Linking amdgpu.ids compatibility file" || return 1
+    return 0
+}
+
+write_force_reinstall_state() {
+    local phase="$1"
+    mkdir -p "$ROCM_FORCE_STATE_DIR"
+    cat > "$ROCM_FORCE_STATE_FILE" <<EOF
+PHASE=$phase
+UPDATED_AT=$(date -Iseconds)
+SCRIPT_PATH=${MLSTACK_SCRIPT_DIR}/install_rocm.sh
+EOF
+    if [ -n "${ROCM_FORCE_OWNER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+        chown "$ROCM_FORCE_OWNER:$ROCM_FORCE_OWNER" "$ROCM_FORCE_STATE_FILE" 2>/dev/null || true
+    fi
+}
+
+clear_force_reinstall_resume_artifacts() {
+    rm -f "$ROCM_FORCE_AUTOSTART_FILE" "$ROCM_FORCE_LAUNCHER"
+    rmdir "$ROCM_FORCE_AUTOSTART_DIR" 2>/dev/null || true
+}
+
+setup_force_reinstall_resume_autostart() {
+    mkdir -p "$ROCM_FORCE_STATE_DIR" "$ROCM_FORCE_AUTOSTART_DIR"
+
+    cat > "$ROCM_FORCE_LAUNCHER" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec /usr/bin/env bash "${MLSTACK_SCRIPT_DIR}/install_rocm.sh" --force --resume-install
+EOF
+    chmod +x "$ROCM_FORCE_LAUNCHER"
+
+    cat > "$ROCM_FORCE_AUTOSTART_FILE" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Rusty Stack ROCm Reinstall Resume
+Comment=Resume forced ROCm reinstall after reboot
+Exec=${ROCM_FORCE_LAUNCHER}
+Terminal=true
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+    chmod 644 "$ROCM_FORCE_AUTOSTART_FILE"
+
+    if [ -n "${ROCM_FORCE_OWNER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+        chown -R "$ROCM_FORCE_OWNER:$ROCM_FORCE_OWNER" "$ROCM_FORCE_STATE_DIR" 2>/dev/null || true
+        chown "$ROCM_FORCE_OWNER:$ROCM_FORCE_OWNER" "$ROCM_FORCE_AUTOSTART_FILE" 2>/dev/null || true
+    fi
+}
+
+countdown_and_reboot() {
+    local message="$1"
+    print_warning "$message"
+    for sec in 10 9 8 7 6 5 4 3 2 1; do
+        print_step "System reboot in ${sec}s..."
+        sleep 1
+    done
+
+    if [ "$DRY_RUN" = true ]; then
+        print_warning "[DRY-RUN] Would execute: sudo reboot"
+        return 0
+    fi
+
+    sync
+    sudo reboot
+}
+
+force_reinstall_purge_then_reboot() {
+    print_section "ROCm Forced Reinstall - Phase 1/2"
+    print_step "Force reinstall is enabled. Existing ROCm installation will be purged."
+    if ! purge_rocm; then
+        print_error "ROCm purge did not complete successfully. Aborting reinstall flow."
+        return 1
+    fi
+    setup_force_reinstall_resume_autostart
+    write_force_reinstall_state "awaiting_install_after_reboot"
+
+    print_warning "Automatic resume is configured via desktop autostart when your session supports it."
+    print_step "After reboot, the ROCm installer will resume in a terminal."
+    countdown_and_reboot "ROCm purge complete. Reboot is required before reinstall."
+}
+
+force_reinstall_finalize_with_second_reboot() {
+    print_section "ROCm Forced Reinstall - Phase 2/2"
+    clear_force_reinstall_resume_artifacts
+    rm -f "$ROCM_FORCE_STATE_FILE"
+    countdown_and_reboot "ROCm installation complete. A second reboot is required to load drivers cleanly."
 }
 
 # Function to setup GPG fix for Debian Trixie
@@ -524,8 +925,18 @@ validate_system() {
     if [ -n "$missing_tools" ]; then
         print_warning "Missing required tools:$missing_tools"
         print_step "Installing missing tools..."
-        if [ "$package_manager" = "apt" ]; then
+
+        # Use pm_* functions if available
+        if declare -f pm_install &>/dev/null; then
+            pm_update && pm_install wget gnupg curl
+        elif is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
             execute_command "sudo apt update && sudo apt install -y wget gnupg curl" "Installing required tools"
+        elif is_fedora_based 2>/dev/null || [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+            execute_command "sudo $package_manager install -y wget gnupg2 curl" "Installing required tools"
+        elif is_arch_based 2>/dev/null || [ "$package_manager" = "pacman" ]; then
+            execute_command "sudo pacman -S --noconfirm wget gnupg curl" "Installing required tools"
+        elif is_suse_based 2>/dev/null || [ "$package_manager" = "zypper" ]; then
+            execute_command "sudo zypper install -y wget gpg2 curl" "Installing required tools"
         fi
     fi
 
@@ -550,6 +961,7 @@ OPTIONS:
     --help              Show this help message
     --dry-run           Show what would be done without making changes
     --force             Force reinstallation even if ROCm is already installed
+    --resume-install    Resume forced reinstall after reboot (internal)
     --show-env          Show ROCm environment variables for manual setup
 
 EXAMPLES:
@@ -616,8 +1028,17 @@ install_rocm_python_packages() {
     fi
 }
 
-# Function to detect OS information robustly
+# Function to detect OS information robustly (use library version if available)
 detect_os_info() {
+    # Use library variables if loaded
+    if [[ -n "${DISTRO_ID:-}" ]]; then
+        OS_ID="$DISTRO_ID"
+        OS_VERSION_ID="${DISTRO_VERSION:-}"
+        OS_CODENAME="${DISTRO_CODENAME:-}"
+        return 0
+    fi
+
+    # Fallback implementation
     if [ -f /etc/os-release ]; then
         # shellcheck source=/dev/null
         . /etc/os-release
@@ -635,7 +1056,7 @@ detect_os_info() {
         OS_VERSION_ID=$(uname -r)
         OS_CODENAME=""
     fi
-    
+
     # Normalize ID to lowercase
     OS_ID=$(echo "$OS_ID" | tr '[:upper:]' '[:lower:]')
 }
@@ -651,14 +1072,30 @@ install_rocm() {
     # Detect package manager
     package_manager=$(detect_package_manager)
     print_step "Package manager: $package_manager"
+
+    if [ "$FORCE_REINSTALL" = true ]; then
+        if [ "$ROCM_FORCE_RESUME_INSTALL" = true ]; then
+            ROCM_FORCE_TWO_STAGE_ACTIVE=true
+            print_warning "Resuming forced ROCm reinstall after reboot (phase 2/2)."
+            if [ ! -f "$ROCM_FORCE_STATE_FILE" ]; then
+                print_warning "Resume state file not found; continuing with force reinstall."
+            fi
+        elif has_existing_rocm_installation; then
+            force_reinstall_purge_then_reboot
+            return $?
+        else
+            print_warning "Force reinstall requested but no existing ROCm installation was detected."
+            print_step "Proceeding with a fresh ROCm installation."
+        fi
+    fi
+
     if command_exists rocminfo; then
         rocm_version=$(get_rocm_version)
 
         if [ -n "$rocm_version" ]; then
             print_warning "ROCm is already installed (version: $rocm_version)"
 
-            # Check for --force flag
-            if [[ "$*" == *"--force"* ]]; then
+            if [ "$FORCE_REINSTALL" = true ]; then
                 print_warning "Force reinstall requested - proceeding with reinstallation"
             else
                 echo
@@ -667,12 +1104,18 @@ install_rocm() {
                 echo "2) Reinstall ROCm"
                 echo "3) Install additional components only"
                 echo
-                read -p "Choose option (1-3) [1]: " REINSTALL_CHOICE
-                REINSTALL_CHOICE=${REINSTALL_CHOICE:-1}
+                if [ "${MLSTACK_BATCH_MODE:-0}" = "1" ]; then
+                    REINSTALL_CHOICE=1
+                    echo "Choose option (1-3) [1]: $REINSTALL_CHOICE (auto-selected)"
+                else
+                    read -p "Choose option (1-3) [1]: " REINSTALL_CHOICE
+                    REINSTALL_CHOICE=${REINSTALL_CHOICE:-1}
+                fi
 
                 case $REINSTALL_CHOICE in
                     1)
                         print_step "Skipping ROCm installation"
+                        ensure_amdgpu_ids_compat || true
                         return 0
                         ;;
                     2)
@@ -686,6 +1129,7 @@ install_rocm() {
                         ;;
                     *)
                         print_step "Skipping ROCm installation"
+                        ensure_amdgpu_ids_compat || true
                         return 0
                         ;;
                 esac
@@ -694,36 +1138,57 @@ install_rocm() {
     fi
 
     # Check if ROCm is installed but rocminfo is missing
-    if ! command_exists rocminfo; then
+    # Check multiple locations for rocminfo (PATH, /opt/rocm/bin, /usr/bin)
+    rocminfo_found=false
+    if command_exists rocminfo; then
+        rocminfo_found=true
+    elif [ -x "/opt/rocm/bin/rocminfo" ]; then
+        rocminfo_found=true
+        export PATH="/opt/rocm/bin:$PATH"
+    elif [ -x "/usr/bin/rocminfo" ]; then
+        rocminfo_found=true
+    fi
+
+    if [ "$rocminfo_found" = "false" ]; then
         if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
             print_warning "ROCm is installed but rocminfo is missing"
             print_step "Installing rocminfo..."
 
-            package_manager=$(detect_package_manager)
-            case $package_manager in
-                apt)
-                    sudo apt update && sudo apt install -y rocminfo
-                    ;;
-                dnf)
-                    sudo dnf install -y rocminfo
-                    ;;
-                yum)
-                    sudo yum install -y rocminfo
-                    ;;
-                pacman)
-                    sudo pacman -S rocminfo
-                    ;;
-                zypper)
-                    sudo zypper install -y rocminfo
-                    ;;
-                *)
-                    print_error "Unsupported package manager: $package_manager"
-                    print_step "Please install rocminfo manually"
-                    return 1
-                    ;;
-            esac
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                pm_update && pm_install rocminfo
+            else
+                package_manager=$(detect_package_manager)
+                case $package_manager in
+                    apt)
+                        sudo apt update && sudo apt install -y rocminfo
+                        ;;
+                    dnf)
+                        sudo dnf install -y rocminfo
+                        ;;
+                    yum)
+                        sudo yum install -y rocminfo
+                        ;;
+                    pacman)
+                        sudo pacman -S --noconfirm rocminfo
+                        ;;
+                    zypper)
+                        sudo zypper install -y rocminfo
+                        ;;
+                    *)
+                        print_error "Unsupported package manager: $package_manager"
+                        print_step "Please install rocminfo manually"
+                        return 1
+                        ;;
+                esac
+            fi
 
-            if command_exists rocminfo; then
+            # Re-check after installation (check multiple locations)
+            if command_exists rocminfo || [ -x "/opt/rocm/bin/rocminfo" ]; then
+                # Add to PATH if in /opt/rocm/bin
+                if [ -x "/opt/rocm/bin/rocminfo" ] && ! command_exists rocminfo; then
+                    export PATH="/opt/rocm/bin:$PATH"
+                fi
                 print_success "Installed rocminfo component"
                 # Continue to full installation to ensure all other components are present
             else
@@ -819,8 +1284,18 @@ install_rocm() {
         echo "3) Full installation (ROCm + development tools + libraries)"
         echo "4) Custom installation (select specific components)"
         echo
-        read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
-        INSTALL_METHOD=${INSTALL_METHOD:-1}
+
+        # Check for pre-seeded value from TUI
+        if [ -n "${MLSTACK_ROCM_METHOD:-}" ]; then
+            INSTALL_METHOD="$MLSTACK_ROCM_METHOD"
+            print_step "Using pre-seeded installation method: $INSTALL_METHOD"
+        elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+            read -p "Choose installation method (1-4) [1]: " INSTALL_METHOD
+            INSTALL_METHOD=${INSTALL_METHOD:-1}
+        else
+            INSTALL_METHOD=1
+            echo "Choose installation method (1-4) [1]: $INSTALL_METHOD (auto-selected)"
+        fi
 
         case $INSTALL_METHOD in
             1)
@@ -852,8 +1327,18 @@ install_rocm() {
     echo "2) Create ROCm virtual environment (recommended for development)"
     echo "3) Use existing virtual environment (specify path)"
     echo
-    read -p "Choose virtual environment option (1-3) [2]: " VENV_METHOD
-    VENV_METHOD=${VENV_METHOD:-2}
+
+    # Check for pre-seeded value from TUI
+    if [ -n "${MLSTACK_VENV_METHOD:-}" ]; then
+        VENV_METHOD="$MLSTACK_VENV_METHOD"
+        print_step "Using pre-seeded venv method: $VENV_METHOD"
+    elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+        read -p "Choose virtual environment option (1-3) [2]: " VENV_METHOD
+        VENV_METHOD=${VENV_METHOD:-2}
+    else
+        VENV_METHOD=1
+        echo "Choose virtual environment option (1-3) [2]: $VENV_METHOD (auto-selected)"
+    fi
 
     case $VENV_METHOD in
         1)
@@ -885,25 +1370,11 @@ install_rocm() {
         print_section "Installing ROCm"
 
         # Choose ROCm version (only if not additional components)
-        # Check for non-interactive mode (pre-seeded choice)
-        if [ -n "$INSTALL_ROCM_PRESEEDED_CHOICE" ]; then
-            # Non-interactive mode: use pre-seeded choice
+        # Check for pre-seeded choice from TUI or environment
+        if [ -n "${INSTALL_ROCM_PRESEEDED_CHOICE:-}" ]; then
             ROCM_CHOICE="$INSTALL_ROCM_PRESEEDED_CHOICE"
-
-            # Validate the choice is in valid range
-            if [[ ! "$ROCM_CHOICE" =~ ^[1-3]$ ]]; then
-                print_error "Invalid INSTALL_ROCM_PRESEEDED_CHOICE value: $ROCM_CHOICE"
-                echo
-                echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2)${RESET}"
-                echo
-                echo -e "${CYAN}For ROCm 7.10.0 Preview (TheRock distribution):${RESET}"
-                echo "  https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html"
-                return 1
-            fi
-
-            # Set default if choice is empty
-            ROCM_CHOICE=${ROCM_CHOICE:-3}
-        else
+            print_step "Using pre-seeded ROCm version choice: $ROCM_CHOICE"
+        elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
             # Interactive mode: prompt user
             echo
             echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
@@ -918,6 +1389,24 @@ install_rocm() {
             echo
             read -p "Choose ROCm version (1-3) [3]: " ROCM_CHOICE
             ROCM_CHOICE=${ROCM_CHOICE:-3}
+        else
+            # Non-interactive mode: use default
+            ROCM_CHOICE=3
+            echo
+            echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
+            echo "1) ROCm 6.4.3 (Legacy - Stable)"
+            echo "2) ROCm 7.1 (Stable)"
+            echo "3) ROCm 7.2 (Latest - Recommended)"
+            echo
+            echo "Choose ROCm version (1-3) [3]: $ROCM_CHOICE (auto-selected)"
+        fi
+
+        # Validate the choice is in valid range
+        if [[ ! "$ROCM_CHOICE" =~ ^[1-3]$ ]]; then
+            print_error "Invalid ROCm choice: $ROCM_CHOICE"
+            echo
+            echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2)${RESET}"
+            return 1
         fi
 
         case $ROCM_CHOICE in
@@ -957,8 +1446,8 @@ install_rocm() {
         esac
 
         # Log mode information for debugging
-        if [ -n "$INSTALL_ROCM_PRESEEDED_CHOICE" ]; then
-            print_step "Non-interactive mode: Using pre-seeded choice $ROCM_CHOICE ($ROCM_CHANNEL channel)"
+        if [ -n "${INSTALL_ROCM_PRESEEDED_CHOICE:-}" ]; then
+            print_step "Using pre-seeded choice $ROCM_CHOICE ($ROCM_CHANNEL channel)"
         fi
 
         # For ROCm 7.x, offer to install updated framework components
@@ -969,8 +1458,18 @@ install_rocm() {
             echo "1) Yes - Install updated frameworks (PyTorch 2.7, JAX 0.6.0, ONNX Runtime 1.22.0, etc.)"
             echo "2) No - Install ROCm core only"
             echo
-            read -p "Install additional frameworks? (1-2) [1]: " INSTALL_FRAMEWORKS
-            INSTALL_FRAMEWORKS=${INSTALL_FRAMEWORKS:-1}
+
+            # Check for pre-seeded value from TUI
+            if [ -n "${MLSTACK_INSTALL_FRAMEWORKS:-}" ]; then
+                INSTALL_FRAMEWORKS="$MLSTACK_INSTALL_FRAMEWORKS"
+                print_step "Using pre-seeded frameworks choice: $INSTALL_FRAMEWORKS"
+            elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+                read -p "Install additional frameworks? (1-2) [1]: " INSTALL_FRAMEWORKS
+                INSTALL_FRAMEWORKS=${INSTALL_FRAMEWORKS:-1}
+            else
+                INSTALL_FRAMEWORKS=1
+                echo "Install additional frameworks? (1-2) [1]: $INSTALL_FRAMEWORKS (auto-selected)"
+            fi
 
             if [ "$INSTALL_FRAMEWORKS" = "1" ]; then
                 INSTALL_ROCM7_FRAMEWORKS=true
@@ -1004,7 +1503,375 @@ install_rocm() {
             *)       ROCM_PKG_VER="7.2.70200-1" ;;
         esac
 
-        if [ "$package_manager" = "apt" ]; then
+        # Handle different package managers
+        if [ "$package_manager" = "pacman" ]; then
+            # =====================================================================
+            # ARCH LINUX - Use AUR packages or official tarballs
+            # =====================================================================
+            print_step "Detected Arch Linux - using AUR packages for ROCm installation"
+            echo
+            echo -e "${CYAN}${BOLD}Arch Linux ROCm Installation Options:${RESET}"
+            echo -e "${YELLOW}ROCm on Arch Linux is typically installed via AUR packages.${RESET}"
+            echo
+            echo "1) Install via AUR helper (yay/paru) - Recommended"
+            echo "2) Install official AMD tarball manually"
+            echo "3) Skip ROCm installation (install manually later)"
+            echo
+
+            # Check for pre-seeded value from TUI
+            if [ -n "${MLSTACK_ARCH_ROCM_METHOD:-}" ]; then
+                ARCH_ROCM_METHOD="$MLSTACK_ARCH_ROCM_METHOD"
+                print_step "Using pre-seeded Arch method: $ARCH_ROCM_METHOD"
+            elif [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+                read -p "Choose installation method (1-3) [1]: " ARCH_ROCM_METHOD
+                ARCH_ROCM_METHOD=${ARCH_ROCM_METHOD:-1}
+            else
+                ARCH_ROCM_METHOD=1
+                echo "Choose installation method (1-3) [1]: $ARCH_ROCM_METHOD (auto-selected)"
+            fi
+
+            case $ARCH_ROCM_METHOD in
+                1)
+                    # Check for AUR helper
+                    AUR_HELPER=""
+                    if command -v yay &>/dev/null; then
+                        AUR_HELPER="yay"
+                    elif command -v paru &>/dev/null; then
+                        AUR_HELPER="paru"
+                    fi
+
+                    if [ -z "$AUR_HELPER" ]; then
+                        print_error "No AUR helper found (yay or paru required)"
+                        echo
+                        echo -e "${YELLOW}Install an AUR helper first:${RESET}"
+                        echo "  sudo pacman -S --needed base-devel git"
+                        echo "  git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
+                        echo
+                        echo -e "${CYAN}Alternatively, choose option 2 to use official tarballs.${RESET}"
+                        return 1
+                    fi
+
+                    print_step "Using AUR helper: $AUR_HELPER"
+
+                    # Core ROCm AUR packages
+                    ROCM_AUR_PACKAGES=(
+                        "rocm-hip-sdk"      # HIP SDK (core)
+                        "rocminfo"          # ROCm info utility
+                        "rocm-smi-lib"      # System Management Interface
+                        "hipblas"           # HIP BLAS library
+                        "rocblas"           # ROCm BLAS library
+                        "hipsparselt"       # Required by newer ROCm PyTorch/vLLM wheels
+                    )
+
+                    # Optional packages based on ROCm version
+                    if [ "$ROCM_CHOICE" = "2" ] || [ "$ROCM_CHOICE" = "3" ]; then
+                        ROCM_AUR_PACKAGES+=(
+                            "rocm-opencl-sdk"   # OpenCL support
+                            "rccl"              # ROCm Collective Communications
+                        )
+                    fi
+
+                    echo
+                    echo -e "${CYAN}Will install the following AUR packages:${RESET}"
+                    for pkg in "${ROCM_AUR_PACKAGES[@]}"; do
+                        echo "  - $pkg"
+                    done
+                    echo
+
+                    # Check if running interactively (stdin is a terminal)
+                    if [ "${MLSTACK_BATCH_MODE:-0}" != "1" ]; then
+                        if ! read -r -p "Proceed with installation? (y/n) [y]: " CONFIRM_AUR; then
+                            CONFIRM_AUR="y"
+                        fi
+                        CONFIRM_AUR=${CONFIRM_AUR:-y}
+                    else
+                        # Non-interactive mode - auto-confirm
+                        echo "Proceed with installation? (y/n) [y]: y (auto-confirmed)"
+                        CONFIRM_AUR="y"
+                    fi
+
+                    CONFIRM_AUR="$(echo "${CONFIRM_AUR:-y}" | tr '[:upper:]' '[:lower:]' | xargs)"
+                    if [[ "$CONFIRM_AUR" != "y" && "$CONFIRM_AUR" != "yes" && "$CONFIRM_AUR" != "1" && "$CONFIRM_AUR" != "true" ]]; then
+                        print_warning "ROCm installation cancelled"
+                        return 1
+                    fi
+                    print_step "AUR install confirmation accepted: ${CONFIRM_AUR}"
+
+                    # Install packages using AUR helper
+                    # AUR helpers should NOT run as root; repository packages are installed
+                    # directly via pacman to avoid sudo prompt churn inside yay.
+                    AUR_RUN_AS_USER=""
+                    AUR_SUDO_KEEPALIVE_PID=""
+                    AUR_ASKPASS_FILE=""
+                    YAY_SUDOFLAGS="-n -p ''"
+
+                    aur_exec() {
+                        if [ -n "${AUR_RUN_AS_USER:-}" ]; then
+                            sudo -H -u "$AUR_RUN_AS_USER" "$AUR_HELPER" "$@"
+                        else
+                            "$AUR_HELPER" "$@"
+                        fi
+                    }
+
+                    aur_repo_name() {
+                        local pkg="$1"
+                        local repo_line=""
+                        repo_line="$(aur_exec -Si "$pkg" 2>/dev/null | awk -F: '/^Repository[[:space:]]*:/{gsub(/^[ \t]+/,"",$2); print tolower($2); exit}')"
+                        if [ -n "$repo_line" ]; then
+                            printf '%s\n' "$repo_line"
+                            return 0
+                        fi
+                        return 1
+                    }
+
+                    configure_aur_askpass() {
+                        local target_user="$1"
+                        [ -n "${MLSTACK_SUDO_PASSWORD:-}" ] || return 0
+                        [ -n "$target_user" ] || return 0
+
+                        AUR_ASKPASS_FILE="/tmp/mlstack-aur-askpass-$$.sh"
+                        cat > "$AUR_ASKPASS_FILE" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${MLSTACK_SUDO_PASSWORD:-}"
+EOF
+                        chmod 700 "$AUR_ASKPASS_FILE"
+                        chown "$target_user:$target_user" "$AUR_ASKPASS_FILE" 2>/dev/null || true
+                        YAY_SUDOFLAGS="-A -p ''"
+                    }
+
+                    cleanup_aur_askpass() {
+                        if [ -n "${AUR_ASKPASS_FILE:-}" ] && [ -f "$AUR_ASKPASS_FILE" ]; then
+                            rm -f "$AUR_ASKPASS_FILE"
+                            AUR_ASKPASS_FILE=""
+                        fi
+                    }
+
+                    prime_user_sudo_ticket() {
+                        local target_user="$1"
+                        if [ -z "$target_user" ]; then
+                            return 0
+                        fi
+                        if [ -n "${AUR_ASKPASS_FILE:-}" ] && [ -n "${MLSTACK_SUDO_PASSWORD:-}" ]; then
+                            if sudo -H -u "$target_user" env MLSTACK_SUDO_PASSWORD="$MLSTACK_SUDO_PASSWORD" SUDO_ASKPASS="$AUR_ASKPASS_FILE" SUDO_PROMPT="" sudo -A -v >/dev/null 2>&1; then
+                                print_step "Primed sudo ticket for user $target_user"
+                                return 0
+                            fi
+                            print_error "Failed to prime sudo ticket for user $target_user using cached password."
+                            return 1
+                        fi
+                        if sudo -u "$target_user" sudo -n -v >/dev/null 2>&1; then
+                            print_step "Existing sudo ticket detected for user $target_user"
+                            return 0
+                        fi
+                        print_error "No cached sudo password was provided and user sudo ticket is unavailable for $target_user."
+                        return 1
+                    }
+
+                    start_user_sudo_keepalive() {
+                        local target_user="$1"
+                        [ -n "$target_user" ] || return 0
+                        [ -n "${AUR_ASKPASS_FILE:-}" ] || return 0
+                        (
+                            while true; do
+                                sleep 45
+                                sudo -H -u "$target_user" env MLSTACK_SUDO_PASSWORD="$MLSTACK_SUDO_PASSWORD" SUDO_ASKPASS="$AUR_ASKPASS_FILE" SUDO_PROMPT="" sudo -A -v >/dev/null 2>&1 || true
+                            done
+                        ) &
+                        AUR_SUDO_KEEPALIVE_PID="$!"
+                        print_step "Started sudo keepalive for user $target_user (pid: $AUR_SUDO_KEEPALIVE_PID)"
+                    }
+
+                    stop_user_sudo_keepalive() {
+                        if [ -n "${AUR_SUDO_KEEPALIVE_PID:-}" ]; then
+                            kill "$AUR_SUDO_KEEPALIVE_PID" >/dev/null 2>&1 || true
+                            wait "$AUR_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+                            AUR_SUDO_KEEPALIVE_PID=""
+                        fi
+                    }
+
+                    if [ "$(id -u)" -eq 0 ]; then
+                        # Running as root - need to run yay as regular user
+                        if [ -n "${SUDO_USER:-}" ]; then
+                            print_step "Running $AUR_HELPER as user $SUDO_USER (AUR helpers should not run as root)..."
+                            AUR_RUN_AS_USER="$SUDO_USER"
+                        elif [ -n "${PKEXEC_UID:-}" ]; then
+                            AUR_RUN_AS_USER="$(id -un "$PKEXEC_UID" 2>/dev/null || true)"
+                        fi
+                    fi
+
+                    missing_aur_packages=()
+                    repo_packages=()
+                    aur_packages=()
+                    for pkg in "${ROCM_AUR_PACKAGES[@]}"; do
+                        repo_name="$(aur_repo_name "$pkg" || true)"
+                        if [ -n "$repo_name" ]; then
+                            print_step "Package available via $AUR_HELPER [$repo_name]: $pkg"
+                            if [ "$repo_name" = "aur" ]; then
+                                aur_packages+=("$pkg")
+                            else
+                                repo_packages+=("$pkg")
+                            fi
+                        else
+                            missing_aur_packages+=("$pkg")
+                        fi
+                    done
+
+                    if [ "${#missing_aur_packages[@]}" -gt 0 ]; then
+                        cleanup_aur_askpass
+                        print_error "The following packages are unavailable via $AUR_HELPER: ${missing_aur_packages[*]}"
+                        print_step "Review package naming/repositories and rerun installation."
+                        return 1
+                    fi
+
+                    if [ "${#repo_packages[@]}" -gt 0 ]; then
+                        print_step "Installing repository ROCm packages via pacman (no yay sudo path)..."
+                        if [ "$DRY_RUN" != true ]; then
+                            if [ "$(id -u)" -eq 0 ]; then
+                                if ! pacman -S --needed --noconfirm "${repo_packages[@]}" 2>&1; then
+                                    cleanup_aur_askpass
+                                    print_error "Failed to install repository packages via pacman."
+                                    return 1
+                                fi
+                            else
+                                if ! sudo pacman -S --needed --noconfirm "${repo_packages[@]}" 2>&1; then
+                                    cleanup_aur_askpass
+                                    print_error "Failed to install repository packages via pacman."
+                                    return 1
+                                fi
+                            fi
+                        fi
+                    fi
+
+                    if [ "${#aur_packages[@]}" -gt 0 ]; then
+                        if [ -z "${AUR_RUN_AS_USER:-}" ]; then
+                            cleanup_aur_askpass
+                            print_error "AUR packages require running $AUR_HELPER as a regular user."
+                            return 1
+                        fi
+
+                        configure_aur_askpass "${AUR_RUN_AS_USER:-}"
+                        if ! prime_user_sudo_ticket "$AUR_RUN_AS_USER"; then
+                            cleanup_aur_askpass
+                            return 1
+                        fi
+                        start_user_sudo_keepalive "${AUR_RUN_AS_USER:-}"
+                    fi
+
+                    failed_aur_packages=()
+                    for pkg in "${aur_packages[@]}"; do
+                        print_step "Installing $pkg via $AUR_HELPER..."
+                        if [ "$DRY_RUN" != true ]; then
+                            if ! sudo -H -u "$AUR_RUN_AS_USER" env MLSTACK_SUDO_PASSWORD="${MLSTACK_SUDO_PASSWORD:-}" SUDO_ASKPASS="${AUR_ASKPASS_FILE:-}" SUDO_PROMPT="" "$AUR_HELPER" -S --needed --noconfirm --sudoloop --sudo sudo --sudoflags "$YAY_SUDOFLAGS" --answerdiff None --answerclean None "$pkg" 2>&1; then
+                                print_warning "Failed to install $pkg, continuing..."
+                                failed_aur_packages+=("$pkg")
+                            fi
+                        fi
+                    done
+
+                    if [ "${#failed_aur_packages[@]}" -gt 0 ]; then
+                        stop_user_sudo_keepalive
+                        cleanup_aur_askpass
+                        print_error "AUR installation failed for: ${failed_aur_packages[*]}"
+                        print_step "Fix the failing package(s) and rerun ROCm installation."
+                        return 1
+                    fi
+                    stop_user_sudo_keepalive
+                    cleanup_aur_askpass
+
+                    # Set up environment for Arch
+                    print_step "Configuring ROCm environment for Arch Linux..."
+                    execute_command "sudo tee -a /etc/profile.d/rocm.sh << 'EOF'
+# ROCm Environment (Arch Linux)
+export ROCm_PATH=/opt/rocm
+export HIP_PATH=/opt/rocm/hip
+export HSA_PATH=/opt/rocm/hsa
+export PATH=\$PATH:/opt/rocm/bin:/opt/rocm/hip/bin
+export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+export AMDGPU_ASIC_ID_TABLE_PATH=/usr/share/libdrm/amdgpu.ids
+export AMDGPU_ASIC_ID_TABLE_PATHS=/usr/share/libdrm
+EOF" "Creating ROCm environment profile"
+
+                    execute_command "sudo chmod +x /etc/profile.d/rocm.sh" "Setting profile permissions"
+
+                    print_success "ROCm Arch packages installed successfully!"
+                    print_step "Please log out and log back in for environment changes to take effect."
+                    return 0
+                    ;;
+
+                2)
+                    # Official tarball installation for Arch Linux
+                    print_warning "Official tarball installation is experimental on Arch Linux"
+                    print_step "Downloading ROCm ${ROCM_VERSION} tarball..."
+
+                    # Use the official AMD tarball download URL
+                    # Format: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/native-install/install.html
+                    ROCM_TARBALL_DIR="/tmp/rocm-tarball-$$"
+                    mkdir -p "$ROCM_TARBALL_DIR"
+
+                    # Download URL for the Linux tarball
+                    ROCM_TARBALL_URL="https://download.amd.com/rocm/releases/${ROCM_VERSION}/rocm-rel-${ROCM_VERSION}.tar.gz"
+
+                    print_step "Downloading from: $ROCM_TARBALL_URL"
+                    if ! wget -q --show-progress "$ROCM_TARBALL_URL" -O "$ROCM_TARBALL_DIR/rocm.tar.gz"; then
+                        # Try alternative URL format
+                        ROCM_TARBALL_URL="https://repo.radeon.com/rocm/rocm-releases/${ROCM_VERSION}/rocm-rel-${ROCM_VERSION}.tar.gz"
+                        print_step "Trying alternative URL: $ROCM_TARBALL_URL"
+                        if ! wget -q --show-progress "$ROCM_TARBALL_URL" -O "$ROCM_TARBALL_DIR/rocm.tar.gz"; then
+                            print_error "Failed to download ROCm tarball"
+                            echo -e "${YELLOW}Please download manually from:${RESET}"
+                            echo "  https://rocm.docs.amd.com/en/latest/install/native_install/install.html"
+                            rm -rf "$ROCM_TARBALL_DIR"
+                            return 1
+                        fi
+                    fi
+
+                    print_success "Downloaded ROCm tarball"
+                    print_step "Extracting to /opt/rocm..."
+
+                    # Create /opt/rocm directory
+                    execute_command "sudo mkdir -p /opt/rocm" "Creating ROCm directory"
+
+                    # Extract the tarball
+                    execute_command "sudo tar -xzf '$ROCM_TARBALL_DIR/rocm.tar.gz' -C /opt/rocm --strip-components=1" "Extracting ROCm tarball"
+
+                    # Clean up
+                    rm -rf "$ROCM_TARBALL_DIR"
+
+                    # Set up environment
+                    print_step "Configuring ROCm environment..."
+                    execute_command "sudo tee /etc/profile.d/rocm.sh << 'EOF'
+# ROCm Environment (Arch Linux - Tarball)
+export ROCm_PATH=/opt/rocm
+export HIP_PATH=/opt/rocm/hip
+export HSA_PATH=/opt/rocm/hsa
+export PATH=\$PATH:/opt/rocm/bin:/opt/rocm/hip/bin
+export LD_LIBRARY_PATH=\$LD_LIBRARY_PATH:/opt/rocm/lib:/opt/rocm/lib64
+export AMDGPU_ASIC_ID_TABLE_PATH=/usr/share/libdrm/amdgpu.ids
+export AMDGPU_ASIC_ID_TABLE_PATHS=/usr/share/libdrm
+EOF" "Creating ROCm environment profile"
+
+                    execute_command "sudo chmod +x /etc/profile.d/rocm.sh" "Setting profile permissions"
+
+                    print_success "ROCm tarball installed successfully!"
+                    print_step "Please log out and log back in for environment changes to take effect."
+                    return 0
+                    ;;
+
+                3)
+                    print_warning "Skipping ROCm installation"
+                    echo
+                    echo -e "${CYAN}To install ROCm manually on Arch Linux:${RESET}"
+                    echo "  yay -S rocm-hip-sdk rocminfo rocm-smi-lib"
+                    return 0
+                    ;;
+
+                *)
+                    print_error "Invalid choice: $ARCH_ROCM_METHOD"
+                    return 1
+                    ;;
+            esac
+
+        elif [ "$package_manager" = "apt" ]; then
             installer_file="amdgpu-install_${ROCM_PKG_VER}_all.deb"
             installer_url="https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/ubuntu/$ubuntu_codename/$installer_file"
         elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
@@ -1019,37 +1886,44 @@ install_rocm() {
         elif [ "$package_manager" = "zypper" ]; then
             installer_file="amdgpu-install-$ROCM_PKG_VER.noarch.rpm"
             installer_url="https://repo.radeon.com/amdgpu-install/$ROCM_DIR_PATH/sle/$sles_version/$installer_file"
+        else
+            print_error "Unsupported package manager: $package_manager"
+            echo -e "${YELLOW}Supported package managers: apt, pacman, dnf, yum, zypper${RESET}"
+            return 1
         fi
 
-        if [ "$DRY_RUN" != true ]; then
-            print_step "Downloading installer from: $installer_url"
-            if ! retry_command "wget -q \"$installer_url\" -O \"$installer_file\"" 3 2; then
-                print_error "Failed to download installer package after retries"
-                return 1
+        # Skip download/install for pacman (handled above)
+        if [ "$package_manager" != "pacman" ]; then
+            if [ "$DRY_RUN" != true ]; then
+                print_step "Downloading installer from: $installer_url"
+                if ! retry_command "wget -q \"$installer_url\" -O \"$installer_file\"" 3 2; then
+                    print_error "Failed to download installer package after retries"
+                    return 1
+                fi
+                print_success "Downloaded installer package: $installer_file"
             fi
-            print_success "Downloaded installer package: $installer_file"
-        fi
 
-        # Install the package using the appropriate package manager
-        if [ "$package_manager" = "apt" ]; then
-            # Fix: Pre-create the file that causes postinst script failures
-            print_step "Applying permission fix for amdgpu-install..."
-            execute_command "sudo chattr -i /etc/apt/sources.list.d/amdgpu-proprietary.list 2>/dev/null || true" "Removing immutable attribute"
-            execute_command "sudo touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
-            execute_command "sudo chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
-            
-            execute_command "sudo apt install -y ./$installer_file" "Installing amdgpu-install package..."
-            
-            # Handle postinst script failures gracefully
-            if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
-                print_warning "amdgpu-install installation had post-install script issues, attempting recovery..."
-                execute_command "sudo dpkg --configure -a" "Reconfiguring packages"
+            # Install the package using the appropriate package manager
+            if [ "$package_manager" = "apt" ]; then
+                # Fix: Pre-create the file that causes postinst script failures
+                print_step "Applying permission fix for amdgpu-install..."
+                execute_command "sudo chattr -i /etc/apt/sources.list.d/amdgpu-proprietary.list 2>/dev/null || true" "Removing immutable attribute"
+                execute_command "sudo touch /etc/apt/sources.list.d/amdgpu-proprietary.list" "Creating amdgpu-proprietary.list file"
+                execute_command "sudo chmod 644 /etc/apt/sources.list.d/amdgpu-proprietary.list" "Setting file permissions"
+
+                execute_command "sudo apt install -y ./$installer_file" "Installing amdgpu-install package..."
+
+                # Handle postinst script failures gracefully
+                if [ $? -ne 0 ] && [ "$DRY_RUN" != true ]; then
+                    print_warning "amdgpu-install installation had post-install script issues, attempting recovery..."
+                    execute_command "sudo dpkg --configure -a" "Reconfiguring packages"
+                fi
+            elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+                execute_command "sudo $package_manager install -y ./$installer_file" "Installing amdgpu-install package..."
+                execute_command "sudo $package_manager clean all" "Cleaning package cache"
+            elif [ "$package_manager" = "zypper" ]; then
+                execute_command "sudo zypper --no-gpg-checks install -y ./$installer_file" "Installing amdgpu-install package..."
             fi
-        elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
-            execute_command "sudo $package_manager install -y ./$installer_file" "Installing amdgpu-install package..."
-            execute_command "sudo $package_manager clean all" "Cleaning package cache"
-        elif [ "$package_manager" = "zypper" ]; then
-            execute_command "sudo zypper --no-gpg-checks install -y ./$installer_file" "Installing amdgpu-install package..."
         fi
 
         # Setup ROCm repositories manually for better control (Debian/Ubuntu only)
@@ -1086,16 +1960,24 @@ EOF" "Setting ROCm repository priorities"
 
         # Update package lists
         print_step "Updating package lists..."
-        if [ "$package_manager" = "apt" ]; then
+        # Use pm_update if available
+        if declare -f pm_update &>/dev/null; then
+            pm_update
+        elif [ "$package_manager" = "apt" ]; then
             sudo apt clean
             sudo apt update
         elif [ "$package_manager" = "zypper" ]; then
             sudo zypper --gpg-auto-import-keys refresh
+        elif [ "$package_manager" = "pacman" ]; then
+            sudo pacman -Sy
         fi
 
         # Install prerequisites
         print_step "Installing prerequisites..."
-        if [ "$package_manager" = "apt" ]; then
+        # Use pm_install if available
+        if declare -f pm_install &>/dev/null; then
+            pm_install python3-setuptools python3-wheel || true
+        elif [ "$package_manager" = "apt" ]; then
             sudo apt install -y python3-setuptools python3-wheel
         elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
             # RHEL prerequisites
@@ -1107,15 +1989,21 @@ EOF" "Setting ROCm repository priorities"
             sudo $package_manager install -y python3-setuptools python3-wheel
         elif [ "$package_manager" = "zypper" ]; then
             sudo zypper install -y python3-setuptools python3-wheel
+        elif [ "$package_manager" = "pacman" ]; then
+            sudo pacman -S --noconfirm python-setuptools python-wheel
         fi
 
-        # Add user to render and video groups
-        print_step "Adding user to render and video groups..."
-        sudo usermod -a -G render,video $LOGNAME
+        # Add the real desktop user to render/video groups (not root).
+        local target_user="${SUDO_USER:-${MLSTACK_FORCE_OWNER:-${USER:-${LOGNAME:-}}}}"
+        if [ -z "$target_user" ] || ! id "$target_user" >/dev/null 2>&1; then
+            target_user="$(id -un)"
+        fi
+        print_step "Ensuring user '$target_user' is in render and video groups..."
+        sudo usermod -a -G render,video "$target_user" 2>/dev/null || true
     fi
-    
+
     # For Debian, install any missing dependencies from Ubuntu Noble
-    if [ "$distributor" = "Debian" ]; then
+    if [ "$distributor" = "Debian" ] || is_debian_based 2>/dev/null; then
         print_step "Installing any missing dependencies from Ubuntu Noble..."
 
         # Temporarily add Ubuntu noble for missing dependencies
@@ -1177,8 +2065,22 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
                         "full")     execute_command "sudo amdgpu-install --usecase=rocm,rocmdev --accept-eula --no-32 -y" "Fallback: Full ROCm installation" ;;
                     esac
                 fi
+            elif [ "$package_manager" = "pacman" ]; then
+                # =====================================================================
+                # ARCH LINUX - ROCm already installed via AUR packages above
+                # =====================================================================
+                print_success "ROCm installation via AUR packages completed earlier"
+                print_step "Skipping amdgpu-install (not used on Arch Linux)"
+
+                # Verify ROCm installation
+                if command_exists rocminfo && command_exists rocm-smi; then
+                    print_success "ROCm tools verified: rocminfo and rocm-smi available"
+                else
+                    print_warning "Some ROCm tools may not be in PATH"
+                    print_step "You may need to log out and log back in for PATH changes"
+                fi
             else
-                # For non-apt managers, use the standard case
+                # For dnf/yum/zypper, use the standard amdgpu-install
                 case $INSTALL_TYPE in
                     "minimal")
                         # Install minimal ROCm runtime
@@ -1264,12 +2166,17 @@ EOF" "Adding Ubuntu noble repositories for missing dependencies"
             execute_command "sudo amdgpu-install --usecase=$USECASE --accept-eula --no-32 -y" "Installing additional ROCm components"
         else
             # Fallback for RCCL if usecase not available
-            if [ "$package_manager" = "apt" ]; then
+            # Use pm_* functions if available
+            if declare -f pm_install &>/dev/null; then
+                pm_update && pm_install librccl-dev librccl1 || print_warning "RCCL installation via pm_install failed"
+            elif is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
                 execute_command "sudo apt update && sudo apt install -y librccl-dev librccl1" "Installing RCCL libraries directly"
-            elif [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+            elif is_fedora_based 2>/dev/null || [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
                 execute_command "sudo $package_manager install -y rccl-devel" "Installing RCCL libraries directly"
-            elif [ "$package_manager" = "zypper" ]; then
+            elif is_suse_based 2>/dev/null || [ "$package_manager" = "zypper" ]; then
                 execute_command "sudo zypper install -y rccl-devel" "Installing RCCL libraries directly"
+            elif is_arch_based 2>/dev/null || [ "$package_manager" = "pacman" ]; then
+                print_warning "Arch users should install rccl from AUR: yay -S rccl"
             fi
         fi
         ;;
@@ -1279,10 +2186,20 @@ esac
         print_error "Failed to install ROCm"
 
         print_step "Installation failed. Check the error messages above for details."
-        print_step "You can try: sudo apt install -f  # to fix broken dependencies"
-        print_step "Or check: sudo apt update && sudo apt upgrade  # to update packages"
+        if is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
+            print_step "You can try: sudo apt install -f  # to fix broken dependencies"
+            print_step "Or check: sudo apt update && sudo apt upgrade  # to update packages"
+        elif is_arch_based 2>/dev/null || [ "$package_manager" = "pacman" ]; then
+            print_step "You can try: sudo pacman -Fy && sudo pacman -Su  # to fix/update packages"
+        elif is_fedora_based 2>/dev/null || [ "$package_manager" = "dnf" ] || [ "$package_manager" = "yum" ]; then
+            print_step "You can try: sudo $package_manager clean all && sudo $package_manager upgrade"
+        fi
 
         return 1
+    fi
+
+    if ! ensure_amdgpu_ids_compat; then
+        print_warning "Failed to create amdgpu.ids compatibility path; some tools may emit warnings."
     fi
 
     print_success "Installed ROCm ($INSTALL_TYPE)"
@@ -1360,7 +2277,7 @@ esac
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion if present
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
         PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
         unset PYTORCH_CUDA_ALLOC_CONF
         print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
@@ -1386,9 +2303,10 @@ esac
     verify_rocm_installation "$ROCM_VERSION"
 
     # Final cleanup and fix for any remaining dependency issues
-    if [ "$package_manager" = "apt" ]; then
+    # Only applicable to Debian-based systems
+    if is_debian_based 2>/dev/null || [ "$package_manager" = "apt" ]; then
         print_step "Performing final dependency resolution..."
-        sudo apt install -f -y
+        sudo apt install -f -y || true
     fi
 
     if command_exists rocminfo; then
@@ -1448,6 +2366,18 @@ esac
 EOF
 
     print_success "ROCm installation completed successfully"
+    echo
+    echo -e "${RED}${BOLD}╔═══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${RED}${BOLD}║                    ⚠️  REBOOT REQUIRED ⚠️                      ║${RESET}"
+    echo -e "${RED}${BOLD}╠═══════════════════════════════════════════════════════════════╣${RESET}"
+    echo -e "${RED}${BOLD}║  A system reboot is REQUIRED for:                              ║${RESET}"
+    echo -e "${RED}${BOLD}║  • AMD GPU drivers to properly load                            ║${RESET}"
+    echo -e "${RED}${BOLD}║  • ROCm to access the GPU                                      ║${RESET}"
+    echo -e "${RED}${BOLD}║  • Group membership changes (render, video) to take effect     ║${RESET}"
+    echo -e "${RED}${BOLD}║                                                                 ║${RESET}"
+    echo -e "${RED}${BOLD}║  Run: sudo reboot                                               ║${RESET}"
+    echo -e "${RED}${BOLD}╚═══════════════════════════════════════════════════════════════╝${RESET}"
+    echo
     print_warning "You may need to log out and log back in for group changes to take effect"
     echo
     echo -e "${CYAN}${BOLD}ROCm Environment Variables:${RESET}"
@@ -1510,11 +2440,12 @@ if os.path.exists('/opt/rocm/.info/version'):
 print('='*55)
 "
 
+    if [ "$ROCM_FORCE_TWO_STAGE_ACTIVE" = true ]; then
+        force_reinstall_finalize_with_second_reboot
+    fi
+
     return 0
 }
-
-# Global variables for dry-run mode
-DRY_RUN=false
 
 # Check for command line options
 while [[ $# -gt 0 ]]; do
@@ -1533,11 +2464,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run)
             DRY_RUN=true
-            print_warning "DRY RUN MODE: No actual changes will be made"
             shift
             ;;
         --force)
-            # Already handled in the function
+            FORCE_REINSTALL=true
+            shift
+            ;;
+        --resume-install)
+            ROCM_FORCE_RESUME_INSTALL=true
             shift
             ;;
         *)
@@ -1548,6 +2482,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$FORCE_REINSTALL" = true ]; then
+    export FORCE=true
+    export PYTORCH_REINSTALL=true
+    export MLSTACK_FORCE_REINSTALL=true
+fi
+
+if [ "$DRY_RUN" = true ]; then
+    print_warning "DRY RUN MODE: No actual changes will be made"
+fi
 
 # Run the installation function
 install_rocm "$@"

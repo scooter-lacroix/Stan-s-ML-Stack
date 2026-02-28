@@ -160,6 +160,28 @@ detect_gpus() {
 # Function to create environment file
 create_environment_file() {
     print_section "Creating Environment File"
+    local setup_script_dir
+    local permanent_env_script
+
+    setup_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    permanent_env_script="$setup_script_dir/setup_permanent_rocm_env.sh"
+
+    # Canonical path: always use the permanent env generator, which now supports
+    # Bash/Zsh/Fish-compatible .mlstack_env output and shell hook patching.
+    if [ -x "$permanent_env_script" ]; then
+        print_step "Delegating environment generation to setup_permanent_rocm_env.sh..."
+        if bash "$permanent_env_script"; then
+            # Source in POSIX shells for immediate availability in this process.
+            if [ -f "$HOME/.mlstack_env" ]; then
+                # shellcheck disable=SC1090
+                source "$HOME/.mlstack_env" || true
+            fi
+            print_success "Environment file created successfully"
+            print_step "Environment file: $HOME/.mlstack_env"
+            return 0
+        fi
+        print_warning "Delegated environment generation failed; falling back to legacy template."
+    fi
 
     # Create environment file
     print_step "Creating environment file..."
@@ -193,6 +215,14 @@ if [ -z "\${MIOPEN_FIND_ENFORCE:-}" ]; then export MIOPEN_FIND_ENFORCE=${MIOPEN_
 # PyTorch Settings
 if [ -z "\${TORCH_CUDA_ARCH_LIST:-}" ]; then export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-7.0;8.0;9.0}"; fi
 if [ -z "\${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:512}"; fi
+if [ -z "\${VLLM_WORKER_MULTIPROC_METHOD:-}" ]; then export VLLM_WORKER_MULTIPROC_METHOD=spawn; fi
+if [ -z "\${VLLM_ROCM_USE_AITER:-}" ]; then export VLLM_ROCM_USE_AITER=0; fi
+if [ -z "\${MLSTACK_TRITON_HOME:-}" ]; then export MLSTACK_TRITON_HOME="\$HOME/.cache/mlstack/triton"; fi
+if [ -z "\${TRITON_HOME:-}" ]; then export TRITON_HOME="\$MLSTACK_TRITON_HOME"; fi
+if [ -z "\${TRITON_CACHE_DIR:-}" ]; then export TRITON_CACHE_DIR="\$TRITON_HOME/cache"; fi
+if [ -z "\${TRITON_DUMP_DIR:-}" ]; then export TRITON_DUMP_DIR="\$TRITON_HOME/dump"; fi
+if [ -z "\${TRITON_OVERRIDE_DIR:-}" ]; then export TRITON_OVERRIDE_DIR="\$TRITON_HOME/override"; fi
+mkdir -p "\$TRITON_CACHE_DIR" "\$TRITON_DUMP_DIR" "\$TRITON_OVERRIDE_DIR" 2>/dev/null || true
 
 # MPI Settings
 if [ -z "\${OMPI_MCA_opal_cuda_support:-}" ]; then export OMPI_MCA_opal_cuda_support=${OMPI_MCA_opal_cuda_support:-true}; fi
@@ -206,7 +236,7 @@ if [ -z "\${OMPI_MCA_btl:-}" ]; then export OMPI_MCA_btl=${OMPI_MCA_btl:-^openib
 
 # Path Settings - Hardcoded safe paths to prevent "command not found" errors
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:/opt/rocm/bin:/opt/rocm/hip/bin:\$PATH"
-export LD_LIBRARY_PATH="/opt/rocm/lib:/opt/rocm/hip/lib:/opt/rocm/opencl/lib:\${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="\$HOME/.mlstack/libmpi-compat:\$HOME/.mlstack/libmpi-compat-user-\$(id -u):/opt/rocm/lib:/opt/rocm/hip/lib:/opt/rocm/opencl/lib:\${LD_LIBRARY_PATH:-}"
 EOF
 
     # Add source to .bashrc if not already there

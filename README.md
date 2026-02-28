@@ -164,6 +164,25 @@ This script will:
 
 The TUI provides a responsive, interactive experience with real-time feedback during the installation process.
 
+### Benchmarking and HTML Report Export
+
+Rusty-Stack includes an integrated benchmarking screen for ROCm, PyTorch, vLLM, DeepSpeed, Megatron-LM, and Flash Attention validation.
+
+After installation:
+
+1. Open the benchmark view (or run the benchmark category tasks).
+2. Review in-terminal benchmark summaries and recent errors.
+3. Press `E` to export a full HTML benchmark report.
+
+`E` export behavior:
+
+- Generates a detailed visual report with animated charts, labeled axes, data points, and table summaries.
+- Shows an explicit success/failure notification in the TUI.
+- Prints the output path so you can immediately open/share the report.
+- Default output location: `~/.mlstack/reports/benchmark_report_<timestamp>.html`.
+
+This export is designed for performance validation, regression comparison, and shareable install verification evidence.
+
 ### PyPI Installation
 
 Install via PyPI (Python package, maintained for backward compatibility):
@@ -675,6 +694,5 @@ Rusty Stack (formerly Stan's ML Stack) is licensed under the MIT License. See th
 - Patreon: https://patreon.com/ScooterLacroix
 
 If this code saved you time, consider supporting the project! ☕
-
 
 

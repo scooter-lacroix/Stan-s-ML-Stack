@@ -863,3 +863,96 @@ Build ONNX Runtime with ROCm support and set the correct environment variables:
 ./scripts/build_onnxruntime.sh
 export PYTHONPATH=/home/stan/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
 ```
+
+## 2026-02 ROCm Runtime and Benchmark Addendum
+
+### vLLM: "No module named 'cbor2' / 'pybase64' / 'openai_harmony' / 'mistral_common'"
+
+**Cause**:
+- Partial vLLM dependency graph in the runtime environment.
+
+**Fix**:
+```bash
+./scripts/install_vllm_multi.sh
+./scripts/run_vllm_benchmarks.sh
+```
+
+The installer and benchmark preflight now attempt targeted missing-module repair automatically.
+
+### vLLM: "Device string must not be empty"
+
+**Cause**:
+- Unset or invalid target device for vLLM runtime init.
+
+**Fix**:
+```bash
+export VLLM_TARGET_DEVICE=rocm
+./scripts/run_vllm_benchmarks.sh
+```
+
+### vLLM: "torch.cuda is not available"
+
+**Cause**:
+- ROCm runtime environment not loaded or stale shell session.
+
+**Fix**:
+```bash
+source ~/.mlstack_env
+python3 - <<'PY'
+import torch
+print(torch.cuda.is_available(), torch.cuda.device_count())
+PY
+./scripts/run_vllm_benchmarks.sh
+```
+
+### vLLM/Triton: cache permission or engine-core init failures
+
+**Cause**:
+- Non-writable Triton cache path.
+
+**Fix**:
+```bash
+mkdir -p ~/.cache/mlstack/triton/cache
+export TRITON_CACHE_DIR=~/.cache/mlstack/triton/cache
+./scripts/run_vllm_benchmarks.sh
+```
+
+### Mixed iGPU+dGPU: iGPU appears in HIP/CUDA visible devices
+
+**Cause**:
+- Stale environment file or old detection output.
+
+**Fix**:
+```bash
+./scripts/setup_permanent_rocm_env.sh
+source ~/.mlstack_env
+env | grep -E 'HIP_VISIBLE_DEVICES|CUDA_VISIBLE_DEVICES'
+```
+
+Expected output on mixed systems: discrete GPU indices only.
+
+### Fish shell: `${...}` syntax errors when sourcing `~/.mlstack_env`
+
+**Cause**:
+- Legacy env file format generated for POSIX-only shells.
+
+**Fix**:
+```bash
+./scripts/setup_permanent_rocm_env.sh
+source ~/.mlstack_env
+```
+
+The current generator writes fish-compatible exports and startup integration.
+
+### DeepSpeed benchmark: "No DeepSpeed data available" or modulo crash
+
+**Cause**:
+- Runtime preflight/import issues or legacy benchmark failure path.
+
+**Fix**:
+```bash
+./scripts/install_ml_stack_extensions.sh
+./scripts/run_deepspeed_benchmarks.sh
+```
+
+DeepSpeed benchmark execution now includes runtime preflight and improved output capture to avoid silent empty-result scenarios.

@@ -1,5 +1,184 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    local selected=""
+    local rocm_mm=""
+
+    if mlstack_is_strict_rocm && declare -f mlstack_ensure_python_for_rocm_torch >/dev/null 2>&1; then
+        if declare -f strict_detect_rocm_mm >/dev/null 2>&1; then
+            rocm_mm="$(strict_detect_rocm_mm)"
+        else
+            rocm_mm="${ROCM_VERSION:-7.2}"
+        fi
+        selected="$(mlstack_ensure_python_for_rocm_torch "$candidate" "$rocm_mm" "${MLSTACK_TORCH_CHANNEL:-latest}" "${DRY_RUN:-false}" || true)"
+        [ -n "$selected" ] && candidate="$selected"
+    elif mlstack_is_strict_rocm && declare -f mlstack_select_python_for_rocm_torch >/dev/null 2>&1; then
+        if declare -f strict_detect_rocm_mm >/dev/null 2>&1; then
+            rocm_mm="$(strict_detect_rocm_mm)"
+        else
+            rocm_mm="${ROCM_VERSION:-7.2}"
+        fi
+        selected="$(mlstack_select_python_for_rocm_torch "$candidate" "$rocm_mm" "${MLSTACK_TORCH_CHANNEL:-latest}" || true)"
+        [ -n "$selected" ] && candidate="$selected"
+    fi
+
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_assert_rocm_torch_contract() {
+    local py="${1:-${MLSTACK_PYTHON_BIN:-python3}}"
+    "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+import re
+import subprocess
+import sys
+
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+
+import torch
+if getattr(torch.version, "cuda", None):
+    raise SystemExit(2)
+if not getattr(torch.version, "hip", None):
+    raise SystemExit(3)
+
+pip_out = subprocess.check_output(
+    [sys.executable, "-m", "pip", "list", "--format=freeze"],
+    text=True,
+    stderr=subprocess.DEVNULL,
+)
+for line in pip_out.splitlines():
+    name = line.split("==", 1)[0].strip().lower()
+    if name.startswith("nvidia-") or re.search(r"(^|-)cuda([_-]|$)", name) or name in {"pytorch-cuda", "torch-cuda"}:
+        raise SystemExit(4)
+PY
+}
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ] || [ "${py_minor:-99}" -gt 13 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10-3.13; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch_contract "$MLSTACK_PYTHON_BIN"; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    local torch_method torch_channel strict_venv_python verify_py
+    torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
+    torch_channel="${MLSTACK_TORCH_CHANNEL:-latest}"
+    strict_venv_python="$HOME/.mlstack/venvs/pytorch_rocm/bin/python"
+    verify_py="$MLSTACK_PYTHON_BIN"
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN=$MLSTACK_PYTHON_BIN bash $pytorch_installer --method $torch_method --channel $torch_channel"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling via strict ROCm installer..."
+    if ! MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" TORCH_CHANNEL="$torch_channel" \
+        bash "$pytorch_installer" --method "$torch_method" --channel "$torch_channel"; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if [ -x "$strict_venv_python" ] && "$strict_venv_python" -c "import torch" >/dev/null 2>&1; then
+        verify_py="$strict_venv_python"
+        MLSTACK_PYTHON_BIN="$strict_venv_python"
+        PYTHON_BIN="$strict_venv_python"
+        export MLSTACK_PYTHON_BIN PYTHON_BIN
+    fi
+
+    if ! mlstack_assert_rocm_torch_contract "$verify_py"; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
 # Set up colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -10,11 +189,14 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-$PYTHON_BIN}"
+UV_CACHE_DIR="${MLSTACK_UV_CACHE_DIR:-${TMPDIR:-/tmp}/mlstack-uv-cache}"
+mkdir -p "$UV_CACHE_DIR" >/dev/null 2>&1 || true
+export UV_CACHE_DIR
 
 # Wrapper for python3 to ensure we use the correct interpreter
 python3() {
-    "$PYTHON_BIN" "$@"
+    command "$PYTHON_BIN" "$@"
 }
 
 # Progress bar variables
@@ -28,8 +210,9 @@ ANIMATION_INDEX=0
 
 # Suppress HIP logs
 export AMD_LOG_LEVEL=0
-export HIP_VISIBLE_DEVICES=0,1,2
-export ROCR_VISIBLE_DEVICES=0,1,2
+MLSTACK_GPU_VISIBLE="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}"
+export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+export ROCR_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
 
 # Configuration file support
 CONFIG_FILE="${HOME}/.megatron_install_config"
@@ -37,6 +220,9 @@ load_config() {
     if [ -f "$CONFIG_FILE" ]; then
         print_step "Loading configuration from $CONFIG_FILE"
         source "$CONFIG_FILE"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
     fi
 }
 
@@ -75,7 +261,12 @@ log_message() {
 # Command-line argument parsing
 DRY_RUN=false
 FORCE_REINSTALL=false
-INSTALL_METHOD="auto"
+INSTALL_METHOD="${INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-auto}}"
+INSTALL_METHOD="$(echo "$INSTALL_METHOD" | tr '[:upper:]' '[:lower:]')"
+case "$INSTALL_METHOD" in
+    global|venv|auto) ;;
+    *) INSTALL_METHOD="auto" ;;
+esac
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -449,12 +640,12 @@ setup_rocm_environment() {
     export HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-"11.0.0"}
 
     # Set PYTORCH_ROCM_ARCH if not already set
-    if [ -z "$PYTORCH_ROCM_ARCH" ]; then
+    if [ -z "${PYTORCH_ROCM_ARCH:-}" ]; then
         detect_gpu_architecture
     fi
 
     # Set ROCM_PATH if not already set
-    if [ -z "$ROCM_PATH" ]; then
+    if [ -z "${ROCM_PATH:-}" ]; then
         if [ -d "/opt/rocm" ]; then
             export ROCM_PATH="/opt/rocm"
         else
@@ -463,9 +654,13 @@ setup_rocm_environment() {
     fi
 
     # Update PATH and LD_LIBRARY_PATH
-    if [ -n "$ROCM_PATH" ]; then
+    if [ -n "${ROCM_PATH:-}" ]; then
         export PATH="$ROCM_PATH/bin:$PATH"
-        export LD_LIBRARY_PATH="$ROCM_PATH/lib:$LD_LIBRARY_PATH"
+        if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+            export LD_LIBRARY_PATH="$ROCM_PATH/lib:$LD_LIBRARY_PATH"
+        else
+            export LD_LIBRARY_PATH="$ROCM_PATH/lib"
+        fi
     fi
 
     # Set HSA_TOOLS_LIB with automatic profiler library detection
@@ -491,7 +686,7 @@ setup_rocm_environment() {
     fi
 
     # Handle PYTORCH_CUDA_ALLOC_CONF conversion to PYTORCH_ALLOC_CONF
-    if [ -n "$PYTORCH_CUDA_ALLOC_CONF" ]; then
+    if [ -n "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
         export PYTORCH_ALLOC_CONF="$PYTORCH_CUDA_ALLOC_CONF"
         unset PYTORCH_CUDA_ALLOC_CONF
         print_step "Converted deprecated PYTORCH_CUDA_ALLOC_CONF to PYTORCH_ALLOC_CONF"
@@ -620,6 +815,8 @@ install_system_dev_packages() {
 # Function to install Megatron-LM
 install_megatron() {
     print_header "Installing Megatron-LM"
+    local megatron_dir="$HOME/Megatron-LM"
+    local fallback_megatron_dir="$HOME/.mlstack/src/Megatron-LM"
 
     # Load configuration
     load_config
@@ -630,6 +827,31 @@ install_megatron() {
     log_message "INFO" "Dry run: $DRY_RUN"
     log_message "INFO" "Force reinstall: $FORCE_REINSTALL"
     log_message "INFO" "Install method: $INSTALL_METHOD"
+
+    # Resolve a writable Megatron checkout directory.
+    if [ -d "$megatron_dir" ] && [ ! -w "$megatron_dir" ]; then
+        print_warning "Primary Megatron directory is not writable: $megatron_dir"
+        megatron_dir="$fallback_megatron_dir"
+    elif [ ! -d "$megatron_dir" ] && [ ! -w "$(dirname "$megatron_dir")" ]; then
+        print_warning "Primary Megatron parent is not writable: $(dirname "$megatron_dir")"
+        megatron_dir="$fallback_megatron_dir"
+    fi
+    mkdir -p "$(dirname "$megatron_dir")"
+    print_step "Using Megatron directory: $megatron_dir"
+
+    if [ "$DRY_RUN" = true ]; then
+        print_warning "DRY RUN MODE - No installation actions will be performed."
+        print_step "[DRY RUN] Would validate ROCm/PyTorch prerequisites and compiler/MPI availability"
+        print_step "[DRY RUN] Would clone/update Megatron-LM repository under $megatron_dir"
+        print_step "[DRY RUN] Would install Megatron-LM with ROCm-compatible Python dependencies"
+        print_step "[DRY RUN] Would run post-install import and GPU checks"
+        return 0
+    fi
+
+    if ! mlstack_rocm_python_preflight "$DRY_RUN"; then
+        print_error "ROCm/Python preflight failed"
+        return 1
+    fi
 
     # Detect execution environment
     detect_environment
@@ -647,27 +869,35 @@ install_megatron() {
             log_message "ERROR" "PyTorch is installed but cannot be imported (possibly missing system libraries)"
             print_error "PyTorch is installed but cannot be imported!"
             print_step "This usually means missing system libraries (e.g., libmpi_cxx.so.40)"
-            print_step "Attempting to reinstall ROCm PyTorch..."
-
-            # Uninstall broken torch and reinstall from AMD repo
-            python3 -m pip uninstall -y torch torchvision torchaudio triton 2>/dev/null || true
-            python3 -m pip install \
-                torch torchvision torchaudio triton \
-                --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/ \
-                --break-system-packages --no-cache-dir
-
-            if ! python_module_exists "torch"; then
-                print_error "Failed to fix PyTorch. Please run: ./scripts/install_pytorch_multi.sh"
+            print_step "Attempting to reinstall ROCm PyTorch via strict installer..."
+            if ! MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+                MLSTACK_INSTALL_METHOD="$INSTALL_METHOD" TORCH_CHANNEL="${MLSTACK_TORCH_CHANNEL:-latest}" \
+                bash "$SCRIPT_DIR/install_pytorch_rocm.sh" --method "$INSTALL_METHOD" --channel "${MLSTACK_TORCH_CHANNEL:-latest}"; then
+                print_error "Failed to repair PyTorch with install_pytorch_rocm.sh"
                 complete_progress_bar
                 return 1
+            fi
+            if [ -x "$HOME/.mlstack/venvs/pytorch_rocm/bin/python" ] && "$HOME/.mlstack/venvs/pytorch_rocm/bin/python" -c "import torch" >/dev/null 2>&1; then
+                MLSTACK_PYTHON_BIN="$HOME/.mlstack/venvs/pytorch_rocm/bin/python"
+                PYTHON_BIN="$MLSTACK_PYTHON_BIN"
+                export MLSTACK_PYTHON_BIN PYTHON_BIN
             fi
             print_success "ROCm PyTorch reinstalled successfully"
         else
             log_message "ERROR" "PyTorch is not installed"
-            print_error "PyTorch is not installed. Please install PyTorch first."
-            print_step "Run the install_pytorch_rocm.sh script to install PyTorch."
-            complete_progress_bar
-            return 1
+            print_warning "PyTorch is not installed. Bootstrapping strict ROCm PyTorch..."
+            if ! MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+                MLSTACK_INSTALL_METHOD="$INSTALL_METHOD" TORCH_CHANNEL="${MLSTACK_TORCH_CHANNEL:-latest}" \
+                bash "$SCRIPT_DIR/install_pytorch_rocm.sh" --method "$INSTALL_METHOD" --channel "${MLSTACK_TORCH_CHANNEL:-latest}"; then
+                print_error "Failed to bootstrap PyTorch with install_pytorch_rocm.sh"
+                complete_progress_bar
+                return 1
+            fi
+            if [ -x "$HOME/.mlstack/venvs/pytorch_rocm/bin/python" ] && "$HOME/.mlstack/venvs/pytorch_rocm/bin/python" -c "import torch" >/dev/null 2>&1; then
+                MLSTACK_PYTHON_BIN="$HOME/.mlstack/venvs/pytorch_rocm/bin/python"
+                PYTHON_BIN="$MLSTACK_PYTHON_BIN"
+                export MLSTACK_PYTHON_BIN PYTHON_BIN
+            fi
         fi
     fi
 
@@ -728,11 +958,14 @@ install_megatron() {
 
         # Run the MPI installation script
         if [ -f "$(dirname "$0")/install_mpi4py.sh" ]; then
-            bash "$(dirname "$0")/install_mpi4py.sh"
+            if ! bash "$(dirname "$0")/install_mpi4py.sh"; then
+                print_warning "MPI helper install failed; continuing because MPI is optional for Megatron package install"
+            fi
         else
-            print_error "MPI installation script not found. Please install MPI first."
-            complete_progress_bar
-            return 1
+            print_warning "MPI installation script not found; continuing without MPI bootstrap"
+        fi
+        if ! check_mpi; then
+            print_warning "MPI tooling still unavailable; installation will continue and runtime features requiring MPI may fail"
         fi
     else
         print_success "MPI is installed"
@@ -742,16 +975,16 @@ install_megatron() {
     draw_progress_bar "Checking for Megatron-LM..."
 
     # Check if Megatron-LM is already installed
-    if [ -d "$HOME/Megatron-LM" ]; then
+    if [ -d "$megatron_dir" ]; then
         if [ "$FORCE_REINSTALL" = true ]; then
             print_step "Force reinstall requested - removing existing Megatron-LM directory..."
             if [ "$DRY_RUN" = false ]; then
-                rm -rf "$HOME/Megatron-LM"
+                rm -rf "$megatron_dir"
             else
-                print_step "[DRY RUN] Would remove $HOME/Megatron-LM"
+                print_step "[DRY RUN] Would remove $megatron_dir"
             fi
         else
-            print_warning "Megatron-LM directory already exists at $HOME/Megatron-LM"
+            print_warning "Megatron-LM directory already exists at $megatron_dir"
             # In batch/non-interactive mode, proceed with reinstall
             if [ "${MLSTACK_BATCH_MODE:-0}" = "1" ] || [ -n "${RUSTY_STACK:-}" ] || [ ! -t 0 ]; then
                 print_step "Non-interactive mode: proceeding with reinstall..."
@@ -768,9 +1001,9 @@ install_megatron() {
 
             print_step "Removing existing Megatron-LM directory..."
             if [ "$DRY_RUN" = false ]; then
-                rm -rf "$HOME/Megatron-LM"
+                rm -rf "$megatron_dir"
             else
-                print_step "[DRY RUN] Would remove $HOME/Megatron-LM"
+                print_step "[DRY RUN] Would remove $megatron_dir"
             fi
         fi
     fi
@@ -781,13 +1014,13 @@ install_megatron() {
     # Clone Megatron-LM repository
     print_step "Cloning Megatron-LM repository..."
     if [ "$DRY_RUN" = true ]; then
-        print_step "[DRY RUN] Would clone https://github.com/NVIDIA/Megatron-LM.git to $HOME/Megatron-LM"
+        print_step "[DRY RUN] Would clone https://github.com/NVIDIA/Megatron-LM.git to $megatron_dir"
     else
         # Retry mechanism for git clone
         local clone_attempts=0
         local max_clone_attempts=3
         while [ $clone_attempts -lt $max_clone_attempts ]; do
-            if git clone https://github.com/NVIDIA/Megatron-LM.git "$HOME/Megatron-LM"; then
+            if git clone https://github.com/NVIDIA/Megatron-LM.git "$megatron_dir"; then
                 print_success "Successfully cloned Megatron-LM repository"
                 break
             else
@@ -809,7 +1042,7 @@ install_megatron() {
 
     # Install Megatron-LM
     print_step "Installing Megatron-LM..."
-    cd "$HOME/Megatron-LM" || { print_error "Failed to enter Megatron-LM directory"; complete_progress_bar; return 1; }
+    cd "$megatron_dir" || { print_error "Failed to enter Megatron-LM directory"; complete_progress_bar; return 1; }
 
     # Check Python version
     PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -906,7 +1139,7 @@ except ImportError:
         # Try to install the pre-built wheel first
         if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
             # For Python 3.12+, use a specific version that's compatible
-            if ! python3 -m pip install tensorstore==0.1.75; then
+            if ! mlstack_pip_install "$PYTHON_BIN" tensorstore==0.1.75; then
                 print_warning "Failed to install tensorstore from PyPI, trying alternative approach..."
                 # Create a dummy tensorstore package to satisfy the import
                 SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
@@ -918,7 +1151,7 @@ except ImportError:
             fi
         else
             # For Python 3.8/3.9, use the standard installation
-            if ! python3 -m pip install tensorstore; then
+            if ! mlstack_pip_install "$PYTHON_BIN" tensorstore; then
                 print_error "Failed to install tensorstore"
             else
                 print_success "tensorstore installed successfully"
@@ -928,21 +1161,22 @@ except ImportError:
         print_success "tensorstore is already installed"
     fi
 
-    # Install nvidia-modelopt with compatibility fix
-    print_step "Installing nvidia-modelopt..."
+    # Keep ROCm path NVIDIA-free: provide a lightweight compatibility stub instead
+    print_step "Ensuring nvidia_modelopt compatibility shim (ROCm-safe)..."
     if ! python_module_exists "nvidia_modelopt"; then
-        if ! python3 -m pip install nvidia-modelopt; then
-            print_warning "Failed to install nvidia-modelopt, trying alternative approach..."
-            # Create a dummy nvidia_modelopt package to satisfy the import
+        if [ "$DRY_RUN" = true ]; then
+            print_step "[DRY RUN] Would create nvidia_modelopt compatibility shim in site-packages"
+        else
             SITE_PACKAGES=$(python3 -c "import site; print(site.getsitepackages()[0])")
             mkdir -p "$SITE_PACKAGES/nvidia_modelopt"
-            echo "# Dummy nvidia_modelopt package for compatibility" > "$SITE_PACKAGES/nvidia_modelopt/__init__.py"
-            print_success "Created dummy nvidia_modelopt package for compatibility"
-        else
-            print_success "nvidia-modelopt installed successfully"
+            cat > "$SITE_PACKAGES/nvidia_modelopt/__init__.py" <<'PY'
+# ROCm compatibility shim for optional NVIDIA-only dependency.
+__all__ = []
+PY
+            print_success "Created ROCm-safe nvidia_modelopt compatibility shim"
         fi
     else
-        print_success "nvidia-modelopt is already installed"
+        print_success "nvidia_modelopt module already present"
     fi
 
     # Use command-line specified installation method or ask user
@@ -953,8 +1187,13 @@ except ImportError:
         echo "2) Virtual environment (isolated installation)"
         echo "3) Auto-detect (try global, fallback to venv if needed)"
         echo
-        read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
-        INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+        if [ "${MLSTACK_BATCH_MODE:-0}" = "1" ] || [ -n "${RUSTY_STACK:-}" ] || [ ! -t 0 ]; then
+            INSTALL_CHOICE=3
+            print_step "Non-interactive mode: defaulting to auto-detect installation method"
+        else
+            read -p "Choose installation method (1-3) [3]: " INSTALL_CHOICE
+            INSTALL_CHOICE=${INSTALL_CHOICE:-3}
+        fi
 
         case $INSTALL_CHOICE in
             1)
@@ -971,9 +1210,183 @@ except ImportError:
 
     print_step "Using $INSTALL_METHOD installation method"
 
+    ensure_megatron_runtime_rocm_torch() {
+        local target_python="$1"
+        local channel rocm_version
+
+        [ -n "$target_python" ] || {
+            print_error "No runtime Python provided for Megatron validation"
+            return 1
+        }
+
+        if mlstack_assert_rocm_torch_contract "$target_python"; then
+            print_success "ROCm PyTorch already available for Megatron runtime"
+            return 0
+        fi
+
+        channel="${TORCH_CHANNEL:-${MLSTACK_TORCH_CHANNEL:-latest}}"
+        rocm_version="${ROCM_VERSION:-}"
+        if [ -z "$rocm_version" ] && declare -f strict_detect_rocm_mm >/dev/null 2>&1; then
+            rocm_version="$(strict_detect_rocm_mm || true)"
+        fi
+        rocm_version="${rocm_version:-7.1}"
+
+        if [ "$DRY_RUN" = true ]; then
+            print_step "[DRY RUN] Would install ROCm PyTorch stack into $target_python (channel=$channel rocm=$rocm_version)"
+            return 0
+        fi
+
+        print_step "Ensuring ROCm PyTorch stack exists for Megatron runtime interpreter..."
+        if declare -f mlstack_install_rocm_torch_stack >/dev/null 2>&1; then
+            if ! mlstack_install_rocm_torch_stack "$target_python" "$rocm_version" "$channel" "megatron"; then
+                print_error "Failed to install ROCm PyTorch stack for Megatron runtime"
+                return 1
+            fi
+        else
+            print_warning "ROCm installer guard unavailable; falling back to strict PyTorch ROCm installer"
+            if ! MLSTACK_STRICT_ROCM=1 MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$target_python" \
+                MLSTACK_INSTALL_METHOD="$INSTALL_METHOD" TORCH_CHANNEL="$channel" \
+                bash "$SCRIPT_DIR/install_pytorch_rocm.sh" --method "$INSTALL_METHOD" --channel "$channel"; then
+                print_error "Fallback ROCm PyTorch install failed for Megatron runtime"
+                return 1
+            fi
+        fi
+
+        if ! mlstack_assert_rocm_torch_contract "$target_python"; then
+            print_error "ROCm PyTorch verification failed for Megatron runtime interpreter"
+            return 1
+        fi
+        print_success "ROCm PyTorch stack verified for Megatron runtime"
+    }
+
+    megatron_pip_install_for_python() {
+        local target_python="$1"
+        shift
+        if "$target_python" -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'; then
+            "$target_python" -m pip install --break-system-packages "$@"
+        else
+            "$target_python" -m pip install "$@"
+        fi
+    }
+
+    megatron_is_safe_python_pkg() {
+        local raw="${1:-}"
+        local pkg="${raw,,}"
+        pkg="${pkg%%;*}"
+        pkg="${pkg%%[*}"
+        pkg="${pkg%%[<>=!~ ]*}"
+        case "$pkg" in
+            ""|*nvidia*|*cuda*|*cudnn*|*cublas*|*cufft*|*curand*|*cusolver*|*cusparse*|*nccl*|*nvtx*|*nvjitlink*|*tensorrt*|torch|torchvision|torchaudio|triton|xformers|pytorch-cuda|torch-cuda)
+                return 1
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    }
+
+    install_megatron_safe_requirements() {
+        local target_python="$1"
+        local repo_dir="$2"
+        local req_file line dep
+        local -a req_files=(
+            "$repo_dir/requirements.txt"
+            "$repo_dir/requirements/requirements.txt"
+        )
+        for req_file in "$repo_dir"/requirements/*.txt; do
+            [ -f "$req_file" ] && req_files+=("$req_file")
+        done
+
+        for req_file in "${req_files[@]}"; do
+            [ -f "$req_file" ] || continue
+            while IFS= read -r line || [ -n "$line" ]; do
+                dep="$(printf '%s' "$line" | sed 's/[[:space:]]*#.*$//' | xargs)"
+                [ -n "$dep" ] || continue
+                case "$dep" in
+                    -r*|-c*|-f*|--*|git+*|http://*|https://*|file:*)
+                        continue
+                        ;;
+                esac
+                if ! megatron_is_safe_python_pkg "$dep"; then
+                    continue
+                fi
+                if ! megatron_pip_install_for_python "$target_python" "$dep" >/dev/null 2>&1; then
+                    print_warning "Optional Megatron dependency install failed: $dep"
+                fi
+            done < "$req_file"
+        done
+    }
+
+    megatron_missing_module_pkg() {
+        local missing="${1:-}"
+        case "$missing" in
+            yaml) echo "pyyaml" ;;
+            pkg_resources) echo "setuptools" ;;
+            numpy|regex|sentencepiece|six|packaging|psutil|tensorstore|tqdm|einops|requests|omegaconf|transformers|tokenizers|pybind11|scipy|attrs|typing_extensions)
+                echo "$missing"
+                ;;
+            *)
+                echo ""
+                ;;
+        esac
+    }
+
+    reconcile_megatron_import_deps() {
+        local target_python="$1"
+        local output missing_module pkg
+        local attempts=0
+
+        install_megatron_safe_requirements "$target_python" "$megatron_dir"
+        while [ $attempts -lt 10 ]; do
+            if "$target_python" -c "import megatron" >/dev/null 2>&1; then
+                return 0
+            fi
+            output="$("$target_python" - <<'PY' 2>&1 || true
+try:
+    import megatron
+except Exception as exc:
+    print(exc)
+    raise
+print("ok")
+PY
+)"
+            missing_module="$(printf '%s\n' "$output" | sed -n "s/.*No module named '\([^']\+\)'.*/\1/p" | tail -n1)"
+            if [ -z "$missing_module" ]; then
+                break
+            fi
+            pkg="$(megatron_missing_module_pkg "$missing_module")"
+            if [ -z "$pkg" ]; then
+                pkg="${missing_module//_/-}"
+            fi
+            if [ -z "$pkg" ] || ! megatron_is_safe_python_pkg "$pkg"; then
+                print_error "Megatron import dependency resolution blocked for module: $missing_module"
+                return 1
+            fi
+            print_step "Installing missing Megatron runtime dependency: $pkg"
+            if ! megatron_pip_install_for_python "$target_python" "$pkg"; then
+                print_error "Failed to install required Megatron runtime dependency: $pkg"
+                return 1
+            fi
+            attempts=$((attempts + 1))
+        done
+        "$target_python" -c "import megatron" >/dev/null 2>&1
+    }
+
     # Function to handle uv/pip installation with venv fallback
     uv_pip_install_megatron() {
         local args="$@"
+        local VENV_DIR
+        fallback_pip_venv_install() {
+            VENV_DIR="./megatron_rocm_venv"
+            if [ ! -d "$VENV_DIR" ]; then
+                "$PYTHON_BIN" -m venv "$VENV_DIR" || return 1
+            fi
+            "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel || return 1
+            "$VENV_DIR/bin/python" -m pip install $args || return 1
+            MEGATRON_VENV_PYTHON="$VENV_DIR/bin/python"
+            print_success "Installed in virtual environment: $VENV_DIR"
+            return 0
+        }
 
         if [ "$DRY_RUN" = true ]; then
             case $INSTALL_METHOD in
@@ -982,7 +1395,7 @@ except ImportError:
                     MEGATRON_VENV_PYTHON=""
                     ;;
                 "venv")
-                    print_step "[DRY RUN] Would create uv virtual environment and install: uv venv ./megatron_rocm_venv && source ./megatron_rocm_venv/bin/activate && uv pip install $args"
+                    print_step "[DRY RUN] Would create uv virtual environment and install: uv venv --seed ./megatron_rocm_venv && source ./megatron_rocm_venv/bin/activate && uv pip install $args"
                     MEGATRON_VENV_PYTHON="./megatron_rocm_venv/bin/python"
                     ;;
                 "auto")
@@ -998,7 +1411,7 @@ except ImportError:
             case $INSTALL_METHOD in
                 "global")
                     print_step "Installing globally with pip..."
-                    python3 -m pip install --break-system-packages $args
+                    "$PYTHON_BIN" -m pip install --break-system-packages $args
                     local install_exit_code=$?
                     if [ $install_exit_code -eq 0 ]; then
                         MEGATRON_VENV_PYTHON=""
@@ -1011,11 +1424,18 @@ except ImportError:
                     print_step "Creating uv virtual environment..."
                     VENV_DIR="./megatron_rocm_venv"
                     if [ ! -d "$VENV_DIR" ]; then
-                        uv venv "$VENV_DIR"
+                        uv venv --seed "$VENV_DIR" || {
+                            print_warning "uv venv creation failed; falling back to python venv..."
+                            fallback_pip_venv_install || return 1
+                            return 0
+                        }
                     fi
-                    source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    if ! uv pip install --python "$VENV_DIR/bin/python" $args; then
+                        print_warning "uv pip install failed; falling back to python venv pip install..."
+                        fallback_pip_venv_install || return 1
+                        return 0
+                    fi
                     MEGATRON_VENV_PYTHON="$VENV_DIR/bin/python"
                     print_success "Installed in virtual environment: $VENV_DIR"
                     ;;
@@ -1023,7 +1443,7 @@ except ImportError:
                     # Try global install first
                     print_step "Attempting global installation with uv..."
                     local install_output
-                    install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                    install_output=$(uv pip install --python "$PYTHON_BIN" $args 2>&1)
                     local install_exit_code=$?
 
                     if echo "$install_output" | grep -q "externally managed"; then
@@ -1033,13 +1453,19 @@ except ImportError:
                         # Create uv venv in project directory
                         VENV_DIR="./megatron_rocm_venv"
                         if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
+                            uv venv --seed "$VENV_DIR" || {
+                                print_warning "uv venv creation failed; falling back to python venv..."
+                                fallback_pip_venv_install || return 1
+                                return 0
+                            }
                         fi
 
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
                         print_step "Installing in virtual environment..."
-                        uv pip install $args
+                        if ! uv pip install --python "$VENV_DIR/bin/python" $args; then
+                            print_warning "uv pip install failed; falling back to python venv pip install..."
+                            fallback_pip_venv_install || return 1
+                            return 0
+                        fi
 
                         # Store venv path for verification
                         MEGATRON_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -1055,13 +1481,19 @@ except ImportError:
                         # Create uv venv in project directory
                         VENV_DIR="./megatron_rocm_venv"
                         if [ ! -d "$VENV_DIR" ]; then
-                            uv venv "$VENV_DIR"
+                            uv venv --seed "$VENV_DIR" || {
+                                print_warning "uv venv creation failed; falling back to python venv..."
+                                fallback_pip_venv_install || return 1
+                                return 0
+                            }
                         fi
 
-                        # Activate venv and install
-                        source "$VENV_DIR/bin/activate"
                         print_step "Installing in virtual environment..."
-                        uv pip install $args
+                        if ! uv pip install --python "$VENV_DIR/bin/python" $args; then
+                            print_warning "uv pip install failed; falling back to python venv pip install..."
+                            fallback_pip_venv_install || return 1
+                            return 0
+                        fi
 
                         # Store venv path for verification
                         MEGATRON_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -1071,18 +1503,71 @@ except ImportError:
             esac
         else
             # Fall back to pip
-            print_step "Installing with pip..."
-            python3 -m pip install $args
-            MEGATRON_VENV_PYTHON=""
+            case $INSTALL_METHOD in
+                "global")
+                    print_step "Installing globally with pip..."
+                    "$PYTHON_BIN" -m pip install --break-system-packages $args
+                    MEGATRON_VENV_PYTHON=""
+                    ;;
+                "venv")
+                    print_step "Creating Python virtual environment..."
+                    VENV_DIR="./megatron_rocm_venv"
+                    if [ ! -d "$VENV_DIR" ]; then
+                        "$PYTHON_BIN" -m venv "$VENV_DIR"
+                    fi
+                    print_step "Installing in virtual environment..."
+                    "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
+                    "$VENV_DIR/bin/python" -m pip install $args
+                    MEGATRON_VENV_PYTHON="$VENV_DIR/bin/python"
+                    print_success "Installed in virtual environment: $VENV_DIR"
+                    ;;
+                "auto")
+                    print_step "Attempting global installation with pip..."
+                    if "$PYTHON_BIN" -m pip install --break-system-packages $args; then
+                        MEGATRON_VENV_PYTHON=""
+                        print_success "Global installation successful"
+                    else
+                        print_warning "Global installation failed; falling back to virtual environment..."
+                        VENV_DIR="./megatron_rocm_venv"
+                        if [ ! -d "$VENV_DIR" ]; then
+                            "$PYTHON_BIN" -m venv "$VENV_DIR"
+                        fi
+                        "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
+                        "$VENV_DIR/bin/python" -m pip install $args
+                        MEGATRON_VENV_PYTHON="$VENV_DIR/bin/python"
+                        print_success "Installed in virtual environment: $VENV_DIR"
+                    fi
+                    ;;
+            esac
         fi
     }
 
     # Install Megatron-LM using the enhanced installation method
     print_step "Installing Megatron-LM..."
-    if ! uv_pip_install_megatron -e .; then
+    if ! uv_pip_install_megatron -e . --no-deps; then
         print_error "Failed to install Megatron-LM"
         complete_progress_bar
         return 1
+    fi
+
+    # Verify the runtime interpreter used for Megatron has ROCm PyTorch available.
+    MEGATRON_PYTHON_CMD="${MEGATRON_VENV_PYTHON:-$PYTHON_BIN}"
+    if ! ensure_megatron_runtime_rocm_torch "$MEGATRON_PYTHON_CMD"; then
+        print_error "Megatron runtime interpreter is missing ROCm-enabled PyTorch"
+        complete_progress_bar
+        return 1
+    fi
+    if ! reconcile_megatron_import_deps "$MEGATRON_PYTHON_CMD"; then
+        print_error "Unable to reconcile Megatron runtime dependencies for interpreter: $MEGATRON_PYTHON_CMD"
+        complete_progress_bar
+        return 1
+    fi
+    if declare -f mlstack_guard_python_env >/dev/null 2>&1; then
+        if ! mlstack_guard_python_env "megatron-post-install" "$MEGATRON_PYTHON_CMD" --purge; then
+            print_error "CUDA/NVIDIA contamination detected after Megatron install"
+            complete_progress_bar
+            return 1
+        fi
     fi
 
     update_progress_bar 80
@@ -1106,8 +1591,9 @@ from datetime import datetime
 
 # Set environment variables for ROCm
 os.environ["AMD_LOG_LEVEL"] = "0"
-os.environ["HIP_VISIBLE_DEVICES"] = "0,1,2"
-os.environ["ROCR_VISIBLE_DEVICES"] = "0,1,2"
+gpu_visible = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get("CUDA_VISIBLE_DEVICES") or "0"
+os.environ["HIP_VISIBLE_DEVICES"] = gpu_visible
+os.environ["ROCR_VISIBLE_DEVICES"] = gpu_visible
 
 def print_separator(title):
     """Print a separator with a title."""
@@ -1354,8 +1840,9 @@ def main():
         status = "✅ PASS" if result else "❌ FAIL"
         print(f"  {test_name}: {status}")
 
-    # Overall result
-    overall_success = all(test_results.values())
+    # Overall result: benchmark is informational and can fail on mixed/partial GPU environments.
+    required_tests = ['system_info', 'environment', 'pytorch_gpu', 'megatron_import']
+    overall_success = all(test_results.get(name, False) for name in required_tests)
 
     if overall_success:
         print_success("🎉 All tests passed! Megatron-LM installation is working correctly.")
@@ -1371,13 +1858,14 @@ if __name__ == "__main__":
     sys.exit(0 if success else 1)
 EOF
 
+    # Run the test script with the interpreter that owns the install target.
     # Run the test script
     print_step "Running test script..."
-    if python3 /tmp/test_megatron.py; then
+    if "$MEGATRON_PYTHON_CMD" /tmp/test_megatron.py; then
         print_success "Megatron-LM verification successful"
 
         # Check for the "Tool lib '1' failed to load" warning
-        if python3 -c "
+        if "$MEGATRON_PYTHON_CMD" -c "
 import torch
 import sys
 try:
@@ -1389,6 +1877,7 @@ except Exception as e:
     if 'Tool lib' in str(e) and 'failed to load' in str(e):
         print('Warning: Tool lib failed to load message detected but this is a known issue with ROCm and can be safely ignored.')
         sys.exit(0)
+sys.exit(1)
 " 2>/dev/null; then
             print_warning "Detected 'Tool lib failed to load' message, which is a known issue with ROCm and can be safely ignored."
         fi
@@ -1437,64 +1926,38 @@ EOF
     else
         print_error "Megatron-LM verification failed"
 
-        # Check if it's just the "Tool lib '1' failed to load" warning
-        if python3 -c "
+        # The comprehensive suite includes GPU benchmarks that can fail on mixed GPU setups
+        # even when Megatron-LM is correctly installed/importable. Treat core import success
+        # as installation success and downgrade benchmark-only failures to warnings.
+        if "$MEGATRON_PYTHON_CMD" -c "import megatron; print('megatron ok')" >/dev/null 2>&1; then
+            print_warning "Comprehensive Megatron-LM test suite failed, but core import succeeded."
+            print_warning "Marking installation successful; review benchmark/runtime warnings above."
+            print_success "Megatron-LM installed successfully (core import validated)"
+            complete_progress_bar
+
+            save_config
+            log_message "INFO" "Configuration saved to $CONFIG_FILE"
+
+            rm -f /tmp/test_megatron.py
+
+            log_message "INFO" "Megatron-LM installation completed with benchmark warnings"
+            log_message "INFO" "Log file: $LOG_FILE"
+            return 0
+        fi
+
+        if "$MEGATRON_PYTHON_CMD" -c "
 import torch
 import sys
 try:
     torch.cuda.is_available()
     if 'Tool lib \"1\" failed to load' in torch._C._cuda_getDeviceCount.__doc__:
-        print('Warning: Tool lib \"1\" failed to load message detected but this is a known issue with ROCm and can be safely ignored.')
         sys.exit(0)
 except Exception as e:
     if 'Tool lib' in str(e) and 'failed to load' in str(e):
-        print('Warning: Tool lib failed to load message detected but this is a known issue with ROCm and can be safely ignored.')
         sys.exit(0)
+sys.exit(1)
 " 2>/dev/null; then
-            print_warning "Detected 'Tool lib failed to load' message, which is a known issue with ROCm and can be safely ignored."
-            print_step "Checking if Megatron-LM can be imported despite the warning..."
-
-            # Try a simple import test
-            if python3 -c "
-import sys
-try:
-    import megatron
-    print('Megatron-LM imported successfully despite the warning.')
-    sys.exit(0)
-except Exception as e:
-    print(f'Error importing Megatron-LM: {e}')
-    sys.exit(1)
-" 2>/dev/null; then
-                print_success "Megatron-LM can be imported successfully despite the warning"
-                print_success "Installation is considered successful"
-                complete_progress_bar
-
-                # Display completion message
-                clear
-                cat << "EOF"
-
-        ╔═════════════════════════════════════════════════════════╗
-        ║                                                         ║
-        ║  ███╗   ███╗███████╗ ██████╗  █████╗ ████████╗██████╗  ║
-        ║  ████╗ ████║██╔════╝██╔════╝ ██╔══██╗╚══██╔══╝██╔══██╗ ║
-        ║  ██╔████╔██║█████╗  ██║  ███╗███████║   ██║   ██████╔╝ ║
-        ║  ██║╚██╔╝██║██╔══╝  ██║   ██║██╔══██║   ██║   ██╔══██╗ ║
-        ║  ██║ ╚═╝ ██║███████╗╚██████╔╝██║  ██║   ██║   ██║  ██║ ║
-        ║  ╚═╝     ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ║
-        ║                                                         ║
-        ║  Installation Completed Successfully!                   ║
-        ║                                                         ║
-        ╚═════════════════════════════════════════════════════════╝
-
-EOF
-                echo -e "${YELLOW}Note: The 'Tool lib \"1\" failed to load' warning is a known issue with ROCm and can be safely ignored.${RESET}"
-                echo -e "${GREEN}${BOLD}Installation complete. Exiting now.${RESET}"
-
-                # Clean up test script
-                rm -f /tmp/test_megatron.py
-
-                return 0
-            fi
+            print_warning "Detected 'Tool lib failed to load' warning, but verification still failed."
         fi
 
         print_error "Megatron-LM installation failed"

@@ -278,8 +278,8 @@ verify_flash_attention() {
         print_success "Flash Attention is installed (flash_attn_amd_direct)"
         print_step "Flash Attention version: AMD direct version"
         return 0
-    elif directory_exists "/home/stan/ml_stack/flash_attn_amd_direct"; then
-        print_success "Flash Attention is installed (directory exists at /home/stan/ml_stack/flash_attn_amd_direct)"
+    elif directory_exists "$HOME/ml_stack/flash_attn_amd_direct"; then
+        print_success "Flash Attention is installed (directory exists at $HOME/ml_stack/flash_attn_amd_direct)"
         print_step "Flash Attention version: AMD custom version"
         return 0
     else

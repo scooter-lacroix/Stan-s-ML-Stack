@@ -2,11 +2,12 @@
 
 import sys
 import os
+megatron_path = os.environ.get("MEGATRON_PATH", os.path.expanduser("~/Megatron-LM"))
 print(f"Python version: {sys.version}")
 print(f"Python executable: {sys.executable}")
 print(f"Python path: {sys.path}")
 print(f"Current directory: {os.getcwd()}")
-print(f"Megatron-LM directory exists: {os.path.exists('/home/stan/Megatron-LM')}")
+print(f"Megatron-LM directory exists: {os.path.exists(megatron_path)}")
 print(f"Megatron-LM in sys.path: {any('Megatron-LM' in p for p in sys.path)}")
 
 print("\nAttempting to import megatron:")
@@ -45,7 +46,6 @@ for dep in dependencies:
 
 # Try to manually add Megatron-LM to path and import
 print("\nTrying manual import:")
-megatron_path = "/home/stan/Megatron-LM"
 if megatron_path not in sys.path:
     sys.path.append(megatron_path)
     print(f"Added {megatron_path} to sys.path")

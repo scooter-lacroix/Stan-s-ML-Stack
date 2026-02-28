@@ -81,6 +81,22 @@ The TUI automatically manages a performance baseline for your system:
 - **vLLM Throughput**: Real-world tokens/second performance using standard models (e.g., `opt-125m`).
 - **Flash Attention**: Quantitative speedup and memory savings analysis compared to standard attention.
 
+### HTML Export
+
+From the benchmark screen, press `E` to export a full HTML report.
+
+- Export notifications now show success/failure and output path.
+- Default output directory is `~/.mlstack/reports/`.
+- Report contains animated charts, labeled axes, plotted points, and summary tables.
+
+### Benchmark Log Parsing
+
+Rusty-Stack now parses benchmark JSON from mixed log streams using a dedicated parser module (`src/benchmark_logs.rs`). This improves recovery from noisy script output and ensures summary/error views are populated from real run data.
+
+### Multi-GPU and iGPU Filtering
+
+On mixed iGPU+dGPU systems, benchmark runtime prep filters integrated GPUs and exports only discrete devices in `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES`. This behavior is shared between persistent environment setup and benchmark runner preflight.
+
 ## Architecture
 
 Rusty-Stack uses a **frontend + backend** architecture:
@@ -112,6 +128,8 @@ Runtime logs are written to:
 ```
 ~/.mlstack/logs/rusty-stack.log
 ```
+
+Benchmark logs and benchmark JSON files are also written under the MLStack log directory (typically `~/.mlstack/logs/`) with timestamped filenames.
 
 ## Troubleshooting
 

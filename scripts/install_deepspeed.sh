@@ -16,6 +16,127 @@
 # large-scale model training.
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALLER_GUARD="$SCRIPT_DIR/lib/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
+PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
+
+mlstack_is_strict_rocm() {
+    case "${MLSTACK_STRICT_ROCM:-1}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+mlstack_preflight_msg() {
+    local level="$1"
+    shift
+    if declare -f "print_${level}" >/dev/null 2>&1; then
+        "print_${level}" "$*"
+    else
+        echo "$*"
+    fi
+}
+
+mlstack_resolve_python_bin() {
+    local candidate="${MLSTACK_PYTHON_BIN:-python3}"
+    if [ -x "$candidate" ]; then
+        :
+    else
+        candidate="$(command -v "$candidate" 2>/dev/null || true)"
+    fi
+    if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then
+        mlstack_preflight_msg error "Python interpreter not found: ${MLSTACK_PYTHON_BIN:-python3}"
+        return 1
+    fi
+    MLSTACK_PYTHON_BIN="$candidate"
+    PYTHON_BIN="$candidate"
+    export MLSTACK_PYTHON_BIN
+}
+
+if ! declare -f mlstack_assert_rocm_torch >/dev/null 2>&1; then
+    mlstack_assert_rocm_torch() {
+        local py="${MLSTACK_PYTHON_BIN:-python3}"
+        "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+spec = importlib.util.find_spec("torch")
+if spec is None:
+    raise SystemExit(1)
+import torch
+hip = getattr(getattr(torch, "version", None), "hip", None)
+if not hip:
+    raise SystemExit(2)
+PY
+    }
+fi
+
+mlstack_rocm_python_preflight() {
+    local dry_run="${1:-false}"
+    local strict=false
+    if mlstack_is_strict_rocm; then
+        strict=true
+    fi
+
+    mlstack_resolve_python_bin || {
+        [ "$strict" = true ] && return 1
+        mlstack_preflight_msg warning "Continuing without strict Python preflight."
+        return 0
+    }
+
+    if [ "$strict" = true ]; then
+        local py_mm py_minor
+        py_mm="$("$MLSTACK_PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+        py_minor="${py_mm#3.}"
+        if [[ ! "$py_mm" =~ ^3\.[0-9]+$ ]] || [ "${py_minor:-0}" -lt 10 ]; then
+            mlstack_preflight_msg error "Strict ROCm mode requires Python 3.10+; found ${py_mm:-unknown}."
+            return 1
+        fi
+    fi
+
+    if mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
+        return 0
+    fi
+
+    if [ "$strict" != true ]; then
+        mlstack_preflight_msg warning "ROCm-enabled PyTorch not validated; strict mode is disabled."
+        return 0
+    fi
+
+    local pytorch_installer="$SCRIPT_DIR/install_pytorch_rocm.sh"
+    local torch_method="${PYTORCH_INSTALL_METHOD:-${MLSTACK_INSTALL_METHOD:-${INSTALL_METHOD:-auto}}}"
+    torch_method="$(echo "$torch_method" | tr '[:upper:]' '[:lower:]')"
+    case "$torch_method" in
+        global|venv|auto) ;;
+        *) torch_method="auto" ;;
+    esac
+    if [ ! -f "$pytorch_installer" ]; then
+        mlstack_preflight_msg error "Missing $pytorch_installer; cannot repair ROCm PyTorch in strict mode."
+        return 1
+    fi
+
+    if [ "$dry_run" = "true" ]; then
+        mlstack_preflight_msg warning "[DRY RUN] Would run: MLSTACK_BATCH_MODE=1 MLSTACK_INSTALL_METHOD=$torch_method bash $pytorch_installer --method $torch_method"
+        return 0
+    fi
+
+    mlstack_preflight_msg warning "ROCm PyTorch missing or corrupt; reinstalling with $torch_method method..."
+    if ! MLSTACK_BATCH_MODE=1 MLSTACK_PYTHON_BIN="$MLSTACK_PYTHON_BIN" \
+        MLSTACK_INSTALL_METHOD="$torch_method" INSTALL_METHOD="$torch_method" \
+        bash "$pytorch_installer" --method "$torch_method"; then
+        mlstack_preflight_msg error "Failed to run PyTorch ROCm installer."
+        return 1
+    fi
+
+    if ! mlstack_assert_rocm_torch "$MLSTACK_PYTHON_BIN"; then
+        mlstack_preflight_msg error "ROCm PyTorch verification failed after reinstall."
+        return 1
+    fi
+}
+
 # ASCII Art Banner
 cat << "EOF"
   ██████╗ ███████╗███████╗██████╗ ███████╗██████╗ ███████╗███████╗██████╗
@@ -112,6 +233,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found at $config_file, using defaults"
@@ -164,7 +288,41 @@ command_exists() {
 
 # Function to check if Python package is installed
 package_installed() {
-    python3 -c "import $1" &>/dev/null
+    "$MLSTACK_PYTHON_BIN" -c "import $1" &>/dev/null
+}
+
+python_supports_break_system_packages() {
+    local py_cmd="$1"
+    "$py_cmd" -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'
+}
+
+mlstack_pip_install_for_python() {
+    local py_cmd="$1"
+    shift
+
+    if declare -f mlstack_pip_install >/dev/null 2>&1; then
+        mlstack_pip_install "$py_cmd" "$@"
+        return $?
+    fi
+
+    if python_supports_break_system_packages "$py_cmd"; then
+        "$py_cmd" -m pip install --break-system-packages "$@"
+    else
+        "$py_cmd" -m pip install "$@"
+    fi
+}
+
+ensure_deepspeed_in_stack_python() {
+    local stack_python="${MLSTACK_PYTHON_BIN:-python3}"
+    if "$stack_python" -c "import deepspeed" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    print_warning "DeepSpeed missing in stack Python ($stack_python); installing for benchmark/runtime compatibility"
+    if ! mlstack_pip_install_for_python "$stack_python" deepspeed einops; then
+        return 1
+    fi
+    "$stack_python" -c "import deepspeed" >/dev/null 2>&1
 }
 
 # Function to detect package manager
@@ -230,6 +388,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found at $config_file, using defaults"
@@ -377,17 +538,18 @@ complete_progress_bar() {
 
 # Function to handle pip installation with venv fallback
 uv_pip_install() {
-    local args="$@"
+    local -a args=("$@")
+    local target_python="$MLSTACK_PYTHON_BIN"
 
     if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}[DRY RUN]${RESET} Would install: $args"
+        echo -e "${BLUE}[DRY RUN]${RESET} Would install: ${args[*]}"
         return 0
     fi
 
     case $INSTALL_METHOD in
         "global")
             print_step "Installing globally with pip..."
-            python3 -m pip install --break-system-packages $args
+            mlstack_pip_install_for_python "$target_python" "${args[@]}"
             local install_exit_code=$?
             if [ $install_exit_code -eq 0 ]; then
                 DEEPSPEED_VENV_PYTHON=""
@@ -400,30 +562,30 @@ uv_pip_install() {
             print_step "Creating virtual environment..."
             VENV_DIR="./deepspeed_rocm_venv"
             if [ ! -d "$VENV_DIR" ]; then
-                python3 -m venv "$VENV_DIR"
+                "$MLSTACK_PYTHON_BIN" -m venv "$VENV_DIR"
             fi
-            source "$VENV_DIR/bin/activate"
+            target_python="$VENV_DIR/bin/python"
             print_step "Installing in virtual environment..."
-            python3 -m pip install $args
-            DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
+            mlstack_pip_install_for_python "$target_python" "${args[@]}"
+            DEEPSPEED_VENV_PYTHON="$target_python"
             print_success "Installed in virtual environment: $VENV_DIR"
             ;;
         "auto")
             # Try global install first
             print_step "Attempting global installation..."
-            if python3 -m pip install --break-system-packages $args; then
+            if mlstack_pip_install_for_python "$target_python" "${args[@]}"; then
                 print_success "Global installation successful"
                 DEEPSPEED_VENV_PYTHON=""
             else
                 print_warning "Global installation failed, creating virtual environment..."
                 VENV_DIR="./deepspeed_rocm_venv"
                 if [ ! -d "$VENV_DIR" ]; then
-                    python3 -m venv "$VENV_DIR"
+                    "$MLSTACK_PYTHON_BIN" -m venv "$VENV_DIR"
                 fi
-                source "$VENV_DIR/bin/activate"
+                target_python="$VENV_DIR/bin/python"
                 print_step "Installing in virtual environment..."
-                python3 -m pip install $args
-                DEEPSPEED_VENV_PYTHON="$VENV_DIR/bin/python"
+                mlstack_pip_install_for_python "$target_python" "${args[@]}"
+                DEEPSPEED_VENV_PYTHON="$target_python"
                 print_success "Installed in virtual environment: $VENV_DIR"
             fi
             ;;
@@ -439,14 +601,19 @@ install_deepspeed() {
     update_progress_bar 5
     draw_progress_bar "Checking DeepSpeed installation..."
 
+    if ! mlstack_rocm_python_preflight "$DRY_RUN"; then
+        complete_progress_bar
+        return 1
+    fi
+
     # Check if DeepSpeed is already installed
     if package_installed "deepspeed"; then
         # Try to get version cleanly, ignoring warnings and stderr
-        deepspeed_version=$(python3 -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null | tail -n 1)
+            deepspeed_version=$("$MLSTACK_PYTHON_BIN" -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null | tail -n 1)
 
         # Check if it's working properly and detecting ROCm
         # We check for 'cuda' or 'rocm' support in the accelerator
-        if python3 -c "import deepspeed; from deepspeed.accelerator import get_accelerator; acc=get_accelerator().communication_backend_name(); print('Working' if acc in ['nccl', 'rccl'] else 'CPU')" 2>/dev/null | grep -q "Working"; then
+        if "$MLSTACK_PYTHON_BIN" -c "import deepspeed; from deepspeed.accelerator import get_accelerator; acc=get_accelerator().communication_backend_name(); print('Working' if acc in ['nccl', 'rccl'] else 'CPU')" 2>/dev/null | grep -q "Working"; then
             print_success "DeepSpeed is already installed and working (version: $deepspeed_version)"
 
             # Check if --force flag is provided
@@ -479,7 +646,7 @@ install_deepspeed() {
     draw_progress_bar "Checking PyTorch ROCm support..."
 
     # Check if PyTorch has ROCm/HIP support
-    if ! python3 -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
+    if ! "$MLSTACK_PYTHON_BIN" -c "import torch; print(hasattr(torch.version, 'hip'))" 2>/dev/null | grep -q "True"; then
         print_warning "PyTorch does not have explicit ROCm/HIP support"
         print_warning "DeepSpeed may not work correctly without ROCm support in PyTorch"
         read -p "Do you want to continue anyway? (y/n) " -n 1 -r
@@ -656,6 +823,14 @@ install_deepspeed() {
             ;;
     esac
 
+    if [ "$DRY_RUN" = true ]; then
+        print_step "[DRY RUN] Would ensure uv/pip tooling is available"
+        print_step "[DRY RUN] Would install DeepSpeed and required dependencies"
+        print_step "[DRY RUN] Would verify DeepSpeed import, GPU access, and basic initialization"
+        complete_progress_bar
+        return 0
+    fi
+
     # Check if uv is installed
     update_progress_bar 10
     draw_progress_bar "Checking package manager..."
@@ -666,9 +841,9 @@ install_deepspeed() {
         update_progress_bar 5
         draw_progress_bar "Installing uv package manager..."
         if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}[DRY RUN]${RESET} Would run: python3 -m pip install uv"
+            echo -e "${BLUE}[DRY RUN]${RESET} Would run: $MLSTACK_PYTHON_BIN -m pip install uv"
         else
-            python3 -m pip install uv
+            "$MLSTACK_PYTHON_BIN" -m pip install uv
 
             # Add uv to PATH if it was installed in a user directory
             if [ -f "$HOME/.local/bin/uv" ]; then
@@ -697,8 +872,7 @@ install_deepspeed() {
     print_step "Installing required dependencies first..."
 
     # Ensure einops is installed in the correct environment
-    python3 -m pip install --break-system-packages packaging ninja pydantic jsonschema einops
-    python3 -m pip install --user --break-system-packages einops || true
+    mlstack_pip_install_for_python "$MLSTACK_PYTHON_BIN" packaging ninja pydantic jsonschema einops
     
     # Check for anaconda
     if [ -d "$HOME/anaconda3" ]; then
@@ -726,7 +900,7 @@ install_deepspeed() {
     unset DS_ACCELERATOR
     export ROCM_HOME=/opt/rocm
     export HIP_PATH=/opt/rocm
-    python3 -m pip install --break-system-packages deepspeed einops
+    mlstack_pip_install_for_python "$MLSTACK_PYTHON_BIN" deepspeed einops
     install_result=$?
 
     if [ $install_result -ne 0 ]; then
@@ -756,7 +930,7 @@ install_deepspeed() {
     log_message "INFO" "Starting DeepSpeed installation verification"
 
     # Use venv Python if available, otherwise system python3
-    PYTHON_CMD=${DEEPSPEED_VENV_PYTHON:-python3}
+    PYTHON_CMD=${DEEPSPEED_VENV_PYTHON:-$MLSTACK_PYTHON_BIN}
 
     # Use timeout to prevent hanging during verification
     set +e  # Don't exit on error
@@ -764,6 +938,12 @@ install_deepspeed() {
         deepspeed_version=$(timeout 10s $PYTHON_CMD -c "import deepspeed; print(deepspeed.__version__)" 2>/dev/null)
         print_success "DeepSpeed is installed (version: $deepspeed_version)"
         log_message "INFO" "DeepSpeed installed successfully (version: $deepspeed_version)"
+
+        if ! ensure_deepspeed_in_stack_python; then
+            print_error "DeepSpeed could not be made importable in stack Python: $MLSTACK_PYTHON_BIN"
+            complete_progress_bar
+            return 1
+        fi
 
         # Check if DeepSpeed can detect GPUs
         update_progress_bar 10
@@ -952,4 +1132,3 @@ fi
 
 # Run the installation function with all script arguments
 install_deepspeed "$@"
-

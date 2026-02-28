@@ -1,4 +1,10 @@
 #!/bin/bash
+
+MLSTACK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh" ]]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$MLSTACK_SCRIPT_DIR/lib/installer_guard.sh"
+fi
 #
 # Author: Stanley Chisango (Scooter Lacroix)
 # Email: scooterlacroix@gmail.com
@@ -24,6 +30,20 @@
 # - Virtual environment support with uv
 # - Cross-platform compatibility
 # =============================================================================
+
+# =============================================================================
+# Source Multi-Distro Support Libraries
+# =============================================================================
+SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "$SCRIPT_LIB_DIR/distro_detection.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/distro_detection.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/package_manager.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/package_manager.sh"
+fi
+if [[ -f "$SCRIPT_LIB_DIR/rocm_env.sh" ]]; then
+    source "$SCRIPT_LIB_DIR/rocm_env.sh"
+fi
 
 # ASCII Art Banner
 cat << "EOF"
@@ -361,8 +381,22 @@ install_bitsandbytes_enhanced() {
             export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
             print_step "ROCm profiler library found and configured"
         else
-            # Check if we can install rocprofiler
-            if command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
+            # Check if we can install rocprofiler using multi-distro abstraction layer
+            if declare -f pm_install &>/dev/null; then
+                print_step "Installing rocprofiler for HSA tools support..."
+                if pm_install rocprofiler; then
+                    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+                        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+                        print_success "ROCm profiler installed and configured"
+                    else
+                        export HSA_TOOLS_LIB=0
+                        print_warning "ROCm profiler installation failed, disabling HSA tools"
+                    fi
+                else
+                    export HSA_TOOLS_LIB=0
+                    print_warning "ROCm profiler library not found, disabling HSA tools (this may cause warnings but won't affect functionality)"
+                fi
+            elif command_exists apt-get && apt-cache show rocprofiler >/dev/null 2>&1; then
                 print_step "Installing rocprofiler for HSA tools support..."
                 sudo apt-get update && sudo apt-get install -y rocprofiler
                 if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
@@ -390,33 +424,50 @@ install_bitsandbytes_enhanced() {
         print_step "rocminfo not found in PATH, checking for ROCm installation..."
         if [ -d "/opt/rocm" ] || ls /opt/rocm-* >/dev/null 2>&1; then
             print_step "ROCm directory found, attempting to install rocminfo..."
-            package_manager=$(detect_package_manager)
-            case $package_manager in
-                apt)
-                    sudo apt update && sudo apt install -y rocminfo
-                    ;;
-                dnf)
-                    sudo dnf install -y rocminfo
-                    ;;
-                yum)
-                    sudo yum install -y rocminfo
-                    ;;
-                pacman)
-                    sudo pacman -S rocminfo
-                    ;;
-                zypper)
-                    sudo zypper install -y rocminfo
-                    ;;
-                *)
-                    print_error "Unsupported package manager: $package_manager"
+
+            # Use multi-distro abstraction layer if available
+            if declare -f pm_install &>/dev/null; then
+                if pm_install rocminfo; then
+                    if command_exists rocminfo; then
+                        print_success "Installed rocminfo"
+                    else
+                        print_error "Failed to install rocminfo"
+                        return 1
+                    fi
+                else
+                    print_error "Failed to install rocminfo"
                     return 1
-                    ;;
-            esac
-            if command_exists rocminfo; then
-                print_success "Installed rocminfo"
+                fi
             else
-                print_error "Failed to install rocminfo"
-                return 1
+                # Fallback to original implementation
+                package_manager=$(detect_package_manager)
+                case $package_manager in
+                    apt)
+                        sudo apt update && sudo apt install -y rocminfo
+                        ;;
+                    dnf)
+                        sudo dnf install -y rocminfo
+                        ;;
+                    yum)
+                        sudo yum install -y rocminfo
+                        ;;
+                    pacman)
+                        sudo pacman -S --noconfirm rocminfo
+                        ;;
+                    zypper)
+                        sudo zypper install -y rocminfo
+                        ;;
+                    *)
+                        print_error "Unsupported package manager: $package_manager"
+                        return 1
+                        ;;
+                esac
+                if command_exists rocminfo; then
+                    print_success "Installed rocminfo"
+                else
+                    print_error "Failed to install rocminfo"
+                    return 1
+                fi
             fi
         else
             print_error "ROCm is not installed. Please install ROCm first."

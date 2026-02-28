@@ -15,6 +15,14 @@
 # This script installs MIGraphX Python bindings for AMD GPUs.
 # =============================================================================
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_LIB_DIR="$SCRIPT_DIR/lib"
+INSTALLER_GUARD="$SCRIPT_LIB_DIR/installer_guard.sh"
+if [ -f "$INSTALLER_GUARD" ]; then
+    # shellcheck source=lib/installer_guard.sh
+    source "$INSTALLER_GUARD"
+fi
+
 # ASCII Art Banner
 cat << "EOF"
   ███╗   ███╗██╗ ██████╗ ██████╗  █████╗ ██████╗ ██╗  ██╗    ██████╗ ██╗   ██╗████████╗██╗  ██╗ ██████╗ ███╗   ██╗
@@ -141,14 +149,22 @@ detect_package_manager() {
 install_python_package() {
     local package="$1"
     shift
-    local extra_args="$@"
+    local extra_args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_migraphx_python.sh:install_python_package" "${extra_args[@]}" "$package" || return 1
+    fi
 
     if command_exists uv; then
         print_step "Installing $package with uv..."
-        uv pip install --python $(which python3) $extra_args "$package"
+        uv pip install --python "$(command -v python3)" "${extra_args[@]}" "$package"
     else
         print_step "Installing $package with pip..."
-        python3 -m pip install $extra_args "$package"
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install python3 "${extra_args[@]}" "$package"
+        else
+            python3 -m pip install "${extra_args[@]}" "$package"
+        fi
     fi
 }
 
@@ -258,6 +274,9 @@ load_config() {
     if [ -f "$config_file" ]; then
         print_step "Loading configuration from $config_file"
         source "$config_file"
+        if type mlstack_enforce_global_install_contract >/dev/null 2>&1; then
+            mlstack_enforce_global_install_contract
+        fi
         print_success "Configuration loaded"
     else
         print_step "No configuration file found at $config_file, using defaults"
@@ -471,14 +490,22 @@ install_uv() {
 
 # Function to handle uv commands properly with venv fallback
 uv_pip_install() {
-    local args="$@"
+    local args=("$@")
+
+    if declare -f mlstack_guard_install_request >/dev/null 2>&1; then
+        mlstack_guard_install_request "install_migraphx_python.sh:uv_pip_install" "${args[@]}" || return 1
+    fi
 
     # Check if uv is available as a command
     if command -v uv &> /dev/null; then
         case $INSTALL_METHOD in
             "global")
                 print_step "Installing globally with pip..."
-                python3 -m pip install --break-system-packages $args
+                if declare -f mlstack_pip_install >/dev/null 2>&1; then
+                    mlstack_pip_install python3 --break-system-packages "${args[@]}"
+                else
+                    python3 -m pip install --break-system-packages "${args[@]}"
+                fi
                 MIGRAPHX_VENV_PYTHON=""
                 ;;
             "venv")
@@ -489,7 +516,7 @@ uv_pip_install() {
                 fi
                 source "$VENV_DIR/bin/activate"
                 print_step "Installing in virtual environment..."
-                uv pip install $args
+                uv pip install "${args[@]}"
                 MIGRAPHX_VENV_PYTHON="$VENV_DIR/bin/python"
                 print_success "Installed in virtual environment: $VENV_DIR"
                 ;;
@@ -497,7 +524,7 @@ uv_pip_install() {
                 # Try global install first
                 print_step "Attempting global installation with uv..."
                 local install_output
-                install_output=$(uv pip install --python $(which python3) $args 2>&1)
+                install_output=$(uv pip install --python "$(command -v python3)" "${args[@]}" 2>&1)
                 local install_exit_code=$?
 
                 if echo "$install_output" | grep -q "externally managed"; then
@@ -513,7 +540,7 @@ uv_pip_install() {
                     # Activate venv and install
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install "${args[@]}"
 
                     # Store venv path for verification
                     MIGRAPHX_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -535,7 +562,7 @@ uv_pip_install() {
                     # Activate venv and install
                     source "$VENV_DIR/bin/activate"
                     print_step "Installing in virtual environment..."
-                    uv pip install $args
+                    uv pip install "${args[@]}"
 
                     # Store venv path for verification
                     MIGRAPHX_VENV_PYTHON="$VENV_DIR/bin/python"
@@ -546,7 +573,11 @@ uv_pip_install() {
     else
         # Fall back to pip
         print_step "Installing with pip..."
-        python3 -m pip install $args
+        if declare -f mlstack_pip_install >/dev/null 2>&1; then
+            mlstack_pip_install python3 "${args[@]}"
+        else
+            python3 -m pip install "${args[@]}"
+        fi
         MIGRAPHX_VENV_PYTHON=""
     fi
 }
@@ -635,8 +666,9 @@ install_migraphx_python() {
 
     # Suppress HIP logs
     export AMD_LOG_LEVEL=0
-    export HIP_VISIBLE_DEVICES=0,1,2
-    export ROCR_VISIBLE_DEVICES=0,1,2
+    MLSTACK_GPU_VISIBLE="${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}"
+    export HIP_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
+    export ROCR_VISIBLE_DEVICES="$MLSTACK_GPU_VISIBLE"
 
     # Install MIGraphX Python module
     print_section "Installing MIGraphX Python Module"

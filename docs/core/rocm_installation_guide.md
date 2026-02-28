@@ -151,6 +151,68 @@ rocm-smi --showtemp --showuse
 sudo rocm-smi --resetgpu
 ```
 
+## Rusty-Stack Managed ROCm Flow (Recommended)
+
+For production installs, use the Rusty-Stack ROCm component instead of ad-hoc manual steps. The installer now implements a strict force-reinstall workflow that is designed for broken or partial ROCm states.
+
+### Supported Linux Package Families
+
+- Debian/Ubuntu (`apt`/`dpkg`)
+- Fedora/RHEL (`dnf`/`yum`)
+- openSUSE (`zypper`)
+- Arch/CachyOS/Manjaro (`pacman` + `yay`/`paru` when AUR packages are required)
+
+### Force Reinstall Workflow
+
+When `force reinstall` is enabled in preinstall configuration, the installer performs:
+
+1. Full ROCm/AMDGPU purge with dependency-cycle handling.
+2. Purge validation pass to ensure packages are gone.
+3. 10-second reboot countdown and `sudo reboot`.
+4. Resume install on next login/session (autostart where available).
+5. ROCm installation pass.
+6. Mandatory second reboot to load drivers cleanly.
+
+This process intentionally separates uninstall and reinstall phases to avoid mixed-driver states.
+
+### Arch-Specific Notes
+
+- AUR helpers are run as non-root user.
+- Repository packages are installed via `pacman`.
+- AUR package availability is checked before install.
+- A sudo ticket keepalive is used so long-running AUR builds do not fail on auth timeout.
+
+### Persistent Environment Setup (bash/zsh/fish)
+
+After ROCm installation, run:
+
+```bash
+./scripts/setup_permanent_rocm_env.sh
+```
+
+The generated `~/.mlstack_env` now:
+
+- Is sourceable from bash, zsh, and fish startup files.
+- Exports ROCm runtime variables and Triton cache paths.
+- Filters integrated GPUs and only exports discrete GPU indices in `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES`.
+
+### Post-Install Validation
+
+Run the following before benchmarking:
+
+```bash
+source ~/.mlstack_env
+rocminfo | head -n 40
+rocm-smi
+python3 - <<'PY'
+import torch
+print("torch.cuda.is_available:", torch.cuda.is_available())
+print("device_count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    print("device0:", torch.cuda.get_device_name(0))
+PY
+```
+
 ## Additional Resources
 
 - [Official ROCm Documentation](https://rocm.docs.amd.com/)
@@ -174,4 +236,3 @@ After installing ROCm, you can proceed to install PyTorch with ROCm support, whi
 > If this code saved you time, consider buying me a coffee! ☕
 > 
 > "Code is like humor. When you have to explain it, it's bad!" - Cory House
-
