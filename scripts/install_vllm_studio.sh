@@ -43,12 +43,32 @@ else
                 DRY_RUN=true
                 shift
                 ;;
+            --force)
+                shift
+                ;;
             --dir)
-                VLLM_STUDIO_DIR="$2"
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: --dir requires a path argument" >&2
+                    exit 1
+                fi
+                if [[ "$2" != /* ]]; then
+                    echo "Error: --dir requires an absolute path" >&2
+                    exit 1
+                fi
+                VLLM_STUDIO_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
+                    echo "Error: --dir path does not exist: $2" >&2
+                    exit 1
+                }
+                case "$VLLM_STUDIO_DIR" in
+                    /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
+                        echo "Error: --dir targets a system directory: $VLLM_STUDIO_DIR" >&2
+                        exit 1
+                        ;;
+                esac
                 shift 2
                 ;;
             --help|-h)
-                echo "Usage: $0 [--dry-run] [--dir <path>]"
+                echo "Usage: $0 [--dry-run] [--dir <path>] [--force]"
                 exit 0
                 ;;
             *)

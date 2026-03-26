@@ -45,12 +45,32 @@ else
                 DRY_RUN=true
                 shift
                 ;;
+            --force)
+                shift
+                ;;
             --dir)
-                COMFYUI_DIR="$2"
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: --dir requires a path argument" >&2
+                    exit 1
+                fi
+                if [[ "$2" != /* ]]; then
+                    echo "Error: --dir requires an absolute path" >&2
+                    exit 1
+                fi
+                COMFYUI_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
+                    echo "Error: --dir path does not exist: $2" >&2
+                    exit 1
+                }
+                case "$COMFYUI_DIR" in
+                    /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
+                        echo "Error: --dir targets a system directory: $COMFYUI_DIR" >&2
+                        exit 1
+                        ;;
+                esac
                 shift 2
                 ;;
             --help|-h)
-                echo "Usage: $0 [--dry-run] [--dir <path>]"
+                echo "Usage: $0 [--dry-run] [--dir <path>] [--force]"
                 exit 0
                 ;;
             *)
@@ -228,10 +248,10 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$COMFYUI_DIR
-Environment="HIP_VISIBLE_DEVICES=$GPU_DEVICES"
-Environment="CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
-ExecStart=$PYTHON_BIN $COMFYUI_DIR/main.py --enable-manager
+WorkingDirectory="${COMFYUI_DIR}"
+Environment="HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
+Environment="CUDA_VISIBLE_DEVICES=${GPU_DEVICES}"
+ExecStart="${PYTHON_BIN} ${COMFYUI_DIR}/main.py --enable-manager"
 Restart=on-failure
 
 [Install]

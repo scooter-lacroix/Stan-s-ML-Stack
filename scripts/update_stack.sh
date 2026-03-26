@@ -65,14 +65,40 @@ show_list() {
         return 0
     fi
 
+    # Collect component IDs
+    local -a comp_ids=()
+    while IFS= read -r comp_id; do
+        comp_ids+=("$comp_id")
+    done <<< "$installed"
+
+    # Batch query Python module versions in single process (O2)
+    local -A ver_cache=()
+    local -a py_batch=()
+    for cid in "${comp_ids[@]}"; do
+        case "$cid" in
+            pytorch|triton|deepspeed|vllm|aiter|onnx|bitsandbytes|migraphx|flash-attn|mpi4py|wandb)
+                py_batch+=("$cid")
+                ;;
+        esac
+    done
+    if [[ ${#py_batch[@]} -gt 0 ]] && declare -f up_get_versions_batch &>/dev/null; then
+        while IFS='=' read -r key ver; do
+            ver_cache["$key"]="$ver"
+        done < <(up_get_versions_batch "$PYTHON_BIN" "${py_batch[@]}")
+    fi
+
     printf "%-18s %-25s %s\n" "COMPONENT" "NAME" "VERSION"
     printf "%-18s %-25s %s\n" "--------" "----" "-------"
 
-    while IFS= read -r comp_id; do
+    for comp_id in "${comp_ids[@]}"; do
         local ver
-        ver=$(up_get_version "$comp_id" "$PYTHON_BIN")
+        if [[ -n "${ver_cache[$comp_id]+isset}" ]]; then
+            ver="${ver_cache[$comp_id]}"
+        else
+            ver=$(up_get_version "$comp_id" "$PYTHON_BIN")
+        fi
         printf "%-18s %-25s %s\n" "$comp_id" "$(up_display_name "$comp_id")" "$ver"
-    done <<< "$installed"
+    done
 }
 
 # --- Interactive menu ---
@@ -86,6 +112,29 @@ show_menu() {
         return 1
     fi
 
+    # Collect component IDs
+    local -a comp_ids=()
+    while IFS= read -r comp_id; do
+        comp_ids+=("$comp_id")
+    done <<< "$installed"
+
+    # Batch query Python module versions in single process (O2)
+    local -A ver_cache=()
+    local -a py_batch=()
+    for cid in "${comp_ids[@]}"; do
+        case "$cid" in
+            pytorch|triton|deepspeed|vllm|aiter|onnx|bitsandbytes|migraphx|flash-attn|mpi4py|wandb)
+                py_batch+=("$cid")
+                ;;
+        esac
+    done
+    if [[ ${#py_batch[@]} -gt 0 ]] && declare -f up_get_versions_batch &>/dev/null; then
+        while IFS='=' read -r key ver; do
+            ver_cache["$key"]="$ver"
+        done < <(up_get_versions_batch "$PYTHON_BIN" "${py_batch[@]}")
+    fi
+
+    # Display menu
     echo ""
     echo "=== Stan's ML Stack - Component Update ==="
     echo ""
@@ -93,14 +142,16 @@ show_menu() {
     printf "  -  %-18s %-25s %s\n" "--" "----" "-------"
 
     local idx=1
-    local -a comp_ids=()
-    while IFS= read -r comp_id; do
+    for comp_id in "${comp_ids[@]}"; do
         local ver
-        ver=$(up_get_version "$comp_id" "$PYTHON_BIN")
+        if [[ -n "${ver_cache[$comp_id]+isset}" ]]; then
+            ver="${ver_cache[$comp_id]}"
+        else
+            ver=$(up_get_version "$comp_id" "$PYTHON_BIN")
+        fi
         printf "  %d) %-18s %-25s %s\n" "$idx" "$comp_id" "$(up_display_name "$comp_id")" "$ver"
-        comp_ids+=("$comp_id")
         ((idx++))
-    done <<< "$installed"
+    done
 
     echo ""
     echo "  a) Update all"
@@ -114,12 +165,19 @@ show_menu() {
             return 0
             ;;
         a|A)
+            # E6: Guard against empty comp_ids
+            if [[ ${#comp_ids[@]} -eq 0 ]]; then
+                echo "No components to update."
+                return 1
+            fi
             update_components "${comp_ids[@]}"
             ;;
         *)
             # Parse comma-separated numbers
             local -a selected=()
+            local saved_ifs="$IFS"
             IFS=',' read -ra nums <<< "$selection"
+            IFS="$saved_ifs"
             for num in "${nums[@]}"; do
                 num=$(echo "$num" | tr -d ' ')
                 if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#comp_ids[@]} )); then
@@ -223,8 +281,26 @@ main() {
             return $?
             ;;
         *)
-            # Treat remaining args as component IDs
-            update_components "$@"
+            # I7: Validate component IDs before dispatching
+            local -a valid_comps=()
+            local -a invalid_args=()
+            for arg in "$@"; do
+                if declare -f up_is_known_component &>/dev/null && up_is_known_component "$arg"; then
+                    valid_comps+=("$arg")
+                else
+                    invalid_args+=("$arg")
+                fi
+            done
+            if [[ ${#invalid_args[@]} -gt 0 ]]; then
+                echo "Error: Unknown component(s): ${invalid_args[*]}" >&2
+                echo "Run '$(basename "$0") --list' to see available components." >&2
+                return 1
+            fi
+            if [[ ${#valid_comps[@]} -eq 0 ]]; then
+                echo "No valid components specified." >&2
+                return 1
+            fi
+            update_components "${valid_comps[@]}"
             return $?
             ;;
     esac

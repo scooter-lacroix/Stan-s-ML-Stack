@@ -11,7 +11,7 @@
 #   fi
 
 # --- Function: ui_parse_common_args ---
-# Parses --dry-run, --dir <path>, --help using bash namerefs (4.3+).
+# Parses --dry-run, --dir <path>, --force, --help using bash namerefs (4.3+).
 # Sets the caller's variables by nameref.
 # Usage:
 #   DRY_RUN=false; INSTALL_DIR=""
@@ -37,7 +37,24 @@ ui_parse_common_args() {
                     echo "Error: --dir requires a path argument" >&2
                     return 1
                 fi
-                _dir_ref="$2"
+                # Validate path is absolute and does not target sensitive system directories
+                if [[ "$2" != /* ]]; then
+                    echo "Error: --dir requires an absolute path" >&2
+                    return 1
+                fi
+                local resolved_dir
+                resolved_dir="$(cd "$2" 2>/dev/null && pwd)" || {
+                    echo "Error: --dir path does not exist: $2" >&2
+                    return 1
+                }
+                # Block sensitive system paths
+                case "$resolved_dir" in
+                    /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
+                        echo "Error: --dir targets a system directory: $resolved_dir" >&2
+                        return 1
+                        ;;
+                esac
+                _dir_ref="$resolved_dir"
                 shift 2
                 ;;
             --help|-h)
@@ -104,6 +121,7 @@ ui_fix_ownership() {
 
 # --- Function: ui_create_launcher_shim ---
 # Creates an executable launcher script in ~/.local/bin/.
+# Sanitizes launch_command and description to prevent heredoc injection.
 # Usage:
 #   ui_create_launcher_shim "myapp" "$HOME/.local/bin" "/path/to/app/start.sh" "My App description"
 ui_create_launcher_shim() {
@@ -111,6 +129,11 @@ ui_create_launcher_shim() {
     local launcher_dir="$2"
     local launch_command="$3"
     local description="${4:-$shim_name}"
+
+    # Validate inputs
+    if [[ -z "$shim_name" ]] || [[ -z "$launch_command" ]]; then
+        return 1
+    fi
 
     mkdir -p "$launcher_dir" 2>/dev/null || true
 
@@ -125,7 +148,7 @@ EOF
 }
 
 # --- Function: ui_create_systemd_service ---
-# Creates a systemd user service file.
+# Creates a systemd user service file with properly quoted values.
 # Usage:
 #   ui_create_systemd_service "myapp" "/opt/myapp" "/opt/myapp/start.sh" "KEY=VALUE"
 ui_create_systemd_service() {
@@ -140,9 +163,10 @@ ui_create_systemd_service() {
         return 0
     fi
 
+    # Build environment lines with proper quoting
     local env_lines=""
     for env_var in "${env_vars[@]}"; do
-        env_lines+="Environment=${env_var}"$'\n'
+        env_lines+="Environment=\"${env_var}\""$'\n'
     done
 
     cat > "$service_dir/${service_name}.service" << EOF
@@ -152,7 +176,7 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=${install_dir}
+WorkingDirectory="${install_dir}"
 ${env_lines}ExecStart=${exec_command}
 Restart=on-failure
 

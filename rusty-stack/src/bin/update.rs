@@ -14,8 +14,6 @@ fn find_scripts_dir() -> Option<PathBuf> {
     let candidates = [
         exe_dir.join("../../scripts"),
         exe_dir.join("../../../scripts"),
-        PathBuf::from("./scripts"),
-        PathBuf::from("../scripts"),
     ];
 
     for dir in &candidates {
@@ -34,7 +32,7 @@ fn main() {
         Some(dir) => dir,
         None => {
             eprintln!("Error: Could not find scripts directory containing update_stack.sh");
-            eprintln!("Searched: ./scripts, ../scripts, and relative to binary location");
+            eprintln!("Searched relative to binary location");
             std::process::exit(1);
         }
     };

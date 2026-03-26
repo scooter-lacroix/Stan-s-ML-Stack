@@ -45,12 +45,32 @@ else
                 DRY_RUN=true
                 shift
                 ;;
+            --force)
+                shift
+                ;;
             --dir)
-                TEXTGEN_DIR="$2"
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: --dir requires a path argument" >&2
+                    exit 1
+                fi
+                if [[ "$2" != /* ]]; then
+                    echo "Error: --dir requires an absolute path" >&2
+                    exit 1
+                fi
+                TEXTGEN_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
+                    echo "Error: --dir path does not exist: $2" >&2
+                    exit 1
+                }
+                case "$TEXTGEN_DIR" in
+                    /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
+                        echo "Error: --dir targets a system directory: $TEXTGEN_DIR" >&2
+                        exit 1
+                        ;;
+                esac
                 shift 2
                 ;;
             --help|-h)
-                echo "Usage: $0 [--dry-run] [--dir <path>]"
+                echo "Usage: $0 [--dry-run] [--dir <path>] [--force]"
                 exit 0
                 ;;
             *)
@@ -221,22 +241,29 @@ fi
 SERVICE_DIR="$HOME/.config/systemd/user"
 if [ "$DRY_RUN" = "false" ] && [ -d "$SERVICE_DIR" ]; then
     print_step "Creating systemd user service file..."
-    cat > "$SERVICE_DIR/textgen.service" << EOF
+    if declare -f ui_create_systemd_service &>/dev/null; then
+        ui_create_systemd_service "textgen" "$TEXTGEN_DIR" \
+            "$PYTHON_BIN $TEXTGEN_DIR/server.py --chat" \
+            "HIP_VISIBLE_DEVICES=$GPU_DEVICES" \
+            "CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
+    else
+        cat > "$SERVICE_DIR/textgen.service" << EOF
 [Unit]
 Description=text-generation-webui - LLM chat interface with ROCm support
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$TEXTGEN_DIR
-Environment="HIP_VISIBLE_DEVICES=$GPU_DEVICES"
-Environment="CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
-ExecStart=$PYTHON_BIN $TEXTGEN_DIR/server.py --chat
+WorkingDirectory="${TEXTGEN_DIR}"
+Environment="HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
+Environment="CUDA_VISIBLE_DEVICES=${GPU_DEVICES}"
+ExecStart="${PYTHON_BIN} ${TEXTGEN_DIR}/server.py --chat"
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
 EOF
+    fi
     print_step "To enable text-generation-webui as a service: systemctl --user enable --now textgen.service"
 fi
 

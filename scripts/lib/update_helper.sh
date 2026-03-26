@@ -15,9 +15,9 @@ up_user_home() {
     if [[ -n "${HOME:-}" ]]; then
         echo "$HOME"
     elif [[ -n "${SUDO_USER:-}" ]]; then
-        getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME"
+        getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || echo "/root"
     else
-        echo "${HOME:-$(getent passwd "$USER" 2>/dev/null | cut -d: -f6)}"
+        getent passwd "${USER:-}" 2>/dev/null | cut -d: -f6 || echo "/root"
     fi
 }
 
@@ -37,6 +37,22 @@ up_command_exists() {
     command -v "$1" &>/dev/null
 }
 
+# --- Function: up_is_known_component ---
+# Check if a component ID is recognized by the ML Stack (I7).
+# Usage:
+#   up_is_known_component "pytorch" && echo "known"
+up_is_known_component() {
+    local id="$1"
+    case "$id" in
+        rocm|pytorch|triton|deepspeed|vllm|aiter|onnx|bitsandbytes|migraphx|flash-attn|mpi4py|wandb|comfyui|vllm-studio|textgen|rocm-smi|permanent-env)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # --- Function: up_is_python_module ---
 # Check if a Python module is importable.
 # Usage:
@@ -45,6 +61,74 @@ up_is_python_module() {
     local module="$1"
     local python="${2:-python3}"
     "$python" -c "import $module" &>/dev/null
+}
+
+# --- Function: up_detect_python_modules ---
+# Detects which Python ML modules are installed in a single process (O1).
+# Maps component IDs to actual Python import names.
+# Outputs newline-separated component IDs for installed modules.
+# Usage:
+#   while IFS= read -r mod; do installed+=("$mod"); done < <(up_detect_python_modules python3)
+up_detect_python_modules() {
+    local python="${1:-python3}"
+    "$python" -c '
+mods = [
+    ("pytorch", "torch"),
+    ("triton", "triton"),
+    ("deepspeed", "deepspeed"),
+    ("vllm", "vllm"),
+    ("aiter", "aiter"),
+    ("onnx", "onnxruntime"),
+    ("bitsandbytes", "bitsandbytes"),
+    ("migraphx", "migraphx"),
+    ("flash-attn", "flash_attn"),
+    ("mpi4py", "mpi4py"),
+    ("wandb", "wandb"),
+]
+for comp_id, import_name in mods:
+    try:
+        __import__(import_name)
+        print(comp_id)
+    except ImportError:
+        pass
+' 2>/dev/null
+}
+
+# --- Function: up_get_versions_batch ---
+# Gets versions of multiple Python ML modules in a single process (O2).
+# Outputs "component_id=version" per line.
+# Usage:
+#   up_get_versions_batch python3 pytorch triton vllm
+up_get_versions_batch() {
+    local python="${1:-python3}"
+    shift
+    "$python" -c '
+import sys
+mapping = {
+    "pytorch": ("torch", "__version__"),
+    "triton": ("triton", "__version__"),
+    "deepspeed": ("deepspeed", "__version__"),
+    "vllm": ("vllm", "__version__"),
+    "aiter": ("aiter", "__version__"),
+    "onnx": ("onnxruntime", "__version__"),
+    "bitsandbytes": ("bitsandbytes", "__version__"),
+    "migraphx": ("migraphx", "__version__"),
+    "flash-attn": ("flash_attn", "__version__"),
+    "mpi4py": ("mpi4py", "__version__"),
+    "wandb": ("wandb", "__version__"),
+}
+for comp_id in sys.argv[1:]:
+    if comp_id not in mapping:
+        print(f"{comp_id}=unknown")
+        continue
+    mod_name, ver_attr = mapping[comp_id]
+    try:
+        mod = __import__(mod_name)
+        ver = getattr(mod, ver_attr, "unknown")
+        print(f"{comp_id}={ver}")
+    except ImportError:
+        print(f"{comp_id}=not installed")
+' "$@" 2>/dev/null
 }
 
 # --- Function: up_get_version ---
@@ -216,6 +300,7 @@ up_display_name() {
 
 # --- Function: up_detect_installed ---
 # Detect all installed components. Outputs newline-separated list of component IDs.
+# Uses single Python process for module detection (O1).
 # Usage:
 #   installed=$(up_detect_installed)
 up_detect_installed() {
@@ -229,13 +314,10 @@ up_detect_installed() {
         installed+=("rocm")
     fi
 
-    # Python packages
-    local -a py_modules=(pytorch triton deepspeed vllm aiter onnx bitsandbytes migraphx flash-attn mpi4py wandb)
-    for mod in "${py_modules[@]}"; do
-        if up_is_python_module "$mod" "$python"; then
-            installed+=("$mod")
-        fi
-    done
+    # Python packages - consolidated into single process (O1)
+    while IFS= read -r mod; do
+        [[ -n "$mod" ]] && installed+=("$mod")
+    done < <(up_detect_python_modules "$python")
 
     # Git-based
     local -a git_dirs=("ComfyUI" "vllm-studio" "text-generation-webui")
