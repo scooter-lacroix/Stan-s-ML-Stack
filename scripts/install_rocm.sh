@@ -1381,7 +1381,7 @@ install_rocm() {
 
             echo "1) ROCm 6.4.3 (Legacy - Stable)"
             echo "2) ROCm 7.1 (Stable)"
-            echo "3) ROCm 7.2 (Latest - Recommended)"
+            echo "3) ROCm 7.2.1 (Latest - Recommended)"
             echo
             echo -e "${YELLOW}NOTE: ROCm 7.10.0 Preview is not available through this installer.${RESET}"
             echo -e "${YELLOW}      ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only).${RESET}"
@@ -1396,7 +1396,7 @@ install_rocm() {
             echo -e "${CYAN}${BOLD}Choose ROCm Version:${RESET}"
             echo "1) ROCm 6.4.3 (Legacy - Stable)"
             echo "2) ROCm 7.1 (Stable)"
-            echo "3) ROCm 7.2 (Latest - Recommended)"
+            echo "3) ROCm 7.2.1 (Latest - Recommended)"
             echo
             echo "Choose ROCm version (1-3) [3]: $ROCM_CHOICE (auto-selected)"
         fi
@@ -1405,7 +1405,7 @@ install_rocm() {
         if [[ ! "$ROCM_CHOICE" =~ ^[1-3]$ ]]; then
             print_error "Invalid ROCm choice: $ROCM_CHOICE"
             echo
-            echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2)${RESET}"
+            echo -e "${YELLOW}Valid values are: 1 (Legacy 6.4.3), 2 (Stable 7.1), 3 (Latest 7.2.1)${RESET}"
             return 1
         fi
 
@@ -1428,11 +1428,11 @@ install_rocm() {
                 ;;
             3)
                 ROCM_VERSION="7.2"
-                ROCM_INSTALL_VERSION="7.2.70200-1"
+                ROCM_INSTALL_VERSION="7.2.1.70201-1"
                 repo="ubuntu"
                 ubuntu_codename="noble"
                 ROCM_CHANNEL="latest"
-                print_step "Using ROCm 7.2 (latest - recommended)"
+                print_step "Using ROCm 7.2.1 (latest - recommended)"
                 ;;
             *)
                 print_error "Invalid choice: $ROCM_CHOICE"
@@ -1481,26 +1481,26 @@ install_rocm() {
         fi
 
         # Determine the appropriate installer package and URL based on OS and ROCm version
-        # ROCm 7.2.0 versions:
-        # Ubuntu: amdgpu-install_7.2.70200-1_all.deb
-        # RHEL 9: amdgpu-install-7.2.70200-1.el9.noarch.rpm
-        # SLES 15: amdgpu-install-7.2.70200-1.noarch.rpm
+        # ROCm 7.2.1 versions:
+        # Ubuntu: amdgpu-install_7.2.1.70201-1_all.deb
+        # RHEL 9: amdgpu-install-7.2.1.70201-1.el9.noarch.rpm
+        # SLES 15: amdgpu-install-7.2.1.70201-1.noarch.rpm
         
         # Determine directory path for ROCm (7.1, 7.2, etc.)
         if [ "$ROCM_VERSION" = "7.1" ]; then
             ROCM_DIR_PATH="7.1"
         elif [ "$ROCM_VERSION" = "7.2" ]; then
-            ROCM_DIR_PATH="7.2"
+            ROCM_DIR_PATH="7.2.1"
         else
             ROCM_DIR_PATH="$ROCM_VERSION"
         fi
 
-        # Mapping versions to their installer IDs (e.g., 7.2.70200-1)
+        # Mapping versions to their installer IDs (e.g., 7.2.1.70201-1)
         case $ROCM_VERSION in
             "6.4.3") ROCM_PKG_VER="6.4.60403-1" ;;
             "7.1")   ROCM_PKG_VER="7.1.70100-1" ;;
-            "7.2")   ROCM_PKG_VER="7.2.70200-1" ;;
-            *)       ROCM_PKG_VER="7.2.70200-1" ;;
+            "7.2")   ROCM_PKG_VER="7.2.1.70201-1" ;;
+            *)       ROCM_PKG_VER="7.2.1.70201-1" ;;
         esac
 
         # Handle different package managers

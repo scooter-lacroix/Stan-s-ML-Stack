@@ -20,7 +20,7 @@ Usage: $0 [CHANNEL]
 Channels:
   legacy  - ROCm 6.4.3
   stable  - ROCm 7.1
-  latest  - ROCm 7.2 (default)
+  latest  - ROCm 7.2.1 (default)
 
 Note: ROCm 7.10.0 Preview is not available through this installer.
       ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only).
