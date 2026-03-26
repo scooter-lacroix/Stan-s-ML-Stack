@@ -1,165 +1,150 @@
-# Tzar of Excellence -- Final Gate Review
+# Tzar of Excellence -- Fresh Gate Review (Final)
 
-**Branch:** `rocm-7.2.1-update` (6 commits: `b14cbfc`, `683b6ad`, `c6e7982`, `1d716a3`, `adda65c`, `a173200`)
-**Scope:** 19 files changed, +1988/-157 lines
-**Reviewer Date:** 2026-03-25
-**Reviewer:** Tzar of Excellence (codex-reviewer delegation)
-**Verdict:** PASS
-
----
-
-## 0. Previously Identified Issues -- Disposition
-
-| ID  | Severity    | Status | Notes |
-|-----|-------------|--------|-------|
-| C1  | Critical    | FIXED  | `--dir` guard now correctly uses `$# -lt 2` (line 36) |
-| C2  | Critical    | FIXED  | `ui_git_clone_or_update` now calls `fetch --all` before reset (line 85) |
-| C3  | Critical    | FIXED  | `eval` removed from `up_user_home`; replaced with `getent passwd` (line 15-18) |
-| C4  | Critical    | FIXED  | All three UI installers accept `--force` (comfyui:48, textgen:48, vllm_studio:46) |
-| C5  | Critical    | FIXED  | ROCm filter regex now matches `triton[...]` extras syntax (textgen:162) |
-| I1  | Improvement | FIXED  | UI installers now accept `--force` |
-| I2  | Improvement | FIXED  | `ui_create_systemd_service` is called by textgen installer |
-| I3  | Improvement | PARTIAL | `WorkingDirectory` is quoted; `ExecStart` is not -- see N3 below |
-| I4  | Improvement | FIXED  | `ui_detect_gpu_devices` now uses `grep -c ... || true` to avoid pipefail crash (line 195) |
-| I5  | Improvement | N/A    | Out of scope for this track |
-| I6  | Improvement | FIXED  | `update_stack.sh` saves and restores `IFS` (lines 178, 188) |
-| I7  | Improvement | FIXED  | Component IDs are validated against `comp_ids` array before dispatch |
-| O1  | Optimization | FIXED  | `up_detect_python_modules` consolidates into single Python process |
-| O2  | Optimization | FIXED  | `up_get_versions_batch` consolidates version queries |
-| O3  | Optimization | N/A    | Not addressed, acceptable as non-critical |
-| E1  | Edge Case   | FIXED  | `grep -c` guarded with `|| true` |
-| E2  | Edge Case   | FIXED  | Tied to C1 fix |
-| E3  | Edge Case   | FIXED  | `preserve_dirs` handling is safe with empty arrays |
-| E4  | Edge Case   | PARTIAL | `origin/HEAD` fallback still missing -- see N1 below |
-| E5  | Edge Case   | FIXED  | `up_user_home` now has full fallback chain with `getent` |
-| E6  | Edge Case   | FIXED  | Empty `comp_ids` guarded at line 169-172 |
-| E7  | Edge Case   | FIXED  | Filter regex now uses proper word-boundary matching |
-| S1  | Security    | FIXED  | `eval` removed (see C3) |
-| S2  | Security    | FIXED  | `--dir` now validates absolute path, rejects system directories, resolves to canonical path |
-| S3  | Security    | FIXED  | `--dir` path traversal mitigated by canonical resolution and system dir blocklist |
-| S4  | Security    | PARTIAL | See N3 -- unsanitized `ExecStart` in systemd unit |
-| S5  | Security    | N/A    | Pre-existing, not from this track |
-| S6  | Security    | N/A    | Pre-existing, not from this track |
-| P1  | Performance | FIXED  | Single-process Python module detection |
-| P2  | Performance | FIXED  | Batch version queries |
-| P3  | Performance | N/A    | Not addressed, acceptable as non-critical |
+**Branch:** `rocm-7.2.1-update` (3 commits: `b14cbfc`, `683b6ad`, `c6e7982`, `adda65c`, `1d716a3`)
+**Scope:** 19 files changed (excluding docs/phase-tzar-review*.md)
+**Reviewer:** Tzar of Excellence (independent, from-scratch review)
+**Review Date:** 2026-03-26
 
 ---
 
-## 1. New Findings (all remediated in `a173200`)
+## Verdict: PASS
 
-### N1. [Critical] Update dispatcher crashes on detectable but non-updatable components
-
-**Files:**
-- `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/lib/update_helper.sh`, lines 332-337 (detect), lines 355-374 (dispatch)
-- `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/update_stack.sh`, line 173
-
-`up_detect_installed()` returns component IDs `rocm-smi` (line 332-333) and `permanent-env` (line 336-337), but `up_update_component()` has no case branch for either (they fall through to the `*` catch-all at line 371-374 which prints an error and returns 1).
-
-Additionally, `up_update_component()` maps `mpi4py` to `install_mpi.sh` (line 366), but the actual script is named `install_mpi4py.sh`. The fallback logic at lines 381-383 strips `_multi` suffixes but does not handle this mismatch.
-
-When a user runs `update_stack.sh --all` or selects "a) Update all" from the interactive menu, these components are included in the batch, causing guaranteed failures. Reproduced by sourcing the helper and calling `up_update_component` directly for all three IDs.
-
-**Impact:** The `--all` update workflow is broken for any installation that has `rocm-smi` installed (which is nearly all of them, since ROCm installs it) and/or has sourced the ML Stack environment (`permanent-env`).
-
-**Fix:** Either (a) filter non-updatable components from `update_components`, or (b) add explicit skip-handlers in `up_update_component` that print an informational message and return 0, or (c) fix the script name for `mpi4py` to `install_mpi4py.sh`.
+No critical or security issues remain. All findings are informational or low-severity. The codebase is sound for merge.
 
 ---
 
-### N2. [Edge Case] `origin/HEAD` symbolic ref may not exist, causing reset to empty branch name
+## Verification Summary
 
-**File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/lib/ui_installer_helper.sh`, lines 84, 100, 103
-
-Line 84 calls `git remote set-head origin -a || true`, which may silently fail if the remote is unreachable or has no default branch. Lines 100 and 103 then use `symbolic-ref refs/remotes/origin/HEAD` to derive the branch name for `reset --hard`. If the symbolic ref does not exist (which `set-head -a` cannot guarantee), the command substitution returns empty, producing `git reset --hard "origin/"` which will fail.
-
-This was previously flagged as E4 and noted as partially fixed (fetch was added), but the fallback for a missing `origin/HEAD` was never implemented.
-
-**Impact:** Git-based updates (ComfyUI, vLLM Studio, textgen) will fail if the remote HEAD cannot be established. While uncommon, this can happen with bare clones, shallow clones, or network interruptions during `set-head`.
-
-**Fix:** Add a fallback that uses the current branch name (`git rev-parse --abbrev-ref HEAD`) or a known default (e.g., `main`) when `symbolic-ref refs/remotes/origin/HEAD` returns empty.
+| Check | Result |
+|-------|--------|
+| `bash -n` on all 9 changed shell scripts | PASS (all 9) |
+| `tests/validation/test_phase2_ui_refactor.sh` | PASS (7/7) |
+| `tests/validation/test_phase3_update_cli.sh` | PASS (6/6) |
+| `tests/validation/test_version_consistency.sh` | PASS (7/7) |
+| `cargo check --bin rusty-stack-update` | PASS (clean) |
 
 ---
 
-### N3. [Improvement] `ExecStart` in systemd unit file is not quoted
+## Files Reviewed (19 changed files, read in full from disk)
 
-**File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/lib/ui_installer_helper.sh`, line 180
-
-The heredoc at line 180 emits `ExecStart=${exec_command}` without quoting. If `exec_command` contains spaces (e.g., a path like `/home/user/My Apps/start.sh`), systemd will parse the first token as the executable and the rest as arguments, producing a broken unit. `WorkingDirectory` at line 179 is properly quoted with `"${install_dir}"`, but `ExecStart` is not.
-
-This was previously flagged as I3/S4. `WorkingDirectory` was fixed; `ExecStart` was not.
-
-**Impact:** Install directories containing spaces will produce non-functional systemd service files.
-
-**Fix:** Quote `ExecStart` with proper systemd escaping: `ExecStart="${exec_command}"` or use systemd path escaping.
-
----
-
-### N4. [Improvement] `--dir` rejects paths that do not yet exist
-
-**File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/lib/ui_installer_helper.sh`, line 46
-
-The path resolution at line 46 uses `cd "$2" 2>/dev/null && pwd`, which requires the target directory to already exist. However, installers are expected to create the target directory (via `mkdir -p` in the install scripts). If a user passes `--dir /new/install/path`, parsing fails before the installer can create it.
-
-Confirmed by invoking `ui_parse_common_args` directly with a non-existent path.
-
-**Impact:** Users cannot specify a new install directory via `--dir`; they must pre-create it manually.
-
-**Fix:** Accept any syntactically valid absolute path and let the installer handle directory creation. Only canonicalize if the path already exists.
+1. `rusty-stack/src/bin/update.rs` (59 lines)
+2. `rusty-stack/src/component_status.rs` (1067 lines)
+3. `rusty-stack/src/state.rs` (555 lines)
+4. `rusty-stack/Cargo.toml` (27 lines)
+5. `scripts/update_stack.sh` (309 lines)
+6. `scripts/lib/update_helper.sh` (401 lines)
+7. `scripts/lib/ui_installer_helper.sh` (228 lines)
+8. `scripts/install_rocm.sh` (2497 lines)
+9. `scripts/install_rocm_channel.sh` (82 lines)
+10. `scripts/install_comfyui.sh` (304 lines)
+11. `scripts/install_textgen.sh` (309 lines)
+12. `scripts/install_vllm_studio.sh` (204 lines)
+13. `tests/validation/test_phase2_ui_refactor.sh` (141 lines)
+14. `tests/validation/test_phase3_update_cli.sh` (132 lines)
+15. `tests/validation/test_version_consistency.sh` (149 lines)
+16. `docs/MULTI_CHANNEL_GUIDE.md` (54 lines)
+17. `CLAUDE.md` (153 lines)
+18. `README.md` (698 lines)
+19. `docs/phase-tzar-review.md` (review doc)
 
 ---
 
-### N5. [Improvement] Audit document (`phase-tzar-review.md`) is stale
+## Findings
 
-**File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/docs/phase-tzar-review.md`, lines 3-4
+### I1 -- Informational: `install_rocm.sh` lacks `set -euo pipefail`
+- **Severity:** Informational (pre-existing, not introduced by this branch)
+- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **Line:** N/A (entire file)
+- **Description:** The primary ROCm installer does not use `set -euo pipefail`. All other changed shell scripts (`update_stack.sh`, `update_helper.sh`, `ui_installer_helper.sh`, `install_rocm_channel.sh`, `install_comfyui.sh`, `install_textgen.sh`, `install_vllm_studio.sh`) use it. This is a pre-existing design choice likely because the script has complex error recovery paths (force purge, multi-pass retry, reboot-resume flow) that would be difficult to express under strict mode.
+- **Risk:** Low. The script already has extensive manual error checking (`if [ $? -ne 0 ]` guards, `|| true` on non-critical commands).
 
-The document header states "4 commits / 16 files changed" but the current branch has 5 commits (`adda65c` added after the initial review) and 19 files changed. The review metadata is inaccurate relative to the actual branch state.
+### I2 -- Informational: `show_env` / `show_env_clean` use non-local variable assignments
+- **Severity:** Informational (pre-existing, mitigated by no strict mode)
+- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **Lines:** 443-448, 476-481
+- **Description:** These functions assign to `HSA_TOOLS_LIB`, `HSA_OVERRIDE_GFX_VERSION`, `PYTORCH_ROCM_ARCH`, `ROCM_PATH`, `PATH`, `LD_LIBRARY_PATH` without `local`. Since the file has no `set -euo pipefail`, this leaks into the caller's scope. However, these functions are only called at the top level or in `--show-env` exit paths, so the leak is harmless in practice.
+- **Risk:** None in current usage.
 
-**Impact:** Minor documentation inconsistency. Does not affect runtime behavior.
+### I3 -- Informational: `install_rocm.sh` uses `eval` for command execution
+- **Severity:** Informational (pre-existing)
+- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **Lines:** 201, 229
+- **Description:** `retry_command()` and `execute_command()` use `eval "$cmd"`. The callers always construct `$cmd` from hardcoded strings and controlled variables (not user-supplied). No injection vector exists in the current code paths.
+- **Risk:** None in current usage. Would become a concern if `eval` were used with untrusted input.
+
+### I4 -- Informational: `install_rocm.sh` has `set -euo pipefail` only inside heredoc at line 809
+- **Severity:** Informational (not a bug)
+- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **Line:** 809
+- **Description:** The string `set -euo pipefail` appears at line 809 but only inside a heredoc that generates the autostart resume launcher script. This is correct -- the generated launcher script should use strict mode.
+
+### I5 -- Informational: `python_has_module` uses string interpolation in Python code
+- **Severity:** Informational
+- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/rusty-stack/src/component_status.rs`
+- **Lines:** 750-757
+- **Description:** `python_has_module` constructs Python code with `format!` and a module name: `format!("import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('{module}') else 1)")`. The `module` parameter comes from hardcoded string literals in the source code (e.g., `"torch"`, `"triton"`), never from user input.
+- **Risk:** None in current usage.
 
 ---
 
-## 2. Remediation Summary
+## Detailed Review Notes (No Issues Found)
 
-| ID | Severity | Status | Fix Commit |
-|----|----------|--------|------------|
-| N1 | Critical | FIXED | `a173200` |
-| N2 | Edge Case | FIXED | `a173200` |
-| N3 | Improvement | FIXED | `a173200` |
-| N4 | Improvement | FIXED | `a173200` |
-| N5 | Improvement | FIXED | `a173200` |
+### Rust Code (`update.rs`, `component_status.rs`, `state.rs`)
 
-All 5 new findings have been remediated. All 20 validation tests pass. All 8 shell scripts syntax-check clean.
+- **`update.rs`**: Clean, minimal wrapper. Correctly inherits stdin/stdout/stderr for interactive menu support. Proper error handling with exit code propagation. No issues.
+- **`component_status.rs`**: Comprehensive component detection with multi-strategy fallback (version file + rocminfo functional check, Python module import, path existence, git repo detection). The dual-check for ROCm (both version file AND functional rocminfo) prevents false positives from partial installs. Python search path logic is thorough. The `resolve_component_user_home` function has a robust candidate resolution chain (env vars, SUDO_USER, passwd lookup, .mlstack detection).
+- **`state.rs`**: Well-structured component definitions with correct category assignments. All UI components (comfyui, vllm-studio, textgen) correctly have `needs_sudo: false`. `textgen` is properly registered with `install_textgen.sh`.
 
-## 3. Verification Performed
+### Shell Scripts
 
-All checks passed:
-- `bash -n` syntax check: all 8 shell scripts pass
-- `cargo check --bin rusty-stack-update`: compiles cleanly
-- `tests/validation/test_phase2_ui_refactor.sh`: 7/7 PASS
-- `tests/validation/test_phase3_update_cli.sh`: 6/6 PASS
-- `tests/validation/test_version_consistency.sh`: 7/7 PASS
-- Direct reproduction of N1: confirmed `mpi4py`, `rocm-smi`, `permanent-env` all fail dispatch
-- Direct reproduction of N4: confirmed `--dir /nonexistent` rejected at parse time
-- ROCm 7.2.1 version consistency: confirmed across CLAUDE.md, README.md, MULTI_CHANNEL_GUIDE.md, install_rocm.sh, install_rocm_channel.sh, test_version_consistency.sh
+- **`update_stack.sh`**: Proper `set -euo pipefail`. All `local` declarations are inside function bodies. Correct use of `declare -f` guards for function existence checks. Empty `comp_ids` guarded at line 169 (E6 comment). Component ID validation at lines 284-303 (I7 comment). IFS save/restore pattern at lines 178-180 is correct for safe comma-parsing. `((idx++))` has `|| true` equivalents via arithmetic context.
+- **`update_helper.sh`**: Clean library with well-documented functions. `up_detect_python_modules` (O1 optimization) and `up_get_versions_batch` (O2 optimization) correctly consolidate multiple Python module checks into single processes. The `up_user_home` function has proper fallback chain (HOME -> SUDO_USER -> USER via getent). `up_is_known_component` whitelist matches `up_update_component` dispatch table. Multi-distro installer fallback logic at lines 379-390 is correct.
+- **`ui_installer_helper.sh`**: Seven functions, all present and correctly implemented. `ui_parse_common_args` uses bash 4.3+ namerefs (documented in header comment). `--dir` validation blocks system directories correctly. `ui_git_clone_or_update` properly handles stash/pop for user data preservation. `ui_create_launcher_shim` validates non-empty inputs. `ui_detect_gpu_devices` uses `grep -c ... || true` for pipefail safety. `ui_create_systemd_service` correctly generates environment lines with quoting. `ui_print_summary` uses `declare -p` guard for COMMANDS_ARRAY.
+- **`install_comfyui.sh`**: Correct `declare -f` guard pattern for all 6 UI helper functions. Inline fallback for when the library is missing. System directory blocking on `--dir`. Proper ownership fix when run with sudo. `grep -c ... || true` for GPU detection. Filtered requirements exclude torch/torchvision/torchaudio/torchsde/sentencepiece correctly.
+- **`install_textgen.sh`**: Same robust patterns as ComfyUI. Additional ROCm build verification (`torch.version.hip` check). Requirements filtering excludes nvidia/cuda/tensorrt/xformers/flash-attn packages correctly. Preserves user data directories (models, loras, embeddings, presets, characters, training).
+- **`install_vllm_studio.sh`**: Same patterns. Correctly detects bun/npm and falls back. Has a broken logs page fix for upstream issues. Shim installation uses temp file + sudo mv pattern (safe).
+- **`install_rocm_channel.sh`**: Clean channel wrapper. Proper preview channel rejection with documentation link. Correct `INSTALL_ROCM_PRESEEDED_CHOICE` mapping (1=legacy, 2=stable, 3=latest). Argument count validation.
+- **`install_rocm.sh`**: (Pre-existing file, version references updated in this branch.) Version variables are consistent: `ROCM_VERSION="7.2"`, `ROCM_PKG_VER="7.2.1.70201-1"`, `ROCM_DIR_PATH="7.2.1"`. Menu text shows "ROCm 7.2.1 (Latest - Recommended)". Preview channel properly removed. Multi-pass purge logic is robust. AUR installation path is sophisticated (sudo keepalive, askpass, repo vs AUR package separation).
 
-## 4. What Was Verified as Correct
+### Validation Tests
 
-- C1-C5: All five original critical issues are fixed
-- `up_user_home()` uses safe `getent passwd` instead of `eval`
-- `--dir` argument validation is correct (bounds check, absolute path requirement, system directory blocklist)
-- `ui_git_clone_or_update` fetches before resetting
-- `ui_detect_gpu_devices` uses `|| true` to prevent pipefail crash on zero matches
-- All three UI installers accept `--force`
-- textgen ROCm filter regex correctly excludes `triton[...]` pip extras syntax
-- `declare -f` guard pattern is consistent across all callers
-- IFS save/restore pattern is correct in `update_stack.sh`
-- Empty component list guard is present in `update_stack.sh`
-- Single-process Python module detection is implemented correctly
-- Batch version query is implemented correctly
-- Rust binary wrapper (`update.rs`) is minimal, correct, and has no clippy warnings
-- Component registry in `state.rs` correctly lists textgen, vllm-studio, ComfyUI
-- Component status detection in `component_status.rs` covers textgen, vllm-studio, ComfyUI, rocm-smi
+- **`test_phase2_ui_refactor.sh`**: 7 tests covering helper function presence, source guards, textgen component registration, CUDA filtering, and detection logic. All pass.
+- **`test_phase3_update_cli.sh`**: 6 tests covering helper existence, function presence, `local`-outside-functions check, Cargo.toml binary target, and source file existence. All pass. The `local`-outside-functions check uses a correct awk pattern.
+- **`test_version_consistency.sh`**: 7 tests covering menu options, version variables, outdated references, guide consistency, preview removal, channel wrapper, and package version. All pass.
 
-## 5. Final Verdict: PASS
+### Version Consistency
 
-All 5 original critical issues (C1-C5) and all 5 new findings (N1-N5) have been remediated. The branch is ready for merge.
+All version references are consistent across files:
+- Legacy: ROCm 6.4.3
+- Stable: ROCm 7.1
+- Latest: ROCm 7.2.1 (ROCM_VERSION="7.2", ROCM_PKG_VER="7.2.1.70201-1", ROCM_DIR_PATH="7.2.1")
+- Preview (7.10.0): Properly removed with documentation links preserved
+
+---
+
+## Exclusions (per review instructions)
+
+- **E1**: Custom install location detection -- deferred to future track (not flagged).
+- **Unquoted ExecStart in systemd units**: systemd requires it unquoted (not flagged).
+- **Shell metacharacter sanitization in launcher shim generation**: Known limitation (not flagged).
+- **Pre-existing issues in `install_rocm.sh`**: `set -euo pipefail` absence, `eval` usage, non-local variable assignments in `show_env` -- all pre-existing patterns not introduced by this branch (flagged as informational only).
+
+---
+
+## What Was Verified as Correct
+
+1. All 9 changed shell scripts pass `bash -n` syntax checking.
+2. All 3 validation test suites pass (20/20 tests total).
+3. `cargo check --bin rusty-stack-update` compiles cleanly.
+4. No `local` keyword used outside function bodies in `update_stack.sh`.
+5. All `grep -c` calls protected with `|| true` for pipefail safety.
+6. All `declare -f` guards present for UI helper functions in all 3 installer scripts.
+7. Component ID whitelist in `up_is_known_component` matches dispatch table in `up_update_component`.
+8. Version variables (ROCM_VERSION, ROCM_PKG_VER, ROCM_DIR_PATH) follow the correct patch-release model.
+9. System directory blocking works for `--dir` in all 3 UI installers.
+10. Ownership fix (`ui_fix_ownership`) correctly uses EUID/SUDO_USER check.
+11. Batch Python module detection (O1/O2 optimizations) correctly reduces subprocess overhead.
+12. Rust `update.rs` wrapper correctly inherits stdio for interactive menu.
+13. `component_status.rs` ROCm detection requires both version file AND functional rocminfo.
+14. `state.rs` textgen component correctly registered with `needs_sudo: false`.
+15. Documentation (MULTI_CHANNEL_GUIDE.md, CLAUDE.md, README.md) is consistent with code.
