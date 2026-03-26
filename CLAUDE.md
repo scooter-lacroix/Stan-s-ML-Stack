@@ -125,7 +125,7 @@ The `core/`, `extensions/`, and `benchmarks/` directories are mirrored under `st
 Three channels available (select via TUI or `INSTALL_ROCM_PRESEEDED_CHOICE` env var):
 1. **Legacy (ROCm 6.4.3)** - Production-proven stability
 2. **Stable (ROCm 7.1)** - Production-ready for RDNA 3
-3. **Latest (ROCm 7.2)** - Default, expanded RDNA 4 support
+3. **Latest (ROCm 7.2.1)** - Default, expanded RDNA 4 support
 
 See `docs/MULTI_CHANNEL_GUIDE.md` for channel-specific component versions.
 

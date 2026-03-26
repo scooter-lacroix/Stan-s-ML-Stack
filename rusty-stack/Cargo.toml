@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "rusty-stack-bench"
 path = "src/bin/benchmark_runner.rs"
 
+[[bin]]
+name = "rusty-stack-update"
+path = "src/bin/update.rs"
+
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"

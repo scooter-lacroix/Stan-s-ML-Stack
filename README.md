@@ -124,7 +124,7 @@ Rusty Stack installer now offers three ROCm channels so you can balance stabilit
 
 1. **Legacy (ROCm 6.4.3)** – production-proven for maximum stability
 2. **Stable (ROCm 7.1)** – production-ready for RDNA 3 GPUs
-3. **Latest (ROCm 7.2)** – default choice with expanded RDNA 4 support
+3. **Latest (ROCm 7.2.1)** – default choice with expanded RDNA 4 support
 
 You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-3). See [docs/MULTI_CHANNEL_GUIDE.md](docs/MULTI_CHANNEL_GUIDE.md) for helper scripts covering PyTorch, Triton, Flash Attention, vLLM, ONNX Runtime, MIGraphX, bitsandbytes, and RCCL.
 

@@ -24,30 +24,61 @@ if [ -f "$SCRIPT_DIR/common_utils.sh" ]; then
     source "$SCRIPT_DIR/common_utils.sh"
 fi
 
+# Source UI installer helper if available
+if [[ -f "$SCRIPT_DIR/lib/ui_installer_helper.sh" ]]; then
+    # shellcheck source=lib/ui_installer_helper.sh
+    source "$SCRIPT_DIR/lib/ui_installer_helper.sh"
+fi
+
 DRY_RUN=${DRY_RUN:-false}
 COMFYUI_DIR=${COMFYUI_DIR:-"$HOME/ComfyUI"}
 REPO_URL="https://github.com/comfyanonymous/ComfyUI.git"
 WEB_PORT=8188
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --dry-run)
-            DRY_RUN=true
-            shift
-            ;;
-        --dir)
-            COMFYUI_DIR="$2"
-            shift 2
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--dry-run] [--dir <path>]"
-            exit 0
-            ;;
-        *)
-            shift
-            ;;
-    esac
-done
+# Parse CLI arguments
+if declare -f ui_parse_common_args &>/dev/null; then
+    ui_parse_common_args DRY_RUN COMFYUI_DIR "$@"
+    _rc=$?
+    if [[ "$_rc" -eq 2 ]]; then exit 0; fi
+    if [[ "$_rc" -ne 0 ]]; then exit "$_rc"; fi
+else
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --force)
+                shift
+                ;;
+            --dir)
+                if [[ $# -lt 2 ]]; then
+                    echo "Error: --dir requires a path argument" >&2
+                    exit 1
+                fi
+                if [[ "$2" != /* ]]; then
+                    echo "Error: --dir requires an absolute path" >&2
+                    exit 1
+                fi
+                COMFYUI_DIR="$(cd "$2" 2>/dev/null && pwd)" || COMFYUI_DIR="$2"
+                case "$COMFYUI_DIR" in
+                    /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
+                        echo "Error: --dir targets a system directory: $COMFYUI_DIR" >&2
+                        exit 1
+                        ;;
+                esac
+                shift 2
+                ;;
+            --help|-h)
+                echo "Usage: $0 [--dry-run] [--dir <path>] [--force]"
+                exit 0
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+fi
 
 print_header "ComfyUI Installer"
 print_step "Install directory: $COMFYUI_DIR"
@@ -72,52 +103,61 @@ if ! python3 -c "import torch" &>/dev/null; then
 fi
 
 # Clone or update repo
-# Check for existing models before proceeding
-MODELS_DIR="$COMFYUI_DIR/models"
-INPUT_DIR="$COMFYUI_DIR/input"
-OUTPUT_DIR="$COMFYUI_DIR/output"
-USER_DIR="$COMFYUI_DIR/user"
-HAS_MODELS=false
-
-check_dir_has_content() {
-    [ -d "$1" ] && [ "$(ls -A "$1" 2>/dev/null)" ]
-}
-
-if [ -d "$COMFYUI_DIR/.git" ]; then
-    # Check if any user directories have content
-    if check_dir_has_content "$MODELS_DIR" || \
-       check_dir_has_content "$INPUT_DIR" || \
-       check_dir_has_content "$OUTPUT_DIR" || \
-       check_dir_has_content "$USER_DIR"; then
-        HAS_MODELS=true
-        print_warning "Existing user data detected - will preserve during update"
-    fi
-
-    print_step "Updating ComfyUI..."
-    # Ensure we are on a branch before pulling
-    git -C "$COMFYUI_DIR" remote set-head origin -a || true
-    DEFAULT_BRANCH=$(git -C "$COMFYUI_DIR" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-    DEFAULT_BRANCH=${DEFAULT_BRANCH:-master}
-
-    execute_command "git -C \"$COMFYUI_DIR\" checkout \"$DEFAULT_BRANCH\"" "Checking out $DEFAULT_BRANCH branch"
-    execute_command "git -C \"$COMFYUI_DIR\" fetch --all" "Fetching ComfyUI updates"
-
-    if [ "$HAS_MODELS" = true ]; then
-        # Preserve user data by stashing it before reset
-        execute_command "git -C \"$COMFYUI_DIR\" stash push -u -m \"rusty-stack-preserve-user-data\" -- \"$MODELS_DIR\" \"$INPUT_DIR\" \"$OUTPUT_DIR\" \"$USER_DIR\"" "Stashing user data"
-        execute_command "git -C \"$COMFYUI_DIR\" reset --hard \"origin/$DEFAULT_BRANCH\"" "Resetting to origin/$DEFAULT_BRANCH"
-        execute_command "git -C \"$COMFYUI_DIR\" stash pop" "Restoring user data"
-        print_success "User data preserved during update"
-    else
-        execute_command "git -C \"$COMFYUI_DIR\" reset --hard \"origin/$DEFAULT_BRANCH\"" "Resetting to origin/$DEFAULT_BRANCH"
-    fi
+if declare -f ui_git_clone_or_update &>/dev/null; then
+    ui_git_clone_or_update "$COMFYUI_DIR" "$REPO_URL" "models" "input" "output" "user"
 else
-    execute_command "git clone \"$REPO_URL\" \"$COMFYUI_DIR\"" "Cloning ComfyUI repository"
+    # Check for existing models before proceeding
+    MODELS_DIR="$COMFYUI_DIR/models"
+    INPUT_DIR="$COMFYUI_DIR/input"
+    OUTPUT_DIR="$COMFYUI_DIR/output"
+    USER_DIR="$COMFYUI_DIR/user"
+    HAS_MODELS=false
+
+    check_dir_has_content() {
+        [ -d "$1" ] && [ "$(ls -A "$1" 2>/dev/null)" ]
+    }
+
+    if [ -d "$COMFYUI_DIR/.git" ]; then
+        # Check if any user directories have content
+        if check_dir_has_content "$MODELS_DIR" || \
+           check_dir_has_content "$INPUT_DIR" || \
+           check_dir_has_content "$OUTPUT_DIR" || \
+           check_dir_has_content "$USER_DIR"; then
+            HAS_MODELS=true
+            print_warning "Existing user data detected - will preserve during update"
+        fi
+
+        print_step "Updating ComfyUI..."
+        # Ensure we are on a branch before pulling
+        git -C "$COMFYUI_DIR" remote set-head origin -a || true
+        DEFAULT_BRANCH=$(git -C "$COMFYUI_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || true
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(git -C "$COMFYUI_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-master}"
+
+        execute_command "git -C \"$COMFYUI_DIR\" checkout \"$DEFAULT_BRANCH\"" "Checking out $DEFAULT_BRANCH branch"
+        execute_command "git -C \"$COMFYUI_DIR\" fetch --all" "Fetching ComfyUI updates"
+
+        if [ "$HAS_MODELS" = true ]; then
+            # Preserve user data by stashing it before reset
+            execute_command "git -C \"$COMFYUI_DIR\" stash push -u -m \"rusty-stack-preserve-user-data\" -- \"$MODELS_DIR\" \"$INPUT_DIR\" \"$OUTPUT_DIR\" \"$USER_DIR\"" "Stashing user data"
+            execute_command "git -C \"$COMFYUI_DIR\" reset --hard \"origin/$DEFAULT_BRANCH\"" "Resetting to origin/$DEFAULT_BRANCH"
+            execute_command "git -C \"$COMFYUI_DIR\" stash pop" "Restoring user data"
+            print_success "User data preserved during update"
+        else
+            execute_command "git -C \"$COMFYUI_DIR\" reset --hard \"origin/$DEFAULT_BRANCH\"" "Resetting to origin/$DEFAULT_BRANCH"
+        fi
+    else
+        execute_command "git clone \"$REPO_URL\" \"$COMFYUI_DIR\"" "Cloning ComfyUI repository"
+    fi
 fi
 
 # Ensure correct ownership if run with sudo
-if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-    chown -R "$SUDO_USER:$SUDO_USER" "$COMFYUI_DIR"
+if declare -f ui_fix_ownership &>/dev/null; then
+    ui_fix_ownership "$COMFYUI_DIR"
+else
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        chown -R "$SUDO_USER:$SUDO_USER" "$COMFYUI_DIR"
+    fi
 fi
 
 # Install Python dependencies (excluding torch/torchvision/torchaudio since ROCm version is installed)
@@ -144,20 +184,18 @@ else
     print_warning "requirements.txt not found, skipping Python dependency installation"
 fi
 
-# Create launcher script
-LAUNCHER_DIR="$HOME/.local/bin"
-mkdir -p "$LAUNCHER_DIR" 2>/dev/null || true
-
-print_step "Creating ComfyUI launcher script..."
-
 # Detect GPU count for device selection
 GPU_DEVICES=""
-if command -v rocm-smi &>/dev/null; then
-    GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[")
-    if [ "$GPU_COUNT" -gt 0 ]; then
-        # Generate comma-separated list: 0,1,2,...
-        GPU_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
-        print_step "Detected $GPU_COUNT AMD GPU(s)"
+if declare -f ui_detect_gpu_devices &>/dev/null; then
+    GPU_DEVICES=$(ui_detect_gpu_devices) || true
+else
+    if command -v rocm-smi &>/dev/null; then
+        GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[" || true)
+        if [ "$GPU_COUNT" -gt 0 ]; then
+            # Generate comma-separated list: 0,1,2,...
+            GPU_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
+            print_step "Detected $GPU_COUNT AMD GPU(s)"
+        fi
     fi
 fi
 
@@ -167,9 +205,18 @@ if [ -z "$GPU_DEVICES" ]; then
     print_warning "Could not detect GPU count, using default: $GPU_DEVICES"
 fi
 
+# Create launcher script
+LAUNCHER_DIR="$HOME/.local/bin"
 if [ "$DRY_RUN" = "false" ]; then
-    LAUNCHER_PATH="$LAUNCHER_DIR/comfy"
-    cat > "$LAUNCHER_PATH" << EOF
+    if declare -f ui_create_launcher_shim &>/dev/null; then
+        ui_create_launcher_shim "comfy" "$LAUNCHER_DIR" \
+            "cd \"$COMFYUI_DIR\" && HIP_VISIBLE_DEVICES=$GPU_DEVICES CUDA_VISIBLE_DEVICES=$GPU_DEVICES python3 main.py --enable-manager" \
+            "ComfyUI launcher for Stan's ML Stack"
+        print_success "Launcher script created at $LAUNCHER_DIR/comfy"
+    else
+        mkdir -p "$LAUNCHER_DIR" 2>/dev/null || true
+        LAUNCHER_PATH="$LAUNCHER_DIR/comfy"
+        cat > "$LAUNCHER_PATH" << EOF
 #!/bin/bash
 # ComfyUI launcher for Stan's ML Stack
 # Auto-detected GPU devices: $GPU_DEVICES
@@ -178,8 +225,9 @@ cd "$COMFYUI_DIR" && \\
     CUDA_VISIBLE_DEVICES=$GPU_DEVICES \\
     python3 main.py --enable-manager "\$@"
 EOF
-    chmod +x "$LAUNCHER_PATH"
-    print_success "Launcher script created at $LAUNCHER_PATH"
+        chmod +x "$LAUNCHER_PATH"
+        print_success "Launcher script created at $LAUNCHER_PATH"
+    fi
 
     # Ensure ~/.local/bin is in PATH if not already
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
@@ -201,10 +249,10 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$COMFYUI_DIR
-Environment="HIP_VISIBLE_DEVICES=$GPU_DEVICES"
-Environment="CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
-ExecStart=$PYTHON_BIN $COMFYUI_DIR/main.py --enable-manager
+WorkingDirectory="${COMFYUI_DIR}"
+Environment="HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
+Environment="CUDA_VISIBLE_DEVICES=${GPU_DEVICES}"
+ExecStart=${PYTHON_BIN} "${COMFYUI_DIR}/main.py" --enable-manager
 Restart=on-failure
 
 [Install]
@@ -214,24 +262,43 @@ EOF
 fi
 
 # Print installation summary
-print_section "ComfyUI Installation Summary"
-print_success "ComfyUI installed at: $COMFYUI_DIR"
-echo
-echo -e "${BOLD}Run Commands:${RESET}"
-echo "  comfy                    # Start ComfyUI with manager"
-echo "  comfy --listen 0.0.0.0   # Allow network access"
-echo "  comfy --port 8188        # Custom port"
-echo
-echo -e "${BOLD}Web Interface:${RESET}"
-echo "  http://localhost:$WEB_PORT"
-echo
-echo -e "${BOLD}GPU Acceleration:${RESET}"
-print_success "Uses ROCm for AMD GPU acceleration"
-echo
-echo -e "${BOLD}Service (optional):${RESET}"
-echo "  systemctl --user start comfyui.service   # Start as background service"
-echo "  systemctl --user enable comfyui.service  # Enable auto-start"
-echo
-echo -e "${BOLD}Documentation:${RESET}"
-echo "  https://github.com/comfyanonymous/ComfyUI"
-echo
+if declare -f ui_print_summary &>/dev/null; then
+    COMMANDS_ARRAY=(
+        "comfy                    # Start ComfyUI with manager"
+        "comfy --listen 0.0.0.0   # Allow network access"
+        "comfy --port 8188        # Custom port"
+        "web: http://localhost:$WEB_PORT"
+    )
+    ui_print_summary "ComfyUI" "$COMFYUI_DIR"
+    echo
+    echo -e "${BOLD}GPU Acceleration:${RESET}"
+    print_success "Uses ROCm for AMD GPU acceleration"
+    echo
+    echo -e "${BOLD}Service (optional):${RESET}"
+    echo "  systemctl --user start comfyui.service   # Start as background service"
+    echo "  systemctl --user enable comfyui.service  # Enable auto-start"
+    echo
+    echo -e "${BOLD}Documentation:${RESET}"
+    echo "  https://github.com/comfyanonymous/ComfyUI"
+else
+    print_section "ComfyUI Installation Summary"
+    print_success "ComfyUI installed at: $COMFYUI_DIR"
+    echo
+    echo -e "${BOLD}Run Commands:${RESET}"
+    echo "  comfy                    # Start ComfyUI with manager"
+    echo "  comfy --listen 0.0.0.0   # Allow network access"
+    echo "  comfy --port 8188        # Custom port"
+    echo
+    echo -e "${BOLD}Web Interface:${RESET}"
+    echo "  http://localhost:$WEB_PORT"
+    echo
+    echo -e "${BOLD}GPU Acceleration:${RESET}"
+    print_success "Uses ROCm for AMD GPU acceleration"
+    echo
+    echo -e "${BOLD}Service (optional):${RESET}"
+    echo "  systemctl --user start comfyui.service   # Start as background service"
+    echo "  systemctl --user enable comfyui.service  # Enable auto-start"
+    echo
+    echo -e "${BOLD}Documentation:${RESET}"
+    echo "  https://github.com/comfyanonymous/ComfyUI"
+fi

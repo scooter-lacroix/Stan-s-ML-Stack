@@ -54,7 +54,7 @@ fi
 # Test 3: Check for outdated version references
 echo "[3/5] Checking for outdated version references"
 OUTDATED_FOUND=0
-for old_version in "7.0.0" "7.0.2" "7.9.0"; do
+for old_version in "7.0.0" "7.0.2" "7.9.0" "70200"; do
     # Check main scripts (excluding comments and legitimate detection/migration code)
     # Detection code for existing installations is OK - ignore lines with:
     # - /opt/rocm-<version> (existing installation detection)
@@ -101,14 +101,27 @@ else
 fi
 
 # Test 6: Check channel wrapper consistency
-echo "[6/6] Checking install_rocm_channel.sh consistency"
+echo "[6/7] Checking install_rocm_channel.sh consistency"
 if grep -q "legacy.*6.4.3" scripts/install_rocm_channel.sh && \
    grep -q "stable.*7.1" scripts/install_rocm_channel.sh && \
-   grep -q "latest.*7.2" scripts/install_rocm_channel.sh; then
+   grep -q "latest.*7.2.1" scripts/install_rocm_channel.sh; then
     echo -e "${GREEN}✓ PASS${NC} (Channel wrapper consistent)"
     ((PASSED++)) || true
 else
     echo -e "${RED}✗ FAIL${NC} (Channel wrapper inconsistent)"
+    ((FAILED++)) || true
+fi
+
+# Test 7: Check Latest channel uses ROCm 7.2.1 installer package
+echo "[7/7] Checking Latest channel package version is 7.2.1.70201-1"
+if grep -q 'ROCM_PKG_VER="7.2.1.70201-1"' scripts/install_rocm.sh && \
+   grep -q 'ROCM_INSTALL_VERSION="7.2.1.70201-1"' scripts/install_rocm.sh && \
+   grep -q 'ROCM_DIR_PATH="7.2.1"' scripts/install_rocm.sh && \
+   grep -q "ROCm 7.2.1 (Latest - Recommended)" scripts/install_rocm.sh; then
+    echo -e "${GREEN}✓ PASS${NC} (Latest channel package version is 7.2.1.70201-1)"
+    ((PASSED++)) || true
+else
+    echo -e "${RED}✗ FAIL${NC} (Latest channel package version not updated to 7.2.1)"
     ((FAILED++)) || true
 fi
 
