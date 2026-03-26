@@ -9,6 +9,12 @@ if [[ -f "$SCRIPT_DIR/lib/installer_guard.sh" ]]; then
     source "$SCRIPT_DIR/lib/installer_guard.sh"
 fi
 
+# Source UI installer helper if available
+if [[ -f "$SCRIPT_DIR/lib/ui_installer_helper.sh" ]]; then
+    # shellcheck source=lib/ui_installer_helper.sh
+    source "$SCRIPT_DIR/lib/ui_installer_helper.sh"
+fi
+
 PYTHON_BIN="${MLSTACK_PYTHON_BIN:-python3}"
 
 # Wrapper for python3 to ensure we use the correct interpreter
@@ -27,26 +33,30 @@ DRY_RUN=${DRY_RUN:-false}
 VLLM_STUDIO_DIR=${VLLM_STUDIO_DIR:-"$HOME/vllm-studio"}
 REPO_URL="https://github.com/0xSero/vllm-studio.git"
 
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --dry-run)
-            DRY_RUN=true
-            shift
-            ;;
-        --dir)
-            VLLM_STUDIO_DIR="$2"
-            shift 2
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--dry-run] [--dir <path>]"
-            exit 0
-            ;;
-        *)
-            shift
-            ;;
-    esac
-
-done
+# Parse CLI arguments
+if declare -f ui_parse_common_args &>/dev/null; then
+    ui_parse_common_args DRY_RUN VLLM_STUDIO_DIR "$@"
+else
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --dir)
+                VLLM_STUDIO_DIR="$2"
+                shift 2
+                ;;
+            --help|-h)
+                echo "Usage: $0 [--dry-run] [--dir <path>]"
+                exit 0
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+fi
 
 print_header "vLLM Studio Installer"
 print_step "Install directory: $VLLM_STUDIO_DIR"
@@ -69,24 +79,32 @@ if ! python3 -c "import vllm" &>/dev/null; then
     print_warning "vLLM is not detected. Install vLLM first for full functionality."
 fi
 
-# Clone or update repo
-if [ -d "$VLLM_STUDIO_DIR/.git" ]; then
-    print_step "Updating vLLM Studio..."
-    # Ensure we are on a branch before pulling
-    git -C "$VLLM_STUDIO_DIR" remote set-head origin -a || true
-    DEFAULT_BRANCH=$(git -C "$VLLM_STUDIO_DIR" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-    DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
-    
-    execute_command "git -C \"$VLLM_STUDIO_DIR\" checkout \"$DEFAULT_BRANCH\"" "Checking out $DEFAULT_BRANCH branch"
-    execute_command "git -C \"$VLLM_STUDIO_DIR\" fetch --all" "Fetching vLLM Studio updates"
-    execute_command "git -C \"$VLLM_STUDIO_DIR\" reset --hard \"origin/$DEFAULT_BRANCH\"" "Resetting to origin/$DEFAULT_BRANCH"
+# Clone or update repo (no preserve directories for vLLM Studio)
+if declare -f ui_git_clone_or_update &>/dev/null; then
+    ui_git_clone_or_update "$VLLM_STUDIO_DIR" "$REPO_URL"
 else
-    execute_command "git clone \"$REPO_URL\" \"$VLLM_STUDIO_DIR\"" "Cloning vLLM Studio repository"
+    if [ -d "$VLLM_STUDIO_DIR/.git" ]; then
+        print_step "Updating vLLM Studio..."
+        # Ensure we are on a branch before pulling
+        git -C "$VLLM_STUDIO_DIR" remote set-head origin -a || true
+        DEFAULT_BRANCH=$(git -C "$VLLM_STUDIO_DIR" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+        DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+
+        execute_command "git -C \"$VLLM_STUDIO_DIR\" checkout \"$DEFAULT_BRANCH\"" "Checking out $DEFAULT_BRANCH branch"
+        execute_command "git -C \"$VLLM_STUDIO_DIR\" fetch --all" "Fetching vLLM Studio updates"
+        execute_command "git -C \"$VLLM_STUDIO_DIR\" reset --hard \"origin/$DEFAULT_BRANCH\"" "Resetting to origin/$DEFAULT_BRANCH"
+    else
+        execute_command "git clone \"$REPO_URL\" \"$VLLM_STUDIO_DIR\"" "Cloning vLLM Studio repository"
+    fi
 fi
 
 # Ensure correct ownership if run with sudo
-if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-    chown -R "$SUDO_USER:$SUDO_USER" "$VLLM_STUDIO_DIR"
+if declare -f ui_fix_ownership &>/dev/null; then
+    ui_fix_ownership "$VLLM_STUDIO_DIR"
+else
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        chown -R "$SUDO_USER:$SUDO_USER" "$VLLM_STUDIO_DIR"
+    fi
 fi
 
 # Install backend/controller
@@ -94,13 +112,13 @@ if [ -d "$VLLM_STUDIO_DIR/controller" ]; then
     if [ "$DRY_RUN" = "false" ]; then
         cd "$VLLM_STUDIO_DIR/controller"
     fi
-    
+
     if command_exists bun; then
         execute_command "bun install" "Installing vLLM Studio controller dependencies with bun"
     else
         execute_command "npm install" "Installing vLLM Studio controller dependencies"
     fi
-    
+
     if [ "$DRY_RUN" = "false" ]; then
         cd "$VLLM_STUDIO_DIR"
     fi
@@ -111,7 +129,7 @@ if [ -d "$VLLM_STUDIO_DIR/frontend" ]; then
     if [ "$DRY_RUN" = "false" ]; then
         cd "$VLLM_STUDIO_DIR/frontend"
     fi
-    
+
     # Fix broken logs page if missing components
     if [ -f "src/app/logs/page.tsx" ]; then
         if grep -q "LogsView" "src/app/logs/page.tsx" && [ ! -d "src/app/logs/_components" ]; then

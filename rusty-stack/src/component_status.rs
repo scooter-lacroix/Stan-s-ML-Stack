@@ -258,6 +258,12 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             let default_path = home_path(&home, &["ComfyUI"]);
             path_exists(default_path.join(".git")) || path_exists(default_path.join("main.py"))
         }
+        "textgen" => {
+            // Check for text-generation-webui installation
+            // Default location: $HOME/text-generation-webui
+            let default_path = home_path(&home, &["text-generation-webui"]);
+            path_exists(default_path.join(".git")) || path_exists(default_path.join("server.py"))
+        }
         _ => false,
     }
 }
