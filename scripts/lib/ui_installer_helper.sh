@@ -27,8 +27,13 @@ ui_parse_common_args() {
                 _dry_run_ref=true
                 shift
                 ;;
+            --force)
+                # Accepted for compatibility with update workflow; UI installers
+                # always reinstall so --force is a no-op but should not error.
+                shift
+                ;;
             --dir)
-                if [[ $# -lt 1 ]]; then
+                if [[ $# -lt 2 ]]; then
                     echo "Error: --dir requires a path argument" >&2
                     return 1
                 fi
@@ -58,6 +63,10 @@ ui_git_clone_or_update() {
     local -a preserve_dirs=("$@")
 
     if [[ -d "$install_dir/.git" ]]; then
+        # Ensure remote HEAD is set and fetch latest
+        execute_command "git -C \"$install_dir\" remote set-head origin -a || true" "Setting remote HEAD"
+        execute_command "git -C \"$install_dir\" fetch --all" "Fetching latest changes"
+
         # Check for user data in preserve directories
         local has_preserve=false
         local -a dirs_to_preserve=()
@@ -159,7 +168,7 @@ EOF
 ui_detect_gpu_devices() {
     if command -v rocm-smi &>/dev/null; then
         local gpu_count
-        gpu_count=$(rocm-smi --showproductname 2>/dev/null | grep -c "GPU\[")
+        gpu_count=$(rocm-smi --showproductname 2>/dev/null | grep -c "GPU\[" || true)
         if [[ "$gpu_count" -gt 0 ]]; then
             seq -s, 0 $((gpu_count - 1))
             return 0

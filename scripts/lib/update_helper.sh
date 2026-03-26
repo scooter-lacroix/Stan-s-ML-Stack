@@ -12,7 +12,13 @@
 # --- Function: up_user_home ---
 # Get the user's home directory.
 up_user_home() {
-    echo "${HOME:-$(eval echo "~${SUDO_USER:-$USER}")}"
+    if [[ -n "${HOME:-}" ]]; then
+        echo "$HOME"
+    elif [[ -n "${SUDO_USER:-}" ]]; then
+        getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME"
+    else
+        echo "${HOME:-$(getent passwd "$USER" 2>/dev/null | cut -d: -f6)}"
+    fi
 }
 
 # --- Function: up_path_exists ---

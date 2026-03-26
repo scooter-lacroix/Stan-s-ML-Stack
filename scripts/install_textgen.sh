@@ -139,7 +139,7 @@ if [ -f "$TEXTGEN_DIR/requirements.txt" ]; then
 
     if [ "$DRY_RUN" = "false" ]; then
         FILTERED_REQS=$(mktemp)
-        grep -v -E '^(nvidia-|cuda|tensorrt|triton[=<>!]|xformers|flash-attn|torch[=<>! ]|torchvision|torchaudio)' "$TEXTGEN_DIR/requirements.txt" > "$FILTERED_REQS" || true
+        grep -v -E '^(nvidia-|cuda|tensorrt|triton([=<>!\[]|$)|xformers|flash-attn|torch([=<>! ]|$)|torchvision|torchaudio)' "$TEXTGEN_DIR/requirements.txt" > "$FILTERED_REQS" || true
 
         # Also check for AMD-specific requirements file
         if [ -f "$TEXTGEN_DIR/requirements_amd.txt" ]; then
@@ -170,7 +170,7 @@ if declare -f ui_detect_gpu_devices &>/dev/null; then
     GPU_DEVICES=$(ui_detect_gpu_devices) || true
 else
     if command -v rocm-smi &>/dev/null; then
-        GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[")
+        GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[" || true)
         if [ "$GPU_COUNT" -gt 0 ]; then
             GPU_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))
             print_step "Detected $GPU_COUNT AMD GPU(s)"
