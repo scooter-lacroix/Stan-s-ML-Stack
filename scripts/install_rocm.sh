@@ -2003,7 +2003,7 @@ EOF" "Setting ROCm repository priorities"
     fi
 
     # For Debian, install any missing dependencies from Ubuntu Noble
-    if [ "$distributor" = "Debian" ] || is_debian_based 2>/dev/null; then
+    if [ "${OS_ID:-}" = "debian" ] || is_debian_based 2>/dev/null; then
         print_step "Installing any missing dependencies from Ubuntu Noble..."
 
         # Temporarily add Ubuntu noble for missing dependencies

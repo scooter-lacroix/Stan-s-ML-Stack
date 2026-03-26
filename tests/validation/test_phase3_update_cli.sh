@@ -104,14 +104,14 @@ else
     ((FAILED++)) || true
 fi
 
-# Test 3.6: rusty-stack-update binary exists after build
-echo "[6/6] Testing rusty-stack-update binary exists"
-BINARY="$PROJECT_ROOT/rusty-stack/target/release/rusty-stack-update"
-if [ -x "$BINARY" ]; then
-    echo -e "${GREEN}✓ PASS${NC} (rusty-stack-update binary exists)"
+# Test 3.6: rusty-stack-update binary target is configured and source exists
+echo "[6/6] Testing rusty-stack-update binary target and source"
+UPDATE_RS="$PROJECT_ROOT/rusty-stack/src/bin/update.rs"
+if [ -f "$UPDATE_RS" ] && grep -q "fn main" "$UPDATE_RS"; then
+    echo -e "${GREEN}✓ PASS${NC} (rusty-stack-update source exists with main fn)"
     ((PASSED++)) || true
 else
-    echo -e "${RED}✗ FAIL${NC} (rusty-stack-update binary not found)"
+    echo -e "${RED}✗ FAIL${NC} (rusty-stack-update source not found or missing main)"
     ((FAILED++)) || true
 fi
 

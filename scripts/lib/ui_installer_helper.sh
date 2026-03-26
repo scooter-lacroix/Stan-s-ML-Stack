@@ -56,7 +56,7 @@ ui_parse_common_args() {
                 ;;
             --help|-h)
                 echo "Usage: $0 [--dry-run] [--dir <path>] [--help]"
-                return 0
+                return 2
                 ;;
             *)
                 shift
@@ -126,7 +126,7 @@ ui_fix_ownership() {
 
 # --- Function: ui_create_launcher_shim ---
 # Creates an executable launcher script in ~/.local/bin/.
-# Sanitizes launch_command and description to prevent heredoc injection.
+# Callers are responsible for providing a safe launch_command.
 # Usage:
 #   ui_create_launcher_shim "myapp" "$HOME/.local/bin" "/path/to/app/start.sh" "My App description"
 ui_create_launcher_shim() {
@@ -182,7 +182,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory="${install_dir}"
-${env_lines}ExecStart="${exec_command}"
+${env_lines}ExecStart=${exec_command}
 Restart=on-failure
 
 [Install]

@@ -36,6 +36,9 @@ REPO_URL="https://github.com/0xSero/vllm-studio.git"
 # Parse CLI arguments
 if declare -f ui_parse_common_args &>/dev/null; then
     ui_parse_common_args DRY_RUN VLLM_STUDIO_DIR "$@"
+    local _rc=$?
+    if [[ "$_rc" -eq 2 ]]; then exit 0; fi
+    if [[ "$_rc" -ne 0 ]]; then exit "$_rc"; fi
 else
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -80,17 +83,28 @@ print_step "Install directory: $VLLM_STUDIO_DIR"
 
 # Dependency checks
 missing_deps=()
-for dep in git python3 npm; do
+for dep in git python3; do
     if ! command_exists "$dep"; then
         missing_deps+=("$dep")
     fi
-
 done
 
 if [ ${#missing_deps[@]} -ne 0 ]; then
     print_error "Missing dependencies: ${missing_deps[*]}"
     exit 1
 fi
+
+# Detect package manager once (bun preferred, npm fallback)
+PKG_MGR=""
+if command_exists bun; then
+    PKG_MGR="bun"
+elif command_exists npm; then
+    PKG_MGR="npm"
+else
+    print_error "Need bun or npm for vLLM Studio dependencies"
+    exit 1
+fi
+print_step "Using package manager: $PKG_MGR"
 
 if ! python3 -c "import vllm" &>/dev/null; then
     print_warning "vLLM is not detected. Install vLLM first for full functionality."
@@ -130,11 +144,7 @@ if [ -d "$VLLM_STUDIO_DIR/controller" ]; then
         cd "$VLLM_STUDIO_DIR/controller"
     fi
 
-    if command_exists bun; then
-        execute_command "bun install" "Installing vLLM Studio controller dependencies with bun"
-    else
-        execute_command "npm install" "Installing vLLM Studio controller dependencies"
-    fi
+    execute_command "$PKG_MGR install" "Installing vLLM Studio controller dependencies with $PKG_MGR"
 
     if [ "$DRY_RUN" = "false" ]; then
         cd "$VLLM_STUDIO_DIR"
@@ -161,21 +171,13 @@ EOF
         fi
     fi
 
-    # Use bun if available as requested by user
-    if command_exists bun; then
-        execute_command "bun install" "Installing vLLM Studio frontend dependencies with bun"
-        if execute_command "bun run build" "Building vLLM Studio frontend with bun"; then
-            print_success "Frontend built successfully with bun"
-        else
-            print_warning "Frontend build with bun failed. You can still run the backend or use 'bun dev' in the frontend directory."
-        fi
+    execute_command "$PKG_MGR install" "Installing vLLM Studio frontend dependencies with $PKG_MGR"
+    local build_cmd="run build"
+    if [ "$PKG_MGR" = "npm" ]; then build_cmd="run build"; fi
+    if execute_command "$PKG_MGR $build_cmd" "Building vLLM Studio frontend with $PKG_MGR"; then
+        print_success "Frontend built successfully with $PKG_MGR"
     else
-        execute_command "npm install" "Installing vLLM Studio frontend dependencies"
-        if execute_command "npm run build" "Building vLLM Studio frontend"; then
-            print_success "Frontend built successfully"
-        else
-            print_warning "Frontend build failed. You can still run the backend or use 'npm run dev' in the frontend directory."
-        fi
+        print_warning "Frontend build failed. You can still run the backend or use '$PKG_MGR dev' in the frontend directory."
     fi
 fi
 
@@ -187,14 +189,16 @@ print_success "Frontend built in $VLLM_STUDIO_DIR/frontend"
 SHIM_PATH="/usr/local/bin/vllm-studio"
 print_step "Creating shim at $SHIM_PATH..."
 if [ "$DRY_RUN" = "false" ]; then
-    cat > /tmp/vllm-studio-shim << EOF
+    local shim_tmp
+    shim_tmp="$(mktemp /tmp/vllm-studio-shim.XXXXXX)"
+    cat > "$shim_tmp" << EOF
 #!/bin/bash
-cd "$VLLM_STUDIO_DIR/controller" && bun run start
+cd "$VLLM_STUDIO_DIR/controller" && $PKG_MGR run start
 EOF
-    chmod +x /tmp/vllm-studio-shim
-    sudo mv /tmp/vllm-studio-shim "$SHIM_PATH" || true
+    chmod +x "$shim_tmp"
+    sudo mv "$shim_tmp" "$SHIM_PATH" || { print_error "Failed to install shim at $SHIM_PATH"; rm -f "$shim_tmp"; }
 fi
 
 print_step "Run the controller: vllm-studio"
-print_step "Frontend: npm run dev (inside $VLLM_STUDIO_DIR/frontend)"
+print_step "Frontend: $PKG_MGR run dev (inside $VLLM_STUDIO_DIR/frontend)"
 print_step "Docs: https://github.com/0xSero/vllm-studio"

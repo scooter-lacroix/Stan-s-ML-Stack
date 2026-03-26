@@ -38,6 +38,9 @@ WEB_PORT=8188
 # Parse CLI arguments
 if declare -f ui_parse_common_args &>/dev/null; then
     ui_parse_common_args DRY_RUN COMFYUI_DIR "$@"
+    local _rc=$?
+    if [[ "$_rc" -eq 2 ]]; then exit 0; fi
+    if [[ "$_rc" -ne 0 ]]; then exit "$_rc"; fi
 else
     while [[ $# -gt 0 ]]; do
         case $1 in
