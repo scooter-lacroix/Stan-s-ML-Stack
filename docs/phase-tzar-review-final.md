@@ -53,34 +53,34 @@ No critical or security issues remain. All findings are informational or low-sev
 
 ### I1 -- Informational: `install_rocm.sh` lacks `set -euo pipefail`
 - **Severity:** Informational (pre-existing, not introduced by this branch)
-- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **File:** `scripts/install_rocm.sh`
 - **Line:** N/A (entire file)
 - **Description:** The primary ROCm installer does not use `set -euo pipefail`. All other changed shell scripts (`update_stack.sh`, `update_helper.sh`, `ui_installer_helper.sh`, `install_rocm_channel.sh`, `install_comfyui.sh`, `install_textgen.sh`, `install_vllm_studio.sh`) use it. This is a pre-existing design choice likely because the script has complex error recovery paths (force purge, multi-pass retry, reboot-resume flow) that would be difficult to express under strict mode.
 - **Risk:** Low. The script already has extensive manual error checking (`if [ $? -ne 0 ]` guards, `|| true` on non-critical commands).
 
 ### I2 -- Informational: `show_env` / `show_env_clean` use non-local variable assignments
 - **Severity:** Informational (pre-existing, mitigated by no strict mode)
-- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **File:** `scripts/install_rocm.sh`
 - **Lines:** 443-448, 476-481
 - **Description:** These functions assign to `HSA_TOOLS_LIB`, `HSA_OVERRIDE_GFX_VERSION`, `PYTORCH_ROCM_ARCH`, `ROCM_PATH`, `PATH`, `LD_LIBRARY_PATH` without `local`. Since the file has no `set -euo pipefail`, this leaks into the caller's scope. However, these functions are only called at the top level or in `--show-env` exit paths, so the leak is harmless in practice.
 - **Risk:** None in current usage.
 
 ### I3 -- Informational: `install_rocm.sh` uses `eval` for command execution
 - **Severity:** Informational (pre-existing)
-- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **File:** `scripts/install_rocm.sh`
 - **Lines:** 201, 229
 - **Description:** `retry_command()` and `execute_command()` use `eval "$cmd"`. The callers always construct `$cmd` from hardcoded strings and controlled variables (not user-supplied). No injection vector exists in the current code paths.
 - **Risk:** None in current usage. Would become a concern if `eval` were used with untrusted input.
 
 ### I4 -- Informational: `install_rocm.sh` has `set -euo pipefail` only inside heredoc at line 809
 - **Severity:** Informational (not a bug)
-- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/scripts/install_rocm.sh`
+- **File:** `scripts/install_rocm.sh`
 - **Line:** 809
 - **Description:** The string `set -euo pipefail` appears at line 809 but only inside a heredoc that generates the autostart resume launcher script. This is correct -- the generated launcher script should use strict mode.
 
 ### I5 -- Informational: `python_has_module` uses string interpolation in Python code
 - **Severity:** Informational
-- **File:** `/home/scooter/Documents/Product/Stan-s-ML-Stack/rusty-stack/src/component_status.rs`
+- **File:** `rusty-stack/src/component_status.rs`
 - **Lines:** 750-757
 - **Description:** `python_has_module` constructs Python code with `format!` and a module name: `format!("import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('{module}') else 1)")`. The `module` parameter comes from hardcoded string literals in the source code (e.g., `"torch"`, `"triton"`), never from user input.
 - **Risk:** None in current usage.

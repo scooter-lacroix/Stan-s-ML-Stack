@@ -8,19 +8,18 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 fn find_scripts_dir() -> Option<PathBuf> {
-    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
+    let exe_path = env::current_exe().ok()?;
+    let mut dir = exe_path.parent()?.to_path_buf();
 
-    // Check relative to binary: target/release/../../scripts
-    let candidates = [
-        exe_dir.join("../../scripts"),
-        exe_dir.join("../../../scripts"),
-    ];
-
-    for dir in &candidates {
-        if dir.join("update_stack.sh").exists() {
-            if let Ok(canonical) = dir.canonicalize() {
+    // Walk upward from the binary until we find a directory containing scripts/update_stack.sh
+    loop {
+        if dir.join("scripts/update_stack.sh").exists() {
+            if let Ok(canonical) = dir.join("scripts").canonicalize() {
                 return Some(canonical);
             }
+        }
+        if !dir.pop() {
+            break;
         }
     }
 

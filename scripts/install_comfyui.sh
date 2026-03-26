@@ -252,7 +252,7 @@ Type=simple
 WorkingDirectory="${COMFYUI_DIR}"
 Environment="HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
 Environment="CUDA_VISIBLE_DEVICES=${GPU_DEVICES}"
-ExecStart="${PYTHON_BIN} ${COMFYUI_DIR}/main.py --enable-manager"
+ExecStart=${PYTHON_BIN} "${COMFYUI_DIR}/main.py" --enable-manager
 Restart=on-failure
 
 [Install]

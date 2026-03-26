@@ -244,7 +244,7 @@ if [ "$DRY_RUN" = "false" ] && [ -d "$SERVICE_DIR" ]; then
     print_step "Creating systemd user service file..."
     if declare -f ui_create_systemd_service &>/dev/null; then
         ui_create_systemd_service "textgen" "$TEXTGEN_DIR" \
-            "$PYTHON_BIN $TEXTGEN_DIR/server.py --chat" \
+            "$PYTHON_BIN \"$TEXTGEN_DIR/server.py\" --chat" \
             "HIP_VISIBLE_DEVICES=$GPU_DEVICES" \
             "CUDA_VISIBLE_DEVICES=$GPU_DEVICES"
     else
@@ -258,7 +258,7 @@ Type=simple
 WorkingDirectory="${TEXTGEN_DIR}"
 Environment="HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
 Environment="CUDA_VISIBLE_DEVICES=${GPU_DEVICES}"
-ExecStart=${PYTHON_BIN} ${TEXTGEN_DIR}/server.py --chat
+ExecStart=${PYTHON_BIN} "${TEXTGEN_DIR}/server.py" --chat
 Restart=on-failure
 
 [Install]
