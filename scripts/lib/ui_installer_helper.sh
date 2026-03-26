@@ -43,10 +43,7 @@ ui_parse_common_args() {
                     return 1
                 fi
                 local resolved_dir
-                resolved_dir="$(cd "$2" 2>/dev/null && pwd)" || {
-                    echo "Error: --dir path does not exist: $2" >&2
-                    return 1
-                }
+                resolved_dir="$(cd "$2" 2>/dev/null && pwd)" || resolved_dir="$2"
                 # Block sensitive system paths
                 case "$resolved_dir" in
                     /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
@@ -84,6 +81,14 @@ ui_git_clone_or_update() {
         execute_command "git -C \"$install_dir\" remote set-head origin -a || true" "Setting remote HEAD"
         execute_command "git -C \"$install_dir\" fetch --all" "Fetching latest changes"
 
+        # Derive target branch: prefer origin/HEAD, fall back to current branch, then "main"
+        local target_branch
+        target_branch=$(git -C "$install_dir" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || true
+        if [[ -z "$target_branch" ]]; then
+            target_branch=$(git -C "$install_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) || true
+        fi
+        target_branch="${target_branch:-main}"
+
         # Check for user data in preserve directories
         local has_preserve=false
         local -a dirs_to_preserve=()
@@ -97,10 +102,10 @@ ui_git_clone_or_update() {
         if [[ "$has_preserve" == true ]]; then
             # Stash user data before reset
             execute_command "git -C \"$install_dir\" stash push -u -m \"rusty-stack-preserve-user-data\" -- ${dirs_to_preserve[*]}" "Stashing user data before update"
-            execute_command "git -C \"$install_dir\" reset --hard \"origin/\$(git -C \"$install_dir\" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')\"" "Resetting to latest"
+            execute_command "git -C \"$install_dir\" reset --hard \"origin/$target_branch\"" "Resetting to latest"
             execute_command "git -C \"$install_dir\" stash pop" "Restoring user data"
         else
-            execute_command "git -C \"$install_dir\" reset --hard \"origin/\$(git -C \"$install_dir\" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')\"" "Resetting to latest"
+            execute_command "git -C \"$install_dir\" reset --hard \"origin/$target_branch\"" "Resetting to latest"
         fi
     else
         execute_command "git clone \"$repo_url\" \"$install_dir\"" "Cloning repository"
@@ -177,7 +182,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory="${install_dir}"
-${env_lines}ExecStart=${exec_command}
+${env_lines}ExecStart="${exec_command}"
 Restart=on-failure
 
 [Install]

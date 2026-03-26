@@ -57,10 +57,7 @@ else
                     echo "Error: --dir requires an absolute path" >&2
                     exit 1
                 fi
-                COMFYUI_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
-                    echo "Error: --dir path does not exist: $2" >&2
-                    exit 1
-                }
+                COMFYUI_DIR="$(cd "$2" 2>/dev/null && pwd)" || COMFYUI_DIR="$2"
                 case "$COMFYUI_DIR" in
                     /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
                         echo "Error: --dir targets a system directory: $COMFYUI_DIR" >&2

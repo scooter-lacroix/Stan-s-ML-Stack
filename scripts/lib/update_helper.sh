@@ -363,11 +363,13 @@ up_update_component() {
         bitsandbytes)  installer_script="install_bitsandbytes_multi.sh" ;;
         migraphx)      installer_script="install_migraphx_multi.sh" ;;
         flash-attn)    installer_script="install_flash_attention_ck.sh" ;;
-        mpi4py)        installer_script="install_mpi.sh" ;;
+        mpi4py)        installer_script="install_mpi4py.sh" ;;
         wandb)         installer_script="install_wandb.sh" ;;
         comfyui)       installer_script="install_comfyui.sh" ;;
         vllm-studio)   installer_script="install_vllm_studio.sh" ;;
         textgen)       installer_script="install_textgen.sh" ;;
+        rocm-smi)      echo "rocm-smi is a system tool managed by ROCm — skipping" >&2; return 0 ;;
+        permanent-env) echo "permanent-env is configured by the installer — skipping" >&2; return 0 ;;
         *)
             echo "Error: No installer script known for component '$component_id'" >&2
             return 1

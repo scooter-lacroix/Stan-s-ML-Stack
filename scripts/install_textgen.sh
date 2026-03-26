@@ -57,10 +57,7 @@ else
                     echo "Error: --dir requires an absolute path" >&2
                     exit 1
                 fi
-                TEXTGEN_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
-                    echo "Error: --dir path does not exist: $2" >&2
-                    exit 1
-                }
+                TEXTGEN_DIR="$(cd "$2" 2>/dev/null && pwd)" || TEXTGEN_DIR="$2"
                 case "$TEXTGEN_DIR" in
                     /|/usr|/bin|/sbin|/etc|/var|/boot|/dev|/proc|/sys|/opt/rocm)
                         echo "Error: --dir targets a system directory: $TEXTGEN_DIR" >&2
