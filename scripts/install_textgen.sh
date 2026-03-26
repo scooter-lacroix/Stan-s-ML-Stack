@@ -38,7 +38,7 @@ WEB_PORT=7860
 # Parse CLI arguments
 if declare -f ui_parse_common_args &>/dev/null; then
     ui_parse_common_args DRY_RUN TEXTGEN_DIR "$@"
-    local _rc=$?
+    _rc=$?
     if [[ "$_rc" -eq 2 ]]; then exit 0; fi
     if [[ "$_rc" -ne 0 ]]; then exit "$_rc"; fi
 else
@@ -115,8 +115,9 @@ else
     if [ -d "$TEXTGEN_DIR/.git" ]; then
         print_step "Updating text-generation-webui..."
         git -C "$TEXTGEN_DIR" remote set-head origin -a || true
-        DEFAULT_BRANCH=$(git -C "$TEXTGEN_DIR" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-        DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+        DEFAULT_BRANCH=$(git -C "$TEXTGEN_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || true
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(git -C "$TEXTGEN_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 
         # Check for user data in preserve directories
         HAS_USER_DATA=false

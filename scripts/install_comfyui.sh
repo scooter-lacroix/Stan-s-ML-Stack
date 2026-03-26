@@ -38,7 +38,7 @@ WEB_PORT=8188
 # Parse CLI arguments
 if declare -f ui_parse_common_args &>/dev/null; then
     ui_parse_common_args DRY_RUN COMFYUI_DIR "$@"
-    local _rc=$?
+    _rc=$?
     if [[ "$_rc" -eq 2 ]]; then exit 0; fi
     if [[ "$_rc" -ne 0 ]]; then exit "$_rc"; fi
 else
@@ -130,8 +130,9 @@ else
         print_step "Updating ComfyUI..."
         # Ensure we are on a branch before pulling
         git -C "$COMFYUI_DIR" remote set-head origin -a || true
-        DEFAULT_BRANCH=$(git -C "$COMFYUI_DIR" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-        DEFAULT_BRANCH=${DEFAULT_BRANCH:-master}
+        DEFAULT_BRANCH=$(git -C "$COMFYUI_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || true
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(git -C "$COMFYUI_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-master}"
 
         execute_command "git -C \"$COMFYUI_DIR\" checkout \"$DEFAULT_BRANCH\"" "Checking out $DEFAULT_BRANCH branch"
         execute_command "git -C \"$COMFYUI_DIR\" fetch --all" "Fetching ComfyUI updates"
@@ -189,7 +190,7 @@ if declare -f ui_detect_gpu_devices &>/dev/null; then
     GPU_DEVICES=$(ui_detect_gpu_devices) || true
 else
     if command -v rocm-smi &>/dev/null; then
-        GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[")
+        GPU_COUNT=$(rocm-smi --showproductname | grep -c "GPU\[" || true)
         if [ "$GPU_COUNT" -gt 0 ]; then
             # Generate comma-separated list: 0,1,2,...
             GPU_DEVICES=$(seq -s, 0 $((GPU_COUNT - 1)))

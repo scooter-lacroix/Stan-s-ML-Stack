@@ -36,7 +36,7 @@ REPO_URL="https://github.com/0xSero/vllm-studio.git"
 # Parse CLI arguments
 if declare -f ui_parse_common_args &>/dev/null; then
     ui_parse_common_args DRY_RUN VLLM_STUDIO_DIR "$@"
-    local _rc=$?
+    _rc=$?
     if [[ "$_rc" -eq 2 ]]; then exit 0; fi
     if [[ "$_rc" -ne 0 ]]; then exit "$_rc"; fi
 else
@@ -118,8 +118,9 @@ else
         print_step "Updating vLLM Studio..."
         # Ensure we are on a branch before pulling
         git -C "$VLLM_STUDIO_DIR" remote set-head origin -a || true
-        DEFAULT_BRANCH=$(git -C "$VLLM_STUDIO_DIR" symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-        DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+        DEFAULT_BRANCH=$(git -C "$VLLM_STUDIO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@') || true
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-$(git -C "$VLLM_STUDIO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+        DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 
         execute_command "git -C \"$VLLM_STUDIO_DIR\" checkout \"$DEFAULT_BRANCH\"" "Checking out $DEFAULT_BRANCH branch"
         execute_command "git -C \"$VLLM_STUDIO_DIR\" fetch --all" "Fetching vLLM Studio updates"
@@ -172,7 +173,7 @@ EOF
     fi
 
     execute_command "$PKG_MGR install" "Installing vLLM Studio frontend dependencies with $PKG_MGR"
-    local build_cmd="run build"
+    build_cmd="run build"
     if [ "$PKG_MGR" = "npm" ]; then build_cmd="run build"; fi
     if execute_command "$PKG_MGR $build_cmd" "Building vLLM Studio frontend with $PKG_MGR"; then
         print_success "Frontend built successfully with $PKG_MGR"
@@ -189,7 +190,6 @@ print_success "Frontend built in $VLLM_STUDIO_DIR/frontend"
 SHIM_PATH="/usr/local/bin/vllm-studio"
 print_step "Creating shim at $SHIM_PATH..."
 if [ "$DRY_RUN" = "false" ]; then
-    local shim_tmp
     shim_tmp="$(mktemp /tmp/vllm-studio-shim.XXXXXX)"
     cat > "$shim_tmp" << EOF
 #!/bin/bash
