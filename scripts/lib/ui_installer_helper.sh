@@ -101,7 +101,7 @@ ui_git_clone_or_update() {
 
         if [[ "$has_preserve" == true ]]; then
             # Stash user data before reset
-            execute_command "git -C \"$install_dir\" stash push -u -m \"rusty-stack-preserve-user-data\" -- ${dirs_to_preserve[*]}" "Stashing user data before update"
+            execute_command "git -C \"$install_dir\" stash push -u -m \"rusty-stack-preserve-user-data\" -- \"${dirs_to_preserve[@]}\"" "Stashing user data before update"
             execute_command "git -C \"$install_dir\" reset --hard \"origin/$target_branch\"" "Resetting to latest"
             execute_command "git -C \"$install_dir\" stash pop" "Restoring user data"
         else
