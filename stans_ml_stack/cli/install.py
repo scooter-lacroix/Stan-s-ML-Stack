@@ -222,6 +222,13 @@ EXTENSION_COMPONENTS = [
         "script": "install_wandb.sh",
         "required": False,
         "status": "pending"
+    },
+    {
+        "name": "FastVideo",
+        "description": "Video generation framework with ROCm optimizations",
+        "script": "install_fastvideo.py",
+        "required": False,
+        "status": "pending"
     }
 ]
 
