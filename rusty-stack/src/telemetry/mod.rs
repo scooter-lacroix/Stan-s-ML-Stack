@@ -21,7 +21,9 @@
 pub mod benchmark;
 pub mod opt_in;
 pub mod payload;
+pub mod submit;
 
 pub use benchmark::*;
 pub use opt_in::*;
 pub use payload::*;
+pub use submit::*;
