@@ -10,4 +10,5 @@ pub mod benchmarks;
 pub mod core;
 pub mod orchestrator;
 pub mod platform;
+pub mod telemetry;
 pub mod widgets;
