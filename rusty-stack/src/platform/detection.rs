@@ -330,6 +330,36 @@ fn finalize_distro_info(info: &mut DistroInfo) {
 mod tests {
     use super::*;
 
+    /// RAII guard that removes an env var on creation and restores the
+    /// original value (or removes it if it was absent) on drop.
+    /// This prevents race conditions when tests run in parallel and one
+    /// test sets an env var that another test reads.
+    struct EnvVarGuard {
+        key: String,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        /// Remove the env var (saving its current value for later restore).
+        fn remove(key: &str) -> Self {
+            let original = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self {
+                key: key.to_string(),
+                original,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(v) => std::env::set_var(&self.key, v),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // VAL-PLAT-007: Distro detection identifies correct Linux distribution
     // -----------------------------------------------------------------------
@@ -506,6 +536,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_debian_family() {
+        let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "ubuntu".to_string(),
             family: DistroFamily::Debian,
@@ -516,6 +547,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_arch_family() {
+        let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "arch".to_string(),
             family: DistroFamily::Arch,
@@ -526,6 +558,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_rhel_family() {
+        let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "fedora".to_string(),
             family: DistroFamily::Rhel,
@@ -536,6 +569,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_suse_family() {
+        let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "opensuse-leap".to_string(),
             family: DistroFamily::Suse,
@@ -546,6 +580,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_unknown_family() {
+        let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "alpine".to_string(),
             family: DistroFamily::Unknown,
@@ -556,7 +591,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_env_override() {
-        let saved = std::env::var("MLSTACK_PKG_MANAGER").ok();
+        let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "arch".to_string(),
             family: DistroFamily::Arch,
@@ -567,11 +602,7 @@ ID_LIKE=arch
         std::env::set_var("MLSTACK_PKG_MANAGER", "apt");
         assert_eq!(detect_package_manager(&info), PackageManager::Apt);
 
-        // Restore original state
-        match saved {
-            Some(v) => std::env::set_var("MLSTACK_PKG_MANAGER", v),
-            None => std::env::remove_var("MLSTACK_PKG_MANAGER"),
-        }
+        // Guard restores original state on drop
     }
 
     #[test]
