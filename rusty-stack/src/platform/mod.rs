@@ -4,8 +4,14 @@
 //! - GPU detection with fallback chain (rocminfo → lspci → sysfs)
 //! - GPU architecture correction from marketing names
 //! - ROCm version detection and path search
+//! - Linux distribution detection and package manager identification
+//! - Environment normalization, home directory resolution, Python interpreter discovery
 //! - Linux-specific platform operations
 
+pub mod detection;
+pub mod environment;
 pub mod linux;
 
+pub use detection::*;
+pub use environment::*;
 pub use linux::*;
