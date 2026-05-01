@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "sequence": 1,
+  "generated_at": "2026-04-30T00:00:00Z",
+  "components": [
+    {
+      "id": "rocm",
+      "version": "7.2.1",
+      "script": "scripts/install_rocm.sh",
+      "category": "Foundation",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "pytorch",
+      "version": "2.6.0",
+      "script": "scripts/install_pytorch_rocm.sh",
+      "category": "Core",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "triton",
+      "version": "3.2.0",
+      "script": "scripts/install_triton.sh",
+      "category": "Core",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "onnx",
+      "version": "1.20.0",
+      "script": "scripts/install_onnxruntime.sh",
+      "category": "Core",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "migraphx",
+      "version": "2.12.0",
+      "script": "scripts/install_migraphx.sh",
+      "category": "Core",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "flash-attn",
+      "version": "2.7.0",
+      "script": "scripts/install_flash_attention.sh",
+      "category": "Core",
+      "validation_tier": "Candidate"
+    },
+    {
+      "id": "deepspeed",
+      "version": "0.16.0",
+      "script": "scripts/install_deepspeed.sh",
+      "category": "Extension",
+      "validation_tier": "Candidate"
+    },
+    {
+      "id": "vllm",
+      "version": "0.8.0",
+      "script": "scripts/install_vllm.sh",
+      "category": "Extension",
+      "validation_tier": "Candidate"
+    },
+    {
+      "id": "bitsandbytes",
+      "version": "0.45.0",
+      "script": "scripts/install_bitsandbytes.sh",
+      "category": "Extension",
+      "validation_tier": "Candidate"
+    },
+    {
+      "id": "wandb",
+      "version": "0.19.0",
+      "script": "scripts/install_wandb.sh",
+      "category": "Extension",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "comfyui",
+      "version": "0.3.0",
+      "script": "scripts/install_comfyui.sh",
+      "category": "UiUx",
+      "validation_tier": "Experimental"
+    },
+    {
+      "id": "permanent-env",
+      "version": "1.0.0",
+      "script": "scripts/install_permanent_env.sh",
+      "category": "Environment",
+      "validation_tier": "Validated"
+    }
+  ]
+}
