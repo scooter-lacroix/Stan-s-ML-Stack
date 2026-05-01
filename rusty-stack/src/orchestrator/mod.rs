@@ -5,6 +5,7 @@
 //! - [`planner`] — Update plan computation, classification, and selection
 //! - [`apply`] — Dependency-safe execution engine with failure isolation
 //! - [`verify`] — Post-apply verification orchestration
+//! - [`migration`] — Rust equivalents of shell logic (Wave 1 migration)
 //!
 //! # Update Flow
 //!
@@ -18,11 +19,13 @@
 //! unrelated work continues. The verify runner confirms each successful apply.
 
 pub mod apply;
+pub mod migration;
 pub mod planner;
 pub mod upgrade;
 pub mod verify;
 
 pub use apply::*;
+pub use migration::*;
 pub use planner::*;
 pub use upgrade::*;
 pub use verify::*;
