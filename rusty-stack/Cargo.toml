@@ -15,6 +15,10 @@ path = "src/bin/benchmark_runner.rs"
 name = "rusty-stack-update"
 path = "src/bin/update.rs"
 
+[[bin]]
+name = "rusty-stack-upgrade"
+path = "src/bin/upgrade.rs"
+
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
@@ -31,3 +35,5 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
