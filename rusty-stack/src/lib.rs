@@ -7,4 +7,5 @@
 pub mod benchmark_logs;
 pub mod benchmarks;
 pub mod core;
+pub mod platform;
 pub mod widgets;

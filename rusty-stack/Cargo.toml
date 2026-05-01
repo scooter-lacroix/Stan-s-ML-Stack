@@ -28,3 +28,6 @@ dirs = "5"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
