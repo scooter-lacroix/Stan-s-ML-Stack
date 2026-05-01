@@ -51,6 +51,12 @@ pub struct ManifestComponent {
     pub category: Category,
     #[serde(default = "default_validation_tier")]
     pub validation_tier: ValidationTier,
+    /// Minimum ROCm version required for this component (empty = any).
+    #[serde(default)]
+    pub min_rocm_version: String,
+    /// ROCm channels this component is compatible with (empty = all).
+    #[serde(default)]
+    pub compatible_channels: Vec<String>,
 }
 
 fn default_validation_tier() -> ValidationTier {
@@ -78,6 +84,9 @@ pub struct Manifest {
     /// `None` means the manifest never expires.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// Minimum runtime version required to process this manifest.
+    #[serde(default)]
+    pub min_runtime_version: String,
     /// The component entries.
     pub components: Vec<ManifestComponent>,
     /// HMAC-SHA256 signature over the canonical JSON body (excludes this field).
@@ -372,6 +381,7 @@ pub fn create_signed_manifest(
         sequence,
         generated_at: Utc::now().to_rfc3339(),
         expires_at,
+        min_runtime_version: String::new(),
         components,
         signature: None,
     };
@@ -395,6 +405,8 @@ mod tests {
             script: format!("scripts/install_{id}.sh"),
             category: Category::Core,
             validation_tier: ValidationTier::Validated,
+            min_rocm_version: String::new(),
+            compatible_channels: vec![],
         }
     }
 
@@ -453,6 +465,7 @@ mod tests {
             sequence: 1,
             generated_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at: None,
+            min_runtime_version: String::new(),
             components: vec![
                 make_component("rocm", "7.2.1"),
                 make_component("pytorch", "2.6.0"),
@@ -470,6 +483,8 @@ mod tests {
                     script: "scripts/install_pytorch_rocm.sh".to_string(),
                     category: Category::Core,
                     validation_tier: ValidationTier::Validated,
+                    min_rocm_version: String::new(),
+                    compatible_channels: vec![],
                 },
                 // New component
                 ManifestComponent {
@@ -478,6 +493,8 @@ mod tests {
                     script: "scripts/install_vllm.sh".to_string(),
                     category: Category::Extension,
                     validation_tier: ValidationTier::Candidate,
+                    min_rocm_version: String::new(),
+                    compatible_channels: vec![],
                 },
             ],
         };
@@ -516,6 +533,7 @@ mod tests {
             sequence: 1,
             generated_at: String::new(),
             expires_at: None,
+            min_runtime_version: String::new(),
             components: vec![make_component("rocm", "7.2.1")],
             signature: None,
         };
@@ -534,6 +552,7 @@ mod tests {
             sequence: 42,
             generated_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at: Some("2027-01-01T00:00:00Z".to_string()),
+            min_runtime_version: String::new(),
             components: vec![make_component("rocm", "7.2.1")],
             signature: None,
         };
@@ -592,6 +611,7 @@ mod tests {
             sequence: 1,
             generated_at: String::new(),
             expires_at: None,
+            min_runtime_version: String::new(),
             components: vec![make_component("rocm", "7.2.1")],
             signature: None,
         };
@@ -901,6 +921,8 @@ mod tests {
                     script: "scripts/install_pytorch_rocm.sh".to_string(),
                     category: Category::Core,
                     validation_tier: ValidationTier::Validated,
+                    min_rocm_version: String::new(),
+                    compatible_channels: vec![],
                 },
             ],
         );
@@ -921,6 +943,8 @@ mod tests {
                     script: "scripts/install_new.sh".to_string(),
                     category: Category::Extension,
                     validation_tier: ValidationTier::Candidate,
+                    min_rocm_version: String::new(),
+                    compatible_channels: vec![],
                 },
             ],
         };
