@@ -961,8 +961,7 @@ fn detect_gpu() -> GPUInfo {
                     if let Some(name_value) = trimmed.strip_prefix("Name:") {
                         let name_value = name_value.trim();
                         // Only accept pure gfx architectures (e.g., "gfx1100", "gfx1030")
-                        if name_value.starts_with("gfx") {
-                            let after_gfx = &name_value[3..];
+                        if let Some(after_gfx) = name_value.strip_prefix("gfx") {
                             let gfx_num: String = after_gfx
                                 .chars()
                                 .take_while(|c| c.is_ascii_digit())

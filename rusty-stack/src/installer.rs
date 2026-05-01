@@ -110,6 +110,7 @@ pub fn run_installation(
     }
 
     let mut overall_success = true;
+    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
     let persistent_python = env_exports
         .get("MLSTACK_PYTHON_BIN")
@@ -230,10 +231,7 @@ pub fn run_installation(
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "[DEBUG] Component {}: install_success={}, verification_success={}, final={}",
-                    component.id,
-                    install_success,
-                    verification_outcome.success,
-                    final_success
+                    component.id, install_success, verification_outcome.success, final_success
                 ),
                 false,
             ));
@@ -330,6 +328,7 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
         "auto" => "auto",
         _ => "auto",
     };
+    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
     let persistent_python = env_exports
         .get("MLSTACK_PYTHON_BIN")
@@ -1071,7 +1070,10 @@ fn verify_benchmark_target(target_id: &str) -> Option<(bool, Vec<String>)> {
     let pattern = benchmark_pattern_for_target(target_id)?;
     let log_dirs = benchmark_log_directories();
     if log_dirs.is_empty() {
-        return Some((false, vec!["No benchmark log directories found".to_string()]));
+        return Some((
+            false,
+            vec!["No benchmark log directories found".to_string()],
+        ));
     }
 
     let Some(log_file) = find_latest_log_in_dirs(&log_dirs, pattern) else {
@@ -1239,7 +1241,8 @@ fn passwd_homes_with_mlstack() -> Vec<String> {
         if home.is_empty() {
             continue;
         }
-        if Path::new(home).join(".mlstack").is_dir() || Path::new(home).join(".mlstack_env").is_file()
+        if Path::new(home).join(".mlstack").is_dir()
+            || Path::new(home).join(".mlstack_env").is_file()
         {
             push_unique_env_path(&mut homes, home);
         }
@@ -1351,6 +1354,7 @@ fn run_verification_command(
 ) -> Result<(bool, Vec<String>)> {
     let user_home = resolve_mlstack_user_home();
     let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
 
     let mut command = Command::new(&step.program);
@@ -1561,6 +1565,7 @@ fn run_script(
         }
     }
 
+    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
     let persistent_python = env_exports
         .get("MLSTACK_PYTHON_BIN")
@@ -2319,10 +2324,7 @@ fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
 
     fn descriptor_from_lspci_bus(bus: &str) -> Option<String> {
         let bus = normalize_bus_id(bus)?;
-        let output = Command::new("lspci")
-            .args(["-s", &bus])
-            .output()
-            .ok()?;
+        let output = Command::new("lspci").args(["-s", &bus]).output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -2418,7 +2420,11 @@ fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
             payload_obj
                 .get("Card SKU")
                 .and_then(value_as_string)
-                .or_else(|| payload_obj.get("Card Product Name").and_then(value_as_string)),
+                .or_else(|| {
+                    payload_obj
+                        .get("Card Product Name")
+                        .and_then(value_as_string)
+                }),
         );
         let bus = payload_obj
             .get("PCI Bus")
@@ -2481,20 +2487,18 @@ fn parse_lspci_for_discrete_gpus(lspci_output: &str) -> Vec<String> {
         let bus_id = line.split_whitespace().next().unwrap_or_default();
 
         // Look for AMD/ATI VGA/3D/display devices
-        if line_lower.contains("amd")
+        if (line_lower.contains("amd")
             || line_lower.contains("radeon")
-            || line_lower.contains("advanced micro devices")
-        {
-            if line_lower.contains("vga")
+            || line_lower.contains("advanced micro devices"))
+            && (line_lower.contains("vga")
                 || line_lower.contains("3d")
-                || line_lower.contains("display")
-            {
-                // Check if this is an iGPU based on the description
-                if !is_igpu_name(line) && !lspci_bus_looks_integrated(bus_id) {
-                    discrete_indices.push(gpu_index.to_string());
-                }
-                gpu_index += 1;
+                || line_lower.contains("display"))
+        {
+            // Check if this is an iGPU based on the description
+            if !is_igpu_name(line) && !lspci_bus_looks_integrated(bus_id) {
+                discrete_indices.push(gpu_index.to_string());
             }
+            gpu_index += 1;
         }
     }
 

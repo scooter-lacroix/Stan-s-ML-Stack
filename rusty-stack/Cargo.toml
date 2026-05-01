@@ -3,28 +3,35 @@ name = "rusty-stack"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["tui", "telemetry-submit", "unix-deps"]
+tui = ["crossterm", "ratatui"]
+telemetry-submit = ["reqwest", "tokio"]
+unix-deps = ["libc"]
+
 [[bin]]
 name = "rusty-stack"
 path = "src/main.rs"
+required-features = ["tui", "unix-deps"]
 
 [[bin]]
 name = "rusty-stack-bench"
 path = "src/bin/benchmark_runner.rs"
+required-features = ["tui", "unix-deps"]
 
 [[bin]]
 name = "rusty-stack-update"
 path = "src/bin/update.rs"
+required-features = ["unix-deps"]
 
 [[bin]]
 name = "rusty-stack-upgrade"
 path = "src/bin/upgrade.rs"
+required-features = ["unix-deps"]
 
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
-crossterm = "0.27"
-libc = "0.2"
-ratatui = "0.26"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.30"
@@ -32,8 +39,17 @@ dirs = "5"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 sha2 = "0.10"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+# Optional: TUI (cross-platform but only needed for installer)
+crossterm = { version = "0.27", optional = true }
+ratatui = { version = "0.26", optional = true }
+
+# Optional: Unix-only (libc for geteuid, etc.)
+libc = { version = "0.2", optional = true }
+
+# Optional: Telemetry HTTPS submission
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

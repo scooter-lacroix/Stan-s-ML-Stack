@@ -699,7 +699,11 @@ fn has_benchmark_log_dirs() -> bool {
         .any(|dir| {
             fs::read_dir(dir)
                 .ok()
-                .map(|entries| entries.filter_map(|entry| entry.ok()).any(|entry| entry.path().is_file()))
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok())
+                        .any(|entry| entry.path().is_file())
+                })
                 .unwrap_or(false)
         })
 }
@@ -841,7 +845,8 @@ fn component_passwd_homes_with_mlstack() -> Vec<String> {
         if home.is_empty() {
             continue;
         }
-        if Path::new(home).join(".mlstack").is_dir() || Path::new(home).join(".mlstack_env").is_file()
+        if Path::new(home).join(".mlstack").is_dir()
+            || Path::new(home).join(".mlstack_env").is_file()
         {
             push_unique_path(&mut homes, home);
         }

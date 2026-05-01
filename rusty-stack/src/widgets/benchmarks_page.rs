@@ -259,7 +259,11 @@ fn push_error_unique(results: &mut BenchmarkResults, message: impl Into<String>)
     if trimmed.is_empty() {
         return;
     }
-    if results.errors.iter().any(|existing| existing.trim() == trimmed) {
+    if results
+        .errors
+        .iter()
+        .any(|existing| existing.trim() == trimmed)
+    {
         return;
     }
     results.errors.push(trimmed.to_string());
@@ -368,7 +372,11 @@ fn apply_metrics(val: &serde_json::Value, results: &mut BenchmarkResults, includ
     }
 }
 
-fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResults, include_errors: bool) {
+fn apply_metrics_internal(
+    val: &serde_json::Value,
+    results: &mut BenchmarkResults,
+    include_errors: bool,
+) {
     if include_errors {
         if let Some(root_obj) = val.as_object() {
             if let Some(errors) = root_obj
@@ -394,15 +402,11 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
 
     if let Some(obj) = metrics.as_object() {
         if include_errors {
-            if let Some(errors) = obj
-                .get("errors")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|e| e.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                })
-            {
+            if let Some(errors) = obj.get("errors").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            }) {
                 for err in errors {
                     push_error_unique(results, err);
                 }
@@ -472,7 +476,9 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
                             .unwrap_or(false),
                         temperature_c: obj.get("temperature_c").and_then(|v| v.as_f64()),
                         power_watts: obj.get("power_watts").and_then(|v| v.as_f64()),
-                        utilization_percent: obj.get("utilization_percent").and_then(|v| v.as_f64()),
+                        utilization_percent: obj
+                            .get("utilization_percent")
+                            .and_then(|v| v.as_f64()),
                         memory_percent: obj.get("memory_percent").and_then(|v| v.as_f64()),
                         sclk_mhz: obj
                             .get("sclk_mhz")
@@ -848,7 +854,7 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
         if !has_perf {
             content.push_str("  (No performance benchmarks run yet)\n");
         }
-        content.push_str("\n");
+        content.push('\n');
     }
 
     if !results.errors.is_empty() {
@@ -1401,7 +1407,8 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
         if let Some(baseline) = &results.baseline {
             if let Some(b_meg) = &baseline.megatron {
                 if b_meg.throughput_samples_per_sec > 0.0 {
-                    let diff = ((meg.throughput_samples_per_sec - b_meg.throughput_samples_per_sec)
+                    let diff = ((meg.throughput_samples_per_sec
+                        - b_meg.throughput_samples_per_sec)
                         / b_meg.throughput_samples_per_sec)
                         * 100.0;
                     summary.push_str(&format!(
@@ -1506,8 +1513,13 @@ pub fn export_benchmark_report_html(
 ) -> Result<PathBuf, String> {
     let report_path = resolve_report_path(output_path)?;
     if let Some(parent) = report_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create report directory {}: {}", parent.display(), e))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "failed to create report directory {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
     }
 
     let generated_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1550,8 +1562,8 @@ pub fn export_benchmark_report_html(
             "megatron_sps": results.megatron.as_ref().map(|m| m.throughput_samples_per_sec).unwrap_or(0.0)
         }
     });
-    let report_json =
-        serde_json::to_string_pretty(&report_data).map_err(|e| format!("json serialization failed: {}", e))?;
+    let report_json = serde_json::to_string_pretty(&report_data)
+        .map_err(|e| format!("json serialization failed: {}", e))?;
 
     let html = format!(
         r###"<!doctype html>
@@ -2104,7 +2116,9 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     let mut rows = Vec::new();
 
     if let Some(m) = &results.memory_bandwidth {
-        rows.push(serde_json::json!({"benchmark":"Memory","series":"HBM GB/s","samples":m.hbm_samples}));
+        rows.push(
+            serde_json::json!({"benchmark":"Memory","series":"HBM GB/s","samples":m.hbm_samples}),
+        );
         rows.push(serde_json::json!({"benchmark":"Memory","series":"System GB/s","samples":m.system_samples}));
     }
     if let Some(t) = &results.tensor_core {

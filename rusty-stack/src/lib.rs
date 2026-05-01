@@ -11,4 +11,6 @@ pub mod core;
 pub mod orchestrator;
 pub mod platform;
 pub mod telemetry;
+
+#[cfg(feature = "tui")]
 pub mod widgets;

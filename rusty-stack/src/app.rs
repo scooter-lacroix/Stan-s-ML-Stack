@@ -907,12 +907,10 @@ impl App {
                         .fg(Color::Cyan)
                         .bg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD)
+                } else if comp.installed {
+                    Style::default().fg(Color::Green)
                 } else {
-                    if comp.installed {
-                        Style::default().fg(Color::Green)
-                    } else {
-                        Style::default()
-                    }
+                    Style::default()
                 };
                 ListItem::new(Line::from(Span::styled(line, style)))
             })
@@ -1699,8 +1697,7 @@ impl App {
         match export_benchmark_report_html(&results, None) {
             Ok(path) => {
                 let msg = format!("Benchmark HTML report exported: {}", path.display());
-                self.logs
-                    .push(msg.clone());
+                self.logs.push(msg.clone());
                 self.benchmark_notice = Some(UiNotice {
                     message: msg,
                     color: Color::Green,
@@ -1709,8 +1706,7 @@ impl App {
             }
             Err(err) => {
                 let msg = format!("Failed to export benchmark HTML report: {}", err);
-                self.errors
-                    .push(msg.clone());
+                self.errors.push(msg.clone());
                 self.benchmark_notice = Some(UiNotice {
                     message: msg,
                     color: Color::Red,
@@ -1725,7 +1721,7 @@ impl App {
             return;
         };
 
-        let width = area.width.saturating_sub(4).min(110).max(20);
+        let width = area.width.saturating_sub(4).clamp(20, 110);
         let height = 5u16;
         let x = area.x + area.width.saturating_sub(width) / 2;
         let y = area.y + 1;

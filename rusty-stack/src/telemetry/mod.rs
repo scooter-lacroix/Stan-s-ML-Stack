@@ -21,9 +21,11 @@
 pub mod benchmark;
 pub mod opt_in;
 pub mod payload;
+#[cfg(feature = "telemetry-submit")]
 pub mod submit;
 
 pub use benchmark::*;
 pub use opt_in::*;
 pub use payload::*;
+#[cfg(feature = "telemetry-submit")]
 pub use submit::*;

@@ -64,7 +64,8 @@ fn resolve_benchmark_python() -> String {
         }
     }
 
-    for candidate in ["/usr/local/bin/python3"] {
+    {
+        let candidate = "/usr/local/bin/python3";
         let path = Path::new(candidate);
         if path.exists() {
             return candidate.to_string();

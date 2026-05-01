@@ -111,31 +111,43 @@ fn run_scan() -> rusty_stack::orchestrator::planner::ScanOutput {
 
 /// Detect ROCm version, GPU architecture, and channel.
 fn detect_rocm_info() -> (String, String, String) {
-    use rusty_stack::platform::linux::detect_gpu;
+    #[cfg(unix)]
+    {
+        use rusty_stack::platform::linux::detect_gpu;
 
-    let gpu_info = detect_gpu();
-    let rocm_version = if gpu_info.rocm_version.is_empty() {
-        "not installed".to_string()
-    } else {
-        gpu_info.rocm_version.clone()
-    };
+        let gpu_info = detect_gpu();
+        let rocm_version = if gpu_info.rocm_version.is_empty() {
+            "not installed".to_string()
+        } else {
+            gpu_info.rocm_version.clone()
+        };
 
-    let gpu_architecture = if gpu_info.architecture.is_empty() {
-        "unknown".to_string()
-    } else {
-        gpu_info.architecture.clone()
-    };
+        let gpu_architecture = if gpu_info.architecture.is_empty() {
+            "unknown".to_string()
+        } else {
+            gpu_info.architecture.clone()
+        };
 
-    // Determine channel from version
-    let rocm_channel = if rocm_version.starts_with("6.") {
-        "legacy".to_string()
-    } else if rocm_version.starts_with("7.0") || rocm_version.starts_with("7.1") {
-        "stable".to_string()
-    } else {
-        "latest".to_string()
-    };
+        // Determine channel from version
+        let rocm_channel = if rocm_version.starts_with("6.") {
+            "legacy".to_string()
+        } else if rocm_version.starts_with("7.0") || rocm_version.starts_with("7.1") {
+            "stable".to_string()
+        } else {
+            "latest".to_string()
+        };
 
-    (rocm_version, gpu_architecture, rocm_channel)
+        (rocm_version, gpu_architecture, rocm_channel)
+    }
+
+    #[cfg(not(unix))]
+    {
+        (
+            "not installed".to_string(),
+            "unknown".to_string(),
+            "latest".to_string(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
