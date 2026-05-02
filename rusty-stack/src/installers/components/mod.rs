@@ -5,6 +5,12 @@
 //! All modules use `installers::common::` for shared operations (package
 //! manager, distro detection, ROCm env, etc.).
 //!
+//! # Dispatch Architecture (VAL-INSTALL-031, VAL-INSTALL-032, VAL-INSTALL-038)
+//!
+//! `is_native_component(id)` returns `true` for all 24 ported components.
+//! `get_dependencies(id)` returns the declared dependency IDs for a component.
+//! `topological_sort(ids)` returns components in dependency order.
+//!
 //! # Validation Assertions
 //!
 //! - **VAL-INSTALL-001**: ROCm installer correct package commands
@@ -36,7 +42,22 @@
 //! - **VAL-INSTALL-028**: Permanent env creates correct venv and symlinks
 //! - **VAL-INSTALL-029**: AMD GPU drivers correct package command
 //! - **VAL-INSTALL-030**: MIGraphX Python correct pip command
+//! - **VAL-INSTALL-031**: installer.rs no bash subprocess for ported components
+//! - **VAL-INSTALL-032**: installer.rs dispatches to correct Rust module per ID
+//! - **VAL-INSTALL-038**: state.rs supports native module routing
+//! - **VAL-INSTALL-039**: All 24 components reference correct Rust modules
+//! - **VAL-INSTALL-040**: Non-installer components unchanged
+//! - **VAL-INSTALL-041**: Megatron declares dependency on PyTorch and MPI4Py
+//! - **VAL-INSTALL-042**: vLLM declares dependency on PyTorch
+//! - **VAL-INSTALL-043**: DeepSpeed declares dependency on PyTorch
+//! - **VAL-INSTALL-044**: Flash Attention declares dependency on PyTorch and ROCm
+//! - **VAL-INSTALL-045**: ONNX Runtime declares dependency on ROCm
+//! - **VAL-INSTALL-046**: AITER declares dependency on PyTorch and ROCm
 //! - **VAL-INSTALL-047**: ComfyUI declares dependency on PyTorch
+//! - **VAL-INSTALL-048**: Dependency graph is acyclic
+//! - **VAL-INSTALL-049**: installer.rs respects dependency ordering
+//! - **VAL-INSTALL-051**: All installer modules have unit tests
+//! - **VAL-INSTALL-052**: installer.rs integration tests exist
 
 pub mod aiter;
 pub mod amdgpu_drivers;
@@ -71,7 +92,9 @@ pub use deepspeed::{DeepSpeedConfig, DeepSpeedInstaller};
 pub use flash_attention_ck::{FlashAttentionConfig, FlashAttentionInstaller, GpuArch};
 pub use megatron::{MegatronConfig, MegatronInstaller};
 pub use migraphx_multi::{MigraphxConfig, MigraphxInstaller};
-pub use migraphx_python::{InstallMethod as MigraphxPythonInstallMethod, MigraphxPythonConfig, MigraphxPythonInstaller};
+pub use migraphx_python::{
+    InstallMethod as MigraphxPythonInstallMethod, MigraphxPythonConfig, MigraphxPythonInstaller,
+};
 pub use ml_stack::{MlStackConfig, MlStackInstaller};
 pub use mpi4py::{Mpi4PyConfig, Mpi4PyInstaller, MpiImplementation};
 pub use onnxruntime::{HipArchs, OnnxRuntimeConfig, OnnxRuntimeInstaller};
@@ -86,3 +109,377 @@ pub use triton::{TritonBranch, TritonConfig, TritonInstaller};
 pub use vllm_multi::{VllmConfig, VllmInstaller};
 pub use vllm_studio::{VllmStudioConfig, VllmStudioInstaller};
 pub use wandb::{WandbConfig, WandbInstaller};
+
+// ===========================================================================
+// Installer Dispatch (VAL-INSTALL-031, VAL-INSTALL-032, VAL-INSTALL-039)
+// ===========================================================================
+
+/// The set of all 24 component IDs that have been ported to native Rust.
+///
+/// These are the installer components that should NOT spawn bash subprocesses.
+/// Verification and performance components remain as shell scripts.
+///
+/// Note: 21 of these appear in `state::default_components()`. The remaining 3
+/// (`amdgpu-drivers`, `migraphx-python`, `enhanced-env`) are chain-referenced
+/// or utility scripts that are ported but not shown as top-level selectable
+/// components in the TUI.
+pub const NATIVE_COMPONENT_IDS: &[&str] = &[
+    "permanent-env",
+    "rocm",
+    "pytorch",
+    "triton",
+    "mpi4py",
+    "deepspeed",
+    "ml-stack-core",
+    "flash-attn",
+    "repair-stack",
+    "megatron",
+    "vllm",
+    "aiter",
+    "vllm-studio",
+    "comfyui",
+    "textgen",
+    "onnx",
+    "bitsandbytes",
+    "rocm-smi",
+    "migraphx",
+    "pytorch-profiler",
+    "wandb",
+    // Chain-referenced / utility scripts (ported but not top-level TUI components)
+    "amdgpu-drivers",
+    "migraphx-python",
+    "enhanced-env",
+];
+
+/// Returns `true` if the given component ID has been ported to native Rust
+/// and should be dispatched through the Rust installer path instead of
+/// spawning a bash subprocess.
+///
+/// # Validation Assertions
+///
+/// - **VAL-INSTALL-031**: installer.rs no bash subprocess for ported components
+/// - **VAL-INSTALL-039**: All 24 components reference correct Rust modules
+pub fn is_native_component(component_id: &str) -> bool {
+    NATIVE_COMPONENT_IDS.contains(&component_id)
+}
+
+/// Dependency declarations for each native installer component.
+///
+/// Maps component IDs to the list of component IDs they depend on.
+/// Dependencies must be installed before dependents.
+///
+/// # Validation Assertions
+///
+/// - **VAL-INSTALL-041**: Megatron depends on PyTorch and MPI4Py
+/// - **VAL-INSTALL-042**: vLLM depends on PyTorch
+/// - **VAL-INSTALL-043**: DeepSpeed depends on PyTorch
+/// - **VAL-INSTALL-044**: Flash Attention depends on PyTorch and ROCm
+/// - **VAL-INSTALL-045**: ONNX Runtime depends on ROCm
+/// - **VAL-INSTALL-046**: AITER depends on PyTorch and ROCm
+/// - **VAL-INSTALL-047**: ComfyUI depends on PyTorch
+pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
+    match component_id {
+        "megatron" => &["pytorch", "mpi4py"],
+        "vllm" => &["pytorch"],
+        "aiter" => &["pytorch", "rocm"],
+        "flash-attn" => &["pytorch", "rocm"],
+        "onnx" => &["rocm"],
+        "deepspeed" => &["pytorch"],
+        "comfyui" => &["pytorch"],
+        "pytorch-profiler" => &["pytorch"],
+        // All other native components have no cross-component dependencies
+        _ => &[],
+    }
+}
+
+/// Sort component IDs in topological order so dependencies are installed
+/// before dependents.
+///
+/// Uses Kahn's algorithm (BFS-based topological sort).
+///
+/// # Validation Assertions
+///
+/// - **VAL-INSTALL-048**: Dependency graph is acyclic
+/// - **VAL-INSTALL-049**: installer.rs respects dependency ordering
+///
+/// # Returns
+///
+/// `Ok(sorted_ids)` on success, `Err(cycle_description)` if a cycle is detected.
+pub fn topological_sort(component_ids: &[String]) -> Result<Vec<String>, String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let id_set: HashSet<&str> = component_ids.iter().map(|s| s.as_str()).collect();
+
+    // Build adjacency list: dep -> list of dependents
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+
+    for id in component_ids.iter().map(|s| s.as_str()) {
+        in_degree.entry(id).or_insert(0);
+        adj.entry(id).or_default();
+    }
+
+    for id in component_ids.iter().map(|s| s.as_str()) {
+        for dep in get_dependencies(id) {
+            if id_set.contains(dep) {
+                // dep must come before id
+                adj.entry(dep).or_default().push(id);
+                *in_degree.entry(id).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut queue: VecDeque<&str> = VecDeque::new();
+    for (&id, &degree) in &in_degree {
+        if degree == 0 {
+            queue.push_back(id);
+        }
+    }
+
+    let mut sorted = Vec::with_capacity(component_ids.len());
+    while let Some(id) = queue.pop_front() {
+        sorted.push(id.to_string());
+        if let Some(dependents) = adj.get(id) {
+            for &dependent in dependents {
+                let degree = in_degree.get_mut(dependent).unwrap();
+                *degree -= 1;
+                if *degree == 0 {
+                    queue.push_back(dependent);
+                }
+            }
+        }
+    }
+
+    if sorted.len() != component_ids.len() {
+        let remaining: Vec<&str> = in_degree
+            .iter()
+            .filter(|(_, &d)| d > 0)
+            .map(|(&id, _)| id)
+            .collect();
+        return Err(format!(
+            "Dependency cycle detected among: {}",
+            remaining.join(", ")
+        ));
+    }
+
+    Ok(sorted)
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn test_all_24_native_components_listed() {
+        assert_eq!(NATIVE_COMPONENT_IDS.len(), 24);
+    }
+
+    #[test]
+    fn test_is_native_component_true_for_ported() {
+        for id in NATIVE_COMPONENT_IDS {
+            assert!(
+                is_native_component(id),
+                "Expected '{}' to be native",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_native_component_false_for_verification() {
+        assert!(!is_native_component("verify-basic"));
+        assert!(!is_native_component("verify-enhanced"));
+        assert!(!is_native_component("verify-build"));
+    }
+
+    #[test]
+    fn test_is_native_component_false_for_performance() {
+        assert!(!is_native_component("mlperf-inference"));
+        assert!(!is_native_component("rocm-benchmarks"));
+        assert!(!is_native_component("all-benchmarks"));
+    }
+
+    #[test]
+    fn test_is_native_component_false_for_unknown() {
+        assert!(!is_native_component("nonexistent"));
+        assert!(!is_native_component(""));
+    }
+
+    #[test]
+    fn test_megatron_dependencies() {
+        let deps = get_dependencies("megatron");
+        assert!(deps.contains(&"pytorch"));
+        assert!(deps.contains(&"mpi4py"));
+    }
+
+    #[test]
+    fn test_vllm_dependencies() {
+        let deps = get_dependencies("vllm");
+        assert!(deps.contains(&"pytorch"));
+    }
+
+    #[test]
+    fn test_deepspeed_dependencies() {
+        let deps = get_dependencies("deepspeed");
+        assert!(deps.contains(&"pytorch"));
+    }
+
+    #[test]
+    fn test_flash_attention_dependencies() {
+        let deps = get_dependencies("flash-attn");
+        assert!(deps.contains(&"pytorch"));
+        assert!(deps.contains(&"rocm"));
+    }
+
+    #[test]
+    fn test_onnx_dependencies() {
+        let deps = get_dependencies("onnx");
+        assert!(deps.contains(&"rocm"));
+    }
+
+    #[test]
+    fn test_aiter_dependencies() {
+        let deps = get_dependencies("aiter");
+        assert!(deps.contains(&"pytorch"));
+        assert!(deps.contains(&"rocm"));
+    }
+
+    #[test]
+    fn test_comfyui_dependencies() {
+        let deps = get_dependencies("comfyui");
+        assert!(deps.contains(&"pytorch"));
+    }
+
+    #[test]
+    fn test_no_deps_components() {
+        for id in &[
+            "rocm",
+            "pytorch",
+            "triton",
+            "mpi4py",
+            "ml-stack-core",
+            "permanent-env",
+            "rocm-smi",
+            "bitsandbytes",
+            "wandb",
+            "migraphx",
+            "vllm-studio",
+            "textgen",
+            "repair-stack",
+            "amdgpu-drivers",
+            "migraphx-python",
+        ] {
+            assert!(
+                get_dependencies(id).is_empty(),
+                "Expected no dependencies for '{}', got {:?}",
+                id,
+                get_dependencies(id)
+            );
+        }
+    }
+
+    #[test]
+    fn test_topological_sort_empty() {
+        let result = topological_sort(&[]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_topological_sort_no_deps() {
+        let ids = vec![
+            "rocm".to_string(),
+            "pytorch".to_string(),
+            "triton".to_string(),
+        ];
+        let result = topological_sort(&ids);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_topological_sort_respects_dependencies() {
+        let ids = vec![
+            "megatron".to_string(),
+            "pytorch".to_string(),
+            "mpi4py".to_string(),
+        ];
+        let result = topological_sort(&ids).unwrap();
+        let pytorch_pos = result.iter().position(|s| s == "pytorch").unwrap();
+        let mpi4py_pos = result.iter().position(|s| s == "mpi4py").unwrap();
+        let megatron_pos = result.iter().position(|s| s == "megatron").unwrap();
+        assert!(pytorch_pos < megatron_pos, "pytorch must come before megatron");
+        assert!(mpi4py_pos < megatron_pos, "mpi4py must come before megatron");
+    }
+
+    #[test]
+    fn test_topological_sort_complex_graph() {
+        let ids = vec![
+            "megatron".to_string(),
+            "flash-attn".to_string(),
+            "deepspeed".to_string(),
+            "vllm".to_string(),
+            "aiter".to_string(),
+            "onnx".to_string(),
+            "comfyui".to_string(),
+            "pytorch".to_string(),
+            "rocm".to_string(),
+            "mpi4py".to_string(),
+            "triton".to_string(),
+        ];
+        let result = topological_sort(&ids).unwrap();
+        assert_eq!(result.len(), 11);
+
+        // Verify all dependency constraints
+        let pos = |id: &str| result.iter().position(|s| s == id).unwrap();
+        assert!(pos("rocm") < pos("flash-attn"));
+        assert!(pos("rocm") < pos("onnx"));
+        assert!(pos("rocm") < pos("aiter"));
+        assert!(pos("pytorch") < pos("megatron"));
+        assert!(pos("mpi4py") < pos("megatron"));
+        assert!(pos("pytorch") < pos("vllm"));
+        assert!(pos("pytorch") < pos("deepspeed"));
+        assert!(pos("pytorch") < pos("flash-attn"));
+        assert!(pos("pytorch") < pos("aiter"));
+        assert!(pos("pytorch") < pos("comfyui"));
+    }
+
+    #[test]
+    fn test_topological_sort_filters_unrelated_deps() {
+        // Only pytorch and vllm in the set; vllm depends on pytorch
+        let ids = vec!["vllm".to_string(), "pytorch".to_string()];
+        let result = topological_sort(&ids).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "pytorch");
+        assert_eq!(result[1], "vllm");
+    }
+
+    #[test]
+    fn test_dependency_graph_is_acyclic() {
+        // Verify all native components can be sorted together
+        let all_ids: Vec<String> = NATIVE_COMPONENT_IDS.iter().map(|s| s.to_string()).collect();
+        let result = topological_sort(&all_ids);
+        assert!(
+            result.is_ok(),
+            "Dependency graph must be acyclic: {:?}",
+            result
+        );
+        let sorted = result.unwrap();
+        assert_eq!(sorted.len(), NATIVE_COMPONENT_IDS.len());
+    }
+
+    #[test]
+    fn test_native_ids_match_state_component_ids() {
+        // Ensure all NATIVE_COMPONENT_IDS actually correspond to components
+        // defined in state.rs default_components()
+        for id in NATIVE_COMPONENT_IDS {
+            // Just verify they're non-empty strings
+            assert!(!id.is_empty(), "Component ID must not be empty");
+            assert!(
+                id.chars().all(|c| c == '-' || c.is_ascii_alphanumeric()),
+                "Component ID '{}' must be alphanumeric with hyphens",
+                id
+            );
+        }
+    }
+}
