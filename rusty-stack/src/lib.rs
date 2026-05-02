@@ -12,6 +12,7 @@ pub mod config;
 pub mod core;
 pub mod hardware;
 pub mod installer;
+pub mod installers;
 pub mod orchestrator;
 pub mod platform;
 pub mod state;
