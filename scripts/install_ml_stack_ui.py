@@ -2,6 +2,18 @@
 """
 Enhanced ML Stack Installation Script with Textual UI
 
+DEPRECATED: This installer is deprecated and will be removed in a future release.
+Please use the unified `rusty` CLI instead:
+
+    rusty                  # Launch the interactive TUI installer
+    rusty update           # Scan and update components
+    rusty verify --full    # Verify installation
+    rusty bench --all      # Run all benchmarks
+
+Build from source: cd rusty-stack && cargo build --release
+
+This script is maintained for backward compatibility only.
+
 Author: Stanley Chisango (Scooter Lacroix)
 Email: scooterlacroix@gmail.com
 GitHub: https://github.com/scooter-lacroix

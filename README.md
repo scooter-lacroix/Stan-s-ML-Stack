@@ -29,6 +29,13 @@ For a detailed guide to help you get started from the ground up, head over to [B
 - **Flash Attention**: High-performance attention mechanisms with Triton and CK optimizations
 - **UV Package Management**: Modern, fast Python package management for all dependencies
 - **Repair Capabilities**: Automated detection and fixing of common installation issues
+- **Manifest Trust Model**: Baseline manifest with remote overlay and fallback chain for secure component resolution
+- **Validation Tiers**: Components classified as validated, candidate, experimental, or blocked
+- **Risk Classification**: Safe, guarded, and blocked risk levels for dependency-safe execution ordering
+- **Failure Isolation**: Individual component failures contained without cascading to other components
+- **Shell Parity Migration**: Rust-native installers match legacy shell script behavior for seamless transition
+- **Opt-in Anonymous Telemetry**: 180-second stability benchmark with anonymous HTTPS submission
+- **Windows Cross-Compilation**: Full Windows support with WSL2 bridging, path translation, and service management
 
 ## Hardware Requirements
 
@@ -118,6 +125,70 @@ The ML Stack consists of the following core components:
 | **ComfyUI** | Node-based UI for AI image generation with ROCm support | [Latest](https://github.com/comfyanonymous/ComfyUI) |
 | **PyTorch Profiler** | Performance analysis for PyTorch models | Latest |
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
+## Rusty Stack Platform Architecture
+
+The Rusty Stack engine is organized into five layered modules that handle the full component lifecycle — from detection through planning, execution, verification, and reporting.
+
+```
+rusty-stack/src/
+├── core/           # Shared types, manifest schema, validation state machine
+├── platform/       # Hardware/distro detection, component registry, environment normalization
+├── orchestrator/   # Update planner, apply engine, verify runner, upgrade orchestration
+├── adapter/        # Adapter registry with Rust and legacy script executors
+└── telemetry/      # Stability benchmark, anonymous payload, HTTPS submission, opt-in gate
+```
+
+### Module Breakdown
+
+| Module | Files | Description |
+|--------|-------|-------------|
+| **`core/`** | `types.rs`, `manifest.rs`, `validation.rs`, `plan.rs`, `verification.rs`, `telemetry_types.rs` | Shared types, manifest schema with baseline + remote overlay + fallback chain, validation state machine (validated → candidate → experimental → blocked), plan/verification/telemetry types |
+| **`platform/`** | `detection.rs`, `linux.rs`, `windows.rs`, `wsl.rs`, `registry.rs`, `environment.rs`, `path_bridge.rs`, `service.rs`, `control_shell.rs` | Hardware detection, distro detection, component registry, environment normalization, Windows/WSL2 support with path bridging and service management |
+| **`orchestrator/`** | `planner.rs`, `apply.rs`, `verify.rs`, `upgrade.rs`, `migration.rs` | Update planner with risk classification (safe/guarded/blocked), apply engine with dependency-safe execution ordering and failure isolation, verify runner, upgrade orchestration, shell parity migration logic |
+| **`adapter/`** | `mod.rs`, `rust_adapter.rs`, `legacy_adapter.rs` | Adapter registry with Rust-native and legacy script executors, enabling gradual migration from shell to Rust |
+| **`telemetry/`** | `benchmark.rs`, `payload.rs`, `submit.rs`, `opt_in.rs` | 180-second stability benchmark, anonymous payload construction, HTTPS submission client with fire-and-forget, opt-in gate |
+
+### CLI Commands
+
+Rusty Stack exposes a unified `rusty` CLI with subcommands:
+
+```bash
+# Interactive TUI installer (default)
+rusty
+
+# Component and manifest update (scan → plan → apply → verify)
+rusty update [--scan-only] [--all-safe] [--include-experimental] [--json] [COMPONENT...]
+
+# Rusty Stack application/runtime upgrade
+rusty upgrade [--yes] [--dry-run]
+
+# Installation verification
+rusty verify --full          # Full component verification
+rusty verify --enhanced      # Enhanced verification (all components)
+rusty verify --build         # Verify and rebuild failed components
+
+# Stability benchmark runner
+rusty bench --all            # Run full benchmark suite
+rusty bench --rocm           # ROCm benchmarks
+rusty bench --json <name>    # JSON output for a specific benchmark
+```
+
+### Build & Test
+
+```bash
+# Build the unified rusty CLI + TUI installer
+cd rusty-stack && cargo build --release
+
+# Run the full test suite
+cargo test
+
+# Run without TUI features
+cargo check --no-default-features
+
+# Windows cross-compilation
+cargo build --target x86_64-pc-windows-msvc
+```
+
 ## Installation
 
 Rusty Stack installer now offers three ROCm channels so you can balance stability against cutting-edge features:
@@ -143,19 +214,22 @@ curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/mai
 
 ### Rusty-Stack TUI (Primary Installer)
 
-The recommended way to install Rusty Stack is using the Rust-based **Rusty-Stack** TUI:
+The recommended way to install Rusty Stack is using the unified `rusty` CLI:
 
 ```bash
 # Build + run Rusty-Stack
-./scripts/run_rusty_stack.sh
-
-# Or build manually
 cd rusty-stack
 cargo build --release
+./target/release/rusty
+```
+
+Or use the backward-compatible alias:
+
+```bash
 ./target/release/rusty-stack
 ```
 
-This script will:
+This will:
 1. Detect your hardware
 2. Install required dependencies
 3. Set up the environment
@@ -198,19 +272,32 @@ This will install the core package with all necessary dependencies.
 <details>
 <summary>Python Curses Installer (Deprecated)</summary>
 
-The Python curses-based installer is deprecated but maintained for backward compatibility:
+The Python curses-based installer is deprecated. Use the unified `rusty` CLI instead:
 
 ```bash
-# Clone the repository
-git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
-cd Stan-s-ML-Stack
-
-# Run the installation script
-chmod +x scripts/install_ml_stack_curses.py
-./scripts/install_ml_stack_curses.py
+cd rusty-stack && cargo build --release
+./target/release/rusty
 ```
 
-**Note**: This installer is deprecated. Please use the Rusty-Stack TUI instead.
+The deprecated script is still available at `scripts/install_ml_stack_curses.py` for backward compatibility.
+
+**Note**: This installer is deprecated. Please use the `rusty` CLI instead.
+
+</details>
+
+<details>
+<summary>Python Textual Installer (Deprecated)</summary>
+
+The Python Textual-based installer is deprecated. Use the unified `rusty` CLI instead:
+
+```bash
+cd rusty-stack && cargo build --release
+./target/release/rusty
+```
+
+The deprecated script is still available at `scripts/install_ml_stack_ui.py` for backward compatibility.
+
+**Note**: This installer is deprecated. Please use the `rusty` CLI instead.
 
 </details>
 
@@ -231,69 +318,36 @@ If you prefer to install components manually, follow these steps:
    cd Stan-s-ML-Stack
    ```
 
-2. **Set up the environment**:
+2. **Build the rusty CLI**:
    ```bash
-   ./scripts/enhanced_setup_environment.sh
+   cd rusty-stack
+   cargo build --release
+   ```
+
+3. **Set up the environment**:
+   ```bash
    source ~/.mlstack_env
    ```
 
-3. **Install core components**:
+4. **Run the TUI installer**:
    ```bash
-   # Install ROCm
-   ./scripts/install_rocm.sh
-
-   # Install PyTorch
-   ./scripts/install_pytorch.sh
-
-   # Build ONNX Runtime
-   ./scripts/build_onnxruntime.sh
-
-   # Install MIGraphX
-   ./scripts/install_migraphx.sh
-
-   # Build Flash Attention
-   ./scripts/build_flash_attn_amd.sh
-
-   # Install RCCL
-   ./scripts/install_rccl.sh
-
-   # Install MPI
-   ./scripts/install_mpi.sh
-
-   # Install Megatron-LM
-   ./scripts/install_megatron.sh
-   ```
-
-4. **Install extension components** (optional):
-   ```bash
-   # Install Triton
-   ./scripts/install_triton.sh
-
-   # Install BITSANDBYTES
-   ./scripts/install_bitsandbytes.sh
-
-   # Install vLLM
-   ./scripts/install_vllm.sh
-
-   # Install ROCm SMI
-   ./scripts/install_rocm_smi.sh
-
-   # Install PyTorch Profiler
-   ./scripts/install_pytorch_profiler.sh
-
-   # Install Weights & Biases
-   ./scripts/install_wandb.sh
-
-   # Install vLLM Studio
-   ./scripts/install_vllm_studio.sh
-
-   # Install ComfyUI (ROCm edition)
-   ./scripts/install_comfyui.sh
+   ./target/release/rusty
    ```
 
 5. **Verify the installation**:
    ```bash
-   ./scripts/enhanced_verify_installation.sh
+   ./target/release/rusty verify --full
+   ```
+
+3. **Install components via the rusty TUI**:
+   ```bash
+   ./target/release/rusty
+   ```
+   The TUI will guide you through selecting and installing core and extension components.
+
+4. **Verify the installation**:
+   ```bash
+   ./target/release/rusty verify --full
    ```
 
 ### Docker Installation
@@ -364,11 +418,10 @@ The ML Stack includes a comprehensive environment setup script that automaticall
 To set up the environment automatically:
 
 ```bash
-./scripts/enhanced_setup_environment.sh
 source ~/.mlstack_env
 ```
 
-This script will:
+The environment is configured during installation by the rusty CLI bootstrap module. This will:
 1. Detect your AMD GPUs
 2. Detect ROCm installation
 3. Configure environment variables
@@ -407,25 +460,9 @@ export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$P
 
 ### Persistent Environment Setup
 
-To ensure environment variables and symlinks persist across system reboots, use the persistent environment setup script:
+To ensure environment variables and symlinks persist across system reboots, the rusty CLI bootstrap module handles this automatically during installation. The environment file is created at `~/.mlstack_env`.
 
-```bash
-sudo ./scripts/create_persistent_env.sh
-```
-
-This script will:
-1. Create a system-wide environment file in `/etc/profile.d/`
-2. Set up a systemd service to create necessary symlinks at boot
-3. Create a user-specific environment file
-4. Add environment verification tools
-
-After running this script, the environment will be automatically loaded on system boot, and all necessary symlinks will be created. You may need to log out and log back in for all changes to take effect.
-
-To verify the environment setup, run:
-
-```bash
-sudo verify-mlstack-env.sh
-```
+After installation, the environment will be automatically loaded on system boot, and all necessary symlinks will be created. You may need to log out and log back in for all changes to take effect.
 
 ### Environment Variables
 
@@ -523,13 +560,13 @@ The ML Stack includes several diagnostic tools to help troubleshoot issues:
 
 #### Enhanced Verification Script
 
-Run the enhanced verification script to check the status of all components:
+Run the enhanced verification via the rusty CLI:
 
 ```bash
-./scripts/enhanced_verify_installation.sh
+./target/release/rusty verify --enhanced
 ```
 
-This script will:
+This will:
 1. Detect your hardware
 2. Verify all installed components
 3. Provide troubleshooting suggestions for any issues
@@ -559,26 +596,26 @@ Some components, like vLLM, don't officially support Python 3.13 yet. We've impl
 
 #### vLLM Python 3.13 Workaround
 
-We've created a custom version of vLLM that works with Python 3.13:
+We've created a custom version of vLLM that works with Python 3.13. Install via the rusty CLI:
 
 ```bash
-./scripts/install_vllm.sh
+./target/release/rusty
 ```
 
-This script:
+The vLLM installer:
 1. Creates a simplified vLLM module that provides the basic API
 2. Sets the correct environment variables for AMD GPUs
 3. Installs the module with Python 3.13 support
 
 ### ONNX Runtime ROCm Support
 
-ONNX Runtime needs to be built from source to support ROCm. Our build script handles this automatically:
+ONNX Runtime needs to be built from source to support ROCm. The rusty CLI handles this automatically:
 
 ```bash
-./scripts/build_onnxruntime.sh
+./target/release/rusty
 ```
 
-This script:
+The installer:
 1. Clones the ONNX Runtime repository
 2. Configures the build with ROCm support
 3. Builds and installs ONNX Runtime
@@ -586,11 +623,7 @@ This script:
 
 ### BITSANDBYTES ROCm Compatibility
 
-BITSANDBYTES shows CUDA setup warnings with ROCm, but still functions correctly. Our installation script handles this:
-
-```bash
-./scripts/install_bitsandbytes.sh
-```
+BITSANDBYTES shows CUDA setup warnings with ROCm, but still functions correctly. Install via the rusty CLI.
 
 ### Ninja Build Symlinks
 
@@ -602,14 +635,15 @@ sudo ln -sf /usr/bin/ninja /usr/bin/ninja-build
 
 ## Verification
 
-To verify that your ML Stack installation is working correctly, run one of the verification scripts:
+To verify that your ML Stack installation is working correctly:
 
 ```bash
-# Standard verification script
-./scripts/enhanced_verify_installation.sh
+# Using the unified rusty CLI
+cd rusty-stack && cargo build --release
+./target/release/rusty verify --full
 
-# Custom verification script for non-standard installations
-./scripts/custom_verify_installation.sh
+# Or the enhanced verification
+./target/release/rusty verify --enhanced
 ```
 
 The custom verification script is designed to detect components installed in non-standard locations or with different module names. It's particularly useful for custom installations where components like Flash Attention, RCCL, or Megatron-LM are installed in different locations.

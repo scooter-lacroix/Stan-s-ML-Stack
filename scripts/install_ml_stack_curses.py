@@ -2,10 +2,16 @@
 """
 ML Stack Installation UI using curses
 
-⚠️  DEPRECATED: This installer is deprecated. Please use the Rusty-Stack TUI instead:
-   ./scripts/run_rusty_stack.sh
+DEPRECATED: This installer is deprecated and will be removed in a future release.
+Please use the unified `rusty` CLI instead:
 
-A simple, clean UI for installing the ML Stack components.
+    rusty                  # Launch the interactive TUI installer
+    rusty update           # Scan and update components
+    rusty verify --full    # Verify installation
+    rusty bench --all      # Run all benchmarks
+
+Build from source: cd rusty-stack && cargo build --release
+
 This script is maintained for backward compatibility only.
 """
 
