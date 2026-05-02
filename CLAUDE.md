@@ -169,6 +169,7 @@ See `docs/MULTI_CHANNEL_GUIDE.md` for channel-specific component versions.
 - **Target Hardware:** AMD RDNA 2/3/4 GPUs (7900 XTX, 7800 XT, 9070 XT, etc.)
 - **Shell Scripts:** All scripts in `scripts/` should be executable and handle errors gracefully
 - **Rust Build:** Use `cargo build --release` in `rusty-stack/`
+- **Migration Guide:** See [MIGRATION.md](MIGRATION.md) for the complete migration guide from the legacy shell/Python architecture to Rusty Stack
 
 ## LeIndex Usage
 
