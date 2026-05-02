@@ -15,6 +15,7 @@
 //! - **VAL-INFRA-001**: Module structure compiles and integrates
 //! - **VAL-INFRA-019**: No code duplication with platform modules
 
+pub mod benchmark_common;
 pub mod distro;
 pub mod env_validation;
 pub mod guard;
@@ -25,6 +26,10 @@ pub mod ui_helper;
 pub mod utils;
 
 // Re-export key types for convenience
+pub use benchmark_common::{
+    normalize_pci_bus_id, BenchLogger, BenchTimer, BenchmarkResult, BenchmarkResults,
+    format_elapsed, is_dry_run, now_timestamp, resolve_log_dir,
+};
 pub use distro::DistroFacade;
 pub use env_validation::{EnvValidationResult, EnvVars};
 pub use guard::{
