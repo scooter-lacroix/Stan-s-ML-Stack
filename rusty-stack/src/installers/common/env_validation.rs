@@ -221,6 +221,10 @@ pub fn require_mlstack_env(script_name: Option<&str>) -> EnvValidationResult {
 ///
 /// Equivalent to `source ~/.mlstack_env` in the shell scripts.
 /// Returns `true` if the file was loaded successfully.
+///
+/// Handles both direct exports (`export VAR=value`) and if-guarded exports
+/// (`if [ -z "${VAR:-}" ]; then export VAR=value; fi`). Shell suffixes are
+/// stripped to prevent `; fi` from appearing in environment variable values.
 pub fn load_mlstack_env() -> bool {
     let env_path = default_env_path();
     if !env_path.exists() {
@@ -237,19 +241,17 @@ pub fn load_mlstack_env() -> bool {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("export ") {
-            if let Some((key, value)) = rest.split_once('=') {
-                let key = key.trim();
-                let value = value.trim();
-                // Remove surrounding quotes if present
-                let value = value
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .unwrap_or(value);
-                // Skip values with shell variable expansions ($PATH, etc.)
-                if !value.contains('$') {
-                    std::env::set_var(key, value);
-                }
+
+        if let Some((key, raw_value)) = extract_export_assignment(trimmed) {
+            let value = strip_shell_suffixes(&raw_value);
+            // Remove surrounding quotes if present
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .unwrap_or(&value);
+            // Skip values with shell variable expansions ($PATH, etc.)
+            if !value.contains('$') {
+                std::env::set_var(&key, value);
             }
         }
     }
@@ -262,28 +264,27 @@ pub fn load_mlstack_env() -> bool {
 // ===========================================================================
 
 /// Parse an env file into a HashMap of key-value pairs.
+///
+/// Handles two formats:
+/// 1. Direct exports: `export VAR=value`
+/// 2. If-guarded exports: `if [ -z "${VAR:-}" ]; then export VAR=value; fi`
+///
+/// Shell suffixes (`; fi`, `&&`, etc.) are stripped from values to prevent
+/// shell script remnants from appearing in parsed environment variable values.
 fn parse_env_file(contents: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
+
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("export ") {
-            if let Some((key, value)) = rest.split_once('=') {
-                let key = key.trim().to_string();
-                let value = value.trim().to_string();
-                // Remove surrounding quotes
-                let value = value
-                    .strip_prefix('"')
-                    .and_then(|v| v.strip_suffix('"'))
-                    .unwrap_or(&value)
-                    .to_string();
-                map.insert(key, value);
-            }
-        } else if let Some((key, value)) = trimmed.split_once('=') {
-            let key = key.trim().to_string();
-            let value = value.trim().to_string();
+
+        // Extract any "export KEY=VALUE" assignments from the line.
+        // This handles both direct exports and if-guarded exports.
+        if let Some(key_value) = extract_export_assignment(trimmed) {
+            let (key, value) = key_value;
+            let value = strip_shell_suffixes(&value);
             let value = value
                 .strip_prefix('"')
                 .and_then(|v| v.strip_suffix('"'))
@@ -293,6 +294,59 @@ fn parse_env_file(contents: &str) -> HashMap<String, String> {
         }
     }
     map
+}
+
+/// Extract a `KEY=VALUE` pair from a line containing `export KEY=VALUE`.
+///
+/// Handles:
+/// - `export KEY=VALUE`
+/// - `if [ -z "${KEY:-}" ]; then export KEY=VALUE; fi`
+/// - `    export KEY=VALUE` (indented inside if block)
+fn extract_export_assignment(line: &str) -> Option<(String, String)> {
+    // Find the last occurrence of "export " in the line (handles indented exports)
+    let export_idx = line.rfind("export ")?;
+    let rest = &line[export_idx + 7..]; // skip "export "
+
+    if let Some((key, value)) = rest.split_once('=') {
+        let key = key.trim().to_string();
+        if key.is_empty() || key.contains(' ') || key.contains('$') {
+            return None;
+        }
+        let value = value.trim().to_string();
+        Some((key, value))
+    } else {
+        None
+    }
+}
+
+/// Strip shell command suffixes from a value string.
+///
+/// Removes trailing:
+/// - `; fi` (from if-guard lines)
+/// - `&& ...` (from chained commands)
+/// - Any remaining `;` followed by shell keywords
+fn strip_shell_suffixes(value: &str) -> String {
+    let mut value = value.to_string();
+
+    // Strip trailing "; fi" (possibly with whitespace)
+    if let Some(idx) = value.find("; fi") {
+        value.truncate(idx);
+    }
+    if let Some(idx) = value.find(";& fi") {
+        value.truncate(idx);
+    }
+
+    // Strip trailing "&& ..." (chained commands)
+    if let Some(idx) = value.find("&& ") {
+        value.truncate(idx);
+    }
+
+    // Strip trailing "; then" (shouldn't normally appear in values but safety net)
+    if let Some(idx) = value.find("; then") {
+        value.truncate(idx);
+    }
+
+    value.trim().to_string()
 }
 
 /// Auto-detect environment variables from the system.
@@ -508,5 +562,127 @@ export ROCM_PATH=/opt/rocm
         // Should be gfx followed by digits
         assert!(arch.starts_with("gfx"));
         assert!(arch.len() >= 5); // gfx + at least 2 digits
+    }
+
+    // --- Shell suffix stripping tests (fix-persistent-env-detection) ---
+
+    #[test]
+    fn test_parse_env_file_if_guard_single_line() {
+        // The env_setup.rs generates lines like:
+        // if [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=0,1,2; fi
+        let contents = r#"if [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=0,1,2; fi"#;
+        let map = parse_env_file(contents);
+        let value = map.get("HIP_VISIBLE_DEVICES").unwrap();
+        assert_eq!(value, "0,1,2", "Should strip '; fi' suffix, got: {value}");
+        assert!(!value.contains("; fi"), "Value must not contain shell suffixes");
+    }
+
+    #[test]
+    fn test_parse_env_file_rocm_version_if_guard() {
+        let contents = r#"if [ -z "${ROCM_VERSION:-}" ]; then export ROCM_VERSION=7.2.2; fi"#;
+        let map = parse_env_file(contents);
+        let value = map.get("ROCM_VERSION").unwrap();
+        assert_eq!(value, "7.2.2", "Should strip '; fi' suffix, got: {value}");
+    }
+
+    #[test]
+    fn test_parse_env_file_rocm_home_if_guard() {
+        let contents = r#"if [ -z "${ROCM_HOME:-}" ]; then export ROCM_HOME=/opt/rocm; fi"#;
+        let map = parse_env_file(contents);
+        let value = map.get("ROCM_HOME").unwrap();
+        assert_eq!(value, "/opt/rocm", "Should strip '; fi' suffix, got: {value}");
+    }
+
+    #[test]
+    fn test_parse_env_file_mixed_formats() {
+        // Mix of if-guard and direct export lines, like the real .mlstack_env
+        let contents = r#"
+# ML Stack Environment File
+if [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=0,1,2; fi
+if [ -z "${ROCM_VERSION:-}" ]; then export ROCM_VERSION=7.2.2; fi
+export GPU_ARCH=gfx1100
+export HSA_OVERRIDE_GFX_VERSION=11.0.0
+if [ -z "${HSA_ENABLE_SDMA:-}" ]; then export HSA_ENABLE_SDMA=0; fi
+"#;
+        let map = parse_env_file(contents);
+
+        assert_eq!(map.get("HIP_VISIBLE_DEVICES").unwrap(), "0,1,2");
+        assert_eq!(map.get("ROCM_VERSION").unwrap(), "7.2.2");
+        assert_eq!(map.get("GPU_ARCH").unwrap(), "gfx1100");
+        assert_eq!(map.get("HSA_OVERRIDE_GFX_VERSION").unwrap(), "11.0.0");
+        assert_eq!(map.get("HSA_ENABLE_SDMA").unwrap(), "0");
+
+        // Verify no shell suffixes in any value
+        for (key, value) in &map {
+            assert!(!value.contains("; fi"), "{key}: Value contains '; fi': {value}");
+            assert!(!value.contains("&&"), "{key}: Value contains '&&': {value}");
+        }
+    }
+
+    #[test]
+    fn test_parse_env_file_multiline_if_guard() {
+        // Some if-guards span multiple lines
+        let contents = r#"if [ -z "${HSA_TOOLS_LIB:-}" ]; then
+    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
+        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    else
+        export HSA_TOOLS_LIB=0
+    fi
+fi"#;
+        let map = parse_env_file(contents);
+        // Should extract the last export in the if block
+        let value = map.get("HSA_TOOLS_LIB");
+        assert!(value.is_some(), "Should find HSA_TOOLS_LIB in multiline if-guard");
+        let val = value.unwrap();
+        assert!(!val.contains("fi"), "Value should not contain 'fi': {val}");
+    }
+
+    #[test]
+    fn test_parse_env_file_no_shell_suffixes_in_values() {
+        let contents = r#"
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then export CUDA_VISIBLE_DEVICES=0,1,2; fi
+if [ -z "${PYTORCH_ROCM_DEVICE:-}" ]; then export PYTORCH_ROCM_DEVICE=0,1,2; fi
+if [ -z "${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=latest; fi
+"#;
+        let map = parse_env_file(contents);
+        for (key, value) in &map {
+            assert!(!value.contains(';'), "{key}: Value contains ';': {value}");
+            assert!(!value.contains("fi"), "{key}: Value contains 'fi': {value}");
+        }
+    }
+
+    #[test]
+    fn test_parse_env_file_direct_export_unmodified() {
+        // Direct exports (no if-guard) should still work correctly
+        let contents = r#"
+export ROCM_VERSION=7.2.2
+export GPU_ARCH=gfx1100
+export ROCM_HOME=/opt/rocm
+"#;
+        let map = parse_env_file(contents);
+        assert_eq!(map.get("ROCM_VERSION").unwrap(), "7.2.2");
+        assert_eq!(map.get("GPU_ARCH").unwrap(), "gfx1100");
+        assert_eq!(map.get("ROCM_HOME").unwrap(), "/opt/rocm");
+    }
+
+    #[test]
+    fn test_parse_env_file_permanent_env_format() {
+        // Content generated by permanent_env.rs (direct export, no if-guards)
+        let contents = r#"# Permanent ROCm Environment Setup (Generated by rusty-stack)
+export ROCM_VERSION=7.2.0
+export ROCM_CHANNEL=latest
+export GPU_ARCH=gfx1100
+export PYTORCH_ROCM_ARCH=gfx1100
+export ROCM_HOME=/opt/rocm
+export ROCM_PATH=/opt/rocm
+export HIP_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0
+export MLSTACK_PYTHON_BIN=python3
+export HSA_OVERRIDE_GFX_VERSION=11.0.0
+"#;
+        let map = parse_env_file(contents);
+        assert_eq!(map.get("ROCM_VERSION").unwrap(), "7.2.0");
+        assert_eq!(map.get("HIP_VISIBLE_DEVICES").unwrap(), "0");
+        assert_eq!(map.get("HSA_OVERRIDE_GFX_VERSION").unwrap(), "11.0.0");
     }
 }

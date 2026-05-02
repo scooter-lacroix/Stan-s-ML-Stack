@@ -563,8 +563,10 @@ fn sanitize_mlstack_env(
 }
 
 fn extract_env_key(line: &str) -> Option<&str> {
-    let line = line.strip_prefix("export ")?;
-    line.split('=').next().map(str::trim)
+    // Use rfind to handle both direct exports and if-guarded exports
+    let export_idx = line.rfind("export ")?;
+    let rest = &line[export_idx + 7..]; // skip "export "
+    rest.split('=').next().map(str::trim)
 }
 
 fn fix_env_assignment(line: &str, key: &str) -> (String, bool) {
@@ -580,14 +582,21 @@ fn fix_env_assignment(line: &str, key: &str) -> (String, bool) {
         return (line.to_string(), false);
     }
 
-    (format!("{}\"{}\"", before, after), true)
+    // Strip shell suffixes from the value part before re-quoting
+    let clean_after = strip_shell_suffixes_from_value(after);
+    (format!("{}\"{}\"", before, clean_after), true)
 }
 
 fn normalize_env_value(line: &str, key: &str, desired: &str) -> (String, bool) {
     let marker = format!("export {}=", key);
-    if let Some(rest) = line.trim_start().strip_prefix(&marker) {
-        let current = rest.trim().trim_matches('"');
+    // Use rfind to handle both direct exports and if-guarded exports
+    if let Some(export_idx) = line.rfind(&marker) {
+        let after_marker = &line[export_idx + marker.len()..];
+        let current = after_marker.trim().trim_matches('"');
+        // Strip shell suffixes before comparing
+        let current = strip_shell_suffixes_from_value(current);
         if current != desired {
+            // Replace the entire line with a direct export (removing if-guard)
             return (format!("export {}={}", key, desired), true);
         }
     }
@@ -601,8 +610,12 @@ fn normalize_visible_devices(line: &str, key: &str, desired: &str) -> (String, b
     }
 
     let marker = format!("export {}=", key);
-    if let Some(rest) = line.trim_start().strip_prefix(&marker) {
-        let current = rest.trim().trim_matches('"');
+    // Use rfind to handle both direct exports and if-guarded exports
+    if let Some(export_idx) = line.rfind(&marker) {
+        let after_marker = &line[export_idx + marker.len()..];
+        let current = after_marker.trim().trim_matches('"');
+        // Strip shell suffixes before comparing
+        let current = strip_shell_suffixes_from_value(current);
 
         // Always update if current differs from desired
         // This handles:
@@ -610,6 +623,7 @@ fn normalize_visible_devices(line: &str, key: &str, desired: &str) -> (String, b
         // 2. "0,1,2" -> "0,1" (filtering out iGPUs)
         // 3. "0,1" -> "0,1" (no change)
         if current != desired {
+            // Replace the entire line with a direct export (removing if-guard)
             return (format!("export {}={}", key, desired), true);
         }
     }
@@ -1193,12 +1207,34 @@ fn load_mlstack_env_exports(user_home: &str) -> HashMap<String, String> {
 }
 
 fn parse_env_export(line: &str) -> Option<(String, String)> {
-    let export_idx = line.find("export ")?;
+    let export_idx = line.rfind("export ")?;
     let rest = &line[export_idx + 7..];
     let mut parts = rest.splitn(2, '=');
     let key = parts.next()?.trim().to_string();
     let value = parts.next()?.trim().trim_matches('"').to_string();
+    // Strip shell suffixes from if-guard lines: "; fi", "&& ..."
+    let value = strip_shell_suffixes_from_value(&value);
     Some((key, value))
+}
+
+/// Strip shell command suffixes from an env file value.
+///
+/// The `.mlstack_env` file uses if-guard patterns:
+/// `if [ -z "${VAR:-}" ]; then export VAR=value; fi`
+///
+/// When parsing the `export VAR=value` part, the value may contain
+/// the trailing `; fi`. This function strips it.
+fn strip_shell_suffixes_from_value(value: &str) -> String {
+    let mut v = value.to_string();
+    // Strip trailing "; fi" (from if-guard lines)
+    if let Some(idx) = v.find("; fi") {
+        v.truncate(idx);
+    }
+    // Strip trailing "&& ..." (from chained commands)
+    if let Some(idx) = v.find("&& ") {
+        v.truncate(idx);
+    }
+    v.trim().to_string()
 }
 
 fn detect_onnx_rocm_provider(python: &str) -> Option<String> {
