@@ -15,18 +15,8 @@ path = "src/main.rs"
 required-features = ["tui", "unix-deps"]
 
 [[bin]]
-name = "rusty-stack-bench"
-path = "src/bin/benchmark_runner.rs"
-required-features = ["tui", "unix-deps"]
-
-[[bin]]
-name = "rusty-stack-update"
-path = "src/bin/update.rs"
-required-features = ["unix-deps"]
-
-[[bin]]
-name = "rusty-stack-upgrade"
-path = "src/bin/upgrade.rs"
+name = "rusty"
+path = "src/bin/rusty.rs"
 required-features = ["unix-deps"]
 
 [dependencies]

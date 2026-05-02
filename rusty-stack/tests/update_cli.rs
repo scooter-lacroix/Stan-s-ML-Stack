@@ -1,12 +1,12 @@
-//! CLI integration tests for `rusty-stack-update` binary.
+//! CLI integration tests for `rusty update` subcommand.
 //!
 //! Tests the CLI surface using `assert_cmd` to verify:
-//! - `--help` flag works
-//! - `--version` flag works
-//! - `--scan-only` produces JSON output
-//! - `--all-safe` applies only safe updates
-//! - `--include-experimental` includes experimental components
-//! - `--json` forces JSON output
+//! - `rusty update --help` works
+//! - `rusty --version` works
+//! - `rusty update --scan-only` produces JSON output
+//! - `rusty update --all-safe` applies only safe updates
+//! - `rusty update --include-experimental` includes experimental components
+//! - `rusty update --json` forces JSON output
 //! - Targeted component selection works
 //! - Unknown component produces error
 //! - Non-interactive output is machine-readable JSON
@@ -14,8 +14,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// The binary name for the update command.
-const BIN: &str = "rusty-stack-update";
+/// The unified binary name.
+const BIN: &str = "rusty";
 
 // ===========================================================================
 // Help and version tests
@@ -25,7 +25,7 @@ const BIN: &str = "rusty-stack-update";
 fn test_update_help() {
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--help")
+        .args(["update", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Scans installed components"))
@@ -42,7 +42,7 @@ fn test_update_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("rusty-stack-update"));
+        .stdout(predicate::str::contains("rusty"));
 }
 
 // ===========================================================================
@@ -54,7 +54,7 @@ fn test_update_scan_only_json_output() {
     // --scan-only with --json should produce valid JSON
     let output = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--json"])
+        .args(["update", "--scan-only", "--json"])
         .assert()
         .success()
         .get_output()
@@ -82,7 +82,7 @@ fn test_update_scan_only_json_output() {
 fn test_update_json_output_has_scan_info() {
     let output = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--json"])
+        .args(["update", "--scan-only", "--json"])
         .assert()
         .success()
         .get_output()
@@ -103,7 +103,7 @@ fn test_update_json_output_has_scan_info() {
 fn test_update_json_output_has_plan() {
     let output = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--json"])
+        .args(["update", "--scan-only", "--json"])
         .assert()
         .success()
         .get_output()
@@ -130,7 +130,7 @@ fn test_update_json_output_has_plan() {
 fn test_update_all_safe_json() {
     let output = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--all-safe", "--scan-only", "--json"])
+        .args(["update", "--all-safe", "--scan-only", "--json"])
         .assert()
         .success()
         .get_output()
@@ -157,7 +157,7 @@ fn test_update_include_experimental_adds_items() {
     // Without --include-experimental
     let output_without = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--json"])
+        .args(["update", "--scan-only", "--json"])
         .assert()
         .success()
         .get_output()
@@ -176,7 +176,7 @@ fn test_update_include_experimental_adds_items() {
     // With --include-experimental
     let output_with = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--include-experimental", "--json"])
+        .args(["update", "--scan-only", "--include-experimental", "--json"])
         .assert()
         .success()
         .get_output()
@@ -208,7 +208,7 @@ fn test_update_target_unknown_component_fails() {
     // Targeting a nonexistent component should fail
     Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--json", "nonexistent-component-xyz"])
+        .args(["update", "--scan-only", "--json", "nonexistent-component-xyz"])
         .assert()
         .failure()
         .code(1);
@@ -219,7 +219,7 @@ fn test_update_target_known_component_succeeds() {
     // Targeting a known component (rocm) should succeed
     let output = Command::cargo_bin(BIN)
         .unwrap()
-        .args(["--scan-only", "--json", "rocm"])
+        .args(["update", "--scan-only", "--json", "rocm"])
         .assert()
         .success()
         .get_output()
@@ -251,7 +251,7 @@ fn test_update_target_known_component_succeeds() {
 fn test_update_rejects_unknown_flags() {
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--nonexistent-flag")
+        .args(["update", "--nonexistent-flag"])
         .assert()
         .failure();
 }
@@ -261,7 +261,7 @@ fn test_update_non_tty_produces_json() {
     // When piped (non-TTY), output should be JSON by default
     let output = Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--scan-only")
+        .args(["update", "--scan-only"])
         .assert()
         .success()
         .get_output()

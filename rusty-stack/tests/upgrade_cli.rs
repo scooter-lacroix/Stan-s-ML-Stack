@@ -1,17 +1,17 @@
-//! CLI integration tests for `rusty-stack-upgrade` binary.
+//! CLI integration tests for `rusty upgrade` subcommand.
 //!
 //! Tests the CLI surface using `assert_cmd` to verify:
-//! - `--help` flag works
-//! - `--version` flag works
-//! - `--yes` non-interactive mode produces JSON output
-//! - `--dry-run` mode reports current version
+//! - `rusty upgrade --help` works
+//! - `rusty --version` works
+//! - `rusty upgrade --yes` non-interactive mode produces JSON output
+//! - `rusty upgrade --dry-run` mode reports current version
 //! - Error handling produces proper exit codes
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// The binary name for the upgrade command.
-const BIN: &str = "rusty-stack-upgrade";
+/// The unified binary name.
+const BIN: &str = "rusty";
 
 // ---- Help and version tests ----
 
@@ -19,7 +19,7 @@ const BIN: &str = "rusty-stack-upgrade";
 fn test_upgrade_help() {
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--help")
+        .args(["upgrade", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Rusty Stack"))
@@ -35,7 +35,7 @@ fn test_upgrade_version() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("rusty-stack-upgrade"));
+        .stdout(predicate::str::contains("rusty"));
 }
 
 // ---- Dry run tests ----
@@ -44,7 +44,7 @@ fn test_upgrade_version() {
 fn test_upgrade_dry_run_interactive() {
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--dry-run")
+        .args(["upgrade", "--dry-run"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Current version:"))
@@ -55,8 +55,7 @@ fn test_upgrade_dry_run_interactive() {
 fn test_upgrade_dry_run_non_interactive() {
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--dry-run")
-        .arg("--yes")
+        .args(["upgrade", "--dry-run", "--yes"])
         .assert()
         .success()
         .stdout(predicate::str::contains("current_version"));
@@ -70,7 +69,7 @@ fn test_upgrade_non_interactive_produces_json_on_error() {
     // In --yes mode, the error should be JSON-formatted.
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--yes")
+        .args(["upgrade", "--yes"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("\"status\":"));
@@ -84,6 +83,7 @@ fn test_upgrade_interactive_error_is_human_readable() {
     // In interactive mode (no --yes), the error should be human-readable.
     Command::cargo_bin(BIN)
         .unwrap()
+        .args(["upgrade"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("Download failed"));
@@ -95,7 +95,7 @@ fn test_upgrade_interactive_error_is_human_readable() {
 fn test_upgrade_rejects_unknown_flags() {
     Command::cargo_bin(BIN)
         .unwrap()
-        .arg("--nonexistent-flag")
+        .args(["upgrade", "--nonexistent-flag"])
         .assert()
         .failure()
         .stderr(
