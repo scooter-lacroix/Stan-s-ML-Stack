@@ -8,6 +8,7 @@ pub mod adapter;
 pub mod benchmark_logs;
 pub mod benchmark_runners;
 pub mod benchmarks;
+pub mod bootstrap;
 pub mod component_status;
 pub mod config;
 pub mod core;
