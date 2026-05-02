@@ -123,24 +123,55 @@ impl PackageManagerFacade {
     /// Returns the program and args (without sudo prefix).
     pub fn build_update_indices_cmd(&self) -> (String, Vec<String>) {
         match self.pkg_manager {
-            PackageManager::Apt => ("apt".to_string(), vec!["update".to_string(), "-qq".to_string()]),
-            PackageManager::Pacman => ("pacman".to_string(), vec!["-Sy".to_string(), "--noconfirm".to_string()]),
+            PackageManager::Apt => (
+                "apt".to_string(),
+                vec!["update".to_string(), "-qq".to_string()],
+            ),
+            PackageManager::Pacman => (
+                "pacman".to_string(),
+                vec!["-Sy".to_string(), "--noconfirm".to_string()],
+            ),
             PackageManager::Dnf => ("dnf".to_string(), vec!["makecache".to_string()]),
             PackageManager::Yum => ("yum".to_string(), vec!["makecache".to_string()]),
             PackageManager::Zypper => ("zypper".to_string(), vec!["refresh".to_string()]),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
     /// Build the command for upgrading all packages.
     pub fn build_upgrade_cmd(&self) -> (String, Vec<String>) {
         match self.pkg_manager {
-            PackageManager::Apt => ("apt".to_string(), vec!["upgrade".to_string(), "-y".to_string(), "-qq".to_string()]),
-            PackageManager::Pacman => ("pacman".to_string(), vec!["-Su".to_string(), "--noconfirm".to_string()]),
-            PackageManager::Dnf => ("dnf".to_string(), vec!["upgrade".to_string(), "-y".to_string(), "--refresh".to_string()]),
-            PackageManager::Yum => ("yum".to_string(), vec!["upgrade".to_string(), "-y".to_string()]),
-            PackageManager::Zypper => ("zypper".to_string(), vec!["update".to_string(), "-y".to_string()]),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Apt => (
+                "apt".to_string(),
+                vec!["upgrade".to_string(), "-y".to_string(), "-qq".to_string()],
+            ),
+            PackageManager::Pacman => (
+                "pacman".to_string(),
+                vec!["-Su".to_string(), "--noconfirm".to_string()],
+            ),
+            PackageManager::Dnf => (
+                "dnf".to_string(),
+                vec![
+                    "upgrade".to_string(),
+                    "-y".to_string(),
+                    "--refresh".to_string(),
+                ],
+            ),
+            PackageManager::Yum => (
+                "yum".to_string(),
+                vec!["upgrade".to_string(), "-y".to_string()],
+            ),
+            PackageManager::Zypper => (
+                "zypper".to_string(),
+                vec!["update".to_string(), "-y".to_string()],
+            ),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
@@ -159,10 +190,14 @@ impl PackageManagerFacade {
             ),
             PackageManager::Pacman => (
                 "pacman".to_string(),
-                vec!["-S".to_string(), "--noconfirm".to_string(), "--needed".to_string()]
-                    .into_iter()
-                    .chain(native)
-                    .collect(),
+                vec![
+                    "-S".to_string(),
+                    "--noconfirm".to_string(),
+                    "--needed".to_string(),
+                ]
+                .into_iter()
+                .chain(native)
+                .collect(),
             ),
             PackageManager::Dnf => (
                 "dnf".to_string(),
@@ -185,7 +220,10 @@ impl PackageManagerFacade {
                     .chain(native)
                     .collect(),
             ),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
@@ -228,7 +266,10 @@ impl PackageManagerFacade {
                     .chain(native)
                     .collect(),
             ),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
@@ -272,7 +313,10 @@ impl PackageManagerFacade {
                     .chain(native)
                     .collect(),
             ),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
@@ -283,31 +327,45 @@ impl PackageManagerFacade {
     pub fn build_is_installed_cmd(&self, package: &str) -> (String, Vec<String>) {
         let native = self.translate_single(package);
         match self.pkg_manager {
-            PackageManager::Apt => (
-                "dpkg".to_string(),
-                vec!["-l".to_string(), native],
+            PackageManager::Apt => ("dpkg".to_string(), vec!["-l".to_string(), native]),
+            PackageManager::Pacman => ("pacman".to_string(), vec!["-Qi".to_string(), native]),
+            PackageManager::Dnf | PackageManager::Yum | PackageManager::Zypper => {
+                ("rpm".to_string(), vec!["-q".to_string(), native])
+            }
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
             ),
-            PackageManager::Pacman => (
-                "pacman".to_string(),
-                vec!["-Qi".to_string(), native],
-            ),
-            PackageManager::Dnf | PackageManager::Yum | PackageManager::Zypper => (
-                "rpm".to_string(),
-                vec!["-q".to_string(), native],
-            ),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
         }
     }
 
     /// Build the command for searching packages.
     pub fn build_search_cmd(&self, query: &str) -> (String, Vec<String>) {
         match self.pkg_manager {
-            PackageManager::Apt => ("apt".to_string(), vec!["search".to_string(), query.to_string()]),
-            PackageManager::Pacman => ("pacman".to_string(), vec!["-Ss".to_string(), query.to_string()]),
-            PackageManager::Dnf => ("dnf".to_string(), vec!["search".to_string(), query.to_string()]),
-            PackageManager::Yum => ("yum".to_string(), vec!["search".to_string(), query.to_string()]),
-            PackageManager::Zypper => ("zypper".to_string(), vec!["search".to_string(), query.to_string()]),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Apt => (
+                "apt".to_string(),
+                vec!["search".to_string(), query.to_string()],
+            ),
+            PackageManager::Pacman => (
+                "pacman".to_string(),
+                vec!["-Ss".to_string(), query.to_string()],
+            ),
+            PackageManager::Dnf => (
+                "dnf".to_string(),
+                vec!["search".to_string(), query.to_string()],
+            ),
+            PackageManager::Yum => (
+                "yum".to_string(),
+                vec!["search".to_string(), query.to_string()],
+            ),
+            PackageManager::Zypper => (
+                "zypper".to_string(),
+                vec!["search".to_string(), query.to_string()],
+            ),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
@@ -320,7 +378,10 @@ impl PackageManagerFacade {
             PackageManager::Dnf => ("dnf".to_string(), vec!["info".to_string(), native]),
             PackageManager::Yum => ("yum".to_string(), vec!["info".to_string(), native]),
             PackageManager::Zypper => ("zypper".to_string(), vec!["info".to_string(), native]),
-            PackageManager::Unknown => ("echo".to_string(), vec!["unknown package manager".to_string()]),
+            PackageManager::Unknown => (
+                "echo".to_string(),
+                vec!["unknown package manager".to_string()],
+            ),
         }
     }
 
@@ -376,11 +437,7 @@ impl PackageManagerFacade {
         let (program, args) = self.build_is_installed_cmd(package);
 
         if self.dry_run {
-            eprintln!(
-                "[DRY-RUN] {} {}",
-                program,
-                args.join(" ")
-            );
+            eprintln!("[DRY-RUN] {} {}", program, args.join(" "));
             return Ok(false);
         }
 
@@ -745,8 +802,7 @@ mod tests {
 
     #[test]
     fn test_install_no_translation() {
-        let pm = PackageManagerFacade::new(PackageManager::Pacman)
-            .with_translate_packages(false);
+        let pm = PackageManagerFacade::new(PackageManager::Pacman).with_translate_packages(false);
         let (_, args) = pm.build_install_cmd(&["build-essential"]);
         // Should use original name
         assert!(args.contains(&"build-essential".to_string()));
@@ -874,7 +930,10 @@ mod tests {
         assert_eq!(format!("{}", PackageOperation::Search), "search");
         assert_eq!(format!("{}", PackageOperation::Info), "info");
         assert_eq!(format!("{}", PackageOperation::IsInstalled), "is_installed");
-        assert_eq!(format!("{}", PackageOperation::ListInstalled), "list_installed");
+        assert_eq!(
+            format!("{}", PackageOperation::ListInstalled),
+            "list_installed"
+        );
     }
 
     // --- Accessors ---

@@ -1645,20 +1645,11 @@ enum NativeCommand {
         env: Vec<(String, String)>,
     },
     /// A pip/uv install command (program + args, no extra env).
-    Pip {
-        program: String,
-        args: Vec<String>,
-    },
+    Pip { program: String, args: Vec<String> },
     /// A system package command (program + args, no extra env).
-    System {
-        program: String,
-        args: Vec<String>,
-    },
+    System { program: String, args: Vec<String> },
     /// A package manager command (program + args, may already include sudo).
-    Package {
-        program: String,
-        args: Vec<String>,
-    },
+    Package { program: String, args: Vec<String> },
 }
 
 impl NativeCommand {
@@ -1698,11 +1689,7 @@ fn execute_native_command(
     component_name: &str,
 ) -> Result<()> {
     let (program, args, envs): (String, Vec<String>, Vec<(String, String)>) = match cmd {
-        NativeCommand::Shell {
-            program,
-            args,
-            env,
-        } => (program.clone(), args.clone(), env.clone()),
+        NativeCommand::Shell { program, args, env } => (program.clone(), args.clone(), env.clone()),
         NativeCommand::Pip { program, args } => (program.clone(), args.clone(), vec![]),
         NativeCommand::System { program, args } => (program.clone(), args.clone(), vec![]),
         NativeCommand::Package { program, args } => (program.clone(), args.clone(), vec![]),
@@ -1860,8 +1847,14 @@ fn build_common_env(ctx: &NativeInstallerContext) -> Vec<(String, String)> {
         env.push(("LOGNAME".into(), user));
     }
     env.push(("MLSTACK_USER_HOME".into(), ctx.user_home.to_string()));
-    env.push(("MLSTACK_BATCH_MODE".into(), if ctx.batch_mode { "1" } else { "0" }.into()));
-    env.push(("MLSTACK_INSTALL_METHOD".into(), ctx.install_method.to_string()));
+    env.push((
+        "MLSTACK_BATCH_MODE".into(),
+        if ctx.batch_mode { "1" } else { "0" }.into(),
+    ));
+    env.push((
+        "MLSTACK_INSTALL_METHOD".into(),
+        ctx.install_method.to_string(),
+    ));
     env.push(("INSTALL_METHOD".into(), ctx.install_method.to_string()));
     env.push(("RUSTY_STACK".into(), "true".into()));
 
@@ -1970,13 +1963,28 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             };
             let inst = PermanentEnvInstaller::new(PermanentEnvConfig::default());
             let cmd = inst.build_mkdir_triton_dirs_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             let cmd = inst.build_rocminfo_gpu_detect_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             let cmd = inst.build_rocm_version_detect_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── rocm ──────────────────────────────────────────────────────
@@ -2028,7 +2036,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let deps_cmd = inst.build_common_deps_command(use_uv);
             let _ = common_env.clone(); // Available for future env injection
             execute_native_command(
-                &NativeCommand::Pip { program: deps_cmd.program.clone(), args: deps_cmd.args.clone() },
+                &NativeCommand::Pip {
+                    program: deps_cmd.program.clone(),
+                    args: deps_cmd.args.clone(),
+                },
                 None, // pip commands don't need sudo
                 sender,
                 &component.name,
@@ -2037,7 +2048,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 2: Install PyTorch
             let install_cmd = inst.build_install_command(&rocm_mm, use_uv);
             execute_native_command(
-                &NativeCommand::Pip { program: install_cmd.program.clone(), args: install_cmd.args.clone() },
+                &NativeCommand::Pip {
+                    program: install_cmd.program.clone(),
+                    args: install_cmd.args.clone(),
+                },
                 None,
                 sender,
                 &component.name,
@@ -2052,19 +2066,39 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: git checkout
             let cmd = inst.build_git_checkout_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: prerequisites
             let cmd = inst.build_prerequisites_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 4: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── mpi4py ────────────────────────────────────────────────────
@@ -2075,12 +2109,22 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: Install system MPI
             let cmd = inst.build_system_mpi_install_command(&distro);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: pip install mpi4py
             let mpi_path = std::path::PathBuf::from("/usr");
             let cmd = inst.build_pip_install_command(&mpi_path);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── deepspeed ─────────────────────────────────────────────────
@@ -2092,7 +2136,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 1: Install dependencies
             let deps_cmd = inst.build_deps_install_command();
             execute_native_command(
-                &NativeCommand::Pip { program: deps_cmd.program.clone(), args: deps_cmd.args.clone() },
+                &NativeCommand::Pip {
+                    program: deps_cmd.program.clone(),
+                    args: deps_cmd.args.clone(),
+                },
                 None,
                 sender,
                 &component.name,
@@ -2101,7 +2148,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 2: Install DeepSpeed
             let install_cmd = inst.build_install_command();
             execute_native_command(
-                &NativeCommand::Pip { program: install_cmd.program.clone(), args: install_cmd.args.clone() },
+                &NativeCommand::Pip {
+                    program: install_cmd.program.clone(),
+                    args: install_cmd.args.clone(),
+                },
                 None,
                 sender,
                 &component.name,
@@ -2117,7 +2167,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 1: Install system dependencies
             let migraphx_cmd = inst.build_migraphx_install_command(&distro);
             execute_native_command(
-                &NativeCommand::System { program: migraphx_cmd.program.clone(), args: migraphx_cmd.args.clone() },
+                &NativeCommand::System {
+                    program: migraphx_cmd.program.clone(),
+                    args: migraphx_cmd.args.clone(),
+                },
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2125,7 +2178,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             let rccl_cmd = inst.build_rccl_install_command(&distro);
             execute_native_command(
-                &NativeCommand::System { program: rccl_cmd.program.clone(), args: rccl_cmd.args.clone() },
+                &NativeCommand::System {
+                    program: rccl_cmd.program.clone(),
+                    args: rccl_cmd.args.clone(),
+                },
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2133,7 +2189,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             let mpi_cmd = inst.build_mpi_install_command(&distro);
             execute_native_command(
-                &NativeCommand::System { program: mpi_cmd.program.clone(), args: mpi_cmd.args.clone() },
+                &NativeCommand::System {
+                    program: mpi_cmd.program.clone(),
+                    args: mpi_cmd.args.clone(),
+                },
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2142,7 +2201,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 2: Clone and install Megatron
             let megatron_clone = inst.build_megatron_clone_command();
             execute_native_command(
-                &NativeCommand::System { program: megatron_clone.program.clone(), args: megatron_clone.args.clone() },
+                &NativeCommand::System {
+                    program: megatron_clone.program.clone(),
+                    args: megatron_clone.args.clone(),
+                },
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2150,7 +2212,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             let megatron_install = inst.build_megatron_install_command();
             execute_native_command(
-                &NativeCommand::Pip { program: megatron_install.program.clone(), args: megatron_install.args.clone() },
+                &NativeCommand::Pip {
+                    program: megatron_install.program.clone(),
+                    args: megatron_install.args.clone(),
+                },
                 None,
                 sender,
                 &component.name,
@@ -2166,25 +2231,53 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: git checkout
             let cmd = inst.build_git_checkout_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: cmake
             let rocm_env = crate::installers::common::RocmEnv::detect();
-            let torch_prefix = format!("{}/rocm_venv/lib/python3.12/site-packages/torch/share/cmake/Torch", ctx.user_home);
+            let torch_prefix = format!(
+                "{}/rocm_venv/lib/python3.12/site-packages/torch/share/cmake/Torch",
+                ctx.user_home
+            );
             let cmd = inst.build_cmake_command(&rocm_env, &torch_prefix);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 4: make
             let cmd = inst.build_make_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 5: pip install from build
             let cmd = inst.build_setup_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── repair-stack ──────────────────────────────────────────────
@@ -2194,7 +2287,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let scripts_dir = detect_scripts_dir_internal();
             let steps = inst.build_all_step_commands(&scripts_dir);
             for (_step, cmd) in &steps {
-                execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    sudo_pw,
+                    sender,
+                    &component.name,
+                )?;
             }
         }
 
@@ -2206,16 +2304,31 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 1: Install dependencies
             for dep_pkg in &["ninja", "packaging", "wheel"] {
                 let cmd = inst.build_dep_install_command(dep_pkg);
-                execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
             }
 
             // Step 2: git clone
             let cmd = inst.build_git_clone_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: pip install
             let cmd = inst.build_pip_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── vllm ──────────────────────────────────────────────────────
@@ -2225,11 +2338,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: Install vllm
             let cmd = inst.build_vllm_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: Install dependencies
             let cmd = inst.build_deps_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── aiter ─────────────────────────────────────────────────────
@@ -2240,25 +2363,47 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: Install dependencies
             let cmd = inst.build_deps_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── vllm-studio ───────────────────────────────────────────────
         "vllm-studio" => {
-            use crate::installers::components::vllm_studio::{VllmStudioConfig, VllmStudioInstaller};
+            use crate::installers::components::vllm_studio::{
+                VllmStudioConfig, VllmStudioInstaller,
+            };
             let inst = VllmStudioInstaller::new(VllmStudioConfig::default());
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: Install packages
             let pkg_mgr = if crate::installers::common::utils::command_exists("npm") {
@@ -2267,11 +2412,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 "yarn"
             };
             let cmd = inst.build_pkg_install_command(pkg_mgr);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: Build frontend
             let cmd = inst.build_frontend_build_command(pkg_mgr);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── comfyui ───────────────────────────────────────────────────
@@ -2281,16 +2436,31 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: Check PyTorch
             let cmd = inst.build_pytorch_check_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: git clone
             let cmd = inst.build_git_clone_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: pip install
             let req_path = format!("{}/ComfyUI/requirements.txt", ctx.user_home);
             let cmd = inst.build_pip_install_command(&req_path);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── textgen ───────────────────────────────────────────────────
@@ -2300,15 +2470,22 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: pip install requirements
-            let req_path = format!(
-                "{}/text-generation-webui/requirements.txt",
-                ctx.user_home
-            );
+            let req_path = format!("{}/text-generation-webui/requirements.txt", ctx.user_home);
             let cmd = inst.build_pip_install_command(&req_path);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: Install AMD requirements
             let amd_req_path = format!(
@@ -2316,38 +2493,75 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ctx.user_home
             );
             let cmd = inst.build_amd_requirements_command(&amd_req_path);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── onnx ──────────────────────────────────────────────────────
         "onnx" => {
-            use crate::installers::components::onnxruntime::{OnnxRuntimeConfig, OnnxRuntimeInstaller};
+            use crate::installers::components::onnxruntime::{
+                OnnxRuntimeConfig, OnnxRuntimeInstaller,
+            };
             let inst = OnnxRuntimeInstaller::new(OnnxRuntimeConfig::default());
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: git checkout
             let cmd = inst.build_git_checkout_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: git submodule
             let cmd = inst.build_git_submodule_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 4: build (cmake)
             let rocm_env = crate::installers::common::RocmEnv::detect();
             let cmd = inst.build_build_command(&rocm_env);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 5: uninstall old version
             let cmd = inst.build_uninstall_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
 
             // Step 6: pip install wheel
             let cmd = inst.build_wheel_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── bitsandbytes ──────────────────────────────────────────────
@@ -2360,11 +2574,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: Install from PyPI
             let cmd = inst.build_pypi_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── rocm-smi ──────────────────────────────────────────────────
@@ -2376,31 +2600,58 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: package install
             let cmd = inst.build_package_install_command(&distro);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 3: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── migraphx ──────────────────────────────────────────────────
         "migraphx" => {
-            use crate::installers::components::migraphx_multi::{MigraphxConfig, MigraphxInstaller};
+            use crate::installers::components::migraphx_multi::{
+                MigraphxConfig, MigraphxInstaller,
+            };
             let inst = MigraphxInstaller::new(MigraphxConfig::default());
             let distro = crate::installers::common::DistroFacade::detect();
             let packages = inst.required_packages(&distro);
 
             // Step 1: package install
             let cmd = inst.build_package_install_command(&distro, &packages);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: pip install
             let cmd = inst.build_pip_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── pytorch-profiler ──────────────────────────────────────────
@@ -2412,7 +2663,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── wandb ─────────────────────────────────────────────────────
@@ -2422,21 +2678,29 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── amdgpu-drivers ────────────────────────────────────────────
         "amdgpu-drivers" => {
-            use crate::installers::components::amdgpu_drivers::{
-                AmdgpuConfig, AmdgpuInstaller,
-            };
+            use crate::installers::components::amdgpu_drivers::{AmdgpuConfig, AmdgpuInstaller};
             let inst = AmdgpuInstaller::new(AmdgpuConfig::default());
             let distro = crate::installers::common::DistroFacade::detect();
             let packages = inst.required_packages(&distro);
 
             // Step 1: package install
             let cmd = inst.build_package_install_command(&distro, &packages);
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // Step 2: env setup
             let gpu_arch = ctx
@@ -2446,12 +2710,22 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(detect_gpu_arch);
             for cmd in inst.build_env_setup_commands(&gpu_arch) {
-                execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), sudo_pw, sender, &component.name)?;
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    sudo_pw,
+                    sender,
+                    &component.name,
+                )?;
             }
 
             // Step 3: verify
             let cmd = inst.build_verify_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── migraphx-python ───────────────────────────────────────────
@@ -2463,7 +2737,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
-            execute_native_command(&NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env), None, sender, &component.name)?;
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── enhanced-env ──────────────────────────────────────────────

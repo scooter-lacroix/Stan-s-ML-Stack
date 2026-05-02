@@ -73,7 +73,9 @@ pub struct ShellCommand {
 impl ShellCommand {
     /// Format as a shell command string.
     pub fn to_command_string(&self) -> String {
-        let env_prefix = self.env.iter()
+        let env_prefix = self
+            .env
+            .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join(" ");
@@ -150,10 +152,7 @@ impl TritonInstaller {
         let branch = self.select_branch();
         ShellCommand {
             program: "git".to_string(),
-            args: vec![
-                "checkout".to_string(),
-                branch.to_string(),
-            ],
+            args: vec!["checkout".to_string(), branch.to_string()],
             env: vec![],
         }
     }
@@ -163,11 +162,7 @@ impl TritonInstaller {
     /// Installs pybind11, cmake, ninja, and other build tools.
     pub fn build_prerequisites_command(&self) -> ShellCommand {
         let use_break = self.supports_break_system_packages();
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -198,11 +193,7 @@ impl TritonInstaller {
     /// - MAX_JOBS=<nproc-1>
     pub fn build_pip_install_command(&self, _src_dir: &str) -> ShellCommand {
         let use_break = self.supports_break_system_packages();
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -249,7 +240,10 @@ mod tests {
     #[test]
     fn test_git_clone_url() {
         let installer = TritonInstaller::with_defaults();
-        assert_eq!(installer.git_clone_url(), "https://github.com/ROCm/triton.git");
+        assert_eq!(
+            installer.git_clone_url(),
+            "https://github.com/ROCm/triton.git"
+        );
     }
 
     #[test]
@@ -319,7 +313,10 @@ mod tests {
         assert!(cmd.args.contains(&".".to_string()));
 
         // Verify ROCm environment variables
-        assert!(cmd.env.iter().any(|(k, v)| k == "GPU_ARCHS" && v == "gfx1100"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "GPU_ARCHS" && v == "gfx1100"));
         assert!(cmd.env.iter().any(|(k, v)| k == "TRITON_ROCM" && v == "1"));
         assert!(cmd.env.iter().any(|(k, _)| k == "MAX_JOBS"));
     }
@@ -358,7 +355,10 @@ mod tests {
     fn test_command_string_format() {
         let cmd = ShellCommand {
             program: "git".to_string(),
-            args: vec!["clone".to_string(), "https://github.com/ROCm/triton.git".to_string()],
+            args: vec![
+                "clone".to_string(),
+                "https://github.com/ROCm/triton.git".to_string(),
+            ],
             env: vec![],
         };
         assert_eq!(

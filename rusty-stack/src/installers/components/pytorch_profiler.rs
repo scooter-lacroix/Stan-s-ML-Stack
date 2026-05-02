@@ -118,10 +118,7 @@ impl PytorchProfilerInstaller {
     pub fn validate_dependencies(&self, installed_components: &[&str]) -> anyhow::Result<()> {
         for dep in self.dependencies() {
             if !installed_components.contains(dep) {
-                anyhow::bail!(
-                    "PyTorch Profiler requires '{}' to be installed first",
-                    dep
-                );
+                anyhow::bail!("PyTorch Profiler requires '{}' to be installed first", dep);
             }
         }
         Ok(())
@@ -139,18 +136,11 @@ impl PytorchProfilerInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
-        args.extend([
-            "torch-tb-profiler".to_string(),
-            "tensorboard".to_string(),
-        ]);
+        args.extend(["torch-tb-profiler".to_string(), "tensorboard".to_string()]);
 
         ShellCommand {
             program: self.config.python_bin.clone(),
@@ -225,9 +215,7 @@ mod tests {
     #[test]
     fn test_validate_dependencies_success() {
         let installer = PytorchProfilerInstaller::with_defaults();
-        assert!(installer
-            .validate_dependencies(&["pytorch"])
-            .is_ok());
+        assert!(installer.validate_dependencies(&["pytorch"]).is_ok());
     }
 
     #[test]
@@ -235,10 +223,7 @@ mod tests {
         let installer = PytorchProfilerInstaller::with_defaults();
         let result = installer.validate_dependencies(&[]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("pytorch"));
+        assert!(result.unwrap_err().to_string().contains("pytorch"));
     }
 
     #[test]

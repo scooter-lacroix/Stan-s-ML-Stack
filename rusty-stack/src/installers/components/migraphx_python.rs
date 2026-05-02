@@ -121,11 +121,7 @@ impl MigraphxPythonInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -143,10 +139,7 @@ impl MigraphxPythonInstaller {
 
     /// Construct the uv pip install command (preferred method).
     pub fn build_uv_install_command(&self) -> ShellCommand {
-        let mut args = vec![
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["pip".to_string(), "install".to_string()];
         if self.config.force {
             args.push("--force-reinstall".to_string());
         }
@@ -314,7 +307,9 @@ mod tests {
     fn test_rocm_env() {
         let installer = MigraphxPythonInstaller::with_defaults();
         let env = installer.build_rocm_env();
-        assert!(env.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(env.iter().any(|(k, v)| k == "AMD_LOG_LEVEL" && v == "0"));
     }
 }

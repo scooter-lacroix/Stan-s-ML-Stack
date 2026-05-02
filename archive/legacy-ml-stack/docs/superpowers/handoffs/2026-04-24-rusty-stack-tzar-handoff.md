@@ -13,9 +13,9 @@
 ## Current State
 
 - Branch: `rocm-7.2.1-update`
-- Program stage: spec drafting complete, user design approval complete, written spec review pending
-- Latest Tzar status: not yet requested for this spec set
-- Next allowed action: user review of written specs, then Tzar review, then implementation plan generation
+- Program stage: spec set and blocking plans reviewed, Tzar PASS recorded for execution readiness
+- Latest Tzar status: PASS for spec+plan readiness gate after remediation
+- Next allowed action: begin blocking task execution at Milestone 1 (shared core contracts), following the master orchestration graph
 
 ## Approved Spec Files
 
@@ -30,8 +30,8 @@
 
 | Milestone | State | Latest Tzar Result | Evidence | Notes |
 | --- | --- | --- | --- | --- |
-| Spec set drafted | In review | Pending | User design approval in current thread | Waiting for written-spec review and Tzar pass/fail |
-| Implementation plans drafted | Blocked | Not started | N/A | Must not begin until written specs are reviewed |
+| Spec set drafted | Approved for advancement | PASS | Tzar re-review PASS in current thread | Remediation completed and accepted |
+| Implementation plans drafted | Approved for execution | PASS | Tzar re-review PASS in current thread | Blocking task execution may begin |
 | Shared core contracts | Blocked | Not started | N/A | Depends on approved plans |
 | `rusty update` scan/plan/apply | Blocked | Not started | N/A | Depends on shared core contracts |
 | Telemetry/stability | Blocked | Not started | N/A | Depends on verification and plan approval |
@@ -39,7 +39,7 @@
 
 ## Open Remediation Items
 
-- None yet. First Tzar review for this document set has not been run.
+- None. Prior Tzar remediation items were addressed and accepted in the latest PASS review.
 
 ## Review Update Procedure
 

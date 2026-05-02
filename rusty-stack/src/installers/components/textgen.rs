@@ -80,7 +80,12 @@ pub const WEB_PORT: u16 = 7860;
 
 /// Directories to preserve during git update.
 pub const PRESERVE_DIRS: &[&str] = &[
-    "models", "loras", "embeddings", "presets", "characters", "training",
+    "models",
+    "loras",
+    "embeddings",
+    "presets",
+    "characters",
+    "training",
 ];
 
 /// Regex pattern for packages to exclude from requirements.txt.
@@ -200,7 +205,8 @@ impl TextgenInstaller {
                     "-m".to_string(),
                     "rusty-stack-preserve-user-data".to_string(),
                     "--".to_string(),
-                ].into_iter()
+                ]
+                .into_iter()
                 .chain(PRESERVE_DIRS.iter().map(|s| s.to_string()))
                 .collect(),
                 env: vec![],
@@ -308,11 +314,8 @@ impl TextgenInstaller {
 
     /// Detect GPU devices via rocm-smi.
     pub fn detect_gpu_devices(&self) -> String {
-        if command_exists("rocm-smi") {
-            "0,1".to_string()
-        } else {
-            "0,1".to_string()
-        }
+        let _ = command_exists("rocm-smi");
+        "0,1".to_string()
     }
 
     /// Get the install directory.
@@ -366,7 +369,9 @@ mod tests {
         assert_eq!(cmd.program, "git");
         assert!(cmd.args.contains(&"clone".to_string()));
         assert!(cmd.args.contains(&REPO_URL.to_string()));
-        assert!(cmd.args.contains(&"/home/user/text-generation-webui".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"/home/user/text-generation-webui".to_string()));
     }
 
     #[test]
@@ -431,7 +436,14 @@ mod tests {
         // Original: models, loras, embeddings, presets, characters, training
         assert_eq!(
             PRESERVE_DIRS,
-            ["models", "loras", "embeddings", "presets", "characters", "training"]
+            [
+                "models",
+                "loras",
+                "embeddings",
+                "presets",
+                "characters",
+                "training"
+            ]
         );
     }
 
@@ -477,9 +489,13 @@ mod tests {
     #[test]
     fn test_amd_requirements_command() {
         let installer = make_installer("/home/user/text-generation-webui");
-        let cmd = installer.build_amd_requirements_command("/home/user/text-generation-webui/requirements_amd.txt");
+        let cmd = installer.build_amd_requirements_command(
+            "/home/user/text-generation-webui/requirements_amd.txt",
+        );
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.contains(&"-r".to_string()));
-        assert!(cmd.args.contains(&"/home/user/text-generation-webui/requirements_amd.txt".to_string()));
+        assert!(cmd
+            .args
+            .contains(&"/home/user/text-generation-webui/requirements_amd.txt".to_string()));
     }
 }

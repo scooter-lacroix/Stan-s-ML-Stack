@@ -216,10 +216,7 @@ impl OnnxRuntimeInstaller {
     pub fn build_git_checkout_command(&self) -> ShellCommand {
         ShellCommand {
             program: "git".to_string(),
-            args: vec![
-                "checkout".to_string(),
-                "v1.20.1".to_string(),
-            ],
+            args: vec!["checkout".to_string(), "v1.20.1".to_string()],
             env: vec![],
             working_dir: Some(self.config.workdir().join("onnxruntime")),
         }
@@ -295,7 +292,10 @@ impl OnnxRuntimeInstaller {
 
         // CMAKE extra defines
         let cmake_extra_defines = vec![
-            format!("CMAKE_HIP_ARCHITECTURES={}", hip_archs.cmake_hip_architectures()),
+            format!(
+                "CMAKE_HIP_ARCHITECTURES={}",
+                hip_archs.cmake_hip_architectures()
+            ),
             "onnxruntime_USE_EXTERNAL_ABSEIL=OFF".to_string(),
             "CMAKE_DISABLE_FIND_PACKAGE_re2=ON".to_string(),
             "CMAKE_FIND_PACKAGE_NO_PACKAGE_REGISTRY=ON".to_string(),
@@ -411,7 +411,12 @@ impl OnnxRuntimeInstaller {
     /// Check build output for errors.
     ///
     /// Detects common build failure patterns and propagates as an error.
-    pub fn check_build_output(&self, stdout: &str, stderr: &str, exit_code: i32) -> Result<(), String> {
+    pub fn check_build_output(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+    ) -> Result<(), String> {
         if exit_code != 0 {
             let error_patterns = [
                 "CMake Error",
@@ -466,10 +471,7 @@ mod tests {
             gpu_arch: Some("gfx1100".to_string()),
             ..Default::default()
         });
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_build_command(&rocm_env);
 
         assert_eq!(cmd.program, "./build.sh");
@@ -504,7 +506,10 @@ mod tests {
         let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_build_command(&rocm_env);
 
-        assert!(cmd.args.iter().any(|a| a.contains("CMAKE_HIP_ARCHITECTURES=gfx1100;gfx1101;gfx1102;gfx1103")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("CMAKE_HIP_ARCHITECTURES=gfx1100;gfx1101;gfx1102;gfx1103")));
     }
 
     #[test]
@@ -513,9 +518,18 @@ mod tests {
         let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_build_command(&rocm_env);
 
-        assert!(cmd.args.iter().any(|a| a.contains("onnxruntime_USE_EXTERNAL_ABSEIL=OFF")));
-        assert!(cmd.args.iter().any(|a| a.contains("CMAKE_DISABLE_FIND_PACKAGE_re2=ON")));
-        assert!(cmd.args.iter().any(|a| a.contains("CMAKE_POLICY_VERSION_MINIMUM=3.5")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("onnxruntime_USE_EXTERNAL_ABSEIL=OFF")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("CMAKE_DISABLE_FIND_PACKAGE_re2=ON")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("CMAKE_POLICY_VERSION_MINIMUM=3.5")));
     }
 
     #[test]
@@ -533,9 +547,18 @@ mod tests {
         let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_build_command(&rocm_env);
 
-        assert!(cmd.env.iter().any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
-        assert!(cmd.env.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(cmd.env.iter().any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
         assert!(cmd.env.iter().any(|(k, v)| k == "PYTHONPATH" && v == ""));
     }
 
@@ -551,7 +574,10 @@ mod tests {
 
         assert!(cmd.args.contains(&"--use_preinstalled_eigen".to_string()));
         assert!(cmd.args.iter().any(|a| a.contains("/usr/include/eigen3")));
-        assert!(cmd.args.iter().any(|a| a.contains("FETCHCONTENT_SOURCE_DIR_EIGEN")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("FETCHCONTENT_SOURCE_DIR_EIGEN")));
     }
 
     // --- VAL-INSTALL-011: ONNX Runtime pip install from build output ---
@@ -565,7 +591,10 @@ mod tests {
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.contains(&"pip".to_string()));
         assert!(cmd.args.contains(&"install".to_string()));
-        assert!(cmd.args.iter().any(|a| a.contains("build/Linux/Release/dist/*.whl")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("build/Linux/Release/dist/*.whl")));
     }
 
     #[test]
@@ -635,7 +664,10 @@ mod tests {
     #[test]
     fn test_hip_archs_gfx1100() {
         let archs = HipArchs::from_gpu_arch("gfx1100");
-        assert_eq!(archs.cmake_hip_architectures(), "gfx1100;gfx1101;gfx1102;gfx1103");
+        assert_eq!(
+            archs.cmake_hip_architectures(),
+            "gfx1100;gfx1101;gfx1102;gfx1103"
+        );
     }
 
     #[test]
@@ -664,11 +696,7 @@ mod tests {
     #[test]
     fn test_build_error_cmake() {
         let installer = OnnxRuntimeInstaller::with_defaults();
-        let result = installer.check_build_output(
-            "",
-            "CMake Error at cmake/CMakeLists.txt:42",
-            1,
-        );
+        let result = installer.check_build_output("", "CMake Error at cmake/CMakeLists.txt:42", 1);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("CMake Error"));
     }
@@ -676,11 +704,8 @@ mod tests {
     #[test]
     fn test_build_error_ninja() {
         let installer = OnnxRuntimeInstaller::with_defaults();
-        let result = installer.check_build_output(
-            "ninja: build stopped: subcommand failed.",
-            "",
-            1,
-        );
+        let result =
+            installer.check_build_output("ninja: build stopped: subcommand failed.", "", 1);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ninja: build stopped"));
     }

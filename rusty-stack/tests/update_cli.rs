@@ -208,7 +208,12 @@ fn test_update_target_unknown_component_fails() {
     // Targeting a nonexistent component should fail
     Command::cargo_bin(BIN)
         .unwrap()
-        .args(["update", "--scan-only", "--json", "nonexistent-component-xyz"])
+        .args([
+            "update",
+            "--scan-only",
+            "--json",
+            "nonexistent-component-xyz",
+        ])
         .assert()
         .failure()
         .code(1);

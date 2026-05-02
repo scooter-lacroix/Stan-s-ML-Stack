@@ -118,11 +118,7 @@ impl MigraphxInstaller {
             ),
             DistroFamily::Rhel => (
                 "sudo".to_string(),
-                vec![
-                    "dnf".to_string(),
-                    "install".to_string(),
-                    "-y".to_string(),
-                ],
+                vec!["dnf".to_string(), "install".to_string(), "-y".to_string()],
             ),
             DistroFamily::Arch => (
                 "sudo".to_string(),
@@ -167,7 +163,11 @@ impl MigraphxInstaller {
         let (program, args) = match distro.family() {
             DistroFamily::Debian => (
                 "sudo".to_string(),
-                vec!["apt-get".to_string(), "update".to_string(), "-y".to_string()],
+                vec![
+                    "apt-get".to_string(),
+                    "update".to_string(),
+                    "-y".to_string(),
+                ],
             ),
             DistroFamily::Rhel => (
                 "sudo".to_string(),
@@ -183,7 +183,11 @@ impl MigraphxInstaller {
             ),
             _ => (
                 "sudo".to_string(),
-                vec!["apt-get".to_string(), "update".to_string(), "-y".to_string()],
+                vec![
+                    "apt-get".to_string(),
+                    "update".to_string(),
+                    "-y".to_string(),
+                ],
             ),
         };
 
@@ -275,8 +279,7 @@ mod tests {
             pkg_manager: PackageManager::Apt,
             ..Default::default()
         });
-        let cmd =
-            installer.build_package_install_command(&distro, &["migraphx", "migraphx-dev"]);
+        let cmd = installer.build_package_install_command(&distro, &["migraphx", "migraphx-dev"]);
         assert_eq!(cmd.program, "sudo");
         assert!(cmd.args.contains(&"apt-get".to_string()));
         assert!(cmd.args.contains(&"install".to_string()));
@@ -308,8 +311,7 @@ mod tests {
             pkg_manager: PackageManager::Dnf,
             ..Default::default()
         });
-        let cmd =
-            installer.build_package_install_command(&distro, &["migraphx", "migraphx-dev"]);
+        let cmd = installer.build_package_install_command(&distro, &["migraphx", "migraphx-dev"]);
         assert!(cmd.args.contains(&"dnf".to_string()));
         assert!(cmd.args.contains(&"migraphx".to_string()));
     }

@@ -258,7 +258,11 @@ impl PyTorchInstaller {
         args.push("torchvision".to_string());
         args.push("torchaudio".to_string());
 
-        let program = if use_uv { "uv".to_string() } else { self.config.python_bin.clone() };
+        let program = if use_uv {
+            "uv".to_string()
+        } else {
+            self.config.python_bin.clone()
+        };
 
         PipCommand { program, args }
     }
@@ -282,7 +286,11 @@ impl PyTorchInstaller {
         args.push("torchsde".to_string());
         args.push("sentencepiece".to_string());
 
-        let program = if use_uv { "uv".to_string() } else { self.config.python_bin.clone() };
+        let program = if use_uv {
+            "uv".to_string()
+        } else {
+            self.config.python_bin.clone()
+        };
         PipCommand { program, args }
     }
 
@@ -293,17 +301,25 @@ impl PyTorchInstaller {
         let mut exports = vec![
             ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
             ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
-            ("ROCM_PATH".to_string(), rocm_env.path()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "/opt/rocm".to_string())),
+            (
+                "ROCM_PATH".to_string(),
+                rocm_env
+                    .path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "/opt/rocm".to_string()),
+            ),
         ];
 
         // HSA_TOOLS_LIB
-        let rocm_lib = rocm_env.path()
+        let rocm_lib = rocm_env
+            .path()
             .map(|p| p.join("lib/librocprofiler-sdk-tool.so"))
             .filter(|p| p.exists());
         if let Some(lib) = rocm_lib {
-            exports.push(("HSA_TOOLS_LIB".to_string(), lib.to_string_lossy().to_string()));
+            exports.push((
+                "HSA_TOOLS_LIB".to_string(),
+                lib.to_string_lossy().to_string(),
+            ));
         } else {
             exports.push(("HSA_TOOLS_LIB".to_string(), "0".to_string()));
         }
@@ -456,9 +472,15 @@ mod tests {
             "7.2.0".to_string(),
         );
         let exports = installer.rocm_env_exports(&rocm_env);
-        assert!(exports.iter().any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(exports.iter().any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-        assert!(exports.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(exports
+            .iter()
+            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
+        assert!(exports
+            .iter()
+            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
+        assert!(exports
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(exports.iter().any(|(k, _)| k == "HSA_TOOLS_LIB"));
     }
 

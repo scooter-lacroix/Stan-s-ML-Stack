@@ -148,11 +148,7 @@ impl BitsAndBytesInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -199,11 +195,7 @@ impl BitsAndBytesInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -230,11 +222,7 @@ impl BitsAndBytesInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -347,7 +335,9 @@ mod tests {
         assert!(env
             .iter()
             .any(|(k, v)| k == "BNB_ROCM_ARCH" && v == "gfx1100"));
-        assert!(env.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(env
             .iter()
             .any(|(k, v)| k == "BNB_ROCM_VERSION" && v == "72"));
@@ -396,14 +386,8 @@ mod tests {
         assert!(cmd.args.contains(&"--no-build-isolation".to_string()));
         assert!(cmd.args.contains(&"--no-deps".to_string()));
         assert!(cmd.args.contains(&".".to_string()));
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a.contains("COMPUTE_BACKEND=hip")));
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a.contains("ROCM_PATH=/opt/rocm")));
+        assert!(cmd.args.iter().any(|a| a.contains("COMPUTE_BACKEND=hip")));
+        assert!(cmd.args.iter().any(|a| a.contains("ROCM_PATH=/opt/rocm")));
         // Verify ROCm env vars
         assert!(cmd.env.iter().any(|(k, v)| k == "BNB_USE_ROCM" && v == "1"));
     }

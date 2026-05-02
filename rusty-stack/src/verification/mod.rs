@@ -258,7 +258,10 @@ mod tests {
     fn test_full_verify_returns_result() {
         let result = full_verify();
         assert_eq!(result.mode, "full");
-        assert!(result.total > 0, "Full verify should check at least 1 component");
+        assert!(
+            result.total > 0,
+            "Full verify should check at least 1 component"
+        );
         assert_eq!(result.total, result.passed + result.failed);
     }
 
@@ -279,10 +282,20 @@ mod tests {
         let result = verify_and_build();
         assert_eq!(result.mode, "build");
         // Should include onnx, flash-attn, migraphx (build-critical)
-        let ids: Vec<&str> = result.items.iter().map(|i| i.component_id.as_str()).collect();
+        let ids: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.component_id.as_str())
+            .collect();
         assert!(ids.contains(&"onnx"), "build verify should include onnx");
-        assert!(ids.contains(&"flash-attn"), "build verify should include flash-attn");
-        assert!(ids.contains(&"migraphx"), "build verify should include migraphx");
+        assert!(
+            ids.contains(&"flash-attn"),
+            "build verify should include flash-attn"
+        );
+        assert!(
+            ids.contains(&"migraphx"),
+            "build verify should include migraphx"
+        );
     }
 
     #[test]
@@ -316,39 +329,71 @@ mod tests {
     fn test_format_human_output() {
         let result = full_verify();
         let text = format_result_human(&result);
-        assert!(text.contains("Verification"), "Human output should contain 'Verification'");
-        assert!(text.contains("Passed:"), "Human output should contain 'Passed:'");
+        assert!(
+            text.contains("Verification"),
+            "Human output should contain 'Verification'"
+        );
+        assert!(
+            text.contains("Passed:"),
+            "Human output should contain 'Passed:'"
+        );
     }
 
     #[test]
     fn test_format_json_output() {
         let result = full_verify();
         let json = format_result_json(&result);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should be parseable");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("JSON should be parseable");
         assert!(parsed.get("mode").is_some(), "JSON should contain 'mode'");
         assert!(parsed.get("items").is_some(), "JSON should contain 'items'");
-        assert!(parsed.get("all_passed").is_some(), "JSON should contain 'all_passed'");
+        assert!(
+            parsed.get("all_passed").is_some(),
+            "JSON should contain 'all_passed'"
+        );
     }
 
     #[test]
     fn test_full_verify_includes_core_components() {
         let result = full_verify();
-        let ids: Vec<&str> = result.items.iter().map(|i| i.component_id.as_str()).collect();
+        let ids: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.component_id.as_str())
+            .collect();
         assert!(ids.contains(&"rocm"), "full verify should include rocm");
-        assert!(ids.contains(&"pytorch"), "full verify should include pytorch");
+        assert!(
+            ids.contains(&"pytorch"),
+            "full verify should include pytorch"
+        );
         assert!(ids.contains(&"triton"), "full verify should include triton");
         assert!(ids.contains(&"mpi4py"), "full verify should include mpi4py");
-        assert!(ids.contains(&"deepspeed"), "full verify should include deepspeed");
-        assert!(ids.contains(&"ml-stack-core"), "full verify should include ml-stack-core");
+        assert!(
+            ids.contains(&"deepspeed"),
+            "full verify should include deepspeed"
+        );
+        assert!(
+            ids.contains(&"ml-stack-core"),
+            "full verify should include ml-stack-core"
+        );
     }
 
     #[test]
     fn test_enhanced_verify_includes_all_categories() {
         let result = enhanced_verify();
         let categories: Vec<&str> = result.items.iter().map(|i| i.category.as_str()).collect();
-        assert!(categories.contains(&"ROCm"), "enhanced should include ROCm category");
-        assert!(categories.contains(&"ML Framework"), "enhanced should include ML Framework category");
-        assert!(categories.contains(&"Environment"), "enhanced should include Environment category");
+        assert!(
+            categories.contains(&"ROCm"),
+            "enhanced should include ROCm category"
+        );
+        assert!(
+            categories.contains(&"ML Framework"),
+            "enhanced should include ML Framework category"
+        );
+        assert!(
+            categories.contains(&"Environment"),
+            "enhanced should include Environment category"
+        );
     }
 
     #[test]

@@ -235,10 +235,15 @@ impl RocmInstaller {
     /// Derive the RHEL major version from distro info.
     fn rhel_version(distro: &DistroFacade) -> &'static str {
         let v = distro.version();
-        if v.starts_with("10") { "10" }
-        else if v.starts_with("9") { "9" }
-        else if v.starts_with("8") { "8" }
-        else { "9" }
+        if v.starts_with("10") {
+            "10"
+        } else if v.starts_with("9") {
+            "9"
+        } else if v.starts_with("8") {
+            "8"
+        } else {
+            "9"
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -284,16 +289,16 @@ impl RocmInstaller {
                 args: vec![
                     "dpkg".to_string(),
                     "-i".to_string(),
-                    format!("amdgpu-install_{}_all.deb", self.config.channel.pkg_version()),
+                    format!(
+                        "amdgpu-install_{}_all.deb",
+                        self.config.channel.pkg_version()
+                    ),
                 ],
             },
             // Update and install ROCm packages
             PackageCommand {
                 program: "sudo".to_string(),
-                args: vec![
-                    "apt-get".to_string(),
-                    "update".to_string(),
-                ],
+                args: vec!["apt-get".to_string(), "update".to_string()],
             },
             // Install ROCm metapackage based on install type
             self.apt_rocm_metapackage_command(),
@@ -421,7 +426,11 @@ impl RocmInstaller {
 
     /// Get the repository configuration for apt-based distros.
     pub fn apt_repo_config(&self, distro: &DistroFacade) -> RepoConfig {
-        let codename = if distro.codename().is_empty() { "noble" } else { distro.codename() };
+        let codename = if distro.codename().is_empty() {
+            "noble"
+        } else {
+            distro.codename()
+        };
         let major_minor = self.config.channel.major_minor();
         RepoConfig {
             repo_type: "apt".to_string(),
@@ -433,7 +442,11 @@ impl RocmInstaller {
 
     /// Get the amdgpu repo configuration for apt-based distros.
     pub fn amdgpu_apt_repo_config(&self, distro: &DistroFacade) -> RepoConfig {
-        let codename = if distro.codename().is_empty() { "noble" } else { distro.codename() };
+        let codename = if distro.codename().is_empty() {
+            "noble"
+        } else {
+            distro.codename()
+        };
         let major_minor = self.config.channel.major_minor();
         RepoConfig {
             repo_type: "apt".to_string(),
@@ -768,7 +781,8 @@ mod tests {
             assert!(
                 deb_url.contains(ch.pkg_version()),
                 "deb URL for {:?} should contain pkg_version {}",
-                ch, ch.pkg_version()
+                ch,
+                ch.pkg_version()
             );
 
             // Verify repo URL contains major_minor
@@ -777,7 +791,8 @@ mod tests {
             assert!(
                 repo_url.contains(ch.major_minor()),
                 "repo URL for {:?} should contain major_minor {}",
-                ch, ch.major_minor()
+                ch,
+                ch.major_minor()
             );
         }
     }
@@ -799,7 +814,8 @@ mod tests {
             assert!(
                 meta_cmd.args.contains(&expected_pkg.to_string()),
                 "Install type {:?} should use metapackage {}",
-                itype, expected_pkg
+                itype,
+                expected_pkg
             );
         }
     }

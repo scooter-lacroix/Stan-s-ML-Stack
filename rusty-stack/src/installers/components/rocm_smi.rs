@@ -180,14 +180,15 @@ impl RocmSmiInstaller {
         let (program, args) = match distro.family() {
             DistroFamily::Debian => (
                 "sudo".to_string(),
-                vec!["apt-get".to_string(), "update".to_string(), "-y".to_string()],
+                vec![
+                    "apt-get".to_string(),
+                    "update".to_string(),
+                    "-y".to_string(),
+                ],
             ),
             DistroFamily::Rhel => (
                 "sudo".to_string(),
-                vec![
-                    "dnf".to_string(),
-                    "makecache".to_string(),
-                ],
+                vec!["dnf".to_string(), "makecache".to_string()],
             ),
             DistroFamily::Arch => (
                 "sudo".to_string(),
@@ -195,14 +196,15 @@ impl RocmSmiInstaller {
             ),
             DistroFamily::Suse => (
                 "sudo".to_string(),
-                vec![
-                    "zypper".to_string(),
-                    "refresh".to_string(),
-                ],
+                vec!["zypper".to_string(), "refresh".to_string()],
             ),
             _ => (
                 "sudo".to_string(),
-                vec!["apt-get".to_string(), "update".to_string(), "-y".to_string()],
+                vec![
+                    "apt-get".to_string(),
+                    "update".to_string(),
+                    "-y".to_string(),
+                ],
             ),
         };
 
@@ -234,8 +236,7 @@ impl RocmSmiInstaller {
             ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
             (
                 "PATH".to_string(),
-                "/opt/rocm/bin:".to_string()
-                    + &std::env::var("PATH").unwrap_or_default(),
+                "/opt/rocm/bin:".to_string() + &std::env::var("PATH").unwrap_or_default(),
             ),
             (
                 "LD_LIBRARY_PATH".to_string(),

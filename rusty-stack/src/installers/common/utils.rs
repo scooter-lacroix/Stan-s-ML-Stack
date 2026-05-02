@@ -142,9 +142,15 @@ pub fn print_header(title: &str) {
 pub fn print_section(title: &str) {
     let c = get_colors();
     eprintln!();
-    eprintln!("{}┌─────────────────────────────────────────────────────────┐{}", c.blue, c.reset);
+    eprintln!(
+        "{}┌─────────────────────────────────────────────────────────┐{}",
+        c.blue, c.reset
+    );
     eprintln!("{}│ {}{}{}", c.blue, c.bold, title, c.reset);
-    eprintln!("{}└─────────────────────────────────────────────────────────┘{}", c.blue, c.reset);
+    eprintln!(
+        "{}└─────────────────────────────────────────────────────────┘{}",
+        c.blue, c.reset
+    );
 }
 
 /// Print a step indicator to stderr.
@@ -185,10 +191,7 @@ pub fn execute_command(cmd: &str, description: &str, dry_run: bool) -> Result<()
 
     print_step(&format!("{description}..."));
 
-    let result = Command::new("bash")
-        .arg("-c")
-        .arg(cmd)
-        .output();
+    let result = Command::new("bash").arg("-c").arg(cmd).output();
 
     match result {
         Ok(output) if output.status.success() => {
@@ -264,7 +267,12 @@ pub fn pip_install_prefix(python_bin: &str) -> Vec<String> {
             args
         }
         PythonPkgManager::Pip => {
-            vec![python_bin.to_string(), "-m".to_string(), "pip".to_string(), "install".to_string()]
+            vec![
+                python_bin.to_string(),
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+            ]
         }
     }
 }

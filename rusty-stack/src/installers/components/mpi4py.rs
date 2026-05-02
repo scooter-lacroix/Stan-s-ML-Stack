@@ -7,9 +7,7 @@
 //!
 //! - **VAL-INSTALL-005**: MPI4Py installer detects system MPI
 
-use crate::installers::common::{
-    DistroFacade, command_exists,
-};
+use crate::installers::common::{command_exists, DistroFacade};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -79,7 +77,9 @@ pub struct ShellCommand {
 impl ShellCommand {
     /// Format as a shell command string.
     pub fn to_command_string(&self) -> String {
-        let env_prefix = self.env.iter()
+        let env_prefix = self
+            .env
+            .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join(" ");
@@ -172,10 +172,7 @@ impl Mpi4PyInstaller {
         }
 
         // Try to derive from mpirun location
-        if let Ok(output) = std::process::Command::new("which")
-            .arg("mpirun")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("which").arg("mpirun").output() {
             if output.status.success() {
                 let mpirun = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !mpirun.is_empty() {
@@ -300,8 +297,22 @@ impl Mpi4PyInstaller {
         let env = vec![
             ("MPICC".to_string(), mpicc.to_string_lossy().to_string()),
             ("MPICXX".to_string(), mpicxx.to_string_lossy().to_string()),
-            ("PATH".to_string(), format!("{}:{}", mpi_path.join("bin").to_string_lossy(), std::env::var("PATH").unwrap_or_default())),
-            ("LD_LIBRARY_PATH".to_string(), format!("{}:{}", mpi_path.join("lib").to_string_lossy(), std::env::var("LD_LIBRARY_PATH").unwrap_or_default())),
+            (
+                "PATH".to_string(),
+                format!(
+                    "{}:{}",
+                    mpi_path.join("bin").to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+            (
+                "LD_LIBRARY_PATH".to_string(),
+                format!(
+                    "{}:{}",
+                    mpi_path.join("lib").to_string_lossy(),
+                    std::env::var("LD_LIBRARY_PATH").unwrap_or_default()
+                ),
+            ),
         ];
 
         let mut args = vec![
@@ -389,7 +400,10 @@ mod tests {
         // Just verify it doesn't panic
         let mpi = installer.detect_mpi();
         // On this system, it may or may not have MPI
-        assert!(matches!(mpi, MpiImplementation::OpenMPI | MpiImplementation::MPICH | MpiImplementation::None));
+        assert!(matches!(
+            mpi,
+            MpiImplementation::OpenMPI | MpiImplementation::MPICH | MpiImplementation::None
+        ));
     }
 
     #[test]
@@ -438,9 +452,18 @@ mod tests {
         assert!(cmd.args.contains(&"--break-system-packages".to_string()));
 
         // Verify MPICC/MPICXX env vars
-        assert!(cmd.env.iter().any(|(k, v)| k == "MPICC" && v.contains("mpicc")));
-        assert!(cmd.env.iter().any(|(k, v)| k == "MPICXX" && v.contains("mpicxx")));
-        assert!(cmd.env.iter().any(|(k, v)| k == "PATH" && v.contains("openmpi/bin")));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "MPICC" && v.contains("mpicc")));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "MPICXX" && v.contains("mpicxx")));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "PATH" && v.contains("openmpi/bin")));
     }
 
     #[test]

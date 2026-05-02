@@ -460,7 +460,10 @@ mod tests {
 
     #[test]
     fn test_python3_pacman() {
-        assert_eq!(map_package_name("python3", PackageManager::Pacman), "python");
+        assert_eq!(
+            map_package_name("python3", PackageManager::Pacman),
+            "python"
+        );
     }
     #[test]
     fn test_python3_dev_pacman() {
@@ -788,7 +791,9 @@ mod tests {
     #[test]
     fn test_identity_mappings() {
         // These should be the same on all platforms
-        for pkg in &["gcc", "make", "cmake", "git", "curl", "wget", "clang", "lld"] {
+        for pkg in &[
+            "gcc", "make", "cmake", "git", "curl", "wget", "clang", "lld",
+        ] {
             assert_eq!(map_package_name(pkg, PackageManager::Apt), *pkg);
             assert_eq!(map_package_name(pkg, PackageManager::Pacman), *pkg);
         }

@@ -203,9 +203,7 @@ pub fn detect_discrete_gpus() -> GpuFilterResult {
 
 /// Detect GPUs from rocminfo output, filtering out integrated GPUs.
 fn detect_gpus_from_rocminfo() -> Vec<u32> {
-    let output = match std::process::Command::new("rocminfo")
-        .output()
-    {
+    let output = match std::process::Command::new("rocminfo").output() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => return Vec::new(),
     };
@@ -287,7 +285,9 @@ fn detect_gpus_from_lspci() -> Vec<u32> {
         .lines()
         .filter(|line| {
             let lower = line.to_lowercase();
-            (lower.contains("amd") || lower.contains("radeon") || lower.contains("advanced micro devices"))
+            (lower.contains("amd")
+                || lower.contains("radeon")
+                || lower.contains("advanced micro devices"))
                 && (lower.contains("vga") || lower.contains("3d") || lower.contains("display"))
         })
         .count();
@@ -305,11 +305,7 @@ fn detect_gpus_from_render_nodes() -> Vec<u32> {
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("render")
-                })
+                .filter(|e| e.file_name().to_string_lossy().starts_with("render"))
                 .count()
         })
         .unwrap_or(0);
@@ -361,13 +357,20 @@ pub fn detect_correct_gpu_arch(marketing_name: Option<&str>) -> GpuArchInfo {
 
     // Map marketing names to correct architectures
     // RDNA3 cards are commonly misreported as gfx1030
-    let arch = if lower.contains("7900 xtx") || lower.contains("7900xtx") || lower.contains("7900 xt") || lower.contains("7900xt")
-        || lower.contains("7900 gre") || lower.contains("7900gre")
+    let arch = if lower.contains("7900 xtx")
+        || lower.contains("7900xtx")
+        || lower.contains("7900 xt")
+        || lower.contains("7900xt")
+        || lower.contains("7900 gre")
+        || lower.contains("7900gre")
     {
         "gfx1100"
-    } else if lower.contains("7800 xt") || lower.contains("7800xt")
-        || lower.contains("7800 gre") || lower.contains("7800gre")
-        || lower.contains("7700 xt") || lower.contains("7700xt")
+    } else if lower.contains("7800 xt")
+        || lower.contains("7800xt")
+        || lower.contains("7800 gre")
+        || lower.contains("7800gre")
+        || lower.contains("7700 xt")
+        || lower.contains("7700xt")
     {
         "gfx1101"
     } else if lower.contains("7600 xt") || lower.contains("7600xt") || lower.contains("7600") {
@@ -655,8 +658,7 @@ pub fn setup_environment() -> (EnvFileResult, GpuFilterResult, GpuArchInfo) {
     } else {
         rocm_env.version().to_string()
     };
-    let rocm_channel = std::env::var("ROCM_CHANNEL")
-        .unwrap_or_else(|_| "latest".to_string());
+    let rocm_channel = std::env::var("ROCM_CHANNEL").unwrap_or_else(|_| "latest".to_string());
 
     if rocm_env.is_detected() {
         print_success(&format!("ROCm {rocm_version} detected at {rocm_path}"));
@@ -759,7 +761,10 @@ mod tests {
         for (arch, expected_hsa) in cases {
             let info = GpuArchInfo::from_arch(arch);
             assert_eq!(info.gpu_arch, arch, "GPU arch mismatch for {arch}");
-            assert_eq!(info.hsa_override_gfx_version, expected_hsa, "HSA version mismatch for {arch}");
+            assert_eq!(
+                info.hsa_override_gfx_version, expected_hsa,
+                "HSA version mismatch for {arch}"
+            );
         }
     }
 
@@ -900,17 +905,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_header() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.starts_with("# ML Stack Environment File"));
     }
 
     #[test]
     fn test_generate_env_file_has_gpu_selection() {
-        let content = generate_env_file_content(
-            "0,1", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0,1", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("HIP_VISIBLE_DEVICES"));
         assert!(content.contains("CUDA_VISIBLE_DEVICES"));
         assert!(content.contains("PYTORCH_ROCM_DEVICE"));
@@ -919,9 +922,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_rocm_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("ROCM_HOME"));
         assert!(content.contains("CUDA_HOME"));
         assert!(content.contains("ROCM_VERSION"));
@@ -932,9 +934,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_path_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("PATH="));
         assert!(content.contains("LD_LIBRARY_PATH"));
         assert!(content.contains("/opt/rocm/bin"));
@@ -942,9 +943,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_performance_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("HSA_OVERRIDE_GFX_VERSION"));
         assert!(content.contains("HSA_ENABLE_SDMA"));
         assert!(content.contains("GPU_MAX_HEAP_SIZE"));
@@ -954,9 +954,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_miopen_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("MIOPEN_DEBUG_CONV_IMPLICIT_GEMM"));
         assert!(content.contains("MIOPEN_FIND_MODE"));
         assert!(content.contains("MIOPEN_FIND_ENFORCE"));
@@ -964,9 +963,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_pytorch_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("TORCH_CUDA_ARCH_LIST"));
         assert!(content.contains("PYTORCH_ALLOC_CONF"));
         assert!(content.contains("PYTORCH_HIP_ALLOC_CONF"));
@@ -975,9 +973,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_triton_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("MLSTACK_TRITON_HOME"));
         assert!(content.contains("TRITON_HOME"));
         assert!(content.contains("TRITON_CACHE_DIR"));
@@ -985,9 +982,8 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_mpi_settings() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("OMPI_MCA_opal_cuda_support"));
         assert!(content.contains("OMPI_MCA_pml"));
         assert!(content.contains("OMPI_MCA_osc"));
@@ -996,18 +992,16 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_onnx_runtime() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("PYTHONPATH"));
         assert!(content.contains("onnxruntime"));
     }
 
     #[test]
     fn test_generate_env_file_uses_guard_syntax() {
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         // Should use "if [ -z ... ]" guards for conditional exports
         assert!(content.contains("if [ -z \"${HIP_VISIBLE_DEVICES:-}\" ]"));
         assert!(content.contains("if [ -z \"${ROCM_HOME:-}\" ]"));
@@ -1016,16 +1010,20 @@ mod tests {
     #[test]
     fn test_generate_env_file_gpu_arch_not_guarded() {
         // GPU_ARCH should be exported unconditionally (not guarded)
-        let content = generate_env_file_content(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
         assert!(content.contains("export GPU_ARCH=gfx1100"));
     }
 
     #[test]
     fn test_generate_env_file_custom_values() {
         let content = generate_env_file_content(
-            "0,1", "/opt/rocm-6.4.3", "6.4.3", "legacy", "gfx1030", "10.3.0",
+            "0,1",
+            "/opt/rocm-6.4.3",
+            "6.4.3",
+            "legacy",
+            "gfx1030",
+            "10.3.0",
         );
         assert!(content.contains("0,1"));
         assert!(content.contains("/opt/rocm-6.4.3"));
@@ -1046,9 +1044,7 @@ mod tests {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp_dir.path());
 
-        let result = create_env_file(
-            "0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0",
-        );
+        let result = create_env_file("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
 
         // Restore HOME
         if let Some(home) = original_home {

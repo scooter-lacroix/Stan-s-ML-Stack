@@ -117,11 +117,7 @@ impl WandbInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -212,17 +208,19 @@ mod tests {
             ],
             env: vec![],
         };
-        assert_eq!(
-            cmd.to_command_string(),
-            "python3 -m pip install wandb"
-        );
+        assert_eq!(cmd.to_command_string(), "python3 -m pip install wandb");
     }
 
     #[test]
     fn test_command_string_with_env() {
         let cmd = ShellCommand {
             program: "python3".to_string(),
-            args: vec!["-m".to_string(), "pip".to_string(), "install".to_string(), "wandb".to_string()],
+            args: vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "wandb".to_string(),
+            ],
             env: vec![("ROCM_PATH".to_string(), "/opt/rocm".to_string())],
         };
         let s = cmd.to_command_string();

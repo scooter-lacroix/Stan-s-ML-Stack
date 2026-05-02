@@ -334,9 +334,7 @@ fn detect_rocm_version_or_default() -> String {
 fn detect_gpu_arch_or_default() -> String {
     // Try rocminfo
     if command_exists("rocminfo") {
-        if let Ok(output) = std::process::Command::new("rocminfo")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("rocminfo").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -369,8 +367,6 @@ fn detect_gpu_arch_or_default() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
     // --- parse_env_file tests ---
 
@@ -421,10 +417,12 @@ export ROCM_PATH=/opt/rocm
         // We can't easily override the home dir, but we can test the auto-detect path
         let result = validate_mlstack_env(Some("test_script"));
         // Should always succeed (never panic)
-        assert!(result.vars.rocm_channel == "latest"
-            || result.vars.rocm_channel == "stable"
-            || result.vars.rocm_channel == "legacy"
-            || result.vars.rocm_channel == "preview");
+        assert!(
+            result.vars.rocm_channel == "latest"
+                || result.vars.rocm_channel == "stable"
+                || result.vars.rocm_channel == "legacy"
+                || result.vars.rocm_channel == "preview"
+        );
     }
 
     #[test]

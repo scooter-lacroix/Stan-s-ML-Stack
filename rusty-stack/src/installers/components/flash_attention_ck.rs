@@ -191,10 +191,7 @@ impl FlashAttentionInstaller {
             .unwrap_or_else(|| "/opt/rocm".to_string());
 
         let mut env = vec![
-            (
-                "HSA_OVERRIDE_GFX_VERSION".to_string(),
-                "11.0.0".to_string(),
-            ),
+            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
             (
                 "PYTORCH_ROCM_ARCH".to_string(),
                 self.config.gpu_arch.as_str().to_string(),
@@ -202,7 +199,11 @@ impl FlashAttentionInstaller {
             ("ROCM_PATH".to_string(), rocm_path.clone()),
             (
                 "PATH".to_string(),
-                format!("{}/bin:{}", rocm_path, std::env::var("PATH").unwrap_or_default()),
+                format!(
+                    "{}/bin:{}",
+                    rocm_path,
+                    std::env::var("PATH").unwrap_or_default()
+                ),
             ),
             (
                 "LD_LIBRARY_PATH".to_string(),
@@ -278,7 +279,11 @@ impl FlashAttentionInstaller {
     /// - ROCM_PATH=/opt/rocm
     ///
     /// Working directory: `<install_dir>/build`
-    pub fn build_cmake_command(&self, rocm_env: &RocmEnv, torch_cmake_prefix: &str) -> ShellCommand {
+    pub fn build_cmake_command(
+        &self,
+        rocm_env: &RocmEnv,
+        torch_cmake_prefix: &str,
+    ) -> ShellCommand {
         let rocm_path = rocm_env
             .path()
             .map(|p| p.to_string_lossy().to_string())
@@ -358,7 +363,12 @@ impl FlashAttentionInstaller {
     ///
     /// Detects common cmake and make failure patterns in the output.
     /// Returns an error message if a failure is detected.
-    pub fn check_build_output(&self, stdout: &str, stderr: &str, exit_code: i32) -> Result<(), String> {
+    pub fn check_build_output(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+    ) -> Result<(), String> {
         if exit_code != 0 {
             // Check for specific error patterns
             let error_patterns = [
@@ -430,30 +440,36 @@ mod tests {
             gpu_arch: GpuArch::Known("gfx1100".to_string()),
             ..Default::default()
         });
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
+        let cmd = installer.build_cmake_command(
+            &rocm_env,
+            "/usr/lib/python3/dist-packages/torch/share/cmake",
         );
-        let cmd = installer.build_cmake_command(&rocm_env, "/usr/lib/python3/dist-packages/torch/share/cmake");
 
         assert_eq!(cmd.program, "cmake");
         assert!(cmd.args.contains(&"..".to_string()));
         assert!(cmd.args.iter().any(|a| a.contains("CMAKE_PREFIX_PATH")));
-        assert!(cmd.args.iter().any(|a| a.contains("CMAKE_BUILD_TYPE=Release")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("CMAKE_BUILD_TYPE=Release")));
         assert!(cmd.args.iter().any(|a| a.contains("GPU_TARGETS=gfx1100")));
-        assert!(cmd.args.iter().any(|a| a.contains("CMAKE_CXX_FLAGS=-Wno-error")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("CMAKE_CXX_FLAGS=-Wno-error")));
         assert!(cmd.args.iter().any(|a| a.contains("ROCM_PATH=/opt/rocm")));
     }
 
     #[test]
     fn test_cmake_command_includes_torch_prefix() {
         let installer = FlashAttentionInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_cmake_command(&rocm_env, "/torch/cmake/prefix");
-        let prefix_arg = cmd.args.iter().find(|a| a.starts_with("-DCMAKE_PREFIX_PATH="));
+        let prefix_arg = cmd
+            .args
+            .iter()
+            .find(|a| a.starts_with("-DCMAKE_PREFIX_PATH="));
         assert!(prefix_arg.is_some());
         let prefix = prefix_arg.unwrap();
         assert!(prefix.contains("/torch/cmake/prefix"));
@@ -531,7 +547,10 @@ mod tests {
         let cmd = installer.build_git_clone_command();
         assert_eq!(cmd.program, "git");
         assert!(cmd.args.contains(&"clone".to_string()));
-        assert!(cmd.args.iter().any(|a| a.contains("ROCmSoftwarePlatform/flash-attention")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("ROCmSoftwarePlatform/flash-attention")));
     }
 
     #[test]
@@ -548,14 +567,17 @@ mod tests {
     #[test]
     fn test_rocm_build_env() {
         let installer = FlashAttentionInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let env = installer.rocm_build_env(&rocm_env);
-        assert!(env.iter().any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(env.iter().any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-        assert!(env.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(env.iter().any(|(k, _)| k == "HSA_TOOLS_LIB"));
     }
 
@@ -585,11 +607,8 @@ mod tests {
     #[test]
     fn test_build_error_detection_cmake_error() {
         let installer = FlashAttentionInstaller::with_defaults();
-        let result = installer.check_build_output(
-            "some output",
-            "CMake Error at CMakeLists.txt:10",
-            1,
-        );
+        let result =
+            installer.check_build_output("some output", "CMake Error at CMakeLists.txt:10", 1);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("CMake Error"));
     }
@@ -609,11 +628,7 @@ mod tests {
     #[test]
     fn test_build_error_detection_success() {
         let installer = FlashAttentionInstaller::with_defaults();
-        let result = installer.check_build_output(
-            "Build finished successfully",
-            "",
-            0,
-        );
+        let result = installer.check_build_output("Build finished successfully", "", 0);
         assert!(result.is_ok());
     }
 

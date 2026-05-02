@@ -73,7 +73,9 @@ pub struct PipCommand {
 impl PipCommand {
     /// Format as a shell command string.
     pub fn to_command_string(&self) -> String {
-        let env_prefix = self.env.iter()
+        let env_prefix = self
+            .env
+            .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join(" ");
@@ -119,7 +121,8 @@ impl DeepSpeedInstaller {
     /// - HSA_OVERRIDE_GFX_VERSION
     /// - PYTORCH_ROCM_ARCH
     pub fn rocm_build_env(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
-        let rocm_path = rocm_env.path()
+        let rocm_path = rocm_env
+            .path()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "/opt/rocm".to_string());
 
@@ -142,11 +145,7 @@ impl DeepSpeedInstaller {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if is_global {
             args.push("--break-system-packages".to_string());
         }
@@ -174,11 +173,7 @@ impl DeepSpeedInstaller {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if is_global {
             args.push("--break-system-packages".to_string());
         }
@@ -235,7 +230,14 @@ impl DeepSpeedInstaller {
 
     /// Get the list of required dependencies to verify after install.
     pub fn required_dependencies(&self) -> &[&str] {
-        &["packaging", "ninja", "pydantic", "jsonschema", "einops", "deepspeed"]
+        &[
+            "packaging",
+            "ninja",
+            "pydantic",
+            "jsonschema",
+            "einops",
+            "deepspeed",
+        ]
     }
 }
 
@@ -318,15 +320,18 @@ mod tests {
     #[test]
     fn test_rocm_build_env() {
         let installer = DeepSpeedInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let env = installer.rocm_build_env(&rocm_env);
-        assert!(env.iter().any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
         assert!(env.iter().any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(env.iter().any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
     }
 
     #[test]
@@ -334,7 +339,9 @@ mod tests {
         let installer = DeepSpeedInstaller::with_defaults();
         let rocm_env = RocmEnv::none();
         let env = installer.rocm_build_env(&rocm_env);
-        assert!(env.iter().any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
     }
 
     #[test]
@@ -350,7 +357,12 @@ mod tests {
     fn test_command_string_format() {
         let cmd = PipCommand {
             program: "python3".to_string(),
-            args: vec!["-m".to_string(), "pip".to_string(), "install".to_string(), "deepspeed".to_string()],
+            args: vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "deepspeed".to_string(),
+            ],
             env: vec![("ROCM_HOME".to_string(), "/opt/rocm".to_string())],
         };
         let s = cmd.to_command_string();

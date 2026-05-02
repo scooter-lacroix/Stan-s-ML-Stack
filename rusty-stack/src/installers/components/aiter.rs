@@ -130,10 +130,7 @@ impl AiterInstaller {
     pub fn validate_dependencies(&self, installed_components: &[&str]) -> anyhow::Result<()> {
         for dep in self.dependencies() {
             if !installed_components.contains(dep) {
-                anyhow::bail!(
-                    "AITER requires '{}' to be installed first",
-                    dep
-                );
+                anyhow::bail!("AITER requires '{}' to be installed first", dep);
             }
         }
         Ok(())
@@ -177,18 +174,11 @@ impl AiterInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
-        args.extend([
-            "--no-cache-dir".to_string(),
-            "--upgrade".to_string(),
-        ]);
+        args.extend(["--no-cache-dir".to_string(), "--upgrade".to_string()]);
 
         let deps = [
             "packaging",
@@ -222,11 +212,7 @@ impl AiterInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -307,10 +293,7 @@ mod tests {
             repo_url: Some("https://example.com/aiter.git".to_string()),
             ..Default::default()
         });
-        assert_eq!(
-            installer.git_clone_url(),
-            "https://example.com/aiter.git"
-        );
+        assert_eq!(installer.git_clone_url(), "https://example.com/aiter.git");
     }
 
     #[test]
@@ -320,10 +303,7 @@ mod tests {
         assert_eq!(cmd.program, "git");
         assert!(cmd.args.contains(&"clone".to_string()));
         assert!(cmd.args.contains(&"--recursive".to_string()));
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a.contains("ROCm/aiter")));
+        assert!(cmd.args.iter().any(|a| a.contains("ROCm/aiter")));
         assert!(cmd.args.contains(&"/tmp/aiter".to_string()));
     }
 
@@ -375,10 +355,7 @@ mod tests {
             gpu_arch: "gfx1100".to_string(),
             ..Default::default()
         });
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let env = installer.build_rocm_env(&rocm_env);
         assert!(env.iter().any(|(k, v)| k == "GPU_ARCH" && v == "gfx1100"));
         assert!(env
@@ -394,9 +371,7 @@ mod tests {
         let installer = AiterInstaller::with_defaults();
         let env = installer.aiter_jit_env();
         assert!(env.iter().any(|(k, _)| k == "AITER_JIT_DIR"));
-        assert!(env
-            .iter()
-            .any(|(_, v)| v.contains(".mlstack/aiter/jit")));
+        assert!(env.iter().any(|(_, v)| v.contains(".mlstack/aiter/jit")));
     }
 
     #[test]
@@ -439,10 +414,7 @@ mod tests {
         let installer = AiterInstaller::with_defaults();
         let result = installer.validate_dependencies(&["rocm"]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("pytorch"));
+        assert!(result.unwrap_err().to_string().contains("pytorch"));
     }
 
     #[test]
@@ -450,9 +422,6 @@ mod tests {
         let installer = AiterInstaller::with_defaults();
         let result = installer.validate_dependencies(&["pytorch"]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("rocm"));
+        assert!(result.unwrap_err().to_string().contains("rocm"));
     }
 }

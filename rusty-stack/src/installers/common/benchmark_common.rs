@@ -256,11 +256,7 @@ impl BenchmarkResult {
 impl fmt::Display for BenchmarkResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.success {
-            write!(
-                f,
-                "{}: {:.3} {}",
-                self.name, self.value, self.unit
-            )
+            write!(f, "{}: {:.3} {}", self.name, self.value, self.unit)
         } else {
             write!(
                 f,
@@ -672,10 +668,7 @@ mod tests {
 
     #[test]
     fn test_pci_normalize_already_short() {
-        assert_eq!(
-            normalize_pci_bus_id("01:00.0"),
-            Ok("01:00.0".to_string())
-        );
+        assert_eq!(normalize_pci_bus_id("01:00.0"), Ok("01:00.0".to_string()));
     }
 
     #[test]
@@ -688,10 +681,7 @@ mod tests {
 
     #[test]
     fn test_pci_normalize_mixed_case() {
-        assert_eq!(
-            normalize_pci_bus_id("0A:1B.3"),
-            Ok("0a:1b.3".to_string())
-        );
+        assert_eq!(normalize_pci_bus_id("0A:1B.3"), Ok("0a:1b.3".to_string()));
     }
 
     #[test]
@@ -921,7 +911,10 @@ mod tests {
 
         let json = results.to_json().unwrap();
         let parsed = crate::benchmark_logs::extract_benchmark_json_value(&json);
-        assert!(parsed.is_some(), "benchmark_logs should be able to parse our JSON");
+        assert!(
+            parsed.is_some(),
+            "benchmark_logs should be able to parse our JSON"
+        );
 
         let value = parsed.unwrap();
         assert!(value.get("results").is_some());
@@ -1002,9 +995,15 @@ mod tests {
 
         let contents = fs::read_to_string(&log_path).expect("read log file");
         assert!(contents.contains("INFO"), "log should contain INFO level");
-        assert!(contents.contains("test message"), "log should contain message");
+        assert!(
+            contents.contains("test message"),
+            "log should contain message"
+        );
         // File output should not contain ANSI escape codes
-        assert!(!contents.contains('\x1b'), "file should not have ANSI escapes");
+        assert!(
+            !contents.contains('\x1b'),
+            "file should not have ANSI escapes"
+        );
     }
 
     #[test]

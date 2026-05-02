@@ -79,10 +79,7 @@ impl Default for PermanentEnvConfig {
 
 /// Default path for the environment file.
 pub fn default_env_file_path() -> String {
-    format!(
-        "{}/.mlstack_env",
-        std::env::var("HOME").unwrap_or_default()
-    )
+    format!("{}/.mlstack_env", std::env::var("HOME").unwrap_or_default())
 }
 
 /// The permanent environment setup installer.
@@ -179,7 +176,12 @@ export UV_SYSTEM_PYTHON=1
             rocm_version = self.config.rocm_version,
             gpu_arch = self.config.gpu_arch,
             gpu_list = self.config.discrete_gpu_list,
-            first_gpu = self.config.discrete_gpu_list.split(',').next().unwrap_or("0"),
+            first_gpu = self
+                .config
+                .discrete_gpu_list
+                .split(',')
+                .next()
+                .unwrap_or("0"),
             python_bin = self.config.python_bin,
             install_method = self.config.install_method,
             hsa_override = self.config.hsa_override_gfx_version,
@@ -207,9 +209,15 @@ export UV_SYSTEM_PYTHON=1
             ("ROCM_HOME", "/opt/rocm".to_string()),
             ("ROCM_PATH", "/opt/rocm".to_string()),
             ("HIP_VISIBLE_DEVICES", self.config.discrete_gpu_list.clone()),
-            ("CUDA_VISIBLE_DEVICES", self.config.discrete_gpu_list.clone()),
+            (
+                "CUDA_VISIBLE_DEVICES",
+                self.config.discrete_gpu_list.clone(),
+            ),
             ("MLSTACK_PYTHON_BIN", self.config.python_bin.clone()),
-            ("HSA_OVERRIDE_GFX_VERSION", self.config.hsa_override_gfx_version.clone()),
+            (
+                "HSA_OVERRIDE_GFX_VERSION",
+                self.config.hsa_override_gfx_version.clone(),
+            ),
             ("HSA_ENABLE_SDMA", "0".to_string()),
             ("GPU_MAX_HEAP_SIZE", "100".to_string()),
             ("GPU_MAX_ALLOC_PERCENT", "100".to_string()),
@@ -383,7 +391,11 @@ mod tests {
         let installer = PermanentEnvInstaller::with_defaults();
         let vars = installer.required_env_vars();
         // Must have at least the key variables
-        assert!(vars.len() >= 19, "Expected at least 19 env vars, got {}", vars.len());
+        assert!(
+            vars.len() >= 19,
+            "Expected at least 19 env vars, got {}",
+            vars.len()
+        );
     }
 
     #[test]
@@ -432,10 +444,7 @@ mod tests {
             PermanentEnvInstaller::gfx_to_hsa_override("gfx900"),
             Some("9.0.0".to_string())
         );
-        assert_eq!(
-            PermanentEnvInstaller::gfx_to_hsa_override("invalid"),
-            None
-        );
+        assert_eq!(PermanentEnvInstaller::gfx_to_hsa_override("invalid"), None);
     }
 
     #[test]

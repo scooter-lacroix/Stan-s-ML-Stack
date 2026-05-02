@@ -27,7 +27,11 @@ use rusty_stack::state::{default_components, Category, Component};
 
 #[test]
 fn test_all_24_native_components_recognized() {
-    assert_eq!(NATIVE_COMPONENT_IDS.len(), 24, "Must have exactly 24 native components");
+    assert_eq!(
+        NATIVE_COMPONENT_IDS.len(),
+        24,
+        "Must have exactly 24 native components"
+    );
 
     for id in NATIVE_COMPONENT_IDS {
         assert!(
@@ -187,7 +191,10 @@ fn test_vllm_depends_on_pytorch() {
 #[test]
 fn test_deepspeed_depends_on_pytorch() {
     let deps = get_dependencies("deepspeed");
-    assert!(deps.contains(&"pytorch"), "DeepSpeed must depend on pytorch");
+    assert!(
+        deps.contains(&"pytorch"),
+        "DeepSpeed must depend on pytorch"
+    );
 }
 
 #[test]
@@ -305,30 +312,76 @@ fn test_every_native_component_has_installer_module() {
         // Each component should be dispatchable — we verify the mapping
         // by ensuring the module exists and can create a default installer
         match *id {
-            "rocm" => { let _ = RocmInstaller::with_defaults(); },
-            "pytorch" => { let _ = PyTorchInstaller::with_defaults(); },
-            "triton" => { let _ = TritonInstaller::with_defaults(); },
-            "mpi4py" => { let _ = Mpi4PyInstaller::with_defaults(); },
-            "deepspeed" => { let _ = DeepSpeedInstaller::with_defaults(); },
-            "ml-stack-core" => { let _ = MlStackInstaller::with_defaults(); },
-            "flash-attn" => { let _ = FlashAttentionInstaller::with_defaults(); },
-            "megatron" => { let _ = MegatronInstaller::with_defaults(); },
-            "vllm" => { let _ = VllmInstaller::with_defaults(); },
-            "aiter" => { let _ = AiterInstaller::with_defaults(); },
-            "vllm-studio" => { let _ = VllmStudioInstaller::with_defaults(); },
-            "comfyui" => { let _ = ComfyuiInstaller::with_defaults(); },
-            "textgen" => { let _ = TextgenInstaller::with_defaults(); },
-            "onnx" => { let _ = OnnxRuntimeInstaller::with_defaults(); },
-            "bitsandbytes" => { let _ = BitsAndBytesInstaller::with_defaults(); },
-            "rocm-smi" => { let _ = RocmSmiInstaller::with_defaults(); },
-            "migraphx" => { let _ = MigraphxInstaller::with_defaults(); },
-            "pytorch-profiler" => { let _ = PytorchProfilerInstaller::with_defaults(); },
-            "wandb" => { let _ = WandbInstaller::with_defaults(); },
-            "amdgpu-drivers" => { let _ = AmdgpuInstaller::with_defaults(); },
-            "migraphx-python" => { let _ = MigraphxPythonInstaller::with_defaults(); },
-            "permanent-env" => { let _ = PermanentEnvInstaller::with_defaults(); },
-            "repair-stack" => { let _ = RepairInstaller::with_defaults(); },
-            "enhanced-env" => {}, // env setup module (no dedicated installer struct yet)
+            "rocm" => {
+                let _ = RocmInstaller::with_defaults();
+            }
+            "pytorch" => {
+                let _ = PyTorchInstaller::with_defaults();
+            }
+            "triton" => {
+                let _ = TritonInstaller::with_defaults();
+            }
+            "mpi4py" => {
+                let _ = Mpi4PyInstaller::with_defaults();
+            }
+            "deepspeed" => {
+                let _ = DeepSpeedInstaller::with_defaults();
+            }
+            "ml-stack-core" => {
+                let _ = MlStackInstaller::with_defaults();
+            }
+            "flash-attn" => {
+                let _ = FlashAttentionInstaller::with_defaults();
+            }
+            "megatron" => {
+                let _ = MegatronInstaller::with_defaults();
+            }
+            "vllm" => {
+                let _ = VllmInstaller::with_defaults();
+            }
+            "aiter" => {
+                let _ = AiterInstaller::with_defaults();
+            }
+            "vllm-studio" => {
+                let _ = VllmStudioInstaller::with_defaults();
+            }
+            "comfyui" => {
+                let _ = ComfyuiInstaller::with_defaults();
+            }
+            "textgen" => {
+                let _ = TextgenInstaller::with_defaults();
+            }
+            "onnx" => {
+                let _ = OnnxRuntimeInstaller::with_defaults();
+            }
+            "bitsandbytes" => {
+                let _ = BitsAndBytesInstaller::with_defaults();
+            }
+            "rocm-smi" => {
+                let _ = RocmSmiInstaller::with_defaults();
+            }
+            "migraphx" => {
+                let _ = MigraphxInstaller::with_defaults();
+            }
+            "pytorch-profiler" => {
+                let _ = PytorchProfilerInstaller::with_defaults();
+            }
+            "wandb" => {
+                let _ = WandbInstaller::with_defaults();
+            }
+            "amdgpu-drivers" => {
+                let _ = AmdgpuInstaller::with_defaults();
+            }
+            "migraphx-python" => {
+                let _ = MigraphxPythonInstaller::with_defaults();
+            }
+            "permanent-env" => {
+                let _ = PermanentEnvInstaller::with_defaults();
+            }
+            "repair-stack" => {
+                let _ = RepairInstaller::with_defaults();
+            }
+            "enhanced-env" => {} // env setup module (no dedicated installer struct yet)
             _ => panic!("Unknown native component ID: {}", id),
         }
     }
@@ -347,10 +400,7 @@ fn test_native_components_preserve_needs_sudo_flag() {
         .collect();
 
     // Verify sudo-requiring components still have needs_sudo=true
-    let sudo_components: Vec<&&Component> = native_comps
-        .iter()
-        .filter(|c| c.needs_sudo)
-        .collect();
+    let sudo_components: Vec<&&Component> = native_comps.iter().filter(|c| c.needs_sudo).collect();
 
     // Most installers need sudo (ROCm, PyTorch, etc.)
     assert!(
@@ -360,10 +410,7 @@ fn test_native_components_preserve_needs_sudo_flag() {
     );
 
     // Some don't need sudo (app installers)
-    let no_sudo: Vec<&&Component> = native_comps
-        .iter()
-        .filter(|c| !c.needs_sudo)
-        .collect();
+    let no_sudo: Vec<&&Component> = native_comps.iter().filter(|c| !c.needs_sudo).collect();
 
     assert!(
         no_sudo.iter().any(|c| c.id == "vllm-studio"),

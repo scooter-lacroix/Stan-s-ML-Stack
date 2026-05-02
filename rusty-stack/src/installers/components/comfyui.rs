@@ -125,10 +125,7 @@ impl ComfyuiInstaller {
     pub fn build_pytorch_check_command(&self) -> ShellCommand {
         ShellCommand {
             program: self.config.python_bin.clone(),
-            args: vec![
-                "-c".to_string(),
-                "import torch".to_string(),
-            ],
+            args: vec!["-c".to_string(), "import torch".to_string()],
             env: vec![],
         }
     }
@@ -212,7 +209,8 @@ impl ComfyuiInstaller {
                     "-m".to_string(),
                     "rusty-stack-preserve-user-data".to_string(),
                     "--".to_string(),
-                ].into_iter()
+                ]
+                .into_iter()
                 .chain(PRESERVE_DIRS.iter().map(|s| s.to_string()))
                 .collect(),
                 env: vec![],
@@ -399,17 +397,23 @@ mod tests {
         let pattern = ComfyuiInstaller::requirements_filter_pattern();
         // Pattern should match all excluded packages
         for pkg in EXCLUDED_PACKAGES {
-            assert!(
-                pattern.contains(pkg),
-                "Pattern should contain '{pkg}'"
-            );
+            assert!(pattern.contains(pkg), "Pattern should contain '{pkg}'");
         }
     }
 
     #[test]
     fn test_excluded_packages_match_original_script() {
         // Original script excludes: torch, torchvision, torchaudio, torchsde, sentencepiece
-        assert_eq!(EXCLUDED_PACKAGES, ["torch", "torchvision", "torchaudio", "torchsde", "sentencepiece"]);
+        assert_eq!(
+            EXCLUDED_PACKAGES,
+            [
+                "torch",
+                "torchvision",
+                "torchaudio",
+                "torchsde",
+                "sentencepiece"
+            ]
+        );
     }
 
     #[test]
@@ -471,7 +475,10 @@ mod tests {
         // Should contain stash commands
         let cmd_strings: Vec<String> = cmds.iter().map(|c| c.to_command_string()).collect();
         let has_stash = cmd_strings.iter().any(|s| s.contains("stash"));
-        assert!(has_stash, "Should contain stash commands when user data exists");
+        assert!(
+            has_stash,
+            "Should contain stash commands when user data exists"
+        );
     }
 
     #[test]

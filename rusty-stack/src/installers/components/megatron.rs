@@ -170,10 +170,7 @@ impl MegatronInstaller {
 
         let mut env = vec![
             ("AMD_LOG_LEVEL".to_string(), "0".to_string()),
-            (
-                "HSA_OVERRIDE_GFX_VERSION".to_string(),
-                "11.0.0".to_string(),
-            ),
+            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
             ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
             ("ROCM_PATH".to_string(), rocm_path.clone()),
             (
@@ -188,7 +185,10 @@ impl MegatronInstaller {
             .map(|p| p.join("lib/librocprofiler-sdk-tool.so"))
             .filter(|p| p.exists());
         if let Some(lib) = profiler_lib {
-            env.push(("HSA_TOOLS_LIB".to_string(), lib.to_string_lossy().to_string()));
+            env.push((
+                "HSA_TOOLS_LIB".to_string(),
+                lib.to_string_lossy().to_string(),
+            ));
         } else {
             env.push(("HSA_TOOLS_LIB".to_string(), "0".to_string()));
         }
@@ -239,11 +239,7 @@ impl MegatronInstaller {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
 
         if is_global {
             args.push("--break-system-packages".to_string());
@@ -268,11 +264,7 @@ impl MegatronInstaller {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
 
         if is_global {
             args.push("--break-system-packages".to_string());
@@ -354,7 +346,12 @@ impl MegatronInstaller {
     // -----------------------------------------------------------------------
 
     /// Check build output for errors.
-    pub fn check_build_output(&self, stdout: &str, stderr: &str, exit_code: i32) -> Result<(), String> {
+    pub fn check_build_output(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+    ) -> Result<(), String> {
         if exit_code != 0 {
             let error_patterns = [
                 "error:",
@@ -428,7 +425,10 @@ mod tests {
             ..Default::default()
         });
         let cmd = installer.build_git_clone_command();
-        assert!(cmd.args.iter().any(|a| a.contains("/home/user/Megatron-LM")));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("/home/user/Megatron-LM")));
     }
 
     #[test]
@@ -474,7 +474,10 @@ mod tests {
             ..Default::default()
         });
         let cmd = installer.build_pip_install_command();
-        assert_eq!(cmd.working_dir, Some(PathBuf::from("/home/user/Megatron-LM")));
+        assert_eq!(
+            cmd.working_dir,
+            Some(PathBuf::from("/home/user/Megatron-LM"))
+        );
     }
 
     #[test]
@@ -503,16 +506,21 @@ mod tests {
     #[test]
     fn test_rocm_env() {
         let installer = MegatronInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let env = installer.rocm_env(&rocm_env);
         assert!(env.iter().any(|(k, v)| k == "AMD_LOG_LEVEL" && v == "0"));
-        assert!(env.iter().any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(env.iter().any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-        assert!(env.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, v)| k == "PYTORCH_ALLOC_CONF" && v == "expandable_segments:True"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "PYTORCH_ALLOC_CONF" && v == "expandable_segments:True"));
         assert!(env.iter().any(|(k, _)| k == "HSA_TOOLS_LIB"));
     }
 
@@ -563,11 +571,7 @@ mod tests {
     #[test]
     fn test_build_error_import() {
         let installer = MegatronInstaller::with_defaults();
-        let result = installer.check_build_output(
-            "",
-            "ImportError: No module named 'megatron'",
-            1,
-        );
+        let result = installer.check_build_output("", "ImportError: No module named 'megatron'", 1);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ImportError"));
     }
@@ -602,14 +606,21 @@ mod tests {
     fn test_config_fallback_dir() {
         let config = MegatronConfig::default();
         let fallback = config.fallback_install_dir();
-        assert!(fallback.to_string_lossy().contains(".mlstack/src/Megatron-LM"));
+        assert!(fallback
+            .to_string_lossy()
+            .contains(".mlstack/src/Megatron-LM"));
     }
 
     #[test]
     fn test_command_string_format() {
         let cmd = ShellCommand {
             program: "python3".to_string(),
-            args: vec!["-m".to_string(), "pip".to_string(), "install".to_string(), "numpy".to_string()],
+            args: vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "numpy".to_string(),
+            ],
             env: vec![("ROCM_PATH".to_string(), "/opt/rocm".to_string())],
             working_dir: None,
         };

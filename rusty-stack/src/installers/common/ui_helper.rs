@@ -89,9 +89,7 @@ impl UiArgs {
 
                     // Block sensitive system paths
                     if is_system_path(&resolved) {
-                        return Err(UiArgError::SystemPath {
-                            path: resolved,
-                        });
+                        return Err(UiArgError::SystemPath { path: resolved });
                     }
 
                     install_dir = Some(resolved);
@@ -210,11 +208,7 @@ pub fn is_system_path(path: &str) -> bool {
 /// and hard reset. Otherwise, clones the repository.
 ///
 /// Supports dry-run mode — logs commands without executing.
-pub fn git_clone_or_update(
-    install_dir: &str,
-    repo_url: &str,
-    dry_run: bool,
-) -> Result<(), String> {
+pub fn git_clone_or_update(install_dir: &str, repo_url: &str, dry_run: bool) -> Result<(), String> {
     let git_dir = Path::new(install_dir).join(".git");
 
     if git_dir.exists() {
@@ -225,8 +219,7 @@ pub fn git_clone_or_update(
         // Get target branch
         let target_branch = get_current_branch(install_dir, dry_run);
 
-        let reset_cmd =
-            format!("git -C \"{install_dir}\" reset --hard \"origin/{target_branch}\"");
+        let reset_cmd = format!("git -C \"{install_dir}\" reset --hard \"origin/{target_branch}\"");
         utils::execute_command(&reset_cmd, "Resetting to latest", dry_run)?;
     } else {
         // Fresh clone
@@ -353,7 +346,10 @@ mod tests {
     fn test_parse_dir_nonexistent_absolute() {
         // Nonexistent but absolute path should still work
         let args = UiArgs::parse(&["--dir", "/tmp/nonexistent_test_dir_xyz"]).unwrap();
-        assert_eq!(args.install_dir, Some("/tmp/nonexistent_test_dir_xyz".to_string()));
+        assert_eq!(
+            args.install_dir,
+            Some("/tmp/nonexistent_test_dir_xyz".to_string())
+        );
     }
 
     #[test]
@@ -498,13 +494,19 @@ mod tests {
 
     #[test]
     fn test_ui_arg_error_display() {
-        let err = UiArgError::MissingValue { arg: "--dir".to_string() };
+        let err = UiArgError::MissingValue {
+            arg: "--dir".to_string(),
+        };
         assert!(format!("{err}").contains("--dir requires a path argument"));
 
-        let err = UiArgError::NotAbsolute { path: "relative".to_string() };
+        let err = UiArgError::NotAbsolute {
+            path: "relative".to_string(),
+        };
         assert!(format!("{err}").contains("absolute path"));
 
-        let err = UiArgError::SystemPath { path: "/usr".to_string() };
+        let err = UiArgError::SystemPath {
+            path: "/usr".to_string(),
+        };
         assert!(format!("{err}").contains("system directory"));
 
         let err = UiArgError::HelpRequested;
@@ -514,7 +516,9 @@ mod tests {
     #[test]
     fn test_ui_arg_error_is_std_error() {
         fn assert_error<E: std::error::Error>(_: &E) {}
-        let err = UiArgError::MissingValue { arg: "test".to_string() };
+        let err = UiArgError::MissingValue {
+            arg: "test".to_string(),
+        };
         assert_error(&err);
     }
 

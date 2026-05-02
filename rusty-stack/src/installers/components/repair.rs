@@ -231,6 +231,7 @@ impl Default for RepairConfig {
 
 /// The ML Stack repair tool.
 pub struct RepairInstaller {
+    #[allow(dead_code)]
     config: RepairConfig,
 }
 
@@ -350,19 +351,40 @@ mod tests {
         assert_eq!(RepairStep::Aiter.name(), "AITER Installation");
         assert_eq!(RepairStep::MigraphxPython.name(), "MIGraphX Python");
         assert_eq!(RepairStep::DeepSpeed.name(), "DeepSpeed Installation");
-        assert_eq!(RepairStep::EnvironmentVariables.name(), "Environment Variables");
+        assert_eq!(
+            RepairStep::EnvironmentVariables.name(),
+            "Environment Variables"
+        );
     }
 
     #[test]
     fn test_repair_step_scripts() {
         assert_eq!(RepairStep::Rocm.installer_script(), "install_rocm.sh");
-        assert_eq!(RepairStep::AmdgpuDrivers.installer_script(), "install_amdgpu_drivers.sh");
-        assert_eq!(RepairStep::PyTorch.installer_script(), "install_pytorch_rocm.sh");
-        assert_eq!(RepairStep::MlStackCore.installer_script(), "install_ml_stack.sh");
+        assert_eq!(
+            RepairStep::AmdgpuDrivers.installer_script(),
+            "install_amdgpu_drivers.sh"
+        );
+        assert_eq!(
+            RepairStep::PyTorch.installer_script(),
+            "install_pytorch_rocm.sh"
+        );
+        assert_eq!(
+            RepairStep::MlStackCore.installer_script(),
+            "install_ml_stack.sh"
+        );
         assert_eq!(RepairStep::Aiter.installer_script(), "install_aiter.sh");
-        assert_eq!(RepairStep::MigraphxPython.installer_script(), "install_migraphx_python.sh");
-        assert_eq!(RepairStep::DeepSpeed.installer_script(), "install_deepspeed.sh");
-        assert_eq!(RepairStep::EnvironmentVariables.installer_script(), "setup_permanent_rocm_env.sh");
+        assert_eq!(
+            RepairStep::MigraphxPython.installer_script(),
+            "install_migraphx_python.sh"
+        );
+        assert_eq!(
+            RepairStep::DeepSpeed.installer_script(),
+            "install_deepspeed.sh"
+        );
+        assert_eq!(
+            RepairStep::EnvironmentVariables.installer_script(),
+            "setup_permanent_rocm_env.sh"
+        );
     }
 
     #[test]
@@ -394,7 +416,10 @@ mod tests {
     fn test_step_command_includes_noninteractive_env() {
         let repair = RepairInstaller::with_defaults();
         let cmd = repair.build_step_command(RepairStep::PyTorch, "/scripts");
-        assert!(cmd.env.iter().any(|(k, v)| k == "NONINTERACTIVE" && v == "1"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "NONINTERACTIVE" && v == "1"));
     }
 
     // -----------------------------------------------------------------------

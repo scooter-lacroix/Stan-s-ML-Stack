@@ -127,10 +127,7 @@ impl VllmInstaller {
     pub fn validate_dependencies(&self, installed_components: &[&str]) -> anyhow::Result<()> {
         for dep in self.dependencies() {
             if !installed_components.contains(dep) {
-                anyhow::bail!(
-                    "vLLM requires '{}' to be installed first",
-                    dep
-                );
+                anyhow::bail!("vLLM requires '{}' to be installed first", dep);
             }
         }
         Ok(())
@@ -179,7 +176,10 @@ impl VllmInstaller {
             ("ROCM_PATH".to_string(), rocm_path.clone()),
             ("HIP_PATH".to_string(), rocm_path.clone()),
             ("HIP_ROOT_DIR".to_string(), rocm_path),
-            ("PYTORCH_ROCM_ARCH".to_string(), self.config.gpu_arch.clone()),
+            (
+                "PYTORCH_ROCM_ARCH".to_string(),
+                self.config.gpu_arch.clone(),
+            ),
             ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
             ("VLLM_TARGET_DEVICE".to_string(), "rocm".to_string()),
         ]
@@ -193,11 +193,7 @@ impl VllmInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -223,11 +219,7 @@ impl VllmInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -295,11 +287,7 @@ impl VllmInstaller {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -343,10 +331,7 @@ impl VllmInstaller {
                 "TRITON_CACHE_DIR".to_string(),
                 format!("{triton_home}/cache"),
             ),
-            (
-                "TRITON_DUMP_DIR".to_string(),
-                format!("{triton_home}/dump"),
-            ),
+            ("TRITON_DUMP_DIR".to_string(), format!("{triton_home}/dump")),
             (
                 "TRITON_OVERRIDE_DIR".to_string(),
                 format!("{triton_home}/override"),
@@ -431,13 +416,8 @@ mod tests {
         assert!(cmd.args.contains(&"--no-cache-dir".to_string()));
         assert!(cmd.args.contains(&"--no-deps".to_string()));
         assert!(cmd.args.contains(&"vllm".to_string()));
-        assert!(cmd
-            .args
-            .contains(&"--extra-index-url".to_string()));
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a == "https://wheels.vllm.ai/rocm/"));
+        assert!(cmd.args.contains(&"--extra-index-url".to_string()));
+        assert!(cmd.args.iter().any(|a| a == "https://wheels.vllm.ai/rocm/"));
     }
 
     #[test]
@@ -455,10 +435,7 @@ mod tests {
     #[test]
     fn test_vllm_wheels_url() {
         let installer = VllmInstaller::with_defaults();
-        assert_eq!(
-            installer.vllm_wheels_url(),
-            "https://wheels.vllm.ai/rocm/"
-        );
+        assert_eq!(installer.vllm_wheels_url(), "https://wheels.vllm.ai/rocm/");
     }
 
     #[test]
@@ -500,13 +477,14 @@ mod tests {
             gpu_arch: "gfx1100".to_string(),
             ..Default::default()
         });
-        let rocm_env = RocmEnv::from_known(
-            Some(PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let env = installer.rocm_build_env(&rocm_env);
-        assert!(env.iter().any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(env.iter().any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
         assert!(env
             .iter()
@@ -537,18 +515,9 @@ mod tests {
     fn test_versioned_deps_command() {
         let installer = VllmInstaller::with_defaults();
         let cmd = installer.build_versioned_deps_command();
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a.starts_with("triton-kernels==")));
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a.starts_with("xgrammar==")));
-        assert!(cmd
-            .args
-            .iter()
-            .any(|a| a.starts_with("outlines-core==")));
+        assert!(cmd.args.iter().any(|a| a.starts_with("triton-kernels==")));
+        assert!(cmd.args.iter().any(|a| a.starts_with("xgrammar==")));
+        assert!(cmd.args.iter().any(|a| a.starts_with("outlines-core==")));
     }
 
     #[test]
@@ -566,8 +535,14 @@ mod tests {
         let cmd = installer.build_source_rebuild_command();
         assert!(cmd.args.contains(&"--no-build-isolation".to_string()));
         assert!(cmd.args.contains(&"--no-binary".to_string()));
-        assert!(cmd.env.iter().any(|(k, v)| k == "VLLM_TARGET_DEVICE" && v == "rocm"));
-        assert!(cmd.env.iter().any(|(k, v)| k == "VLLM_USE_ROCM" && v == "1"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "VLLM_TARGET_DEVICE" && v == "rocm"));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "VLLM_USE_ROCM" && v == "1"));
     }
 
     #[test]
@@ -600,9 +575,6 @@ mod tests {
         let installer = VllmInstaller::with_defaults();
         let result = installer.validate_dependencies(&["rocm"]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("pytorch"));
+        assert!(result.unwrap_err().to_string().contains("pytorch"));
     }
 }

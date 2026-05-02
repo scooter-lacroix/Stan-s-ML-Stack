@@ -81,7 +81,10 @@ impl RocmEnv {
     /// Returns `None` if ROCm is not detected or the bin directory
     /// does not exist.
     pub fn bin_path(&self) -> Option<PathBuf> {
-        self.path.as_ref().map(|p| p.join("bin")).filter(|p| p.is_dir())
+        self.path
+            .as_ref()
+            .map(|p| p.join("bin"))
+            .filter(|p| p.is_dir())
     }
 
     /// Get the ROCm lib directory path.
@@ -138,10 +141,7 @@ impl RocmEnv {
         }
 
         // Check in system PATH
-        if let Ok(output) = std::process::Command::new("which")
-            .arg(tool_name)
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("which").arg(tool_name).output() {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path_str.is_empty() {
@@ -169,7 +169,9 @@ impl RocmEnv {
         if !detected.is_empty() {
             candidates.push(detected);
         }
-        for fallback in &["7.2", "7.1", "7.0", "6.4", "6.3", "6.2", "6.1", "6.0", "5.7"] {
+        for fallback in &[
+            "7.2", "7.1", "7.0", "6.4", "6.3", "6.2", "6.1", "6.0", "5.7",
+        ] {
             let fb = fallback.to_string();
             if !candidates.contains(&fb) {
                 candidates.push(fb);

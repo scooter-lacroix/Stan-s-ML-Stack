@@ -48,7 +48,7 @@ impl ShellCommand {
 }
 
 /// Configuration for the AMDGPU drivers installer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AmdgpuConfig {
     /// Whether to run in dry-run mode.
     pub dry_run: bool,
@@ -56,17 +56,9 @@ pub struct AmdgpuConfig {
     pub force: bool,
 }
 
-impl Default for AmdgpuConfig {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            force: false,
-        }
-    }
-}
-
 /// The AMDGPU drivers installer.
 pub struct AmdgpuInstaller {
+    #[allow(dead_code)]
     config: AmdgpuConfig,
 }
 
@@ -128,11 +120,7 @@ impl AmdgpuInstaller {
             ),
             DistroFamily::Rhel => (
                 "sudo".to_string(),
-                vec![
-                    "dnf".to_string(),
-                    "install".to_string(),
-                    "-y".to_string(),
-                ],
+                vec!["dnf".to_string(), "install".to_string(), "-y".to_string()],
             ),
             DistroFamily::Arch => (
                 "sudo".to_string(),
@@ -241,9 +229,7 @@ impl AmdgpuInstaller {
         vec![
             ShellCommand {
                 program: "export".to_string(),
-                args: vec![
-                    "HSA_OVERRIDE_GFX_VERSION=11.0.0".to_string(),
-                ],
+                args: vec!["HSA_OVERRIDE_GFX_VERSION=11.0.0".to_string()],
                 env: vec![],
             },
             ShellCommand {
@@ -287,7 +273,8 @@ mod tests {
                 DistroFamily::Arch => "arch",
                 DistroFamily::Suse => "opensuse",
                 DistroFamily::Unknown => "unknown",
-            }.to_string(),
+            }
+            .to_string(),
             name: "Test Distro".to_string(),
             version: "1.0".to_string(),
             codename: "test".to_string(),
@@ -404,9 +391,15 @@ mod tests {
         assert_eq!(cmds.len(), 3);
 
         let cmd_strings: Vec<String> = cmds.iter().map(|c| c.to_command_string()).collect();
-        assert!(cmd_strings.iter().any(|s| s.contains("HSA_OVERRIDE_GFX_VERSION=11.0.0")));
-        assert!(cmd_strings.iter().any(|s| s.contains("PYTORCH_ROCM_ARCH=gfx1100")));
-        assert!(cmd_strings.iter().any(|s| s.contains("ROCM_PATH=/opt/rocm")));
+        assert!(cmd_strings
+            .iter()
+            .any(|s| s.contains("HSA_OVERRIDE_GFX_VERSION=11.0.0")));
+        assert!(cmd_strings
+            .iter()
+            .any(|s| s.contains("PYTORCH_ROCM_ARCH=gfx1100")));
+        assert!(cmd_strings
+            .iter()
+            .any(|s| s.contains("ROCM_PATH=/opt/rocm")));
     }
 
     #[test]

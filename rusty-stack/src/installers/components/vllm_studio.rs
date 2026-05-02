@@ -206,9 +206,8 @@ impl VllmStudioInstaller {
     /// runs `cd "$DIR/controller" && $PKG_MGR run start`.
     pub fn build_shim_content(&self, pkg_mgr: &str) -> String {
         format!(
-            "#!/bin/bash\ncd \"{}\" && {} run start\n",
-            format!("{}/controller", self.config.install_dir),
-            pkg_mgr,
+            "#!/bin/bash\ncd \"{}/controller\" && {} run start\n",
+            self.config.install_dir, pkg_mgr,
         )
     }
 

@@ -8,7 +8,9 @@
 //!
 //! - **VAL-VBA-012**: install.sh equivalent — clone and build
 
-use crate::installers::common::utils::{command_exists, print_error, print_step, print_success, print_warning};
+use crate::installers::common::utils::{
+    command_exists, print_error, print_step, print_success, print_warning,
+};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -38,7 +40,8 @@ impl Default for InstallConfig {
     fn default() -> Self {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
         Self {
-            repo_dir: std::env::var("REPO_DIR").unwrap_or_else(|_| format!("{home}/Stan-s-ML-Stack")),
+            repo_dir: std::env::var("REPO_DIR")
+                .unwrap_or_else(|_| format!("{home}/Stan-s-ML-Stack")),
             repo_url: "https://github.com/scooter-lacroix/Stan-s-ML-Stack.git".to_string(),
             skip_build: false,
             branch: std::env::var("BRANCH").unwrap_or_else(|_| "main".to_string()),
@@ -143,9 +146,14 @@ pub fn install_sh(config: &InstallConfig) -> InstallResult {
     // Step 3: Clone or update repository
     let repo_path = PathBuf::from(&config.repo_dir);
     if repo_path.join(".git").exists() {
-        print_step(&format!("Repository exists at {}. Updating...", config.repo_dir));
+        print_step(&format!(
+            "Repository exists at {}. Updating...",
+            config.repo_dir
+        ));
         if let Err(e) = update_repo(&config.repo_dir, &config.branch) {
-            result.warnings.push(format!("Failed to update repository: {e}"));
+            result
+                .warnings
+                .push(format!("Failed to update repository: {e}"));
             print_warning(&format!("Repository update failed: {e}"));
         } else {
             print_success("Repository updated");
@@ -166,7 +174,10 @@ pub fn install_sh(config: &InstallConfig) -> InstallResult {
         print_step("Building Rusty-Stack TUI...");
         let rusty_stack_dir = repo_path.join("rusty-stack");
         if !rusty_stack_dir.exists() {
-            let msg = format!("Rust project directory not found: {}", rusty_stack_dir.display());
+            let msg = format!(
+                "Rust project directory not found: {}",
+                rusty_stack_dir.display()
+            );
             print_error(&msg);
             result.errors.push(msg);
             return result;
@@ -208,7 +219,11 @@ pub fn install_sh(config: &InstallConfig) -> InstallResult {
 /// Clone or update a git repository.
 ///
 /// Returns the path to the repository directory on success.
-pub fn clone_or_update_repo(repo_url: &str, repo_dir: &str, branch: &str) -> Result<String, String> {
+pub fn clone_or_update_repo(
+    repo_url: &str,
+    repo_dir: &str,
+    branch: &str,
+) -> Result<String, String> {
     let repo_path = PathBuf::from(repo_dir);
     if repo_path.join(".git").exists() {
         update_repo(repo_dir, branch)?;

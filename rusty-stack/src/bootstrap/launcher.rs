@@ -95,14 +95,8 @@ pub fn launch_tui(build_mode: BuildMode, extra_args: &[String]) -> LaunchResult 
 
     // Build the binary
     let (exec_path, build_args) = match build_mode {
-        BuildMode::Debug => (
-            "target/debug/rusty-stack",
-            vec!["build"],
-        ),
-        BuildMode::Release => (
-            "target/release/rusty-stack",
-            vec!["build", "--release"],
-        ),
+        BuildMode::Debug => ("target/debug/rusty-stack", vec!["build"]),
+        BuildMode::Release => ("target/release/rusty-stack", vec!["build", "--release"]),
     };
 
     print_step(&format!("Building with cargo {}...", build_mode));

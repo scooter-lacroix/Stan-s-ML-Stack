@@ -7,7 +7,8 @@
 
 | Date | Artifact | Reviewer | Result | Follow-Up |
 | --- | --- | --- | --- | --- |
-| 2026-04-24 | Written spec set | Pending | Pending | User review required before Tzar review |
+| 2026-04-24 | Written spec + drafted implementation plan set | Tzar (`gpt-5.4-mini`) | FAIL | Remediate provenance state drift and expand update/upgrade trust compatibility coverage, then re-run Tzar gate |
+| 2026-04-30 | Remediated spec + plan readiness set | Tzar (`gpt-5.4-mini`) | PASS | Phase may advance to blocking task execution |
 
 ## Linked Artifacts
 

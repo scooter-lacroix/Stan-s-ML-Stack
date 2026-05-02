@@ -152,8 +152,8 @@ fn test_rusty_bench_json_gpu_capability() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("JSON parse error: {e}\nOutput: {stdout}"));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("JSON parse error: {e}\nOutput: {stdout}"));
     assert!(
         parsed.get("name").is_some() || parsed.get("success").is_some(),
         "JSON should contain 'name' or 'success' field, got: {stdout}"
@@ -172,8 +172,8 @@ fn test_rusty_bench_all_runs() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("JSON parse error: {e}\nOutput: {stdout}"));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("JSON parse error: {e}\nOutput: {stdout}"));
     // The "all" benchmark should produce a result with multiple sub-results
     assert!(
         parsed.get("success").is_some() || parsed.get("name").is_some(),

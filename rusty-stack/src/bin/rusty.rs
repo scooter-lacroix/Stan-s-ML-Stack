@@ -746,8 +746,7 @@ mod bench_impl {
                     errors: vec![err_msg],
                 };
                 if json {
-                    let json_str =
-                        serde_json::to_string_pretty(&output).unwrap_or_default();
+                    let json_str = serde_json::to_string_pretty(&output).unwrap_or_default();
                     println!("{}", json_str);
                 } else {
                     eprintln!("Error: {}", output.errors.join(", "));

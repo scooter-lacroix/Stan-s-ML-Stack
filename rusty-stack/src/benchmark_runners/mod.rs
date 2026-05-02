@@ -301,7 +301,10 @@ pub fn format_output_human(output: &BenchmarkOutput) -> String {
                             text.push_str(&format!("    - {}: {}\n", metric_key, metric_val));
                         }
                         if metrics.len() > 4 {
-                            text.push_str(&format!("    - ... {} more metrics\n", metrics.len() - 4));
+                            text.push_str(&format!(
+                                "    - ... {} more metrics\n",
+                                metrics.len() - 4
+                            ));
                         }
                     }
                 } else {

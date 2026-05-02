@@ -131,15 +131,17 @@ target/
 # For example: config.local.json
 
 # Explicitly track these directories even if they match ignore patterns
-!assets/
 !docs/
 !scripts/
-!core/
-!extensions/
-!benchmarks/
-!tutorials/
-!troubleshooting/
-!reference/
+
+# Legacy venvs (root-owned, cannot move)
+wandb_venv/
 
 # Maestro developer files (local only, not pushed to remote)
 maestro/
+.nexus/
+
+# Temp directories
+.tmp/
+.tmp-*/
+__pycache__/

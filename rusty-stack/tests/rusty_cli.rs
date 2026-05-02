@@ -161,8 +161,7 @@ fn test_rusty_update_scan_only_json() {
         .clone();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]

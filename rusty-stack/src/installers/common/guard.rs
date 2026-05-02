@@ -162,7 +162,11 @@ impl fmt::Display for InstallerError {
                 write!(f, "Path not found: {path} (needed for {purpose})")
             }
             Self::NvidiaContamination { packages } => {
-                write!(f, "NVIDIA/CUDA contamination detected: {}", packages.join(", "))
+                write!(
+                    f,
+                    "NVIDIA/CUDA contamination detected: {}",
+                    packages.join(", ")
+                )
             }
             Self::PackageBlocked { package, component } => {
                 write!(f, "Blocked package '{package}' in component '{component}'")
@@ -347,9 +351,9 @@ pub fn log_colored(level: LogLevel, message: &str) {
         log(level, message);
     } else {
         let color_code = match level {
-            LogLevel::Info => "\x1b[0;34m",   // Blue
-            LogLevel::Warn => "\x1b[1;33m",   // Yellow bold
-            LogLevel::Error => "\x1b[0;31m",  // Red
+            LogLevel::Info => "\x1b[0;34m",  // Blue
+            LogLevel::Warn => "\x1b[1;33m",  // Yellow bold
+            LogLevel::Error => "\x1b[0;31m", // Red
         };
         let reset = "\x1b[0m";
         eprintln!("{color_code}[mlstack][{level}]{reset} {message}");
@@ -403,7 +407,10 @@ impl ProgressTracker {
     pub fn advance(&mut self, description: &str) -> u32 {
         self.current += 1;
         let prefix = match &self.component {
-            Some(c) => format!("Step {}/{} [{}]: {}", self.current, self.total, c, description),
+            Some(c) => format!(
+                "Step {}/{} [{}]: {}",
+                self.current, self.total, c, description
+            ),
             None => format!("Step {}/{}: {}", self.current, self.total, description),
         };
         log_info(&prefix);
@@ -428,7 +435,10 @@ impl ProgressTracker {
     /// Format a progress message without printing.
     pub fn format_step(&self, description: &str) -> String {
         match &self.component {
-            Some(c) => format!("Step {}/{} [{}]: {}", self.current, self.total, c, description),
+            Some(c) => format!(
+                "Step {}/{} [{}]: {}",
+                self.current, self.total, c, description
+            ),
             None => format!("Step {}/{}: {}", self.current, self.total, description),
         }
     }
@@ -632,10 +642,22 @@ mod tests {
 
     #[test]
     fn test_python_version_ordering() {
-        let v310 = PythonVersion { major: 3, minor: 10 };
-        let v311 = PythonVersion { major: 3, minor: 11 };
-        let v313 = PythonVersion { major: 3, minor: 13 };
-        let v314 = PythonVersion { major: 3, minor: 14 };
+        let v310 = PythonVersion {
+            major: 3,
+            minor: 10,
+        };
+        let v311 = PythonVersion {
+            major: 3,
+            minor: 11,
+        };
+        let v313 = PythonVersion {
+            major: 3,
+            minor: 13,
+        };
+        let v314 = PythonVersion {
+            major: 3,
+            minor: 14,
+        };
         assert!(v310 < v311);
         assert!(v311 < v313);
         assert!(v313 < v314);
@@ -646,34 +668,76 @@ mod tests {
         // Supported: 3.10+
         assert!(!is_python_supported(&PythonVersion { major: 3, minor: 8 }));
         assert!(!is_python_supported(&PythonVersion { major: 3, minor: 9 }));
-        assert!(is_python_supported(&PythonVersion { major: 3, minor: 10 }));
-        assert!(is_python_supported(&PythonVersion { major: 3, minor: 11 }));
-        assert!(is_python_supported(&PythonVersion { major: 3, minor: 12 }));
-        assert!(is_python_supported(&PythonVersion { major: 3, minor: 13 }));
-        assert!(is_python_supported(&PythonVersion { major: 3, minor: 14 }));
+        assert!(is_python_supported(&PythonVersion {
+            major: 3,
+            minor: 10
+        }));
+        assert!(is_python_supported(&PythonVersion {
+            major: 3,
+            minor: 11
+        }));
+        assert!(is_python_supported(&PythonVersion {
+            major: 3,
+            minor: 12
+        }));
+        assert!(is_python_supported(&PythonVersion {
+            major: 3,
+            minor: 13
+        }));
+        assert!(is_python_supported(&PythonVersion {
+            major: 3,
+            minor: 14
+        }));
     }
 
     #[test]
     fn test_is_python_supported_rocm_torch() {
         // Supported: 3.10-3.13
-        assert!(!is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 8 }));
-        assert!(!is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 9 }));
-        assert!(is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 10 }));
-        assert!(is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 11 }));
-        assert!(is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 12 }));
-        assert!(is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 13 }));
-        assert!(!is_python_supported_for_rocm_torch(&PythonVersion { major: 3, minor: 14 }));
+        assert!(!is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 8
+        }));
+        assert!(!is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 9
+        }));
+        assert!(is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 10
+        }));
+        assert!(is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 11
+        }));
+        assert!(is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 12
+        }));
+        assert!(is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 13
+        }));
+        assert!(!is_python_supported_for_rocm_torch(&PythonVersion {
+            major: 3,
+            minor: 14
+        }));
     }
 
     #[test]
     fn test_python_version_display() {
-        let v = PythonVersion { major: 3, minor: 10 };
+        let v = PythonVersion {
+            major: 3,
+            minor: 10,
+        };
         assert_eq!(format!("{v}"), "3.10");
     }
 
     #[test]
     fn test_python_version_to_short_string() {
-        let v = PythonVersion { major: 3, minor: 11 };
+        let v = PythonVersion {
+            major: 3,
+            minor: 11,
+        };
         assert_eq!(v.to_short_string(), "3.11");
     }
 

@@ -102,7 +102,7 @@ pub use permanent_env::{PermanentEnvConfig, PermanentEnvInstaller};
 pub use pytorch::{PyTorchConfig, PyTorchInstaller, TorchChannel};
 pub use pytorch_profiler::{PytorchProfilerConfig, PytorchProfilerInstaller};
 pub use repair::{RepairConfig, RepairInstaller, RepairResult, RepairStep};
-pub use rocm::{RocmConfig, RocmChannel, RocmInstallType, RocmInstaller};
+pub use rocm::{RocmChannel, RocmConfig, RocmInstallType, RocmInstaller};
 pub use rocm_smi::{RocmSmiConfig, RocmSmiInstaller};
 pub use textgen::{TextgenConfig, TextgenInstaller};
 pub use triton::{TritonBranch, TritonConfig, TritonInstaller};
@@ -177,6 +177,7 @@ pub fn is_native_component(component_id: &str) -> bool {
 /// - **VAL-INSTALL-045**: ONNX Runtime depends on ROCm
 /// - **VAL-INSTALL-046**: AITER depends on PyTorch and ROCm
 /// - **VAL-INSTALL-047**: ComfyUI depends on PyTorch
+/// - **VAL-CROSS-001**: PyTorch for ROCm depends on ROCm
 pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
     match component_id {
         "megatron" => &["pytorch", "mpi4py"],
@@ -186,6 +187,7 @@ pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
         "onnx" => &["rocm"],
         "deepspeed" => &["pytorch"],
         "comfyui" => &["pytorch"],
+        "pytorch" => &["rocm"], // PyTorch for ROCm requires ROCm installed
         "pytorch-profiler" => &["pytorch"],
         // All other native components have no cross-component dependencies
         _ => &[],
@@ -277,11 +279,7 @@ mod dispatch_tests {
     #[test]
     fn test_is_native_component_true_for_ported() {
         for id in NATIVE_COMPONENT_IDS {
-            assert!(
-                is_native_component(id),
-                "Expected '{}' to be native",
-                id
-            );
+            assert!(is_native_component(id), "Expected '{}' to be native", id);
         }
     }
 
@@ -354,7 +352,6 @@ mod dispatch_tests {
     fn test_no_deps_components() {
         for id in &[
             "rocm",
-            "pytorch",
             "triton",
             "mpi4py",
             "ml-stack-core",
@@ -376,6 +373,15 @@ mod dispatch_tests {
                 get_dependencies(id)
             );
         }
+    }
+
+    #[test]
+    fn test_pytorch_depends_on_rocm() {
+        let deps = get_dependencies("pytorch");
+        assert!(
+            deps.contains(&"rocm"),
+            "PyTorch for ROCm must depend on ROCm"
+        );
     }
 
     #[test]
@@ -408,8 +414,14 @@ mod dispatch_tests {
         let pytorch_pos = result.iter().position(|s| s == "pytorch").unwrap();
         let mpi4py_pos = result.iter().position(|s| s == "mpi4py").unwrap();
         let megatron_pos = result.iter().position(|s| s == "megatron").unwrap();
-        assert!(pytorch_pos < megatron_pos, "pytorch must come before megatron");
-        assert!(mpi4py_pos < megatron_pos, "mpi4py must come before megatron");
+        assert!(
+            pytorch_pos < megatron_pos,
+            "pytorch must come before megatron"
+        );
+        assert!(
+            mpi4py_pos < megatron_pos,
+            "mpi4py must come before megatron"
+        );
     }
 
     #[test]

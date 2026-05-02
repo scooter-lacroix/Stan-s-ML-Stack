@@ -8,9 +8,7 @@
 //!
 //! - **VAL-INSTALL-007**: ML Stack Core installer correct pip command
 
-use crate::installers::common::{
-    DistroFacade, command_exists,
-};
+use crate::installers::common::{command_exists, DistroFacade};
 use std::fmt;
 
 // ===========================================================================
@@ -198,12 +196,16 @@ export GPU_MAX_ALLOC_PERCENT=100
 export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
 export MIOPEN_FIND_MODE=3
 export MIOPEN_FIND_ENFORCE=3
-"#.to_string()
+"#
+        .to_string()
     }
 
     /// Get the ROCm config file path.
     pub fn rocm_config_path(&self) -> String {
-        format!("{}/.rocmrc", std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+        format!(
+            "{}/.rocmrc",
+            std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
+        )
     }
 
     // -----------------------------------------------------------------------
