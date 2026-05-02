@@ -115,7 +115,10 @@ pub fn run_preflight_checks(
 }
 
 fn check_root_privileges(sudo_password: Option<&str>) -> PreflightCheck {
+    #[cfg(feature = "unix-deps")]
     let is_root = unsafe { libc::geteuid() == 0 };
+    #[cfg(not(feature = "unix-deps"))]
+    let is_root = false;
 
     if is_root {
         return PreflightCheck {

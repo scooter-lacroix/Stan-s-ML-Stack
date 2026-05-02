@@ -2654,7 +2654,14 @@ fn parse_progress(line: &str) -> Option<f32> {
 }
 
 fn needs_sudo() -> bool {
-    unsafe { libc::geteuid() != 0 }
+    #[cfg(feature = "unix-deps")]
+    {
+        unsafe { libc::geteuid() != 0 }
+    }
+    #[cfg(not(feature = "unix-deps"))]
+    {
+        false
+    }
 }
 
 fn strip_ansi_codes(s: &str) -> String {
