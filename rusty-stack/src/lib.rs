@@ -6,6 +6,7 @@
 
 pub mod adapter;
 pub mod benchmark_logs;
+pub mod benchmark_runners;
 pub mod benchmarks;
 pub mod component_status;
 pub mod config;
@@ -17,6 +18,7 @@ pub mod orchestrator;
 pub mod platform;
 pub mod state;
 pub mod telemetry;
+pub mod verification;
 
 #[cfg(feature = "tui")]
 pub mod app;

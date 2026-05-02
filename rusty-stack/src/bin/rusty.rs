@@ -6,6 +6,7 @@
 //! - `rusty update` — Scan, plan, and apply component updates
 //! - `rusty upgrade` — Upgrade the Rusty Stack binary itself
 //! - `rusty bench` — Run benchmarks
+//! - `rusty verify` — Verify ML Stack installation
 //!
 //! # Usage
 //!
@@ -16,6 +17,7 @@
 //!   update   Update Rusty Stack ML components
 //!   upgrade  Upgrade Rusty Stack to the latest version
 //!   bench    Run benchmarks
+//!   verify   Verify ML Stack installation
 //!
 //! Options:
 //!   -h, --help     Show help
@@ -132,6 +134,32 @@ enum Subcommands {
         #[arg(long)]
         list: bool,
     },
+
+    /// Verify ML Stack installation.
+    ///
+    /// Checks component installation status using native Rust detection
+    /// (no shell subprocesses). Supports three modes:
+    ///
+    /// - --full: Core component verification (equivalent to verify_installation.sh)
+    /// - --enhanced: All-component verification (equivalent to enhanced_verify_installation.sh)
+    /// - --build: Verify and identify components needing rebuild (equivalent to verify_and_build.sh)
+    Verify {
+        /// Run full verification (core components: ROCm, PyTorch, Triton, MPI4Py, DeepSpeed, ML Stack Core).
+        #[arg(long)]
+        full: bool,
+
+        /// Run enhanced verification (all components including ROCm tools, Python imports, environment).
+        #[arg(long)]
+        enhanced: bool,
+
+        /// Run verify-and-build mode (core + build-critical components; identifies rebuild targets).
+        #[arg(long)]
+        build: bool,
+
+        /// Output results in JSON format.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ===========================================================================
@@ -225,7 +253,9 @@ mod update_impl {
     /// Run the scan phase: detect hardware, installed components, versions.
     fn run_scan() -> rusty_stack::orchestrator::planner::ScanOutput {
         use rusty_stack::orchestrator::planner::{InstalledComponent, ScanOutput};
-        use rusty_stack::platform::registry::{detect_all_installed, get_version, known_components};
+        use rusty_stack::platform::registry::{
+            detect_all_installed, get_version, known_components,
+        };
 
         let installed_ids = detect_all_installed();
         let mut installed = Vec::new();
@@ -355,7 +385,8 @@ mod update_impl {
         let planner = UpdatePlanner::new();
         let items = planner.build_plan(&manifest, &context, options)?;
 
-        let plan_output: Vec<PlannerItemOutput> = items.iter().map(PlannerItemOutput::from).collect();
+        let plan_output: Vec<PlannerItemOutput> =
+            items.iter().map(PlannerItemOutput::from).collect();
         let summary = PlanSummary::from_items(&items);
 
         Ok(PlanOutput {
@@ -636,7 +667,9 @@ mod upgrade_impl {
                 eprintln!(
                     "✗ Runtime too old: schema v{current_schema} cannot parse manifest schema v{manifest_schema}"
                 );
-                eprintln!("  A manual upgrade is required. Please download the latest binary from:");
+                eprintln!(
+                    "  A manual upgrade is required. Please download the latest binary from:"
+                );
                 eprintln!("  https://github.com/scooter-lacroix/Stan-s-ML-Stack/releases");
             }
             UpgradeError::IntegrityCheckFailed { expected, actual } => {
@@ -692,7 +725,36 @@ mod bench_impl {
             }
         };
 
-        let result = run_benchmark(name);
+        // Delegate to benchmark_runners module
+        let result = match rusty_stack::benchmark_runners::run_benchmark(name) {
+            Ok(output) => {
+                // Convert from benchmark_runners::BenchmarkOutput to our local type
+                BenchmarkOutput {
+                    name: output.name,
+                    success: output.success,
+                    execution_time_ms: output.execution_time_ms,
+                    results: output.results,
+                    errors: output.errors,
+                }
+            }
+            Err(err_msg) => {
+                let output = BenchmarkOutput {
+                    name: name.to_string(),
+                    success: false,
+                    execution_time_ms: 0,
+                    results: serde_json::Value::Object(serde_json::Map::new()),
+                    errors: vec![err_msg],
+                };
+                if json {
+                    let json_str =
+                        serde_json::to_string_pretty(&output).unwrap_or_default();
+                    println!("{}", json_str);
+                } else {
+                    eprintln!("Error: {}", output.errors.join(", "));
+                }
+                process::exit(1);
+            }
+        };
 
         if json {
             let json_str = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -770,173 +832,53 @@ mod bench_impl {
         println!("  all-pre              - All pre-installation benchmarks");
         println!("  all                  - All benchmarks (optional failures non-fatal)");
     }
+}
 
-    fn run_benchmark(name: &str) -> BenchmarkOutput {
-        let mut output = BenchmarkOutput {
-            name: name.to_string(),
-            success: false,
-            execution_time_ms: 0,
-            results: serde_json::Value::Object(serde_json::Map::new()),
-            errors: Vec::new(),
+// ===========================================================================
+// Verify subcommand implementation
+// ===========================================================================
+
+mod verify_impl {
+    use super::*;
+
+    pub fn run(_full: bool, enhanced: bool, build: bool, json: bool) {
+        // Determine mode — default to full if none specified
+        let mode = if enhanced {
+            "enhanced"
+        } else if build {
+            "build"
+        } else {
+            "full" // default or --full
         };
 
-        match name {
-            "gpu-capability" => assign(&mut output, rusty_stack::benchmarks::run_gpu_capability_benchmark()),
-            "memory-bandwidth" => assign(&mut output, rusty_stack::benchmarks::run_memory_bandwidth_benchmark()),
-            "tensor-core" => assign(&mut output, rusty_stack::benchmarks::run_tensor_core_benchmark()),
-            "gemm" => assign(&mut output, rusty_stack::benchmarks::run_gemm_benchmark()),
-            "pytorch" => assign(&mut output, rusty_stack::benchmarks::run_pytorch_benchmark()),
-            "flash-attention" => assign(&mut output, rusty_stack::benchmarks::run_flash_attention_benchmark()),
-            "vllm" => assign(&mut output, rusty_stack::benchmarks::run_vllm_benchmark()),
-            "deepspeed" => assign(&mut output, rusty_stack::benchmarks::run_deepspeed_benchmark()),
-            "megatron" => assign(&mut output, rusty_stack::benchmarks::run_megatron_benchmark()),
-            "all-pre" => {
-                let mut all_results = serde_json::Value::Object(serde_json::Map::new());
-                output.success = true;
-                run_and_collect(
-                    &mut all_results,
-                    "gpu_capability",
-                    &mut output,
-                    rusty_stack::benchmarks::run_gpu_capability_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "memory_bandwidth",
-                    &mut output,
-                    rusty_stack::benchmarks::run_memory_bandwidth_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "tensor_core",
-                    &mut output,
-                    rusty_stack::benchmarks::run_tensor_core_benchmark(),
-                    true,
-                );
-                output.results = all_results;
-            }
-            "all" => {
-                let mut all_results = serde_json::Value::Object(serde_json::Map::new());
-                output.success = true;
-                run_and_collect(
-                    &mut all_results,
-                    "gpu_capability",
-                    &mut output,
-                    rusty_stack::benchmarks::run_gpu_capability_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "memory_bandwidth",
-                    &mut output,
-                    rusty_stack::benchmarks::run_memory_bandwidth_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "tensor_core",
-                    &mut output,
-                    rusty_stack::benchmarks::run_tensor_core_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "gemm",
-                    &mut output,
-                    rusty_stack::benchmarks::run_gemm_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "pytorch",
-                    &mut output,
-                    rusty_stack::benchmarks::run_pytorch_benchmark(),
-                    true,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "flash_attention",
-                    &mut output,
-                    rusty_stack::benchmarks::run_flash_attention_benchmark(),
-                    false,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "vllm",
-                    &mut output,
-                    rusty_stack::benchmarks::run_vllm_benchmark(),
-                    false,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "deepspeed",
-                    &mut output,
-                    rusty_stack::benchmarks::run_deepspeed_benchmark(),
-                    false,
-                );
-                run_and_collect(
-                    &mut all_results,
-                    "megatron",
-                    &mut output,
-                    rusty_stack::benchmarks::run_megatron_benchmark(),
-                    false,
-                );
-                output.results = all_results;
-            }
-            _ => {
-                output.errors.push(format!("Unknown benchmark: {}", name));
+        let result = match mode {
+            "enhanced" => rusty_stack::verification::enhanced_verify(),
+            "build" => rusty_stack::verification::verify_and_build(),
+            _ => rusty_stack::verification::full_verify(),
+        };
+
+        if json {
+            let output = rusty_stack::verification::format_result_json(&result);
+            println!("{}", output);
+        } else {
+            let output = rusty_stack::verification::format_result_human(&result);
+            print!("{}", output);
+        }
+
+        // For --build mode, list failed components that need rebuild
+        if build && !result.all_passed {
+            let failed = rusty_stack::verification::failed_components(&result);
+            if !json {
+                eprintln!("\nComponents needing rebuild:");
+                for id in &failed {
+                    eprintln!("  - {}", id);
+                }
             }
         }
 
-        output
-    }
-
-    fn assign(output: &mut BenchmarkOutput, result: rusty_stack::benchmarks::BenchmarkResult) {
-        output.success = result.success;
-        output.execution_time_ms = result.execution_time_ms;
-        output.errors = result.errors.clone();
-        output.results = serde_json::to_value(result).unwrap_or_default();
-    }
-
-    fn assign_value(target: &mut serde_json::Value, key: &str, result: rusty_stack::benchmarks::BenchmarkResult) {
-        if let serde_json::Value::Object(map) = target {
-            map.insert(
-                key.to_string(),
-                serde_json::to_value(result).unwrap_or_default(),
-            );
+        if !result.all_passed {
+            process::exit(1);
         }
-    }
-
-    fn run_and_collect(
-        all_results: &mut serde_json::Value,
-        key: &str,
-        output: &mut BenchmarkOutput,
-        result: rusty_stack::benchmarks::BenchmarkResult,
-        required: bool,
-    ) {
-        if !result.success {
-            if required {
-                output.success = false;
-            }
-            if result.errors.is_empty() {
-                output.errors.push(format!(
-                    "{}: benchmark failed ({})",
-                    key,
-                    if required { "required" } else { "optional" }
-                ));
-            }
-        }
-        output.execution_time_ms += result.execution_time_ms;
-        for err in &result.errors {
-            output.errors.push(format!(
-                "{} ({}): {}",
-                key,
-                if required { "required" } else { "optional" },
-                err
-            ));
-        }
-        assign_value(all_results, key, result);
     }
 }
 
@@ -972,6 +914,14 @@ fn main() {
             list,
         }) => {
             bench_impl::run(benchmark.as_deref(), json, list);
+        }
+        Some(Subcommands::Verify {
+            full,
+            enhanced,
+            build,
+            json,
+        }) => {
+            verify_impl::run(full, enhanced, build, json);
         }
         None => {
             // No subcommand — launch TUI
