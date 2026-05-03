@@ -810,7 +810,7 @@ mod tests {
         detect_gpu_from_sysfs(&mut info);
         // On this system, DRM may or may not have AMD entries,
         // but the function should not panic
-        assert!(info.gpu_count == 0 || info.gpu_count > 0);
+        // Test passes if we get here without panicking
     }
 
     #[test]
@@ -876,7 +876,7 @@ mod tests {
             assert!(path.is_some(), "Should detect ROCm at /opt/rocm");
             let p = path.unwrap();
             assert!(
-                p == PathBuf::from("/opt/rocm") || p.to_string_lossy().contains("rocm"),
+                p.as_os_str() == "/opt/rocm" || p.to_string_lossy().contains("rocm"),
                 "Path should contain 'rocm': got {:?}",
                 p
             );

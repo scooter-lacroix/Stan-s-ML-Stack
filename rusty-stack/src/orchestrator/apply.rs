@@ -826,7 +826,7 @@ mod tests {
 
     #[test]
     fn test_dependency_sort_no_deps() {
-        let items = vec![
+        let items = [
             make_planner_item("a", "1.0.0", "1.1.0", vec![], true),
             make_planner_item("b", "1.0.0", "1.1.0", vec![], true),
         ];
@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_dependency_sort_cycle_detected() {
-        let items = vec![
+        let items = [
             make_planner_item("a", "1.0.0", "1.1.0", vec!["b"], true),
             make_planner_item("b", "1.0.0", "1.1.0", vec!["a"], true),
         ];

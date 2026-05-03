@@ -361,7 +361,8 @@ mod tests {
     #[test]
     fn test_install_config_default_no_skip() {
         // Verify skip_build defaults to false
-        assert!(!false);
+        let config = InstallConfig::default();
+        assert!(!config.skip_build);
     }
 
     #[test]

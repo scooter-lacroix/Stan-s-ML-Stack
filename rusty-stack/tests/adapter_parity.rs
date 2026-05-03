@@ -185,7 +185,7 @@ fn test_integration_rust_adapter_output_matches_shell_format() {
     assert_eq!(rust_result.executor_kind, ExecutorKind::Rust);
 
     // Execute pytorch directly via legacy adapter for comparison
-    let legacy = LegacyAdapter::new(&scripts_dir.path());
+    let legacy = LegacyAdapter::new(scripts_dir.path().to_path_buf());
     let legacy_result = legacy.execute("pytorch", "2.5.0").unwrap();
 
     // Both should report success
@@ -318,7 +318,7 @@ fn test_integration_output_format_parity_pytorch() {
     let rust_result = registry.execute("pytorch", "2.5.0").unwrap();
 
     // Execute directly via legacy
-    let legacy = LegacyAdapter::new(&scripts_dir.path());
+    let legacy = LegacyAdapter::new(scripts_dir.path().to_path_buf());
     let legacy_result = legacy.execute("pytorch", "2.5.0").unwrap();
 
     // Both should succeed
@@ -339,7 +339,7 @@ fn test_integration_output_format_parity_triton() {
 
     let rust_result = registry.execute("triton", "3.1.0").unwrap();
 
-    let legacy = LegacyAdapter::new(&scripts_dir.path());
+    let legacy = LegacyAdapter::new(scripts_dir.path().to_path_buf());
     let legacy_result = legacy.execute("triton", "3.1.0").unwrap();
 
     assert!(rust_result.is_success());
@@ -436,7 +436,7 @@ fn test_integration_exit_code_parity_partial() {
 #[test]
 fn test_integration_registry_executor_with_apply_engine() {
     let scripts_dir = create_test_scripts_dir();
-    let mut registry = AdapterRegistry::with_legacy(&scripts_dir.path().to_path_buf());
+    let mut registry = AdapterRegistry::with_legacy(scripts_dir.path().to_owned());
 
     // Register Rust adapters
     registry.register_rust(
@@ -607,7 +607,7 @@ fn test_integration_legacy_adapter_forwards_version_to_script() {
     )
     .unwrap();
 
-    let registry = AdapterRegistry::with_legacy(&dir.path().to_path_buf());
+    let registry = AdapterRegistry::with_legacy(dir.path().to_owned());
     let result = registry.execute("pytorch", "2.5.0").unwrap();
 
     assert_eq!(result.exit_code, 0);
@@ -627,7 +627,7 @@ fn test_integration_legacy_adapter_empty_version_no_extra_arg() {
     )
     .unwrap();
 
-    let registry = AdapterRegistry::with_legacy(&dir.path().to_path_buf());
+    let registry = AdapterRegistry::with_legacy(dir.path().to_owned());
     let result = registry.execute("pytorch", "").unwrap();
 
     assert_eq!(result.exit_code, 0);

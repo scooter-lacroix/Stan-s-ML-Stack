@@ -1210,7 +1210,7 @@ mod tests {
         // On the real system, we expect at least ROCm to be installed
         // This test is informational — it just verifies the pipeline doesn't panic
         println!("Installed components: {:?}", installed);
-        assert!(true, "detect_all_installed completed without panic");
+        // Test passes if we get here without panicking
     }
 
     #[test]
@@ -1220,6 +1220,6 @@ mod tests {
             let version = get_version(&c.id);
             println!("{}: {}", display_name(&c.id), version);
         }
-        assert!(true, "Version queries completed without panic");
+        // Test passes if we get here without panicking
     }
 }

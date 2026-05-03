@@ -522,17 +522,16 @@ fn test_integration_validation_tier_identical_across_stages() {
     } else {
         // Candidate items are not preselected — they're held back
         // The tier is still preserved in the plan item
-        let held_back = apply_summary
+        let is_held_back = apply_summary
             .held_back
             .iter()
-            .find(|i| i.component_id == "wandb");
+            .any(|i| i.component_id == "wandb");
         assert!(
-            held_back.is_some()
+            is_held_back
                 || apply_summary
                     .success
                     .iter()
-                    .find(|i| i.component_id == "wandb")
-                    .is_some(),
+                    .any(|i| i.component_id == "wandb"),
             "wandb should be either held back or applied, got: success={}, failed={}, held_back={}",
             apply_summary.success.len(),
             apply_summary.failed.len(),

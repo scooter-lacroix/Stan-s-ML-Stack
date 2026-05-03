@@ -308,7 +308,6 @@ mod tests {
         drop(tx);
 
         // If we got here, the function returned immediately
-        assert!(true, "submit_fire_and_forget returned immediately");
     }
 
     #[test]
@@ -320,7 +319,6 @@ mod tests {
         drop(tx);
 
         // Should not panic even with HTTP URL
-        assert!(true, "HTTP URL in fire-and-forget does not panic");
     }
 
     // =======================================================================
