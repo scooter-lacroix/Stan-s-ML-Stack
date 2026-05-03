@@ -3,12 +3,45 @@
 //! Constructs correct pip install with version for MIGraphX Python bindings.
 //! Also installs system packages via package manager.
 //!
+//! # Arch Linux / CachyOS Handling
+//!
+//! On Arch-family distros, only the `migraphx` system package is available.
+//! The `migraphx-dev` and `python3-migraphx` packages are Debian/Ubuntu-specific.
+//! The pip `migraphx` Python wheel is also not available for Arch.
+//! The installer installs the system package only and skips pip install with
+//! a clear informational message.
+//!
 //! # Validation Assertion
 //!
 //! - **VAL-INSTALL-019**: MIGraphX correct pip command
 
 use crate::installers::common::DistroFacade;
 use crate::platform::detection::DistroFamily;
+
+// ===========================================================================
+// Types
+// ===========================================================================
+
+/// MIGraphX support level for a given distro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigraphxSupport {
+    /// Full support: system packages + Python bindings available.
+    Full,
+    /// Partial support: system package only, no Python bindings.
+    SystemOnly,
+    /// Not available on this distro.
+    Unavailable,
+}
+
+impl std::fmt::Display for MigraphxSupport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigraphxSupport::Full => write!(f, "full"),
+            MigraphxSupport::SystemOnly => write!(f, "system-only"),
+            MigraphxSupport::Unavailable => write!(f, "unavailable"),
+        }
+    }
+}
 
 // ===========================================================================
 // Types
@@ -202,6 +235,10 @@ impl MigraphxInstaller {
     ///
     /// The original script installs system packages and verifies Python import.
     /// The pip install is from the ROCm Python path.
+    ///
+    /// **Note:** On Arch-family distros, this command should NOT be executed
+    /// because the `migraphx` pip wheel is not available. Use
+    /// `is_available_on_distro()` to check first.
     pub fn build_pip_install_command(&self) -> ShellCommand {
         ShellCommand {
             program: self.config.python_bin.clone(),
@@ -214,6 +251,53 @@ impl MigraphxInstaller {
             ],
             env: vec![],
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Distro availability (Arch-specific handling)
+    // -----------------------------------------------------------------------
+
+    /// Check the level of MIGraphX support on the given distro.
+    ///
+    /// - **Debian/Ubuntu**: Full support (system packages + Python bindings).
+    /// - **Arch/CachyOS**: System-only support (`migraphx` package available,
+    ///   but no `python3-migraphx` or pip wheel).
+    /// - **Others**: Assumed full support (will attempt standard install).
+    pub fn is_available_on_distro(&self, distro: &DistroFacade) -> MigraphxSupport {
+        match distro.family() {
+            DistroFamily::Arch => MigraphxSupport::SystemOnly,
+            _ => MigraphxSupport::Full,
+        }
+    }
+
+    /// Build a human-readable message explaining MIGraphX limitations on the
+    /// given distro. Returns `None` if there are no limitations (full support).
+    pub fn build_limitation_message(&self, distro: &DistroFacade) -> Option<String> {
+        match self.is_available_on_distro(distro) {
+            MigraphxSupport::Full => None,
+            MigraphxSupport::SystemOnly => Some(format!(
+                "MIGraphX on {} has limited support: only the system package is available. \
+                 Python bindings (pip install migraphx) are not available on Arch-family distros. \
+                 The system package ({}) has been installed. \
+                 If you need Python bindings, consider using the ROCm Docker image or building from source.",
+                distro.id(),
+                self.required_packages(distro).join(", ")
+            )),
+            MigraphxSupport::Unavailable => Some(format!(
+                "MIGraphX is not available on {}. \
+                 Consider using the ROCm Docker image or building from source.",
+                distro.id()
+            )),
+        }
+    }
+
+    /// Check whether the pip install step should be skipped on this distro.
+    ///
+    /// On Arch-family distros, the `migraphx` pip wheel does not exist and
+    /// attempting to install it will fail. This method returns `true` for
+    /// those distros so the caller can skip the pip step gracefully.
+    pub fn should_skip_pip_install(&self, distro: &DistroFacade) -> bool {
+        matches!(self.is_available_on_distro(distro), MigraphxSupport::SystemOnly)
     }
 }
 
@@ -325,5 +409,151 @@ mod tests {
         assert!(cmd.args.contains(&"pip".to_string()));
         assert!(cmd.args.contains(&"install".to_string()));
         assert!(cmd.args.contains(&"migraphx".to_string()));
+    }
+
+    // --- Arch-specific availability tests ---
+
+    #[test]
+    fn test_availability_debian_is_full() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "ubuntu".to_string(),
+            family: DistroFamily::Debian,
+            pkg_manager: PackageManager::Apt,
+            ..Default::default()
+        });
+        assert_eq!(installer.is_available_on_distro(&distro), MigraphxSupport::Full);
+    }
+
+    #[test]
+    fn test_availability_arch_is_system_only() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "arch".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        assert_eq!(
+            installer.is_available_on_distro(&distro),
+            MigraphxSupport::SystemOnly
+        );
+    }
+
+    #[test]
+    fn test_availability_cachyos_is_system_only() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "cachyos".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        assert_eq!(
+            installer.is_available_on_distro(&distro),
+            MigraphxSupport::SystemOnly
+        );
+    }
+
+    #[test]
+    fn test_availability_rhel_is_full() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "fedora".to_string(),
+            family: DistroFamily::Rhel,
+            pkg_manager: PackageManager::Dnf,
+            ..Default::default()
+        });
+        assert_eq!(installer.is_available_on_distro(&distro), MigraphxSupport::Full);
+    }
+
+    #[test]
+    fn test_limitation_message_debian_is_none() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "ubuntu".to_string(),
+            family: DistroFamily::Debian,
+            pkg_manager: PackageManager::Apt,
+            ..Default::default()
+        });
+        assert!(installer.build_limitation_message(&distro).is_none());
+    }
+
+    #[test]
+    fn test_limitation_message_arch_is_some() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "arch".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        let msg = installer
+            .build_limitation_message(&distro)
+            .expect("Arch should have a limitation message");
+        assert!(
+            msg.contains("limited support"),
+            "Message should mention limited support: {msg}"
+        );
+        assert!(
+            msg.contains("Python bindings"),
+            "Message should mention Python bindings: {msg}"
+        );
+        assert!(
+            msg.contains("Arch"),
+            "Message should mention Arch context: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_should_skip_pip_debian_is_false() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "ubuntu".to_string(),
+            family: DistroFamily::Debian,
+            pkg_manager: PackageManager::Apt,
+            ..Default::default()
+        });
+        assert!(!installer.should_skip_pip_install(&distro));
+    }
+
+    #[test]
+    fn test_should_skip_pip_arch_is_true() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "arch".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        assert!(installer.should_skip_pip_install(&distro));
+    }
+
+    #[test]
+    fn test_arch_required_packages_no_dev() {
+        let installer = MigraphxInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "cachyos".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        let pkgs = installer.required_packages(&distro);
+        assert!(pkgs.contains(&"migraphx"), "Arch should have migraphx package");
+        assert!(
+            !pkgs.contains(&"migraphx-dev"),
+            "Arch should NOT have migraphx-dev (Debian-specific)"
+        );
+        assert!(
+            !pkgs.contains(&"python3-migraphx"),
+            "Arch should NOT have python3-migraphx (Debian-specific)"
+        );
+    }
+
+    #[test]
+    fn test_migraphx_support_display() {
+        assert_eq!(format!("{}", MigraphxSupport::Full), "full");
+        assert_eq!(format!("{}", MigraphxSupport::SystemOnly), "system-only");
+        assert_eq!(format!("{}", MigraphxSupport::Unavailable), "unavailable");
     }
 }

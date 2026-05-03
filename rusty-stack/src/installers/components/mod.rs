@@ -91,7 +91,7 @@ pub use comfyui::{ComfyuiConfig, ComfyuiInstaller};
 pub use deepspeed::{DeepSpeedConfig, DeepSpeedInstaller};
 pub use flash_attention_ck::{FlashAttentionConfig, FlashAttentionInstaller, GpuArch};
 pub use megatron::{MegatronConfig, MegatronInstaller};
-pub use migraphx_multi::{MigraphxConfig, MigraphxInstaller};
+pub use migraphx_multi::{MigraphxConfig, MigraphxInstaller, MigraphxSupport};
 pub use migraphx_python::{
     InstallMethod as MigraphxPythonInstallMethod, MigraphxPythonConfig, MigraphxPythonInstaller,
 };

@@ -3,9 +3,19 @@
 //! Installs the MIGraphX Python module via pip. Requires MIGraphX system
 //! package to be installed first.
 //!
+//! # Arch Linux / CachyOS Handling
+//!
+//! On Arch-family distros, the `migraphx` pip wheel is not available.
+//! The installer should be skipped on these distros with a clear message
+//! informing the user. Use `is_available_on_distro()` to check before
+//! attempting installation.
+//!
 //! # Validation Assertions
 //!
 //! - **VAL-INSTALL-030**: MIGraphX Python correct pip command
+
+use crate::installers::common::DistroFacade;
+use crate::platform::detection::DistroFamily;
 
 // ===========================================================================
 // Types
@@ -194,6 +204,34 @@ impl MigraphxPythonInstaller {
     pub fn package_name(&self) -> &'static str {
         PACKAGE_NAME
     }
+
+    // -----------------------------------------------------------------------
+    // Distro availability (Arch-specific handling)
+    // -----------------------------------------------------------------------
+
+    /// Check whether MIGraphX Python bindings are available on the given distro.
+    ///
+    /// On Arch-family distros, the `migraphx` pip wheel does not exist in PyPI
+    /// and there is no `python3-migraphx` system package. The installation
+    /// should be skipped on these distros.
+    pub fn is_available_on_distro(&self, distro: &DistroFacade) -> bool {
+        !matches!(distro.family(), DistroFamily::Arch)
+    }
+
+    /// Build a human-readable message explaining why MIGraphX Python bindings
+    /// are not available on the given distro. Returns `None` if available.
+    pub fn build_unavailable_message(&self, distro: &DistroFacade) -> Option<String> {
+        if self.is_available_on_distro(distro) {
+            return None;
+        }
+        Some(format!(
+            "MIGraphX Python bindings (pip install migraphx) are not available on {}. \
+             The migraphx pip wheel is not published for Arch-family distros. \
+             If you need Python bindings, consider using the ROCm Docker image \
+             or building MIGraphX from source with Python bindings enabled.",
+            distro.id()
+        ))
+    }
 }
 
 // ===========================================================================
@@ -311,5 +349,118 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(env.iter().any(|(k, v)| k == "AMD_LOG_LEVEL" && v == "0"));
+    }
+
+    // --- Arch-specific availability tests ---
+
+    #[test]
+    fn test_is_available_debian() {
+        use crate::platform::detection::{DistroInfo, PackageManager};
+        let installer = MigraphxPythonInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "ubuntu".to_string(),
+            family: DistroFamily::Debian,
+            pkg_manager: PackageManager::Apt,
+            ..Default::default()
+        });
+        assert!(
+            installer.is_available_on_distro(&distro),
+            "MIGraphX Python should be available on Debian"
+        );
+    }
+
+    #[test]
+    fn test_is_available_rhel() {
+        use crate::platform::detection::{DistroInfo, PackageManager};
+        let installer = MigraphxPythonInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "fedora".to_string(),
+            family: DistroFamily::Rhel,
+            pkg_manager: PackageManager::Dnf,
+            ..Default::default()
+        });
+        assert!(
+            installer.is_available_on_distro(&distro),
+            "MIGraphX Python should be available on RHEL"
+        );
+    }
+
+    #[test]
+    fn test_not_available_on_arch() {
+        use crate::platform::detection::{DistroInfo, PackageManager};
+        let installer = MigraphxPythonInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "arch".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        assert!(
+            !installer.is_available_on_distro(&distro),
+            "MIGraphX Python should NOT be available on Arch"
+        );
+    }
+
+    #[test]
+    fn test_not_available_on_cachyos() {
+        use crate::platform::detection::{DistroInfo, PackageManager};
+        let installer = MigraphxPythonInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "cachyos".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        assert!(
+            !installer.is_available_on_distro(&distro),
+            "MIGraphX Python should NOT be available on CachyOS"
+        );
+    }
+
+    #[test]
+    fn test_unavailable_message_debian_is_none() {
+        use crate::platform::detection::{DistroInfo, PackageManager};
+        let installer = MigraphxPythonInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "ubuntu".to_string(),
+            family: DistroFamily::Debian,
+            pkg_manager: PackageManager::Apt,
+            ..Default::default()
+        });
+        assert!(
+            installer.build_unavailable_message(&distro).is_none(),
+            "Debian should not have an unavailable message"
+        );
+    }
+
+    #[test]
+    fn test_unavailable_message_arch_is_informative() {
+        use crate::platform::detection::{DistroInfo, PackageManager};
+        let installer = MigraphxPythonInstaller::with_defaults();
+        let distro = DistroFacade::from_info(DistroInfo {
+            id: "arch".to_string(),
+            family: DistroFamily::Arch,
+            pkg_manager: PackageManager::Pacman,
+            ..Default::default()
+        });
+        let msg = installer
+            .build_unavailable_message(&distro)
+            .expect("Arch should have an unavailable message");
+        assert!(
+            msg.contains("not available"),
+            "Message should say not available: {msg}"
+        );
+        assert!(
+            msg.contains("Arch"),
+            "Message should mention Arch: {msg}"
+        );
+        assert!(
+            msg.contains("pip"),
+            "Message should mention pip: {msg}"
+        );
+        assert!(
+            msg.contains("Docker") || msg.contains("source"),
+            "Message should suggest alternatives: {msg}"
+        );
     }
 }

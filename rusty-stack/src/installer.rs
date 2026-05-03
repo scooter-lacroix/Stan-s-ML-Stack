@@ -2883,7 +2883,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let distro = crate::installers::common::DistroFacade::detect();
             let packages = inst.required_packages(&distro);
 
-            // Step 1: package install
+            // Step 1: system package install
             let cmd = inst.build_package_install_command(&distro, &packages);
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
@@ -2892,14 +2892,23 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: pip install
-            let cmd = inst.build_pip_install_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                None,
-                sender,
-                &component.name,
-            )?;
+            // Step 2: pip install (skip on Arch — no pip wheel available)
+            if inst.should_skip_pip_install(&distro) {
+                if let Some(msg) = inst.build_limitation_message(&distro) {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[native] [INFO] {}", msg),
+                        false,
+                    ));
+                }
+            } else {
+                let cmd = inst.build_pip_install_command();
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
+            }
         }
 
         // ── pytorch-profiler ──────────────────────────────────────────
@@ -2983,14 +2992,25 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             };
             let inst = MigraphxPythonInstaller::new(MigraphxPythonConfig::default());
 
-            // Step 1: pip install
-            let cmd = inst.build_install_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                None,
-                sender,
-                &component.name,
-            )?;
+            // Check distro availability — skip on Arch (no pip wheel)
+            let distro = crate::installers::common::DistroFacade::detect();
+            if !inst.is_available_on_distro(&distro) {
+                if let Some(msg) = inst.build_unavailable_message(&distro) {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[native] [SKIP] {}", msg),
+                        false,
+                    ));
+                }
+            } else {
+                // Step 1: pip install
+                let cmd = inst.build_install_command();
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
+            }
         }
 
         // ── enhanced-env ──────────────────────────────────────────────
