@@ -243,10 +243,11 @@ pub fn topological_sort(component_ids: &[String]) -> Result<Vec<String>, String>
         sorted.push(id.to_string());
         if let Some(dependents) = adj.get(id) {
             for &dependent in dependents {
-                let degree = in_degree.get_mut(dependent).unwrap();
-                *degree -= 1;
-                if *degree == 0 {
-                    queue.push_back(dependent);
+                if let Some(degree) = in_degree.get_mut(dependent) {
+                    *degree -= 1;
+                    if *degree == 0 {
+                        queue.push_back(dependent);
+                    }
                 }
             }
         }

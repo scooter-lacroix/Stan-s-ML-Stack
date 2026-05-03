@@ -1148,6 +1148,9 @@ mod tests {
 
     #[test]
     fn test_dry_run_case_insensitive() {
+        // Ensure clean state
+        std::env::remove_var("DRY_RUN");
+
         std::env::set_var("DRY_RUN", "TRUE");
         assert!(is_dry_run());
         std::env::remove_var("DRY_RUN");

@@ -191,7 +191,17 @@ pub fn run_installation(
             };
             if let Err(err) = run_native_installer(&component, &ctx) {
                 install_success = false;
-                error_msg = err.to_string();
+                let chain = err
+                    .chain()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(": ");
+                error_msg = format_user_friendly_error(&component.id, &chain);
+                // Log the full error chain for debugging
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[ERROR] {} installation failed: {}", component.name, chain),
+                    false,
+                ));
             }
         } else {
             // Legacy path: spawn bash subprocess for non-ported components
@@ -217,7 +227,17 @@ pub fn run_installation(
                 Arc::clone(&input_rx),
             ) {
                 install_success = false;
-                error_msg = err.to_string();
+                let chain = err
+                    .chain()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(": ");
+                error_msg = format_user_friendly_error(&component.id, &chain);
+                // Log the full error chain for debugging
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[ERROR] {} installation failed: {}", component.name, chain),
+                    false,
+                ));
             }
         }
 
@@ -1752,7 +1772,9 @@ fn execute_native_command(
             c
         }
     } else {
-        Command::new(&program)
+        let mut c = Command::new(&program);
+        c.args(&args);
+        c
     };
 
     // Inject environment variables (VAL-INSTALL-034)
@@ -1777,11 +1799,31 @@ fn execute_native_command(
         false,
     ));
 
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("Failed to spawn command: {}", cmd_str))?;
+    let mut child = command.spawn().with_context(|| {
+        let mut hint = String::new();
+        // Provide actionable hints for common spawn failures
+        if cmd_str.starts_with("sudo") {
+            hint = " — ensure sudo is installed and you have the correct permissions".to_string();
+        } else if cmd_str.starts_with("pip")
+            || cmd_str.starts_with("uv")
+            || cmd_str.starts_with("python")
+        {
+            hint = " — ensure Python/pip is installed and accessible".to_string();
+        } else if cmd_str.starts_with("git") {
+            hint = " — ensure git is installed".to_string();
+        } else if cmd_str.starts_with("cmake") || cmd_str.starts_with("make") {
+            hint = " — ensure build tools (cmake, make, gcc) are installed".to_string();
+        } else if cmd_str.starts_with("rocminfo") || cmd_str.starts_with("rocm-smi") {
+            hint = " — ensure ROCm is installed and /opt/rocm/bin is in PATH".to_string();
+        }
+        format!(
+            "Failed to spawn command '{}' for {}.{}",
+            cmd_str, component_name, hint
+        )
+    })?;
 
-    // Write sudo password to stdin if needed
+    // Write sudo password to stdin if needed, then close stdin
+    // Always close stdin to signal to the child that no more input is coming
     if let Some(pw) = sudo_pw {
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(pw.as_bytes());
@@ -1789,11 +1831,31 @@ fn execute_native_command(
             let _ = stdin.flush();
             drop(stdin);
         }
+    } else {
+        // Close stdin even when no sudo password to prevent child from
+        // blocking on stdin read
+        drop(child.stdin.take());
     }
 
     // Stream stdout and stderr in separate threads (VAL-INSTALL-035)
     let sender_stdout = sender.clone();
-    let stdout_stream = child.stdout.take().unwrap();
+    let stdout_stream = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[ERROR] {} — failed to capture stdout from spawned process",
+                    component_name
+                ),
+                false,
+            ));
+            bail!(
+                "{} — failed to capture stdout from spawned process. \
+                 This usually indicates a system resource issue.",
+                component_name
+            );
+        }
+    };
     let stdout_handle = thread::spawn(move || {
         let reader = BufReader::new(stdout_stream);
         for line in reader.lines() {
@@ -1810,7 +1872,23 @@ fn execute_native_command(
     });
 
     let sender_stderr = sender.clone();
-    let stderr_stream = child.stderr.take().unwrap();
+    let stderr_stream = match child.stderr.take() {
+        Some(s) => s,
+        None => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[ERROR] {} — failed to capture stderr from spawned process",
+                    component_name
+                ),
+                false,
+            ));
+            bail!(
+                "{} — failed to capture stderr from spawned process. \
+                 This usually indicates a system resource issue.",
+                component_name
+            );
+        }
+    };
     let stderr_handle = thread::spawn(move || {
         let reader = BufReader::new(stderr_stream);
         for line in reader.lines() {
@@ -1827,22 +1905,51 @@ fn execute_native_command(
     });
 
     // Wait for completion
-    let status = child.wait().context("Command wait failed")?;
+    let status = child.wait().with_context(|| {
+        format!(
+            "{} — command process wait failed. \
+             The process may have been killed or the system is under heavy load.",
+            component_name
+        )
+    })?;
     let _ = stdout_handle.join();
     let _ = stderr_handle.join();
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
+        let error_detail = match code {
+            1 => "General error — check the command output above for details".to_string(),
+            2 => "Misuse of shell builtins — check command arguments".to_string(),
+            126 => "Command not executable — check file permissions".to_string(),
+            127 => "Command not found — ensure the required tool is installed".to_string(),
+            130 => "Process terminated by Ctrl+C (SIGINT)".to_string(),
+            137 => "Process killed (SIGKILL) — possibly out of memory".to_string(),
+            139 => "Segmentation fault — this is a bug in the invoked program".to_string(),
+            n if n > 128 => format!(
+                "Process terminated by signal {} — check system logs",
+                n - 128
+            ),
+            _ => format!(
+                "Command exited with code {} — check the output above for details",
+                code
+            ),
+        };
         let _ = sender.send(InstallerEvent::Log(
             format!(
-                "{} exited with code {} at {}",
+                "[ERROR] {} failed: {} (exit code {} at {})",
                 component_name,
+                error_detail,
                 code,
                 Local::now().format("%H:%M:%S")
             ),
             false,
         ));
-        bail!("{} failed with exit code {}", component_name, code);
+        bail!(
+            "{} failed: {} (exit code {})",
+            component_name,
+            error_detail,
+            code
+        );
     }
 
     Ok(())
@@ -3058,11 +3165,21 @@ fn run_script(
         command.env("AITER_JIT_DIR", aiter_jit_dir);
     }
 
-    let mut child = command
-        .spawn()
-        .context("Failed to spawn installer script")?;
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "Failed to spawn installer script '{}' for {}. \
+                 Ensure bash is installed and the script file is accessible.",
+            script_path, component.name
+        )
+    })?;
 
-    let mut child_stdin = child.stdin.take().context("Failed to open stdin")?;
+    let mut child_stdin = child.stdin.take().with_context(|| {
+        format!(
+            "Failed to open stdin for script '{}' — \
+             this usually indicates a system resource issue.",
+            script_path
+        )
+    })?;
     if let Some(password) = sudo_password {
         let _ = child_stdin.write_all(password.as_bytes());
         let _ = child_stdin.write_all(b"\n");
@@ -3081,7 +3198,10 @@ fn run_script(
     let stop_input_clone = Arc::clone(&stop_input);
     let input_thread = thread::spawn(move || {
         while !stop_input_clone.load(Ordering::Relaxed) {
-            let rx = input_rx.lock().unwrap();
+            let rx = match input_rx.lock() {
+                Ok(guard) => guard,
+                Err(_) => break, // Mutex poisoned, stop trying
+            };
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(input) => {
                     let _ = child_stdin.write_all(input.as_bytes());
@@ -3098,7 +3218,25 @@ fn run_script(
     let sender_stdout = sender.clone();
     let component_id = component.id.clone();
     let component_name = component_name(component);
-    let stdout_stream = child.stdout.take().unwrap();
+    let stdout_stream = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            stop_input.store(true, Ordering::Relaxed);
+            let _ = input_thread.join();
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[ERROR] {} — failed to capture stdout from script process",
+                    component.name
+                ),
+                false,
+            ));
+            bail!(
+                "{} — failed to capture stdout from script process. \
+                 This usually indicates a system resource issue.",
+                component.name
+            );
+        }
+    };
     let stdout_handle = thread::spawn(move || {
         let mut reader = BufReader::new(stdout_stream);
         let mut buffer = Vec::new();
@@ -3142,7 +3280,26 @@ fn run_script(
     });
 
     let sender_stderr = sender.clone();
-    let stderr_stream = child.stderr.take().unwrap();
+    let stderr_stream = match child.stderr.take() {
+        Some(s) => s,
+        None => {
+            stop_input.store(true, Ordering::Relaxed);
+            let _ = input_thread.join();
+            let _ = stdout_handle.join();
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[ERROR] {} — failed to capture stderr from script process",
+                    component.name
+                ),
+                false,
+            ));
+            bail!(
+                "{} — failed to capture stderr from script process. \
+                 This usually indicates a system resource issue.",
+                component.name
+            );
+        }
+    };
     let stderr_handle = thread::spawn(move || {
         let mut reader = BufReader::new(stderr_stream);
         let mut buffer = Vec::new();
@@ -3174,7 +3331,13 @@ fn run_script(
         }
     });
 
-    let status = child.wait().context("Installer script failed")?;
+    let status = child.wait().with_context(|| {
+        format!(
+            "{} — script process wait failed. \
+             The process may have been killed or the system is under heavy load.",
+            component.name
+        )
+    })?;
     stop_input.store(true, Ordering::Relaxed);
     let _ = input_thread.join();
     let _ = stdout_handle.join();
@@ -3182,16 +3345,39 @@ fn run_script(
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
+        let error_detail = match code {
+            1 => "General error — check the script output above for details".to_string(),
+            2 => "Misuse of shell builtins — check script arguments".to_string(),
+            126 => "Script not executable — check file permissions (chmod +x)".to_string(),
+            127 => "Command not found in script — ensure required tools are installed".to_string(),
+            130 => "Script terminated by Ctrl+C (SIGINT)".to_string(),
+            137 => "Script killed (SIGKILL) — possibly out of memory".to_string(),
+            139 => "Segmentation fault in script subprocess".to_string(),
+            n if n > 128 => format!(
+                "Script process terminated by signal {} — check system logs",
+                n - 128
+            ),
+            _ => format!(
+                "Script exited with code {} — check the output above for details",
+                code
+            ),
+        };
         let _ = sender.send(InstallerEvent::Log(
             format!(
-                "{} exited with code {} at {}",
+                "[ERROR] {} failed: {} (exit code {} at {})",
                 component.name,
+                error_detail,
                 code,
                 Local::now().format("%H:%M:%S")
             ),
             false,
         ));
-        bail!("{} failed with exit code {}", component.name, code);
+        bail!(
+            "{} failed: {} (exit code {})",
+            component.name,
+            error_detail,
+            code
+        );
     }
 
     Ok(())
@@ -3242,6 +3428,149 @@ fn star_repo(config: &InstallerConfig, sender: &Sender<InstallerEvent>) -> Resul
 
 fn component_name(comp: &Component) -> String {
     comp.name.clone()
+}
+
+/// Format a user-friendly error message with actionable guidance based on
+/// the component ID and the raw error chain.
+///
+/// This function translates cryptic error messages into helpful guidance
+/// similar to what the original shell scripts provided with `set -e` and
+/// explicit error handling.
+///
+/// Order of checks: component-specific → error-type-specific → generic fallback
+fn format_user_friendly_error(component_id: &str, raw_error: &str) -> String {
+    let error_lower = raw_error.to_lowercase();
+
+    // ── Component-specific guidance (highest priority) ──────────────
+
+    match component_id {
+        "permanent-env" => {
+            if error_lower.contains("rocminfo") {
+                return format!(
+                    "{}: Failed to detect GPU — rocminfo command failed. \
+                     Ensure ROCm is properly installed and /opt/rocm/bin is in your PATH. \
+                     Original error: {}",
+                    component_id, raw_error
+                );
+            }
+            return format!(
+                "{}: Environment setup failed. \
+                 Ensure ROCm is installed and GPU is accessible. \
+                 Original error: {}",
+                component_id, raw_error
+            );
+        }
+        "rocm" => {
+            if error_lower.contains("no such file") || error_lower.contains("not found") {
+                return format!(
+                    "{}: ROCm installation failed — required packages or repositories not found. \
+                     Ensure your system's package manager is configured correctly and ROCm repositories are added. \
+                     Original error: {}",
+                    component_id, raw_error
+                );
+            }
+        }
+        "pytorch" => {
+            if error_lower.contains("no such file") || error_lower.contains("not found") {
+                return format!(
+                    "{}: PyTorch installation failed — required packages not found. \
+                     Ensure ROCm is installed first and Python 3.10+ is available. \
+                     Original error: {}",
+                    component_id, raw_error
+                );
+            }
+            return format!(
+                "{}: PyTorch installation failed. \
+                 Ensure ROCm is installed first, Python 3.10-3.13 is available, \
+                 and pip/uv can reach the PyTorch package index. \
+                 Original error: {}",
+                component_id, raw_error
+            );
+        }
+        "triton" | "flash-attn" | "vllm" | "aiter" => {
+            return format!(
+                "{}: Installation failed. \
+                 Ensure PyTorch and ROCm are properly installed first \
+                 (these are required dependencies). \
+                 Original error: {}",
+                component_id, raw_error
+            );
+        }
+        "megatron" => {
+            return format!(
+                "{}: Megatron-LM installation failed. \
+                 Ensure PyTorch and MPI4Py are installed first (required dependencies). \
+                 Original error: {}",
+                component_id, raw_error
+            );
+        }
+        "deepspeed" => {
+            return format!(
+                "{}: DeepSpeed installation failed. \
+                 Ensure PyTorch is installed first (required dependency). \
+                 Original error: {}",
+                component_id, raw_error
+            );
+        }
+        _ => {}
+    }
+
+    // ── Error-type-specific guidance ────────────────────────────────
+
+    if error_lower.contains("permission denied") || error_lower.contains("sudo") {
+        return format!(
+            "{}: Permission denied. Try running with elevated privileges or check file/directory permissions. \
+             Original error: {}",
+            component_id, raw_error
+        );
+    }
+
+    if error_lower.contains("network")
+        || error_lower.contains("connection")
+        || error_lower.contains("timeout")
+        || error_lower.contains("resolve")
+    {
+        return format!(
+            "{}: Network error — failed to download packages or clone repositories. \
+             Check your internet connection and try again. \
+             Original error: {}",
+            component_id, raw_error
+        );
+    }
+
+    if error_lower.contains("out of memory")
+        || error_lower.contains("cannot allocate")
+        || error_lower.contains("killed")
+    {
+        return format!(
+            "{}: Out of memory — the build process was killed due to insufficient memory. \
+             Try closing other applications or increasing swap space. \
+             Original error: {}",
+            component_id, raw_error
+        );
+    }
+
+    if error_lower.contains("exit code") {
+        // Already has exit code context from our execute_native_command improvements
+        return raw_error.to_string();
+    }
+
+    if error_lower.contains("no such file") || error_lower.contains("not found") {
+        return format!(
+            "{}: Required file or command not found. \
+             Ensure all dependencies are installed before this component. \
+             Original error: {}",
+            component_id, raw_error
+        );
+    }
+
+    // ── Generic fallback ────────────────────────────────────────────
+
+    format!(
+        "{}: Installation failed. Check the log output above for details. \
+         Original error: {}",
+        component_id, raw_error
+    )
 }
 
 fn detect_gpu_arch() -> String {
@@ -4214,5 +4543,257 @@ Kernel Version:        6.12.63+deb13-rt-amd64
 "#;
         let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
         assert_eq!(result, vec!["0", "1"]);
+    }
+
+    // -------------------------------------------------------------------
+    // Error handling tests (fix-installation-silent-failures)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_format_user_friendly_error_permission_denied() {
+        let msg = format_user_friendly_error("rocm", "Permission denied: /opt/rocm");
+        assert!(
+            msg.contains("Permission denied"),
+            "Should mention permission issue"
+        );
+        assert!(
+            msg.contains("elevated privileges"),
+            "Should suggest running with sudo"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_not_found() {
+        let msg = format_user_friendly_error("pytorch", "No such file or directory: python3");
+        assert!(msg.contains("not found"), "Should mention file not found");
+        assert!(
+            msg.contains("ROCm") || msg.contains("Python"),
+            "Should mention ROCm or Python dependency, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_network() {
+        // Use a generic component to test network error detection
+        let msg = format_user_friendly_error(
+            "onnxruntime",
+            "network error: Could not resolve host: github.com",
+        );
+        assert!(
+            msg.contains("Network error"),
+            "Should mention network issue, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("internet connection"),
+            "Should suggest checking internet, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_out_of_memory() {
+        // Use a generic component to test OOM error detection
+        let msg = format_user_friendly_error("onnxruntime", "out of memory during build");
+        assert!(
+            msg.contains("Out of memory"),
+            "Should mention memory issue, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("swap space"),
+            "Should suggest increasing swap, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_permanent_env_rocminfo() {
+        let msg = format_user_friendly_error("permanent-env", "rocminfo command not found");
+        assert!(
+            msg.contains("rocminfo"),
+            "Should mention rocminfo specifically"
+        );
+        assert!(
+            msg.contains("ROCm is properly installed"),
+            "Should suggest ROCm installation"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_pytorch_specific() {
+        // Use a generic error (not "not found") to hit the general pytorch handler
+        let msg = format_user_friendly_error("pytorch", "pip install failed: build error");
+        assert!(msg.contains("PyTorch"), "Should mention PyTorch by name");
+        assert!(
+            msg.contains("ROCm is installed first"),
+            "Should mention ROCm dependency"
+        );
+        assert!(
+            msg.contains("Python 3.10-3.13"),
+            "Should mention Python version, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_triton_dependency() {
+        let msg = format_user_friendly_error("triton", "git clone failed");
+        assert!(
+            msg.contains("PyTorch and ROCm"),
+            "Should mention required dependencies"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_megatron_dependency() {
+        let msg = format_user_friendly_error("megatron", "pip install failed");
+        assert!(
+            msg.contains("PyTorch and MPI4Py"),
+            "Should mention Megatron's specific dependencies"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_deepspeed_dependency() {
+        let msg = format_user_friendly_error("deepspeed", "build failed");
+        assert!(
+            msg.contains("PyTorch"),
+            "Should mention DeepSpeed's dependency on PyTorch"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_exit_code_passthrough() {
+        let msg = format_user_friendly_error("rocm", "ROCm failed: General error (exit code 1)");
+        // Exit code errors should be passed through as-is
+        assert!(
+            msg.contains("exit code 1"),
+            "Should preserve exit code context"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_unknown_component() {
+        let msg = format_user_friendly_error("some-unknown-component", "something went wrong");
+        assert!(
+            msg.contains("Installation failed"),
+            "Should have generic failure message"
+        );
+        assert!(
+            msg.contains("something went wrong"),
+            "Should include original error"
+        );
+    }
+
+    #[test]
+    fn test_format_user_friendly_error_rocm_not_found() {
+        let msg = format_user_friendly_error("rocm", "package not found: amdgpu-dkms");
+        assert!(msg.contains("ROCm"), "Should mention ROCm specifically");
+        assert!(msg.contains("repositories"), "Should mention repositories");
+    }
+
+    #[test]
+    fn test_execute_native_command_nonexistent_program() {
+        // Verify that executing a non-existent command returns a proper error
+        // (not a panic) and includes context about the failure
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = NativeCommand::Shell {
+            program: "/nonexistent/program/that/does/not/exist".to_string(),
+            args: vec![],
+            env: vec![],
+        };
+        let result = execute_native_command(&cmd, None, &tx, "test-component");
+        assert!(result.is_err(), "Should fail for non-existent program");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(!err_msg.is_empty(), "Error message should not be empty");
+
+        // Verify events were sent (no silent failure)
+        drop(tx);
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            !events.is_empty(),
+            "Should have sent at least one event before failing"
+        );
+    }
+
+    #[test]
+    fn test_execute_native_command_captures_exit_code() {
+        // Verify that a failing command sends error events with context
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = NativeCommand::Shell {
+            program: "bash".to_string(),
+            args: vec!["-c".to_string(), "echo test_output; exit 42".to_string()],
+            env: vec![],
+        };
+        let result = execute_native_command(&cmd, None, &tx, "test-component");
+        assert!(
+            result.is_err(),
+            "Should fail for non-zero exit code, got: {:?}",
+            result
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("42"),
+            "Error should include exit code 42, got: {}",
+            err_msg
+        );
+
+        // Collect events to verify output was captured
+        drop(tx);
+        let events: Vec<_> = rx.try_iter().collect();
+        let log_messages: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                InstallerEvent::Log(msg, _) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            log_messages.iter().any(|m| m.contains("test_output")),
+            "Should have captured stdout output before failure"
+        );
+        assert!(
+            log_messages
+                .iter()
+                .any(|m| m.contains("[ERROR]") || m.contains("exit code")),
+            "Should have logged error with exit code"
+        );
+    }
+
+    #[test]
+    fn test_execute_native_command_success_sends_events() {
+        // Verify that a successful command sends log events
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = NativeCommand::Shell {
+            program: "bash".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "echo 'hello world'; echo 'second line'".to_string(),
+            ],
+            env: vec![],
+        };
+        let result = execute_native_command(&cmd, None, &tx, "test-component");
+        assert!(result.is_ok(), "Should succeed for zero exit code");
+
+        drop(tx);
+        let events: Vec<_> = rx.try_iter().collect();
+        let log_messages: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                InstallerEvent::Log(msg, _) => Some(msg.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            log_messages.iter().any(|m| m.contains("hello world")),
+            "Should have captured first line of output"
+        );
+        assert!(
+            log_messages.iter().any(|m| m.contains("second line")),
+            "Should have captured second line of output"
+        );
     }
 }

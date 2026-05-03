@@ -559,7 +559,10 @@ mod tests {
             .env
             .iter()
             .any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
-        assert!(cmd.env.iter().any(|(k, v)| k == "PYTHONPATH" && v == ""));
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "PYTHONPATH" && v.is_empty()));
     }
 
     #[test]

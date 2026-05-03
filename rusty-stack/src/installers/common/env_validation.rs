@@ -570,11 +570,15 @@ export ROCM_PATH=/opt/rocm
     fn test_parse_env_file_if_guard_single_line() {
         // The env_setup.rs generates lines like:
         // if [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=0,1,2; fi
-        let contents = r#"if [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=0,1,2; fi"#;
+        let contents =
+            r#"if [ -z "${HIP_VISIBLE_DEVICES:-}" ]; then export HIP_VISIBLE_DEVICES=0,1,2; fi"#;
         let map = parse_env_file(contents);
         let value = map.get("HIP_VISIBLE_DEVICES").unwrap();
         assert_eq!(value, "0,1,2", "Should strip '; fi' suffix, got: {value}");
-        assert!(!value.contains("; fi"), "Value must not contain shell suffixes");
+        assert!(
+            !value.contains("; fi"),
+            "Value must not contain shell suffixes"
+        );
     }
 
     #[test]
@@ -590,7 +594,10 @@ export ROCM_PATH=/opt/rocm
         let contents = r#"if [ -z "${ROCM_HOME:-}" ]; then export ROCM_HOME=/opt/rocm; fi"#;
         let map = parse_env_file(contents);
         let value = map.get("ROCM_HOME").unwrap();
-        assert_eq!(value, "/opt/rocm", "Should strip '; fi' suffix, got: {value}");
+        assert_eq!(
+            value, "/opt/rocm",
+            "Should strip '; fi' suffix, got: {value}"
+        );
     }
 
     #[test]
@@ -614,7 +621,10 @@ if [ -z "${HSA_ENABLE_SDMA:-}" ]; then export HSA_ENABLE_SDMA=0; fi
 
         // Verify no shell suffixes in any value
         for (key, value) in &map {
-            assert!(!value.contains("; fi"), "{key}: Value contains '; fi': {value}");
+            assert!(
+                !value.contains("; fi"),
+                "{key}: Value contains '; fi': {value}"
+            );
             assert!(!value.contains("&&"), "{key}: Value contains '&&': {value}");
         }
     }
@@ -632,7 +642,10 @@ fi"#;
         let map = parse_env_file(contents);
         // Should extract the last export in the if block
         let value = map.get("HSA_TOOLS_LIB");
-        assert!(value.is_some(), "Should find HSA_TOOLS_LIB in multiline if-guard");
+        assert!(
+            value.is_some(),
+            "Should find HSA_TOOLS_LIB in multiline if-guard"
+        );
         let val = value.unwrap();
         assert!(!val.contains("fi"), "Value should not contain 'fi': {val}");
     }
