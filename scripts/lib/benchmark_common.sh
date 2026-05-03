@@ -2054,8 +2054,34 @@ benchmark_resolve_bench_binary() {
     local log_file="$2"
     local target_dir
 
+    # Prefer rusty on PATH (e.g. installed system-wide)
+    if command -v rusty >/dev/null 2>&1; then
+        printf '%s\n' "$(command -v rusty)"
+        return 0
+    fi
+
     target_dir="$(benchmark_discover_target_dir "$manifest_path" "$log_file")"
-    printf '%s/debug/rusty-stack-bench\n' "$target_dir"
+
+    # Check debug build
+    if [ -x "${target_dir}/debug/rusty" ]; then
+        printf '%s/debug/rusty\n' "$target_dir"
+        return 0
+    fi
+
+    # Check release build
+    if [ -x "${target_dir}/release/rusty" ]; then
+        printf '%s/release/rusty\n' "$target_dir"
+        return 0
+    fi
+
+    # Check common install location
+    if [ -x "${HOME}/.cargo/bin/rusty" ]; then
+        printf '%s\n' "${HOME}/.cargo/bin/rusty"
+        return 0
+    fi
+
+    # Fallback: return expected debug path (will trigger build if missing)
+    printf '%s/debug/rusty\n' "$target_dir"
 }
 
 benchmark_ensure_writable_dir() {
@@ -2091,25 +2117,39 @@ benchmark_build_rusty_stack_bench() {
     local manifest_path="$1"
     local log_file="$2"
     local fallback_dir
+    local bench_bin
 
-    if benchmark_is_dry_run; then
-        benchmark_info "[DRY-RUN] Would run: cargo build --manifest-path=\"$manifest_path\" --bin rusty-stack-bench"
+    # If rusty is already on PATH, no build needed
+    if command -v rusty >/dev/null 2>&1; then
+        benchmark_info "rusty binary already available on PATH"
         return 0
     fi
 
-    if cargo build --manifest-path="$manifest_path" --bin rusty-stack-bench >>"$log_file" 2>&1; then
+    # Check if a locally built binary already exists
+    bench_bin="$(benchmark_resolve_bench_binary "$manifest_path" "$log_file")"
+    if [ -x "$bench_bin" ]; then
+        benchmark_info "rusty binary already built at $bench_bin"
+        return 0
+    fi
+
+    if benchmark_is_dry_run; then
+        benchmark_info "[DRY-RUN] Would run: cargo build --manifest-path=\"$manifest_path\" --bin rusty"
+        return 0
+    fi
+
+    if cargo build --manifest-path="$manifest_path" --bin rusty >>"$log_file" 2>&1; then
         return 0
     fi
 
     if fallback_dir="$(benchmark_pick_writable_target_dir)"; then
         benchmark_warn "Build failed. Retrying with writable CARGO_TARGET_DIR=$fallback_dir"
         export CARGO_TARGET_DIR="$fallback_dir"
-        if cargo build --manifest-path="$manifest_path" --bin rusty-stack-bench >>"$log_file" 2>&1; then
+        if cargo build --manifest-path="$manifest_path" --bin rusty >>"$log_file" 2>&1; then
             return 0
         fi
     fi
 
-    benchmark_error "Failed to build rusty-stack-bench"
+    benchmark_error "Failed to build rusty binary"
     return 1
 }
 
@@ -2123,19 +2163,19 @@ benchmark_run_named_json() {
 
     if benchmark_is_dry_run; then
         if [ -x "$bench_bin" ]; then
-            benchmark_info "[DRY-RUN] Would run: $bench_bin $benchmark_name --json"
+            benchmark_info "[DRY-RUN] Would run: $bench_bin bench --json $benchmark_name"
         else
-            benchmark_info "[DRY-RUN] Would run fallback: cargo run --manifest-path=\"$manifest_path\" --bin rusty-stack-bench -- $benchmark_name --json"
+            benchmark_info "[DRY-RUN] Would run fallback: cargo run --manifest-path=\"$manifest_path\" --bin rusty -- bench --json $benchmark_name"
         fi
         return 0
     fi
 
     if [ -x "$bench_bin" ]; then
         benchmark_info "Using benchmark binary: $bench_bin"
-        "$bench_bin" "$benchmark_name" --json 2>&1 | tee -a "$log_file"
+        "$bench_bin" bench --json "$benchmark_name" 2>&1 | tee -a "$log_file"
     else
         benchmark_warn "Binary not found at $bench_bin; using cargo run fallback"
-        cargo run --manifest-path="$manifest_path" --bin rusty-stack-bench -- "$benchmark_name" --json 2>&1 | tee -a "$log_file"
+        cargo run --manifest-path="$manifest_path" --bin rusty -- bench --json "$benchmark_name" 2>&1 | tee -a "$log_file"
     fi
 }
 
@@ -2150,9 +2190,9 @@ benchmark_run_named_json_to_file() {
 
     if benchmark_is_dry_run; then
         if [ -x "$bench_bin" ]; then
-            benchmark_info "[DRY-RUN] Would run: $bench_bin $benchmark_name --json"
+            benchmark_info "[DRY-RUN] Would run: $bench_bin bench --json $benchmark_name"
         else
-            benchmark_info "[DRY-RUN] Would run fallback: cargo run --manifest-path=\"$manifest_path\" --bin rusty-stack-bench -- $benchmark_name --json"
+            benchmark_info "[DRY-RUN] Would run fallback: cargo run --manifest-path=\"$manifest_path\" --bin rusty -- bench --json $benchmark_name"
         fi
         benchmark_info "[DRY-RUN] Benchmark JSON output path: $json_file"
         return 0
@@ -2160,9 +2200,9 @@ benchmark_run_named_json_to_file() {
 
     if [ -x "$bench_bin" ]; then
         benchmark_info "Using benchmark binary: $bench_bin"
-        "$bench_bin" "$benchmark_name" --json 2>&1 | tee -a "$log_file" | tee "$json_file"
+        "$bench_bin" bench --json "$benchmark_name" 2>&1 | tee -a "$log_file" | tee "$json_file"
     else
         benchmark_warn "Binary not found at $bench_bin; using cargo run fallback"
-        cargo run --manifest-path="$manifest_path" --bin rusty-stack-bench -- "$benchmark_name" --json 2>&1 | tee -a "$log_file" | tee "$json_file"
+        cargo run --manifest-path="$manifest_path" --bin rusty -- bench --json "$benchmark_name" 2>&1 | tee -a "$log_file" | tee "$json_file"
     fi
 }
