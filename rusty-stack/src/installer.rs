@@ -322,6 +322,35 @@ pub fn run_installation(
         let _ = star_repo(&config, &sender);
     }
 
+    // Fix pip cache directory ownership after all installations complete.
+    // Some installation steps use sudo, which can create pip cache files
+    // owned by root. This prevents the unprivileged user from writing to
+    // the cache, causing permission errors on subsequent pip install runs.
+    {
+        use crate::installers::common::fix_pip_cache_ownership;
+        let result = fix_pip_cache_ownership(&user_home);
+        match &result {
+            crate::installers::common::PipCacheFixResult::Fixed => {
+                let _ = sender.send(InstallerEvent::Log(
+                    "[post-install] Fixed pip cache directory ownership (~/.cache/pip)".into(),
+                    false,
+                ));
+            }
+            crate::installers::common::PipCacheFixResult::FixFailed(err) => {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[post-install] Warning: could not fix pip cache ownership: {}",
+                        err
+                    ),
+                    false,
+                ));
+            }
+            _ => {
+                // NoCacheDir or OwnershipCorrect — nothing to report
+            }
+        }
+    }
+
     let _ = sender.send(InstallerEvent::Finished {
         success: overall_success,
     });

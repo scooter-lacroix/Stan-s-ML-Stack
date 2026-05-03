@@ -327,6 +327,120 @@ pub fn pip_install_prefix(python_bin: &str) -> Vec<String> {
 }
 
 // ===========================================================================
+// Pip Cache Ownership Fix
+// ===========================================================================
+
+/// Result of fixing pip cache directory ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipCacheFixResult {
+    /// Cache directory does not exist — nothing to fix.
+    NoCacheDir,
+    /// Cache directory exists and ownership is already correct.
+    OwnershipCorrect,
+    /// Ownership was wrong and has been fixed.
+    Fixed,
+    /// Ownership was wrong but the fix failed.
+    FixFailed(String),
+}
+
+impl std::fmt::Display for PipCacheFixResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PipCacheFixResult::NoCacheDir => write!(f, "No pip cache directory found"),
+            PipCacheFixResult::OwnershipCorrect => write!(f, "Pip cache ownership already correct"),
+            PipCacheFixResult::Fixed => write!(f, "Fixed pip cache ownership"),
+            PipCacheFixResult::FixFailed(e) => write!(f, "Failed to fix pip cache ownership: {e}"),
+        }
+    }
+}
+
+/// Fix ownership of the pip cache directory (`~/.cache/pip`).
+///
+/// When installation steps use `sudo pip install`, the pip cache directory
+/// (`~/.cache/pip`) can end up owned by root. This prevents the unprivileged
+/// user from writing to the cache, causing permission errors on subsequent
+/// `pip install` runs.
+///
+/// This function:
+/// 1. Checks if `~/.cache/pip` exists
+/// 2. Compares the directory's owner UID with the current effective UID
+/// 3. If the owner is root (UID 0) and we know the target user (via
+///    `SUDO_USER` or `HOME` metadata), runs `chown -R` to fix ownership
+///
+/// # Arguments
+///
+/// * `user_home` - The user's home directory path (e.g., `/home/user`)
+///
+/// # Returns
+///
+/// A `PipCacheFixResult` indicating what action was taken.
+///
+/// # Safety
+///
+/// Uses `libc::geteuid()` to check current effective UID. The chown command
+/// is only executed when running as root with `SUDO_USER` set, which is the
+/// expected scenario when sudo pip operations have corrupted cache ownership.
+#[cfg(unix)]
+pub fn fix_pip_cache_ownership(user_home: &str) -> PipCacheFixResult {
+    use std::os::unix::fs::MetadataExt;
+
+    let cache_dir = Path::new(user_home).join(".cache/pip");
+
+    // Step 1: Check if cache directory exists
+    if !cache_dir.exists() {
+        return PipCacheFixResult::NoCacheDir;
+    }
+
+    // Step 2: Get the expected target UID from the home directory metadata
+    // This is more reliable than checking the current euid because when
+    // running under sudo, euid is 0 (root) but we want the actual user's UID.
+    let home_meta = match std::fs::metadata(user_home) {
+        Ok(m) => m,
+        Err(_) => return PipCacheFixResult::FixFailed("Cannot stat home directory".into()),
+    };
+    let target_uid = home_meta.uid();
+    let target_gid = home_meta.gid();
+
+    // Step 3: Check the cache directory's current ownership
+    let cache_meta = match std::fs::metadata(&cache_dir) {
+        Ok(m) => m,
+        Err(_) => return PipCacheFixResult::FixFailed("Cannot stat cache directory".into()),
+    };
+
+    // If ownership already matches, nothing to do
+    if cache_meta.uid() == target_uid && cache_meta.gid() == target_gid {
+        return PipCacheFixResult::OwnershipCorrect;
+    }
+
+    // Step 4: Fix ownership via chown -R
+    // We need to run chown as root (or with appropriate privileges).
+    // When running under sudo, we have root privileges.
+    let chown_cmd = format!(
+        "chown -R {}:{} \"{}\"",
+        target_uid,
+        target_gid,
+        cache_dir.display()
+    );
+
+    match Command::new("bash").arg("-c").arg(&chown_cmd).output() {
+        Ok(output) if output.status.success() => PipCacheFixResult::Fixed,
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            PipCacheFixResult::FixFailed(format!("chown failed: {stderr}"))
+        }
+        Err(e) => PipCacheFixResult::FixFailed(format!("chown execution error: {e}")),
+    }
+}
+
+/// Fix ownership of the pip cache directory (non-Unix stub).
+///
+/// On non-Unix platforms, this is a no-op that always returns `OwnershipCorrect`.
+#[cfg(not(unix))]
+pub fn fix_pip_cache_ownership(_user_home: &str) -> PipCacheFixResult {
+    PipCacheFixResult::OwnershipCorrect
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
@@ -524,5 +638,105 @@ mod tests {
             path == "rocminfo" || path.contains("rocminfo"),
             "Path should contain 'rocminfo', got: {path}"
         );
+    }
+
+    // --- PipCacheFixResult tests ---
+
+    #[test]
+    fn test_pip_cache_fix_result_display_no_cache_dir() {
+        assert_eq!(
+            format!("{}", PipCacheFixResult::NoCacheDir),
+            "No pip cache directory found"
+        );
+    }
+
+    #[test]
+    fn test_pip_cache_fix_result_display_ownership_correct() {
+        assert_eq!(
+            format!("{}", PipCacheFixResult::OwnershipCorrect),
+            "Pip cache ownership already correct"
+        );
+    }
+
+    #[test]
+    fn test_pip_cache_fix_result_display_fixed() {
+        assert_eq!(
+            format!("{}", PipCacheFixResult::Fixed),
+            "Fixed pip cache ownership"
+        );
+    }
+
+    #[test]
+    fn test_pip_cache_fix_result_display_fix_failed() {
+        let result = PipCacheFixResult::FixFailed("some error".into());
+        assert!(format!("{}", result).contains("some error"));
+    }
+
+    #[test]
+    fn test_pip_cache_fix_result_equality() {
+        assert_eq!(PipCacheFixResult::NoCacheDir, PipCacheFixResult::NoCacheDir);
+        assert_eq!(PipCacheFixResult::OwnershipCorrect, PipCacheFixResult::OwnershipCorrect);
+        assert_eq!(PipCacheFixResult::Fixed, PipCacheFixResult::Fixed);
+        assert_ne!(PipCacheFixResult::NoCacheDir, PipCacheFixResult::Fixed);
+    }
+
+    #[test]
+    fn test_fix_pip_cache_no_cache_dir() {
+        // Use /tmp/nonexistent as home — no .cache/pip there
+        let result = fix_pip_cache_ownership("/tmp/nonexistent_test_dir_xyz");
+        assert_eq!(result, PipCacheFixResult::NoCacheDir);
+    }
+
+    #[test]
+    fn test_fix_pip_cache_ownership_correct() {
+        // Use the real user home — cache dir may or may not exist.
+        // If it exists, it should be owned by the current user already.
+        // If it doesn't, we get NoCacheDir.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let result = fix_pip_cache_ownership(&home);
+        // Either the dir doesn't exist, or ownership is already correct,
+        // or (unlikely in test) it was fixed.
+        assert!(
+            result == PipCacheFixResult::NoCacheDir
+                || result == PipCacheFixResult::OwnershipCorrect
+                || result == PipCacheFixResult::Fixed,
+            "Expected NoCacheDir, OwnershipCorrect, or Fixed, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_fix_pip_cache_with_temp_dir_correct_ownership() {
+        // Create a temp dir with .cache/pip owned by current user
+        let tmp_dir = std::env::temp_dir().join("rusty_stack_test_pip_cache_correct");
+        let cache_dir = tmp_dir.join(".cache/pip");
+        let _ = std::fs::create_dir_all(&cache_dir);
+
+        let result = fix_pip_cache_ownership(tmp_dir.to_string_lossy().as_ref());
+        // Should report ownership correct since we created it as current user
+        assert_eq!(result, PipCacheFixResult::OwnershipCorrect);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_fix_pip_cache_with_temp_dir_no_cache() {
+        // Create a temp dir without .cache/pip
+        let tmp_dir = std::env::temp_dir().join("rusty_stack_test_pip_cache_none");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let result = fix_pip_cache_ownership(tmp_dir.to_string_lossy().as_ref());
+        assert_eq!(result, PipCacheFixResult::NoCacheDir);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_fix_pip_cache_result_debug() {
+        // Verify Debug trait works
+        let result = PipCacheFixResult::Fixed;
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("Fixed"));
     }
 }

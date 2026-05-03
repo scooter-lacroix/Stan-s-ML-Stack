@@ -41,4 +41,4 @@ pub use package_manager::{DryRunResult, PackageManagerFacade, PackageOperation};
 pub use package_mappings::map_package_name;
 pub use rocm_env::RocmEnv;
 pub use ui_helper::{is_system_path, UiArgError, UiArgs};
-pub use utils::{command_exists, get_colors, Colors, PythonPkgManager};
+pub use utils::{command_exists, fix_pip_cache_ownership, get_colors, Colors, PipCacheFixResult, PythonPkgManager};
