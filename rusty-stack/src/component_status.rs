@@ -153,21 +153,14 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
                 || path_exists("/usr/lib/rocm/.info/version");
 
             // Check if rocminfo actually works (not just exists)
-            let rocminfo_functional = if let Ok(output) = std::process::Command::new("rocminfo")
+            let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+            let rocminfo_functional = if let Ok(output) = std::process::Command::new(&rocminfo_path)
                 .arg("--version")
                 .output()
             {
                 output.status.success()
             } else {
-                // Try from ROCm path
-                if let Ok(output) = std::process::Command::new("/opt/rocm/bin/rocminfo")
-                    .arg("--version")
-                    .output()
-                {
-                    output.status.success()
-                } else {
-                    false
-                }
+                false
             };
 
             // Require both: version file AND functional rocminfo

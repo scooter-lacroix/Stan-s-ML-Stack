@@ -3586,7 +3586,8 @@ fn format_user_friendly_error(component_id: &str, raw_error: &str) -> String {
 }
 
 fn detect_gpu_arch() -> String {
-    if let Ok(output) = Command::new("rocminfo").output() {
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    if let Ok(output) = Command::new(&rocminfo_path).output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut best_arch = String::new();
         let mut best_value = 0u32;
@@ -3710,7 +3711,8 @@ fn is_igpu_name(marketing_name: &str) -> bool {
 /// Detects the list of discrete AMD GPUs, filtering out integrated GPUs.
 /// Returns a comma-separated string of GPU indices (e.g., "0,1" for first and second GPUs).
 fn detect_gpu_list() -> String {
-    if let Ok(output) = Command::new("rocminfo").output() {
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    if let Ok(output) = Command::new(&rocminfo_path).output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Parse rocminfo output to identify discrete GPUs
@@ -3761,7 +3763,8 @@ fn detect_gpu_list() -> String {
 fn detect_gpu_arch_by_id() -> HashMap<String, String> {
     let mut mapping: HashMap<String, String> = HashMap::new();
 
-    let Ok(output) = Command::new("rocminfo").output() else {
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    let Ok(output) = Command::new(&rocminfo_path).output() else {
         return mapping;
     };
     let stdout = String::from_utf8_lossy(&output.stdout);

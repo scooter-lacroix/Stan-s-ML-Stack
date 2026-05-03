@@ -168,7 +168,8 @@ pub fn detect_discrete_gpus() -> GpuFilterResult {
     let mut discrete_indices: Vec<u32> = Vec::new();
 
     // Try rocminfo first
-    if command_exists("rocminfo") {
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    if command_exists(&rocminfo_path) || command_exists("rocminfo") {
         discrete_indices = detect_gpus_from_rocminfo();
     }
 
@@ -203,7 +204,8 @@ pub fn detect_discrete_gpus() -> GpuFilterResult {
 
 /// Detect GPUs from rocminfo output, filtering out integrated GPUs.
 fn detect_gpus_from_rocminfo() -> Vec<u32> {
-    let output = match std::process::Command::new("rocminfo").output() {
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    let output = match std::process::Command::new(&rocminfo_path).output() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => return Vec::new(),
     };
@@ -689,11 +691,12 @@ pub fn setup_environment() -> (EnvFileResult, GpuFilterResult, GpuArchInfo) {
 
 /// Detect GPU architecture from the system (rocminfo-based).
 fn detect_gpu_arch_from_system() -> GpuArchInfo {
-    if !command_exists("rocminfo") {
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    if !command_exists(&rocminfo_path) && !command_exists("rocminfo") {
         return GpuArchInfo::default();
     }
 
-    let output = match std::process::Command::new("rocminfo").output() {
+    let output = match std::process::Command::new(&rocminfo_path).output() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => return GpuArchInfo::default(),
     };
@@ -1038,7 +1041,7 @@ mod tests {
     #[test]
     fn test_create_env_file_creates_file() {
         let tmp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let env_path = tmp_dir.path().join(".mlstack_env");
+        let _env_path = tmp_dir.path().join(".mlstack_env");
 
         // Temporarily set HOME to the temp dir
         let original_home = std::env::var("HOME").ok();

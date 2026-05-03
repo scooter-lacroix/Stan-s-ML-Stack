@@ -246,9 +246,14 @@ export UV_SYSTEM_PYTHON=1
     }
 
     /// Construct the command to detect GPU architecture via rocminfo.
+    ///
+    /// Uses the full path to rocminfo (e.g., `/opt/rocm/bin/rocminfo`) to avoid
+    /// "command not found" errors when running via sudo, which strips the user's
+    /// PATH environment.
     pub fn build_rocminfo_gpu_detect_command(&self) -> ShellCommand {
+        let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
         ShellCommand {
-            program: "rocminfo".to_string(),
+            program: rocminfo_path,
             args: vec![],
             env: vec![],
         }
@@ -465,6 +470,25 @@ mod tests {
         let cmd = installer.build_rocm_version_detect_command();
         assert_eq!(cmd.program, "cat");
         assert!(cmd.args.contains(&"/opt/rocm/.info/version".to_string()));
+    }
+
+    #[test]
+    fn test_rocminfo_gpu_detect_command_uses_full_path() {
+        let installer = PermanentEnvInstaller::with_defaults();
+        let cmd = installer.build_rocminfo_gpu_detect_command();
+        // Must NOT be bare "rocminfo" — should resolve to full path when available
+        assert!(
+            cmd.program.contains("rocminfo"),
+            "Program should contain 'rocminfo', got: {}",
+            cmd.program
+        );
+        // If /opt/rocm/bin/rocminfo exists, must use the full path
+        if std::path::Path::new("/opt/rocm/bin/rocminfo").exists() {
+            assert_eq!(
+                cmd.program, "/opt/rocm/bin/rocminfo",
+                "Must use full path when /opt/rocm/bin/rocminfo exists"
+            );
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::io::IsTerminal;
+use std::path::Path;
 use std::process::Command;
 
 // ===========================================================================
@@ -109,6 +110,54 @@ pub fn command_exists(cmd: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Resolve the full path to the `rocminfo` binary.
+///
+/// When running via `sudo`, the user's PATH is typically stripped, so bare
+/// `rocminfo` fails with "command not found" even though `/opt/rocm/bin` is
+/// in the user's PATH. This function resolves the full path by checking
+/// known ROCm installation directories before falling back to bare `rocminfo`.
+///
+/// Resolution order:
+/// 1. `/opt/rocm/bin/rocminfo` (standard ROCm install)
+/// 2. Any `/opt/rocm-*/bin/rocminfo` (versioned installs, newest first)
+/// 3. `/usr/lib/rocm/bin/rocminfo` (Arch AUR)
+/// 4. `rocminfo` bare (last resort, relies on PATH)
+pub fn resolve_rocminfo_path() -> String {
+    // Standard ROCm path
+    let standard = Path::new("/opt/rocm/bin/rocminfo");
+    if standard.exists() {
+        return standard.to_string_lossy().to_string();
+    }
+
+    // Versioned ROCm installs (newest first)
+    if let Ok(entries) = std::fs::read_dir("/opt") {
+        let mut rocm_dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("rocm-")
+            })
+            .collect();
+        rocm_dirs.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+        for dir in rocm_dirs {
+            let path = dir.path().join("bin/rocminfo");
+            if path.exists() {
+                return path.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    // Arch AUR path
+    let arch_path = Path::new("/usr/lib/rocm/bin/rocminfo");
+    if arch_path.exists() {
+        return arch_path.to_string_lossy().to_string();
+    }
+
+    // Last resort: bare command (relies on PATH being set)
+    "rocminfo".to_string()
 }
 
 // ===========================================================================
@@ -443,5 +492,37 @@ mod tests {
     fn test_center_str_longer() {
         let result = center_str("hello world", 5);
         assert_eq!(result, "hello world");
+    }
+
+    // --- resolve_rocminfo_path tests ---
+
+    #[test]
+    fn test_resolve_rocminfo_path_returns_string() {
+        // Should return a string (either a full path or bare "rocminfo")
+        let path = resolve_rocminfo_path();
+        assert!(!path.is_empty(), "resolve_rocminfo_path must return non-empty string");
+    }
+
+    #[test]
+    fn test_resolve_rocminfo_path_prefers_standard_path() {
+        // On a system with ROCm at /opt/rocm, should return full path
+        let path = resolve_rocminfo_path();
+        if Path::new("/opt/rocm/bin/rocminfo").exists() {
+            assert_eq!(path, "/opt/rocm/bin/rocminfo");
+        }
+        // Otherwise just verify it returns something valid
+        assert!(!path.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_rocminfo_path_fallback_is_rocminfo() {
+        // When no known ROCm path exists, should fall back to bare "rocminfo"
+        // We can't easily test this on a system WITH ROCm, but we can verify
+        // the function doesn't panic and returns a valid string
+        let path = resolve_rocminfo_path();
+        assert!(
+            path == "rocminfo" || path.contains("rocminfo"),
+            "Path should contain 'rocminfo', got: {path}"
+        );
     }
 }

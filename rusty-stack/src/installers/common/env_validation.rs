@@ -386,9 +386,10 @@ fn detect_rocm_version_or_default() -> String {
 
 /// Detect GPU architecture or return default.
 fn detect_gpu_arch_or_default() -> String {
-    // Try rocminfo
-    if command_exists("rocminfo") {
-        if let Ok(output) = std::process::Command::new("rocminfo").output() {
+    // Try rocminfo with resolved full path (avoids "command not found" under sudo)
+    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
+    if command_exists(&rocminfo_path) || command_exists("rocminfo") {
+        if let Ok(output) = std::process::Command::new(&rocminfo_path).output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
