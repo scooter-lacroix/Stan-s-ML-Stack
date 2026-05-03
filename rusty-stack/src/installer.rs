@@ -4796,4 +4796,163 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             "Should have captured second line of output"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // fix-textgen-git-clone-args: sudo wrapping only when sudo_pw is Some
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_no_sudo_wrap_when_password_is_none() {
+        // Verify that when sudo_pw is None, the command is NOT wrapped with sudo.
+        // This is the core fix for the textgen git clone failure where git received
+        // empty arguments due to the sudo wrapper inserting "--" separator.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = NativeCommand::Shell {
+            program: "echo".to_string(),
+            args: vec!["hello".to_string()],
+            env: vec![],
+        };
+        let result = execute_native_command(&cmd, None, &tx, "test-component");
+        assert!(result.is_ok(), "Should succeed without sudo: {:?}", result);
+
+        drop(tx);
+        let events: Vec<_> = rx.try_iter().collect();
+        let log_messages: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                InstallerEvent::Log(msg, _) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // The logged command should NOT contain "sudo" since we passed None
+        let cmd_log = log_messages
+            .iter()
+            .find(|m| m.contains("[native] $"));
+        assert!(cmd_log.is_some(), "Should have logged the command");
+        let cmd_log = cmd_log.unwrap();
+        assert!(
+            !cmd_log.contains("sudo"),
+            "Command should NOT be wrapped with sudo when sudo_pw is None, got: {}",
+            cmd_log
+        );
+        assert!(
+            cmd_log.contains("echo hello"),
+            "Command should be 'echo hello', got: {}",
+            cmd_log
+        );
+    }
+
+    #[test]
+    fn test_sudo_wrap_when_password_is_some() {
+        // Verify that when sudo_pw is Some, the command IS wrapped with sudo.
+        // We use a password value but run a command that doesn't actually need sudo
+        // (echo) to avoid actual privilege escalation in tests.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = NativeCommand::Shell {
+            program: "echo".to_string(),
+            args: vec!["hello".to_string()],
+            env: vec![],
+        };
+        // Pass a dummy password — echo doesn't need sudo but we test the wrapping
+        let _result = execute_native_command(&cmd, Some("dummy_pw"), &tx, "test-component");
+        // This may fail since sudo -S with a dummy password won't work, but we
+        // just want to verify the command was constructed with sudo
+        drop(tx);
+        let events: Vec<_> = rx.try_iter().collect();
+        let log_messages: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                InstallerEvent::Log(msg, _) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // The logged command SHOULD contain "sudo" since we passed Some
+        let has_sudo_log = log_messages.iter().any(|m| m.contains("Running with sudo"));
+        assert!(
+            has_sudo_log,
+            "Should have logged 'Running with sudo' when sudo_pw is Some"
+        );
+    }
+
+    #[test]
+    fn test_git_clone_without_sudo_works() {
+        // Simulate the exact textgen git clone scenario:
+        // git clone <URL> <dir> with sudo_pw = None
+        // This should execute "git --version" successfully (we use --version
+        // instead of clone to avoid actually cloning)
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd = NativeCommand::Shell {
+            program: "git".to_string(),
+            args: vec!["--version".to_string()],
+            env: vec![],
+        };
+        let result = execute_native_command(&cmd, None, &tx, "textgen");
+        assert!(
+            result.is_ok(),
+            "git --version should succeed without sudo wrapping: {:?}",
+            result
+        );
+
+        drop(tx);
+        let events: Vec<_> = rx.try_iter().collect();
+        let log_messages: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                InstallerEvent::Log(msg, _) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Verify git version output was captured
+        assert!(
+            log_messages.iter().any(|m| m.contains("git version")),
+            "Should have captured 'git version' output, got: {:?}",
+            log_messages
+        );
+
+        // Verify no sudo wrapping in the command log
+        let cmd_log = log_messages.iter().find(|m| m.contains("[native] $"));
+        assert!(cmd_log.is_some(), "Should have logged the command");
+        assert!(
+            !cmd_log.unwrap().contains("sudo"),
+            "git command should NOT be wrapped with sudo"
+        );
+    }
+
+    #[test]
+    fn test_textgen_git_clone_args_not_empty() {
+        // Verify that the textgen git clone command has proper args
+        // (not empty strings that would cause git to print usage)
+        use crate::installers::components::textgen::{TextgenConfig, TextgenInstaller};
+        let inst = TextgenInstaller::new(TextgenConfig {
+            install_dir: "/tmp/test-textgen".to_string(),
+            python_bin: "python3".to_string(),
+            dry_run: false,
+        });
+        let cmd = inst.build_git_clone_command();
+
+        // Verify no empty arguments
+        for (i, arg) in cmd.args.iter().enumerate() {
+            assert!(
+                !arg.is_empty(),
+                "Argument {} should not be empty in git clone command",
+                i
+            );
+        }
+
+        // Verify the command structure
+        assert_eq!(cmd.program, "git");
+        assert_eq!(cmd.args.len(), 3, "git clone should have 3 args: clone, URL, dir");
+        assert_eq!(cmd.args[0], "clone");
+        assert_eq!(cmd.args[1], "https://github.com/oobabooga/text-generation-webui.git");
+        assert_eq!(cmd.args[2], "/tmp/test-textgen");
+
+        // Verify no "--" separator in args (which would be from sudo wrapping)
+        assert!(
+            !cmd.args.contains(&"--".to_string()),
+            "git clone args should not contain '--' separator (from sudo wrapping)"
+        );
+    }
 }
