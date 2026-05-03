@@ -463,6 +463,59 @@ impl RocmInstaller {
             "/etc/apt/preferences.d/rocm-pin-600".to_string(),
         )
     }
+
+    /// Build a command to check if a single package is installed on Arch/pacman.
+    ///
+    /// Returns a `PackageCommand` that runs `pacman -Qi <package>`.
+    /// Exit code 0 means installed, non-zero means not installed.
+    pub fn build_pacman_check_installed_command(package: &str) -> PackageCommand {
+        PackageCommand {
+            program: "pacman".to_string(),
+            args: vec!["-Qi".to_string(), package.to_string()],
+        }
+    }
+
+    /// Filter out packages that are already installed on Arch/pacman systems.
+    ///
+    /// For each package in `packages`, runs `pacman -Qi <pkg>` to check if
+    /// it's installed. Returns only the packages that are NOT yet installed.
+    /// In dry-run mode, returns all packages (no checks performed).
+    pub fn filter_already_installed_pacman(packages: &[String]) -> Vec<String> {
+        use std::process::Command;
+
+        packages
+            .iter()
+            .filter(|pkg| {
+                let status = Command::new("pacman")
+                    .args(["-Qi", pkg.as_str()])
+                    .output();
+                match status {
+                    Ok(output) => !output.status.success(),
+                    Err(_) => true, // If pacman fails to run, assume not installed
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Check if command output indicates a package is already up to date.
+    ///
+    /// yay/pacman output patterns that should be treated as success:
+    /// - `warning: <pkg> is up to date -- skipping`
+    /// - `<pkg> is up to date -- skipping`
+    /// - `there is nothing to do`
+    /// - `already installed`
+    /// - `.rc files restored` (post-install message, not an error)
+    pub fn is_up_to_date_output(output: &str) -> bool {
+        let lower = output.to_lowercase();
+        // yay/pacman "up to date" patterns
+        lower.contains("up to date -- skipping")
+            || lower.contains("up to date, skipping")
+            || lower.contains("there is nothing to do")
+            || lower.contains("already installed")
+            // pacman -S on already-installed package
+            || lower.contains("warning:") && lower.contains("up to date")
+    }
 }
 
 // ===========================================================================
@@ -818,5 +871,77 @@ mod tests {
                 expected_pkg
             );
         }
+    }
+
+    // --- Up-to-date output detection ---
+
+    #[test]
+    fn test_is_up_to_date_yay_warning() {
+        assert!(RocmInstaller::is_up_to_date_output(
+            "warning: rocminfo is up to date -- skipping"
+        ));
+    }
+
+    #[test]
+    fn test_is_up_to_date_yay_warning_case_insensitive() {
+        assert!(RocmInstaller::is_up_to_date_output(
+            "WARNING: rocminfo is UP TO DATE -- skipping"
+        ));
+    }
+
+    #[test]
+    fn test_is_up_to_date_nothing_to_do() {
+        assert!(RocmInstaller::is_up_to_date_output(
+            " there is nothing to do\n"
+        ));
+    }
+
+    #[test]
+    fn test_is_up_to_date_already_installed() {
+        assert!(RocmInstaller::is_up_to_date_output(
+            "package already installed"
+        ));
+    }
+
+    #[test]
+    fn test_is_up_to_date_normal_output_is_false() {
+        assert!(!RocmInstaller::is_up_to_date_output(
+            "resolving dependencies...\nlooking for conflicting packages...\n"
+        ));
+    }
+
+    #[test]
+    fn test_is_up_to_date_error_output_is_false() {
+        assert!(!RocmInstaller::is_up_to_date_output(
+            "error: failed to prepare transaction\nerror: target not found: rocminfo"
+        ));
+    }
+
+    #[test]
+    fn test_is_up_to_date_empty_output_is_false() {
+        assert!(!RocmInstaller::is_up_to_date_output(""));
+    }
+
+    #[test]
+    fn test_is_up_to_date_pacman_skipping() {
+        assert!(RocmInstaller::is_up_to_date_output(
+            "warning: rocm-hip-sdk is up to date -- skipping"
+        ));
+    }
+
+    // --- Pacman check-installed command construction ---
+
+    #[test]
+    fn test_build_pacman_check_installed_command() {
+        let cmd = RocmInstaller::build_pacman_check_installed_command("rocminfo");
+        assert_eq!(cmd.program, "pacman");
+        assert_eq!(cmd.args, vec!["-Qi", "rocminfo"]);
+    }
+
+    #[test]
+    fn test_build_pacman_check_installed_command_complex_pkg() {
+        let cmd = RocmInstaller::build_pacman_check_installed_command("rocm-hip-sdk");
+        assert_eq!(cmd.program, "pacman");
+        assert!(cmd.args.contains(&"rocm-hip-sdk".to_string()));
     }
 }

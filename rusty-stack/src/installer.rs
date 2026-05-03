@@ -1733,6 +1733,22 @@ impl NativeCommand {
 /// - Checks exit status and returns `Err` on non-zero (VAL-INSTALL-036)
 ///
 /// # Validation Assertions
+/// Check if command output indicates a package is already up to date.
+///
+/// yay/pacman output patterns that should be treated as success even with
+/// non-zero exit codes:
+/// - `warning: <pkg> is up to date -- skipping`
+/// - `there is nothing to do`
+/// - `already installed`
+fn is_up_to_date_output(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("up to date -- skipping")
+        || lower.contains("up to date, skipping")
+        || lower.contains("there is nothing to do")
+        || lower.contains("already installed")
+        || (lower.contains("warning:") && lower.contains("up to date"))
+}
+
 ///
 /// - **VAL-INSTALL-031**: No `Command::new("bash")` for native components
 /// - **VAL-INSTALL-033**: sudo behavior preserved
@@ -1838,6 +1854,7 @@ fn execute_native_command(
     }
 
     // Stream stdout and stderr in separate threads (VAL-INSTALL-035)
+    // Also capture combined output for up-to-date pattern detection.
     let sender_stdout = sender.clone();
     let stdout_stream = match child.stdout.take() {
         Some(s) => s,
@@ -1856,6 +1873,8 @@ fn execute_native_command(
             );
         }
     };
+    let stdout_captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let stdout_captured_clone = stdout_captured.clone();
     let stdout_handle = thread::spawn(move || {
         let reader = BufReader::new(stdout_stream);
         for line in reader.lines() {
@@ -1863,7 +1882,11 @@ fn execute_native_command(
                 Ok(l) => {
                     let clean = strip_ansi_codes(&l);
                     if !clean.trim().is_empty() {
-                        let _ = sender_stdout.send(InstallerEvent::Log(clean, false));
+                        let _ = sender_stdout.send(InstallerEvent::Log(clean.clone(), false));
+                        if let Ok(mut buf) = stdout_captured_clone.lock() {
+                            buf.push_str(&clean);
+                            buf.push('\n');
+                        }
                     }
                 }
                 Err(_) => break,
@@ -1889,6 +1912,8 @@ fn execute_native_command(
             );
         }
     };
+    let stderr_captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let stderr_captured_clone = stderr_captured.clone();
     let stderr_handle = thread::spawn(move || {
         let reader = BufReader::new(stderr_stream);
         for line in reader.lines() {
@@ -1896,7 +1921,11 @@ fn execute_native_command(
                 Ok(l) => {
                     let clean = strip_ansi_codes(&l);
                     if !clean.trim().is_empty() {
-                        let _ = sender_stderr.send(InstallerEvent::Log(clean, false));
+                        let _ = sender_stderr.send(InstallerEvent::Log(clean.clone(), false));
+                        if let Ok(mut buf) = stderr_captured_clone.lock() {
+                            buf.push_str(&clean);
+                            buf.push('\n');
+                        }
                     }
                 }
                 Err(_) => break,
@@ -1916,6 +1945,27 @@ fn execute_native_command(
     let _ = stderr_handle.join();
 
     if !status.success() {
+        // Check if the output indicates the package is already up to date.
+        // yay/pacman may return non-zero exit codes for warnings like
+        // "warning: rocminfo is up to date -- skipping" which should be
+        // treated as success, not failure.
+        let combined_output = {
+            let stdout_buf = stdout_captured.lock().unwrap_or_else(|e| e.into_inner());
+            let stderr_buf = stderr_captured.lock().unwrap_or_else(|e| e.into_inner());
+            format!("{}{}", *stdout_buf, *stderr_buf)
+        };
+
+        if is_up_to_date_output(&combined_output) {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] {} — package already up to date, treating as success",
+                    component_name
+                ),
+                false,
+            ));
+            return Ok(());
+        }
+
         let code = status.code().unwrap_or(-1);
         let error_detail = match code {
             1 => "General error — check the command output above for details".to_string(),
@@ -2132,7 +2182,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
         // ── rocm ──────────────────────────────────────────────────────
         "rocm" => {
-            use crate::installers::components::rocm::{RocmConfig, RocmInstaller};
+            use crate::installers::components::rocm::{PackageCommand, RocmConfig, RocmInstaller};
             let inst = RocmInstaller::new(RocmConfig::default());
             let distro = crate::installers::common::DistroFacade::detect();
             let commands = if distro.uses_apt() {
@@ -2143,7 +2193,50 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             } else if distro.uses_zypper() {
                 inst.zypper_install_commands()
             } else {
-                inst.pacman_install_commands("yay")
+                // Arch/pacman: pre-check already-installed packages to avoid
+                // unnecessary yay/pacman invocations that trigger warnings.
+                let all_pkgs = inst.pacman_rocm_packages();
+                let need_install = RocmInstaller::filter_already_installed_pacman(&all_pkgs);
+
+                if need_install.is_empty() {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — all ROCm packages already installed, skipping",
+                            component.name
+                        ),
+                        false,
+                    ));
+                    // Return early — nothing to install
+                    return Ok(());
+                }
+
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] {} — {} of {} packages need installation: {}",
+                        component.name,
+                        need_install.len(),
+                        all_pkgs.len(),
+                        need_install.join(", ")
+                    ),
+                    false,
+                ));
+
+                // Build a minimal pacman command with only the packages that
+                // actually need installation.
+                let aur_helper = "yay";
+                let mut args = vec!["-S".to_string(), "--noconfirm".to_string()];
+                args.extend(need_install);
+
+                vec![
+                    PackageCommand {
+                        program: "sudo".to_string(),
+                        args: vec![aur_helper.to_string()],
+                    },
+                    PackageCommand {
+                        program: aur_helper.to_string(),
+                        args,
+                    },
+                ]
             };
             for pkg_cmd in &commands {
                 let native_cmd = NativeCommand::Package {
