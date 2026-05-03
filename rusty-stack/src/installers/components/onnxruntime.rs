@@ -296,6 +296,7 @@ impl OnnxRuntimeInstaller {
                 "CMAKE_HIP_ARCHITECTURES={}",
                 hip_archs.cmake_hip_architectures()
             ),
+            "CMAKE_CXX_STANDARD=20".to_string(),
             "onnxruntime_USE_EXTERNAL_ABSEIL=OFF".to_string(),
             "CMAKE_DISABLE_FIND_PACKAGE_re2=ON".to_string(),
             "CMAKE_FIND_PACKAGE_NO_PACKAGE_REGISTRY=ON".to_string(),
@@ -332,6 +333,7 @@ impl OnnxRuntimeInstaller {
             ("HIP_PATH".to_string(), rocm_path),
             ("PYTHONPATH".to_string(), String::new()),
             ("CMAKE_PREFIX_PATH".to_string(), "/opt/rocm".to_string()),
+            ("CMAKE_CXX_STANDARD".to_string(), "20".to_string()),
             (
                 "CMAKE_FIND_PACKAGE_NO_PACKAGE_REGISTRY".to_string(),
                 "ON".to_string(),
@@ -530,6 +532,62 @@ mod tests {
             .args
             .iter()
             .any(|a| a.contains("CMAKE_POLICY_VERSION_MINIMUM=3.5")));
+    }
+
+    // --- C++20 standard fix (fix-onnx-cmake-cxx20) ---
+
+    #[test]
+    fn test_build_command_includes_cmake_cxx_standard_20() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
+        let cmd = installer.build_build_command(&rocm_env);
+
+        // The cmake command must include CMAKE_CXX_STANDARD=20 to fix
+        // C++20 standard library test failures during cmake configuration.
+        assert!(
+            cmd.args
+                .iter()
+                .any(|a| a.contains("CMAKE_CXX_STANDARD=20")),
+            "build command must include CMAKE_CXX_STANDARD=20 cmake extra define, got args: {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn test_build_command_cmake_cxx_standard_is_cmake_extra_define() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
+        let cmd = installer.build_build_command(&rocm_env);
+
+        // Find the CMAKE_CXX_STANDARD=20 arg and verify it's preceded by --cmake_extra_defines
+        let define_idx = cmd
+            .args
+            .iter()
+            .position(|a| a.contains("CMAKE_CXX_STANDARD=20"));
+        assert!(define_idx.is_some(), "CMAKE_CXX_STANDARD=20 not found in args");
+
+        let idx = define_idx.unwrap();
+        assert!(
+            idx > 0 && cmd.args[idx - 1] == "--cmake_extra_defines",
+            "CMAKE_CXX_STANDARD=20 must be preceded by --cmake_extra_defines"
+        );
+    }
+
+    #[test]
+    fn test_build_command_cmake_cxx_standard_env_var() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
+        let cmd = installer.build_build_command(&rocm_env);
+
+        // The CXX standard should also be set as an environment variable for
+        // cmake to pick up during the C++20 standard library test.
+        assert!(
+            cmd.env
+                .iter()
+                .any(|(k, v)| k == "CMAKE_CXX_STANDARD" && v == "20"),
+            "build command env must include CMAKE_CXX_STANDARD=20, got env: {:?}",
+            cmd.env
+        );
     }
 
     #[test]
