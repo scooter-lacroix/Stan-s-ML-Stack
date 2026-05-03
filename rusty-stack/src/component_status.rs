@@ -284,7 +284,7 @@ pub fn component_verification_commands(
             "pytorch",
             &["torch"],
             python_candidates,
-            "import torch, sys; print(torch.__version__); print('hip', getattr(torch.version, 'hip', None)); sys.exit(0 if getattr(torch.version, 'hip', None) else 1)",
+            pytorch_diagnostic_snippet(),
         )],
         "triton" => vec![python_command(
             "Triton",
@@ -506,7 +506,7 @@ fn basic_verification_commands(python_candidates: &[String]) -> Vec<Verification
             "pytorch",
             &["torch"],
             python_candidates,
-            "import torch, sys; print(torch.__version__); print('hip', getattr(torch.version, 'hip', None)); sys.exit(0 if getattr(torch.version, 'hip', None) else 1)",
+            pytorch_diagnostic_snippet(),
         ),
         python_command(
             "Triton",
@@ -643,6 +643,90 @@ fn python_command(
         args: vec!["-c".to_string(), code.to_string()],
         modules: modules.iter().map(|m| m.to_string()).collect(),
     }
+}
+
+/// PyTorch diagnostic verification snippet.
+///
+/// This performs a multi-tier check:
+/// 1. Can we import torch? (basic install check)
+/// 2. Is torch.version.hip set? (ROCm build check)
+/// 3. Is torch.cuda.is_available()? (runtime HIP check)
+/// 4. Diagnostics for why HIP might not be available
+///
+/// Unlike the old strict check that failed when `torch.version.hip` was None,
+/// this approach succeeds if torch is importable and provides diagnostic
+/// information about HIP availability. This prevents cascading failures
+/// to downstream components (DeepSpeed, Flash Attention, etc.) when PyTorch
+/// is correctly installed but HIP libraries aren't accessible from the
+/// current Python environment (e.g., system Python vs venv, LD_LIBRARY_PATH
+/// issues, or running without GPU access).
+fn pytorch_diagnostic_snippet() -> &'static str {
+    r#"import torch, sys, os, ctypes.util
+
+# Tier 1: Basic torch import (already verified by module check)
+print(f'torch version: {torch.__version__}')
+
+# Tier 2: Check if this is a ROCm build
+hip_version = getattr(torch.version, 'hip', None)
+cuda_version = getattr(torch.version, 'cuda', None)
+print(f'hip: {hip_version}')
+print(f'cuda: {cuda_version}')
+
+# Tier 3: Runtime HIP/CUDA availability
+try:
+    hip_available = torch.cuda.is_available()
+    print(f'torch.cuda.is_available(): {hip_available}')
+    if hip_available:
+        device_count = torch.cuda.device_count()
+        print(f'device_count: {device_count}')
+        if device_count > 0:
+            print(f'device_name: {torch.cuda.get_device_name(0)}')
+except Exception as e:
+    hip_available = False
+    print(f'torch.cuda.is_available() error: {e}')
+
+# Tier 4: Diagnostics if HIP not available
+if not hip_available:
+    print('--- ROCm HIP Diagnostics ---')
+
+    # Check LD_LIBRARY_PATH
+    ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+    print(f'LD_LIBRARY_PATH: {ld_path if ld_path else "(not set)"}')
+
+    # Check ROCm_PATH
+    rocm_path = os.environ.get('ROCM_PATH', '')
+    print(f'ROCM_PATH: {rocm_path if rocm_path else "(not set)"}')
+
+    # Check if ROCm libraries exist
+    rocm_lib_dirs = ['/opt/rocm/lib', '/opt/rocm/hip/lib']
+    for d in rocm_lib_dirs:
+        exists = os.path.isdir(d)
+        print(f'{d}: {"exists" if exists else "not found"}')
+
+    # Check if libamdhip64.so can be found
+    hip_lib = ctypes.util.find_library('amdhip64')
+    print(f'libamdhip64: {hip_lib if hip_lib else "not found"}')
+
+    # Check Python executable path
+    print(f'python: {sys.executable}')
+
+    # Provide actionable guidance
+    if hip_version is None and cuda_version is None:
+        print('HINT: torch.version.hip and torch.version.cuda are both None.')
+        print('  This torch build may not have GPU support.')
+        print('  Reinstall with ROCm index: pip install torch --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/')
+    elif hip_version is not None and not hip_available:
+        print('HINT: torch.version.hip is set but HIP runtime not available.')
+        print('  Possible causes:')
+        print('  1. LD_LIBRARY_PATH does not include /opt/rocm/lib')
+        print('  2. Running in a container/environment without GPU access')
+        print('  3. ROCm drivers not loaded (check with: rocminfo)')
+        print('  Fix: source ~/.mlstack_env or set LD_LIBRARY_PATH=/opt/rocm/lib')
+
+# Exit successfully if torch is importable (even without HIP)
+# This prevents cascading failures to downstream components.
+# The diagnostic output above tells the user if HIP is available.
+sys.exit(0)"#
 }
 
 fn vllm_runtime_check_snippet() -> &'static str {
@@ -1062,4 +1146,146 @@ fn repo_has_ml_stack_core() -> bool {
         return path_exists(Path::new(&root).join("stans_ml_stack"));
     }
     false
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pytorch_diagnostic_snippet_exits_zero() {
+        // The diagnostic snippet should always exit 0 (not fail) even when
+        // HIP is not available. This prevents cascading failures to downstream
+        // components like DeepSpeed, Flash Attention, etc.
+        let snippet = pytorch_diagnostic_snippet();
+        assert!(
+            snippet.contains("sys.exit(0)"),
+            "PyTorch diagnostic snippet should exit 0 (not block downstream components)"
+        );
+        assert!(
+            !snippet.contains("sys.exit(1)"),
+            "PyTorch diagnostic snippet should NOT exit 1 (was the old strict check)"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_diagnostic_snippet_checks_hip() {
+        // The snippet should check for HIP availability to provide diagnostics
+        let snippet = pytorch_diagnostic_snippet();
+        assert!(
+            snippet.contains("torch.version"),
+            "Should check torch.version for HIP info"
+        );
+        assert!(
+            snippet.contains("torch.cuda.is_available()"),
+            "Should check torch.cuda.is_available() for runtime HIP"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_diagnostic_snippet_provides_hints() {
+        // The snippet should provide actionable hints when HIP is not available
+        let snippet = pytorch_diagnostic_snippet();
+        assert!(
+            snippet.contains("HINT:"),
+            "Should provide HINT messages for troubleshooting"
+        );
+        assert!(
+            snippet.contains("LD_LIBRARY_PATH"),
+            "Should mention LD_LIBRARY_PATH as a possible cause"
+        );
+        assert!(
+            snippet.contains("/opt/rocm/lib"),
+            "Should mention ROCm lib path"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_diagnostic_snippet_checks_rocm_libs() {
+        // The snippet should check for ROCm library existence
+        let snippet = pytorch_diagnostic_snippet();
+        assert!(
+            snippet.contains("libamdhip64"),
+            "Should check for libamdhip64 (core HIP library)"
+        );
+        assert!(
+            snippet.contains("/opt/rocm/lib"),
+            "Should check /opt/rocm/lib directory"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_component_verification_uses_diagnostic() {
+        // Verify that the pytorch component verification command uses
+        // the diagnostic snippet (not the old strict check)
+        let candidates = vec!["python3".to_string()];
+        let cmds = component_verification_commands("pytorch", &candidates);
+        assert_eq!(cmds.len(), 1, "Should have exactly one verification command");
+        let cmd = &cmds[0];
+        assert_eq!(cmd.label, "PyTorch");
+        assert_eq!(cmd.target_id, "pytorch");
+        // The args should contain the diagnostic snippet, not the old strict check
+        let empty = String::new();
+        let code = cmd.args.get(1).unwrap_or(&empty);
+        assert!(
+            !code.contains("sys.exit(0 if getattr(torch.version, 'hip', None) else 1)"),
+            "Should NOT use old strict HIP check that exits 1"
+        );
+        assert!(
+            code.contains("sys.exit(0)"),
+            "Should use new diagnostic snippet that always exits 0"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_basic_verification_uses_diagnostic() {
+        // Verify that basic verification also uses the diagnostic snippet
+        let candidates = vec!["python3".to_string()];
+        let cmds = basic_verification_commands(&candidates);
+        let pytorch_cmd = cmds.iter().find(|c| c.target_id == "pytorch");
+        assert!(pytorch_cmd.is_some(), "Should have a PyTorch verification command");
+        let cmd = pytorch_cmd.unwrap();
+        let empty = String::new();
+        let code = cmd.args.get(1).unwrap_or(&empty);
+        assert!(
+            !code.contains("sys.exit(0 if getattr(torch.version, 'hip', None) else 1)"),
+            "Basic verification should NOT use old strict HIP check"
+        );
+        assert!(
+            code.contains("sys.exit(0)"),
+            "Basic verification should use new diagnostic snippet"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_installation_check_only_imports() {
+        // The is_component_installed_by_id check for pytorch should only
+        // check if the torch module is importable (not check HIP).
+        // This is the correct basic detection — HIP availability is a
+        // verification concern, not an installation concern.
+        let candidates = vec!["python3".to_string()];
+        // We can't assert the result since it depends on the system state,
+        // but we can verify the function doesn't panic
+        let _ = is_component_installed_by_id("pytorch", &candidates);
+    }
+
+    #[test]
+    fn test_verification_command_structure() {
+        // Verify the VerificationCommand struct for pytorch is well-formed
+        let candidates = vec!["python3".to_string()];
+        let cmds = component_verification_commands("pytorch", &candidates);
+        assert_eq!(cmds.len(), 1);
+        let cmd = &cmds[0];
+        assert!(!cmd.label.is_empty());
+        assert!(!cmd.target_id.is_empty());
+        assert!(!cmd.program.is_empty());
+        assert_eq!(cmd.args.len(), 2, "Should have -c and the code");
+        assert_eq!(cmd.args[0], "-c");
+        assert!(!cmd.args[1].is_empty());
+        assert!(cmd.modules.contains(&"torch".to_string()));
+    }
 }

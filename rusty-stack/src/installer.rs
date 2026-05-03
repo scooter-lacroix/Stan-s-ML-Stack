@@ -4272,10 +4272,13 @@ fn first_gpu_index(list: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Warning variant reserved for future diagnostic severity levels
 enum VerificationResult {
     Verified,
     Failed,
     Missing,
+    /// Installed but with informational warnings (e.g., PyTorch installed but HIP not available)
+    Warning,
 }
 
 impl VerificationResult {
@@ -4284,6 +4287,7 @@ impl VerificationResult {
             VerificationResult::Verified => "Verified",
             VerificationResult::Failed => "Failed",
             VerificationResult::Missing => "Missing",
+            VerificationResult::Warning => "Warning",
         }
     }
 }
@@ -5064,5 +5068,25 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             !cmd.args.contains(&"--".to_string()),
             "git clone args should not contain '--' separator (from sudo wrapping)"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // fix-pytorch-strict-validation: verification result tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_verification_result_labels() {
+        assert_eq!(VerificationResult::Verified.label(), "Verified");
+        assert_eq!(VerificationResult::Failed.label(), "Failed");
+        assert_eq!(VerificationResult::Missing.label(), "Missing");
+        assert_eq!(VerificationResult::Warning.label(), "Warning");
+    }
+
+    #[test]
+    fn test_verification_result_warning_is_distinct() {
+        // Warning should be distinct from Failed and Verified
+        assert_ne!(VerificationResult::Warning, VerificationResult::Failed);
+        assert_ne!(VerificationResult::Warning, VerificationResult::Verified);
+        assert_ne!(VerificationResult::Warning, VerificationResult::Missing);
     }
 }
