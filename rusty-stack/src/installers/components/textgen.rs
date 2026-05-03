@@ -53,8 +53,12 @@ impl ShellCommand {
 pub struct TextgenConfig {
     /// Target installation directory.
     pub install_dir: String,
-    /// Python binary to use.
+    /// Python binary to use (resolved from MLSTACK_PYTHON_BIN or platform detection).
     pub python_bin: String,
+    /// Whether to use `uv pip` instead of `python -m pip`.
+    pub use_uv: bool,
+    /// Whether to add `--break-system-packages` for global pip installs.
+    pub break_system_packages: bool,
     /// Whether to run in dry-run mode.
     pub dry_run: bool,
 }
@@ -63,10 +67,40 @@ impl Default for TextgenConfig {
     fn default() -> Self {
         Self {
             install_dir: default_install_dir(),
-            python_bin: "python3".to_string(),
+            python_bin: resolve_python_bin(),
+            use_uv: command_exists("uv"),
+            break_system_packages: true,
             dry_run: false,
         }
     }
+}
+
+/// Resolve the Python binary from ML Stack context.
+///
+/// Priority:
+/// 1. `MLSTACK_PYTHON_BIN` env var
+/// 2. `UV_PYTHON` env var
+/// 3. Platform environment detection (venvs, conda, system)
+/// 4. Fallback to `python3`
+fn resolve_python_bin() -> String {
+    // Priority 1 & 2: ML Stack configured Python
+    for key in ["MLSTACK_PYTHON_BIN", "UV_PYTHON"] {
+        if let Ok(val) = std::env::var(key) {
+            let val = val.trim().to_string();
+            if !val.is_empty() {
+                return val;
+            }
+        }
+    }
+
+    // Priority 3: Platform environment detection
+    let interpreters = crate::platform::environment::python_interpreters();
+    if let Some(python) = interpreters.first() {
+        return python.to_string_lossy().to_string();
+    }
+
+    // Priority 4: Fallback
+    "python3".to_string()
 }
 
 /// text-generation-webui Git repository URL.
@@ -245,32 +279,63 @@ impl TextgenInstaller {
     ///
     /// The original script filters requirements.txt excluding nvidia/CUDA packages:
     /// `grep -v -E '^(nvidia-|cuda|tensorrt|triton([=<>!\[]|$)|xformers|flash-attn|torch([=<>! ]|$)|torchvision|torchaudio)'`
+    ///
+    /// Uses `uv pip install` when `use_uv` is true, otherwise `python -m pip install`.
+    /// Adds `--break-system-packages` for global installs when `break_system_packages` is true.
     pub fn build_pip_install_command(&self, requirements_path: &str) -> ShellCommand {
+        let (program, mut args) = self.build_pip_prefix();
+        args.push("-r".to_string());
+        args.push(requirements_path.to_string());
+
         ShellCommand {
-            program: self.config.python_bin.clone(),
-            args: vec![
-                "-m".to_string(),
-                "pip".to_string(),
-                "install".to_string(),
-                "-r".to_string(),
-                requirements_path.to_string(),
-            ],
+            program,
+            args,
             env: vec![],
         }
     }
 
     /// Construct the pip install command for AMD-specific requirements.
+    ///
+    /// Uses `uv pip install` when `use_uv` is true, otherwise `python -m pip install`.
+    /// Adds `--break-system-packages` for global installs when `break_system_packages` is true.
     pub fn build_amd_requirements_command(&self, amd_req_path: &str) -> ShellCommand {
+        let (program, mut args) = self.build_pip_prefix();
+        args.push("-r".to_string());
+        args.push(amd_req_path.to_string());
+
         ShellCommand {
-            program: self.config.python_bin.clone(),
-            args: vec![
+            program,
+            args,
+            env: vec![],
+        }
+    }
+
+    /// Build the pip install prefix (program + base args).
+    ///
+    /// Returns `(program, args)` ready for additional arguments to be appended.
+    fn build_pip_prefix(&self) -> (String, Vec<String>) {
+        if self.config.use_uv {
+            let mut args = vec![
+                "uv".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+            ];
+            // uv pip: respect UV_PYTHON env var or pass --python
+            if std::env::var("UV_PYTHON").is_err() {
+                args.push("--python".to_string());
+                args.push(self.config.python_bin.clone());
+            }
+            (String::new(), args)
+        } else {
+            let mut args = vec![
                 "-m".to_string(),
                 "pip".to_string(),
                 "install".to_string(),
-                "-r".to_string(),
-                amd_req_path.to_string(),
-            ],
-            env: vec![],
+            ];
+            if self.config.break_system_packages {
+                args.push("--break-system-packages".to_string());
+            }
+            (self.config.python_bin.clone(), args)
         }
     }
 
@@ -346,6 +411,28 @@ mod tests {
         TextgenInstaller::new(TextgenConfig {
             install_dir: dir.to_string(),
             python_bin: "python3".to_string(),
+            use_uv: false,
+            break_system_packages: true,
+            dry_run: false,
+        })
+    }
+
+    fn make_installer_with_python(dir: &str, python_bin: &str) -> TextgenInstaller {
+        TextgenInstaller::new(TextgenConfig {
+            install_dir: dir.to_string(),
+            python_bin: python_bin.to_string(),
+            use_uv: false,
+            break_system_packages: true,
+            dry_run: false,
+        })
+    }
+
+    fn make_installer_uv(dir: &str) -> TextgenInstaller {
+        TextgenInstaller::new(TextgenConfig {
+            install_dir: dir.to_string(),
+            python_bin: "python3".to_string(),
+            use_uv: true,
+            break_system_packages: true,
             dry_run: false,
         })
     }
@@ -420,6 +507,111 @@ mod tests {
     }
 
     #[test]
+    fn test_pip_install_command_uses_configured_python() {
+        let installer = make_installer_with_python(
+            "/home/user/text-generation-webui",
+            "/home/user/rocm_venv/bin/python",
+        );
+        let cmd = installer.build_pip_install_command("/tmp/filtered_reqs.txt");
+        assert_eq!(
+            cmd.program, "/home/user/rocm_venv/bin/python",
+            "Pip install must use configured Python interpreter, not bare 'python3'"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_command_includes_break_system_packages() {
+        let installer = make_installer("/home/user/text-generation-webui");
+        let cmd = installer.build_pip_install_command("/tmp/filtered_reqs.txt");
+        assert!(
+            cmd.args.contains(&"--break-system-packages".to_string()),
+            "Global pip install must include --break-system-packages for PEP 668 compatibility"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_command_no_break_system_packages_when_disabled() {
+        let installer = TextgenInstaller::new(TextgenConfig {
+            install_dir: "/home/user/text-generation-webui".to_string(),
+            python_bin: "python3".to_string(),
+            use_uv: false,
+            break_system_packages: false,
+            dry_run: false,
+        });
+        let cmd = installer.build_pip_install_command("/tmp/filtered_reqs.txt");
+        assert!(
+            !cmd.args.contains(&"--break-system-packages".to_string()),
+            "Venv pip install should NOT include --break-system-packages"
+        );
+    }
+
+    #[test]
+    fn test_pip_install_command_uses_uv_when_available() {
+        let installer = make_installer_uv("/home/user/text-generation-webui");
+        let cmd = installer.build_pip_install_command("/tmp/filtered_reqs.txt");
+        // When use_uv is true, the program should be empty and args start with "uv"
+        // because build_pip_prefix returns ("", ["uv", "pip", "install", ...])
+        assert!(
+            cmd.args.first().map(|s| s == "uv").unwrap_or(false),
+            "When use_uv is true, args must start with 'uv'"
+        );
+        assert!(
+            !cmd.args.contains(&"--break-system-packages".to_string()),
+            "uv pip does not need --break-system-packages"
+        );
+    }
+
+    #[test]
+    fn test_amd_requirements_command_uses_configured_python() {
+        let installer = make_installer_with_python(
+            "/home/user/text-generation-webui",
+            "/home/user/rocm_venv/bin/python",
+        );
+        let cmd = installer.build_amd_requirements_command(
+            "/home/user/text-generation-webui/requirements_amd.txt",
+        );
+        assert_eq!(
+            cmd.program, "/home/user/rocm_venv/bin/python",
+            "AMD requirements command must use configured Python interpreter"
+        );
+    }
+
+    #[test]
+    fn test_amd_requirements_command_includes_break_system_packages() {
+        let installer = make_installer("/home/user/text-generation-webui");
+        let cmd = installer.build_amd_requirements_command(
+            "/home/user/text-generation-webui/requirements_amd.txt",
+        );
+        assert!(
+            cmd.args.contains(&"--break-system-packages".to_string()),
+            "Global pip install must include --break-system-packages for AMD requirements"
+        );
+    }
+
+    #[test]
+    fn test_default_config_detects_python_from_env() {
+        // The default config should resolve python from MLSTACK_PYTHON_BIN or platform detection
+        let config = TextgenConfig::default();
+        assert!(
+            !config.python_bin.is_empty(),
+            "Default python_bin must not be empty"
+        );
+        // It should NOT be bare "python3" when MLSTACK_PYTHON_BIN is set
+        // (unless that's what MLSTACK_PYTHON_BIN says)
+    }
+
+    #[test]
+    fn test_default_config_detects_uv() {
+        let config = TextgenConfig::default();
+        // Should match whether uv is available
+        let uv_available = command_exists("uv");
+        assert_eq!(
+            config.use_uv, uv_available,
+            "Default use_uv should match uv availability"
+        );
+    }
+
+    #[test]
     fn test_requirements_filter_excludes_nvidia_cuda() {
         let pattern = TextgenInstaller::requirements_filter_pattern();
         assert!(pattern.contains("nvidia-"));
@@ -474,6 +666,19 @@ mod tests {
         assert!(content.contains("/home/user/text-generation-webui"));
         assert!(content.contains("HIP_VISIBLE_DEVICES=0,1"));
         assert!(content.contains("python3 server.py --chat"));
+    }
+
+    #[test]
+    fn test_launcher_content_uses_configured_python() {
+        let installer = make_installer_with_python(
+            "/home/user/text-generation-webui",
+            "/home/user/rocm_venv/bin/python",
+        );
+        let content = installer.build_launcher_content("0,1");
+        assert!(
+            content.contains("/home/user/rocm_venv/bin/python server.py --chat"),
+            "Launcher must use configured Python interpreter"
+        );
     }
 
     #[test]

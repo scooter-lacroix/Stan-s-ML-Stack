@@ -2609,7 +2609,19 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── textgen ───────────────────────────────────────────────────
         "textgen" => {
             use crate::installers::components::textgen::{TextgenConfig, TextgenInstaller};
-            let inst = TextgenInstaller::new(TextgenConfig::default());
+            let textgen_python = ctx
+                .env_exports
+                .get("MLSTACK_PYTHON_BIN")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "python3".to_string());
+            let use_uv = crate::installers::common::utils::command_exists("uv");
+            let inst = TextgenInstaller::new(TextgenConfig {
+                python_bin: textgen_python.clone(),
+                use_uv,
+                break_system_packages: !use_uv,
+                ..Default::default()
+            });
 
             // Step 1: git clone
             let cmd = inst.build_git_clone_command();
@@ -4929,6 +4941,8 @@ Kernel Version:        6.12.63+deb13-rt-amd64
         let inst = TextgenInstaller::new(TextgenConfig {
             install_dir: "/tmp/test-textgen".to_string(),
             python_bin: "python3".to_string(),
+            use_uv: false,
+            break_system_packages: true,
             dry_run: false,
         });
         let cmd = inst.build_git_clone_command();
