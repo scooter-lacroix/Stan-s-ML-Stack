@@ -257,6 +257,7 @@ impl ComfyuiInstaller {
                 "-m".to_string(),
                 "pip".to_string(),
                 "install".to_string(),
+                "--break-system-packages".to_string(),
                 "-r".to_string(),
                 requirements_path.to_string(),
             ],

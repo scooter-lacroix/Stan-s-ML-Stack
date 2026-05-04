@@ -316,16 +316,19 @@ impl TextgenInstaller {
     fn build_pip_prefix(&self) -> (String, Vec<String>) {
         if self.config.use_uv {
             let mut args = vec![
-                "uv".to_string(),
                 "pip".to_string(),
                 "install".to_string(),
             ];
+            // For global installs, uv needs --system
+            if self.config.break_system_packages {
+                args.push("--system".to_string());
+            }
             // uv pip: respect UV_PYTHON env var or pass --python
             if std::env::var("UV_PYTHON").is_err() {
                 args.push("--python".to_string());
                 args.push(self.config.python_bin.clone());
             }
-            (String::new(), args)
+            ("uv".to_string(), args)
         } else {
             let mut args = vec![
                 "-m".to_string(),
@@ -549,11 +552,14 @@ mod tests {
     fn test_pip_install_command_uses_uv_when_available() {
         let installer = make_installer_uv("/home/user/text-generation-webui");
         let cmd = installer.build_pip_install_command("/tmp/filtered_reqs.txt");
-        // When use_uv is true, the program should be empty and args start with "uv"
-        // because build_pip_prefix returns ("", ["uv", "pip", "install", ...])
+        // When use_uv is true, the program is "uv" and args start with "pip"
+        assert_eq!(
+            cmd.program, "uv",
+            "When use_uv is true, program must be 'uv'"
+        );
         assert!(
-            cmd.args.first().map(|s| s == "uv").unwrap_or(false),
-            "When use_uv is true, args must start with 'uv'"
+            cmd.args.first().map(|s| s == "pip").unwrap_or(false),
+            "When use_uv is true, args must start with 'pip'"
         );
         assert!(
             !cmd.args.contains(&"--break-system-packages".to_string()),

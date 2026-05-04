@@ -271,10 +271,15 @@ impl PyTorchInstaller {
     ///
     /// The original script installs `torchsde` and `sentencepiece` after PyTorch.
     pub fn build_common_deps_command(&self, use_uv: bool) -> PipCommand {
+        let is_global = self.config.method == InstallMethod::Global
+            || self.config.method == InstallMethod::Auto;
         let mut args = Vec::new();
         if use_uv {
             args.push("pip".to_string());
             args.push("install".to_string());
+            if is_global {
+                args.push("--system".to_string());
+            }
         } else {
             args.push("-m".to_string());
             args.push("pip".to_string());

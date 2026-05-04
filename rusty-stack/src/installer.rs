@@ -1723,11 +1723,12 @@ struct NativeInstallerContext<'a> {
 /// (`ShellCommand`, `PipCommand`, `SystemCommand`, `PackageCommand`) into a
 /// single type for uniform execution.
 enum NativeCommand {
-    /// A shell command (program + args + env vars).
+    /// A shell command (program + args + env vars + optional working dir).
     Shell {
         program: String,
         args: Vec<String>,
         env: Vec<(String, String)>,
+        working_dir: Option<PathBuf>,
     },
     /// A pip/uv install command (program + args, no extra env).
     Pip { program: String, args: Vec<String> },
@@ -1746,6 +1747,22 @@ impl NativeCommand {
             program: program.to_string(),
             args: args.to_vec(),
             env: env.to_vec(),
+            working_dir: None,
+        }
+    }
+
+    /// Create a NativeCommand from a ShellCommand that has a working_dir.
+    fn from_shell_cmd_with_dir(
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+        working_dir: Option<PathBuf>,
+    ) -> Self {
+        NativeCommand::Shell {
+            program: program.to_string(),
+            args: args.to_vec(),
+            env: env.to_vec(),
+            working_dir,
         }
     }
 }
@@ -1789,11 +1806,19 @@ fn execute_native_command(
     sender: &Sender<InstallerEvent>,
     component_name: &str,
 ) -> Result<()> {
-    let (program, args, envs): (String, Vec<String>, Vec<(String, String)>) = match cmd {
-        NativeCommand::Shell { program, args, env } => (program.clone(), args.clone(), env.clone()),
-        NativeCommand::Pip { program, args } => (program.clone(), args.clone(), vec![]),
-        NativeCommand::System { program, args } => (program.clone(), args.clone(), vec![]),
-        NativeCommand::Package { program, args } => (program.clone(), args.clone(), vec![]),
+    let (program, args, envs, working_dir) = match cmd {
+        NativeCommand::Shell { program, args, env, working_dir } => {
+            (program.clone(), args.clone(), env.clone(), working_dir.clone())
+        }
+        NativeCommand::Pip { program, args } => {
+            (program.clone(), args.clone(), vec![], None)
+        }
+        NativeCommand::System { program, args } => {
+            (program.clone(), args.clone(), vec![], None)
+        }
+        NativeCommand::Package { program, args } => {
+            (program.clone(), args.clone(), vec![], None)
+        }
     };
 
     // Build the std::process::Command, wrapping with sudo if needed.
@@ -1825,6 +1850,11 @@ fn execute_native_command(
     // Inject environment variables (VAL-INSTALL-034)
     for (key, value) in &envs {
         command.env(key, value);
+    }
+
+    // Set working directory if specified (e.g., for pip install -e .)
+    if let Some(ref dir) = working_dir {
+        command.current_dir(dir);
     }
 
     // Set up stdio for streaming
@@ -2126,9 +2156,20 @@ fn build_common_env(ctx: &NativeInstallerContext) -> Vec<(String, String)> {
 
 /// Check if a directory exists and contains a `.git` subdirectory,
 /// indicating it is an existing git repository.
+///
+/// Uses `symlink_metadata` instead of `is_dir()` to handle root-owned
+/// directories that may not be readable by the current user under sudo.
 fn is_existing_git_repo(target_dir: &str) -> bool {
     let path = Path::new(target_dir);
-    path.is_dir() && path.join(".git").exists()
+    // Use symlink_metadata which doesn't follow symlinks and works
+    // even when the directory owner differs from the current user
+    match std::fs::symlink_metadata(target_dir) {
+        Ok(meta) if meta.is_dir() => {
+            // Also use symlink_metadata for .git check to handle permission edge cases
+            path.join(".git").symlink_metadata().map(|m| m.is_dir() || m.is_file()).unwrap_or(false)
+        }
+        _ => false,
+    }
 }
 
 /// Clone a git repository, or pull updates if the directory already exists.
@@ -2451,14 +2492,28 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: git checkout
-            let cmd = inst.build_git_checkout_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 2: git checkout (non-fatal — branch may not exist in all forks)
+            let checkout_cmd = inst.build_git_checkout_command();
+            let mut checkout_args = vec![
+                "-C".to_string(),
+                target_dir.clone(),
+            ];
+            checkout_args.extend(checkout_cmd.args.iter().cloned());
+            let checkout_result = execute_native_command(
+                &NativeCommand::from_shell_cmd(&checkout_cmd.program, &checkout_args, &checkout_cmd.env),
                 sudo_pw,
                 sender,
                 &component.name,
-            )?;
+            );
+            if let Err(err) = checkout_result {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] [WARN] {} git checkout failed (non-fatal): {}",
+                        component.name, err
+                    ),
+                    false,
+                ));
+            }
 
             // Step 3: prerequisites
             let cmd = inst.build_prerequisites_command();
@@ -2706,10 +2761,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: pip install
+            // Step 3: pip install (uses working_dir to run in the cloned Megatron-LM dir)
             let cmd = inst.build_pip_install_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env, cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -2832,14 +2889,23 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: Build frontend
+            // Step 3: Build frontend (non-fatal — build script may not exist yet)
             let cmd = inst.build_frontend_build_command(pkg_mgr);
-            execute_native_command(
+            let build_result = execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
                 None,
                 sender,
                 &component.name,
-            )?;
+            );
+            if let Err(err) = build_result {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] [WARN] {} frontend build failed (non-fatal): {}",
+                        component.name, err
+                    ),
+                    false,
+                ));
+            }
         }
 
         // ── comfyui ───────────────────────────────────────────────────
@@ -2940,11 +3006,15 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let inst = OnnxRuntimeInstaller::new(OnnxRuntimeConfig::default());
 
             // Step 1: git clone (idempotent — pulls if already exists)
-            let clone_cmd = inst.build_git_clone_command();
-            let onnx_target = clone_cmd.args.last().cloned().unwrap_or_default();
+            // ONNX Runtime's build_git_clone_command() does NOT include a target
+            // directory in args — it uses working_dir instead. Compute the actual
+            // clone target from the workdir + "onnxruntime" subdirectory.
+            let onnx_workdir = OnnxRuntimeConfig::default().workdir();
+            let onnx_target = onnx_workdir.join("onnxruntime");
+            let onnx_target_str = onnx_target.to_string_lossy().to_string();
             git_clone_or_pull(
                 "https://github.com/microsoft/onnxruntime.git",
-                &onnx_target,
+                &onnx_target_str,
                 &["--recursive"],
                 sudo_pw,
                 sender,
@@ -3043,14 +3113,23 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: package install
-            let cmd = inst.build_package_install_command(&distro);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+            // Step 2: package install (skip on Arch if rocm-smi already on PATH)
+            if !(distro.family() == crate::platform::detection::DistroFamily::Arch
+                && crate::installers::common::utils::command_exists("rocm-smi"))
+            {
+                let cmd = inst.build_package_install_command(&distro);
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    sudo_pw,
+                    sender,
+                    &component.name,
+                )?;
+            } else {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — rocm-smi already on PATH, skipping package install", component.name),
+                    false,
+                ));
+            }
 
             // Step 3: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
@@ -5098,6 +5177,7 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             program: "/nonexistent/program/that/does/not/exist".to_string(),
             args: vec![],
             env: vec![],
+            working_dir: None,
         };
         let result = execute_native_command(&cmd, None, &tx, "test-component");
         assert!(result.is_err(), "Should fail for non-existent program");
@@ -5121,6 +5201,7 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             program: "bash".to_string(),
             args: vec!["-c".to_string(), "echo test_output; exit 42".to_string()],
             env: vec![],
+            working_dir: None,
         };
         let result = execute_native_command(&cmd, None, &tx, "test-component");
         assert!(
@@ -5169,6 +5250,7 @@ Kernel Version:        6.12.63+deb13-rt-amd64
                 "echo 'hello world'; echo 'second line'".to_string(),
             ],
             env: vec![],
+            working_dir: None,
         };
         let result = execute_native_command(&cmd, None, &tx, "test-component");
         assert!(result.is_ok(), "Should succeed for zero exit code");
@@ -5206,6 +5288,7 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             program: "echo".to_string(),
             args: vec!["hello".to_string()],
             env: vec![],
+            working_dir: None,
         };
         let result = execute_native_command(&cmd, None, &tx, "test-component");
         assert!(result.is_ok(), "Should succeed without sudo: {:?}", result);
@@ -5248,6 +5331,7 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             program: "echo".to_string(),
             args: vec!["hello".to_string()],
             env: vec![],
+            working_dir: None,
         };
         // Pass a dummy password — echo doesn't need sudo but we test the wrapping
         let _result = execute_native_command(&cmd, Some("dummy_pw"), &tx, "test-component");
@@ -5282,6 +5366,7 @@ Kernel Version:        6.12.63+deb13-rt-amd64
             program: "git".to_string(),
             args: vec!["--version".to_string()],
             env: vec![],
+            working_dir: None,
         };
         let result = execute_native_command(&cmd, None, &tx, "textgen");
         assert!(
