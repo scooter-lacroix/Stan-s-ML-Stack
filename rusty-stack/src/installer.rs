@@ -2121,6 +2121,118 @@ fn build_common_env(ctx: &NativeInstallerContext) -> Vec<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------
+// Git clone idempotency helper (fix-git-clone-idempotency)
+// ---------------------------------------------------------------------------
+
+/// Check if a directory exists and contains a `.git` subdirectory,
+/// indicating it is an existing git repository.
+fn is_existing_git_repo(target_dir: &str) -> bool {
+    let path = Path::new(target_dir);
+    path.is_dir() && path.join(".git").exists()
+}
+
+/// Clone a git repository, or pull updates if the directory already exists.
+///
+/// This function makes git clone idempotent:
+/// - If `target_dir` does **not** exist (or has no `.git` subdirectory),
+///   it runs `git clone <extra_args> <repo_url> <target_dir>`.
+/// - If `target_dir` exists and contains a `.git` subdirectory, it runs
+///   `git -C <target_dir> pull --ff-only` to update. If that fails, it
+///   falls back to `git -C <target_dir> fetch --all` followed by
+///   `git -C <target_dir> reset --hard origin/HEAD`.
+///
+/// All commands are executed via `execute_native_command()`.
+fn git_clone_or_pull(
+    repo_url: &str,
+    target_dir: &str,
+    extra_clone_args: &[&str],
+    sudo_pw: Option<&str>,
+    sender: &Sender<InstallerEvent>,
+    component_name: &str,
+) -> Result<()> {
+    if is_existing_git_repo(target_dir) {
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} — directory '{}' already exists, pulling updates instead of cloning",
+                component_name, target_dir
+            ),
+            false,
+        ));
+
+        // Try fast-forward pull first
+        let pull_cmd = NativeCommand::from_shell_cmd(
+            "git",
+            &[
+                "-C".to_string(),
+                target_dir.to_string(),
+                "pull".to_string(),
+                "--ff-only".to_string(),
+            ],
+            &[],
+        );
+        let pull_result = execute_native_command(&pull_cmd, sudo_pw, sender, component_name);
+
+        if pull_result.is_ok() {
+            return Ok(());
+        }
+
+        // Pull failed — log warning and try fetch + reset
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} — git pull --ff-only failed, trying fetch + reset --hard origin/HEAD",
+                component_name
+            ),
+            false,
+        ));
+
+        let fetch_cmd = NativeCommand::from_shell_cmd(
+            "git",
+            &[
+                "-C".to_string(),
+                target_dir.to_string(),
+                "fetch".to_string(),
+                "--all".to_string(),
+            ],
+            &[],
+        );
+        execute_native_command(&fetch_cmd, sudo_pw, sender, component_name)?;
+
+        let reset_cmd = NativeCommand::from_shell_cmd(
+            "git",
+            &[
+                "-C".to_string(),
+                target_dir.to_string(),
+                "reset".to_string(),
+                "--hard".to_string(),
+                "origin/HEAD".to_string(),
+            ],
+            &[],
+        );
+        execute_native_command(&reset_cmd, sudo_pw, sender, component_name)?;
+
+        Ok(())
+    } else {
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} — cloning '{}' into '{}'",
+                component_name, repo_url, target_dir
+            ),
+            false,
+        ));
+
+        let mut args: Vec<String> = vec!["clone".to_string()];
+        for extra in extra_clone_args {
+            args.push(extra.to_string());
+        }
+        args.push(repo_url.to_string());
+        args.push(target_dir.to_string());
+
+        let clone_cmd = NativeCommand::from_shell_cmd("git", &args, &[]);
+        execute_native_command(&clone_cmd, sudo_pw, sender, component_name)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-component dispatch (VAL-INSTALL-032)
 // ---------------------------------------------------------------------------
 
@@ -2329,10 +2441,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let inst = TritonInstaller::new(TritonConfig::default());
             let target_dir = format!("{}/.mlstack/triton", ctx.user_home);
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            git_clone_or_pull(
+                inst.git_clone_url(),
+                &target_dir,
+                &[],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2494,10 +2607,14 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             };
             let inst = FlashAttentionInstaller::new(FlashAttentionConfig::default());
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            // Extract target dir from the clone command (last arg)
+            let clone_cmd = inst.build_git_clone_command();
+            let target_dir_str = clone_cmd.args.last().cloned().unwrap_or_default();
+            git_clone_or_pull(
+                "https://github.com/ROCmSoftwarePlatform/flash-attention.git",
+                &target_dir_str,
+                &[],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2577,10 +2694,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 )?;
             }
 
-            // Step 2: git clone
-            let cmd = inst.build_git_clone_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 2: git clone (idempotent — pulls if already exists)
+            let clone_cmd = inst.build_git_clone_command();
+            let clone_target_str = clone_cmd.args.last().cloned().unwrap_or_default();
+            git_clone_or_pull(
+                "https://github.com/NVIDIA/Megatron-LM.git",
+                &clone_target_str,
+                &[],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2626,10 +2746,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let inst = AiterInstaller::new(AiterConfig::default());
             let target_dir = format!("{}/.mlstack/aiter", ctx.user_home);
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            git_clone_or_pull(
+                inst.git_clone_url(),
+                &target_dir,
+                &["--recursive"],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2652,19 +2773,46 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
-        }
 
-        // ── vllm-studio ───────────────────────────────────────────────
+            // Step 4: Fix ownership of aiter directories if installed under sudo
+            // AITER's JIT compiler writes to ~/.aiter/jit which fails if root-owned
+            if component_needs_sudo {
+                let run_user = std::env::var("SUDO_USER")
+                    .or_else(|_| std::env::var("USER"))
+                    .unwrap_or_default();
+                if !run_user.is_empty() {
+                    let user_home = &ctx.user_home;
+                    for aiter_dir in [
+                        format!("{user_home}/.aiter"),
+                        target_dir.clone(),
+                    ] {
+                        let chown_cmd = NativeCommand::from_shell_cmd(
+                            "chown",
+                            &[
+                                "-R".to_string(),
+                                format!("{run_user}:{run_user}"),
+                                aiter_dir,
+                            ],
+                            &[],
+                        );
+                        let _ = execute_native_command(&chown_cmd, sudo_pw, sender, &component.name);
+                    }
+                }
+            }
+        }
         "vllm-studio" => {
             use crate::installers::components::vllm_studio::{
                 VllmStudioConfig, VllmStudioInstaller,
             };
             let inst = VllmStudioInstaller::new(VllmStudioConfig::default());
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            let clone_cmd = inst.build_git_clone_command();
+            let target_dir = clone_cmd.args.last().cloned().unwrap_or_default();
+            git_clone_or_pull(
+                inst.repo_url(),
+                &target_dir,
+                &[],
                 None,
                 sender,
                 &component.name,
@@ -2708,10 +2856,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: git clone
-            let cmd = inst.build_git_clone_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 2: git clone (idempotent — pulls if already exists)
+            let clone_cmd = inst.build_git_clone_command();
+            let target_dir = clone_cmd.args.last().cloned().unwrap_or_default();
+            git_clone_or_pull(
+                inst.repo_url(),
+                &target_dir,
+                &[],
                 None,
                 sender,
                 &component.name,
@@ -2745,10 +2896,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ..Default::default()
             });
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            let clone_cmd = inst.build_git_clone_command();
+            let target_dir = clone_cmd.args.last().cloned().unwrap_or_default();
+            git_clone_or_pull(
+                inst.repo_url(),
+                &target_dir,
+                &[],
                 None,
                 sender,
                 &component.name,
@@ -2785,10 +2939,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             };
             let inst = OnnxRuntimeInstaller::new(OnnxRuntimeConfig::default());
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            let clone_cmd = inst.build_git_clone_command();
+            let onnx_target = clone_cmd.args.last().cloned().unwrap_or_default();
+            git_clone_or_pull(
+                "https://github.com/microsoft/onnxruntime.git",
+                &onnx_target,
+                &["--recursive"],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2849,10 +3006,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let inst = BitsAndBytesInstaller::new(BitsAndBytesConfig::default());
             let target_dir = format!("{}/.mlstack/bitsandbytes", ctx.user_home);
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            git_clone_or_pull(
+                "https://github.com/ROCm/bitsandbytes.git",
+                &target_dir,
+                &["--recursive"],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2875,10 +3033,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let distro = crate::installers::common::DistroFacade::detect();
             let target_dir = format!("{}/.mlstack/rocm_smi", ctx.user_home);
 
-            // Step 1: git clone
-            let cmd = inst.build_git_clone_command(&target_dir);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+            // Step 1: git clone (idempotent — pulls if already exists)
+            git_clone_or_pull(
+                inst.git_clone_url(),
+                &target_dir,
+                &[],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -4535,6 +4694,81 @@ fn is_exception_or_traceback_line(lowercase_line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Git clone idempotency tests ──────────────────────────────────
+
+    #[test]
+    fn test_is_existing_git_repo_detects_git_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("my-repo");
+        fs::create_dir_all(repo_dir.join(".git")).unwrap();
+        assert!(is_existing_git_repo(repo_dir.to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_existing_git_repo_false_when_no_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain_dir = tmp.path().join("plain-dir");
+        fs::create_dir_all(&plain_dir).unwrap();
+        assert!(!is_existing_git_repo(plain_dir.to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_existing_git_repo_false_when_no_dir() {
+        assert!(!is_existing_git_repo("/nonexistent/path/that/does/not/exist"));
+    }
+
+    #[test]
+    fn test_git_clone_or_pull_clones_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("new-repo");
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        // This will fail (no network/repo) but we can verify it tries to clone
+        let result = git_clone_or_pull(
+            "https://github.com/nonexistent/repo.git",
+            target.to_str().unwrap(),
+            &[],
+            None,
+            &tx,
+            "test-component",
+        );
+        // Should have attempted clone (and failed with network error, which is fine)
+        assert!(result.is_err());
+        // Should have logged cloning intent
+        let mut found_clone_log = false;
+        while let Ok(event) = rx.try_recv() {
+            if let InstallerEvent::Log(msg, _) = event {
+                found_clone_log = found_clone_log || msg.contains("cloning");
+            }
+        }
+        assert!(found_clone_log, "Should log cloning intent");
+    }
+
+    #[test]
+    fn test_git_clone_or_pull_pulls_when_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("existing-repo");
+        fs::create_dir_all(repo_dir.join(".git")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let _ = git_clone_or_pull(
+            "https://github.com/ROCm/aiter.git",
+            repo_dir.to_str().unwrap(),
+            &["--recursive"],
+            None,
+            &tx,
+            "test-component",
+        );
+        // Should NOT try to clone — should try pull instead
+        let mut found_pull_log = false;
+        while let Ok(event) = rx.try_recv() {
+            if let InstallerEvent::Log(msg, _) = event {
+                found_pull_log = found_pull_log || msg.contains("pulling updates");
+            }
+        }
+        assert!(found_pull_log, "Should log pulling intent, not cloning");
+    }
 
     #[test]
     fn test_is_igpu_name_raphael() {
