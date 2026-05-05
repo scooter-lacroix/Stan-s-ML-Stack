@@ -694,5 +694,3 @@ Rusty Stack (formerly Stan's ML Stack) is licensed under the MIT License. See th
 - Patreon: https://patreon.com/ScooterLacroix
 
 If this code saved you time, consider supporting the project! ☕
-
-
