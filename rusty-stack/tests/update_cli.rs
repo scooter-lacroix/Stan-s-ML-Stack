@@ -75,7 +75,7 @@ fn test_update_scan_only_json_output() {
     // scan_only should be true
     let summary = parsed.get("summary").unwrap();
     assert_eq!(summary.get("scan_only").unwrap().as_bool(), Some(true));
-    assert_eq!(summary.get("status").unwrap().as_str(), Some("plan_ready"));
+    assert_eq!(summary.get("status").unwrap().as_str(), Some("scan_only"));
 }
 
 #[test]

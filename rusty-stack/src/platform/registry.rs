@@ -138,6 +138,14 @@ pub fn known_components() -> &'static [ComponentInfo] {
                 clone_dir: None,
             },
             ComponentInfo {
+                id: "megatron".into(),
+                display_name: "Megatron-LM".into(),
+                detection_method: DetectionMethod::GitBased,
+                installer_script: "install_megatron.sh".into(),
+                python_import: None,
+                clone_dir: Some("Megatron-LM".into()),
+            },
+            ComponentInfo {
                 id: "aiter".into(),
                 display_name: "AITER".into(),
                 detection_method: DetectionMethod::PythonModule,
@@ -723,8 +731,8 @@ mod tests {
         let components = known_components();
         assert_eq!(
             components.len(),
-            17,
-            "Registry must contain exactly 17 known components, found {}",
+            18,
+            "Registry must contain exactly 18 known components, found {}",
             components.len()
         );
     }
@@ -859,8 +867,8 @@ mod tests {
         let map = display_name_to_id_map();
         assert_eq!(
             map.len(),
-            17,
-            "Display name to ID map must have exactly 17 entries"
+            18,
+            "Display name to ID map must have exactly 18 entries"
         );
 
         // Verify round-trip: display_name(id) -> display_name -> id == original id

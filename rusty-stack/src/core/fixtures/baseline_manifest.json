@@ -1,12 +1,19 @@
 {
   "schema_version": 2,
-  "sequence": 1,
-  "generated_at": "2026-04-30T00:00:00Z",
+  "sequence": 2,
+  "generated_at": "2026-05-04T00:00:00Z",
   "components": [
     {
       "id": "rocm",
-      "version": "7.2.1",
+      "version": "7.2.2",
       "script": "scripts/install_rocm.sh",
+      "category": "Foundation",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "rocm-smi",
+      "version": "4.0.0",
+      "script": "scripts/install_rocm_smi.sh",
       "category": "Foundation",
       "validation_tier": "Validated"
     },
@@ -43,6 +50,27 @@
       "version": "2.7.0",
       "script": "scripts/install_flash_attention.sh",
       "category": "Core",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "mpi4py",
+      "version": "3.1.6",
+      "script": "scripts/install_mpi4py.sh",
+      "category": "Core",
+      "validation_tier": "Validated"
+    },
+    {
+      "id": "megatron",
+      "version": "25.1",
+      "script": "scripts/install_megatron.sh",
+      "category": "Core",
+      "validation_tier": "Candidate"
+    },
+    {
+      "id": "aiter",
+      "version": "0.1.0",
+      "script": "scripts/install_aiter.sh",
+      "category": "Core",
       "validation_tier": "Candidate"
     },
     {
@@ -75,8 +103,22 @@
     },
     {
       "id": "comfyui",
-      "version": "0.3.0",
+      "version": "latest",
       "script": "scripts/install_comfyui.sh",
+      "category": "UiUx",
+      "validation_tier": "Experimental"
+    },
+    {
+      "id": "vllm-studio",
+      "version": "latest",
+      "script": "scripts/install_vllm_studio.sh",
+      "category": "UiUx",
+      "validation_tier": "Experimental"
+    },
+    {
+      "id": "textgen",
+      "version": "latest",
+      "script": "scripts/install_textgen.sh",
       "category": "UiUx",
       "validation_tier": "Experimental"
     },
