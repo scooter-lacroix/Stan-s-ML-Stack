@@ -160,6 +160,51 @@ pub fn resolve_rocminfo_path() -> String {
     "rocminfo".to_string()
 }
 
+/// Resolve the path to the ROCm rocprofiler SDK tool library.
+///
+/// Searches in priority order:
+/// 1. `<rocm_home>/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so` (ROCm 7.x layout)
+/// 2. `<rocm_home>/lib/librocprofiler-sdk-tool.so` (older layout)
+/// 3. `/usr/lib/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so` (Arch AUR)
+///
+/// Returns `None` if not found.
+pub fn resolve_rocprofiler_tool_path() -> Option<String> {
+    let candidates = [
+        "/opt/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so",
+        "/opt/rocm/lib/librocprofiler-sdk-tool.so",
+        "/usr/lib/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so",
+        "/usr/lib/rocm/lib/librocprofiler-sdk-tool.so",
+    ];
+    for candidate in &candidates {
+        if Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    // Check versioned ROCm installs
+    if let Ok(entries) = std::fs::read_dir("/opt") {
+        let mut rocm_dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("rocm-"))
+            .collect();
+        rocm_dirs.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+        for dir in rocm_dirs {
+            let base = dir.path();
+            for subpath in [
+                "lib/rocprofiler-sdk/librocprofiler-sdk-tool.so",
+                "lib/librocprofiler-sdk-tool.so",
+            ] {
+                let path = base.join(subpath);
+                if path.exists() {
+                    return Some(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 // ===========================================================================
 // Print Helpers
 // ===========================================================================

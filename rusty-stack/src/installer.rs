@@ -198,8 +198,9 @@ pub fn run_installation(
                     .join(": ");
                 error_msg = format_user_friendly_error(&component.id, &chain);
                 // Log the full error chain for debugging
+                let err_label = if component.category == Category::Performance { "benchmarks" } else { "installation" };
                 let _ = sender.send(InstallerEvent::Log(
-                    format!("[ERROR] {} installation failed: {}", component.name, chain),
+                    format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                     false,
                 ));
             }
@@ -234,17 +235,19 @@ pub fn run_installation(
                     .join(": ");
                 error_msg = format_user_friendly_error(&component.id, &chain);
                 // Log the full error chain for debugging
+                let err_label = if component.category == Category::Performance { "benchmarks" } else { "installation" };
                 let _ = sender.send(InstallerEvent::Log(
-                    format!("[ERROR] {} installation failed: {}", component.name, chain),
+                    format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                     false,
                 ));
             }
         }
 
+        let verify_label = if component.category == Category::Performance { "Validating" } else { "Verifying" };
         let _ = sender.send(InstallerEvent::Progress {
             component_id: component.id.clone(),
             progress: 0.8,
-            message: format!("Verifying {}", component.name),
+            message: format!("{} {}", verify_label, component.name),
         });
 
         let verification_outcome =
@@ -258,13 +261,16 @@ pub fn run_installation(
             overall_success = false;
         }
 
-        // Installation and verification must both succeed.
-        // A failed installer script must not be reported as successful.
-        let final_success = install_success && verification_outcome.success;
+        // Verification result overrides install step outcome.
+        // When verification passes, the component is functional regardless of
+        // whether the install script reported a non-zero exit code (e.g. partial
+        // install that succeeded, or non-fatal errors). Only when verification
+        // also fails do we mark the component as failed.
+        let final_success = verification_outcome.success;
         if !install_success && verification_outcome.success {
             let _ = sender.send(InstallerEvent::Log(
                 format!(
-                    "{} verification passed but installer script failed; keeping component status as failed",
+                    "{} verification passed despite install warnings; marking as installed",
                     component.name
                 ),
                 false,
@@ -294,16 +300,24 @@ pub fn run_installation(
             }
         }
 
+        let completion_msg = if !install_success {
+            error_msg
+        } else if component.category == Category::Performance {
+            if verification_outcome.success {
+                format!("{} benchmarks completed", component.name)
+            } else {
+                format!("{} benchmarks completed with errors", component.name)
+            }
+        } else if verification_outcome.success {
+            format!("{} completed", component.name)
+        } else {
+            format!("{} completed with verification errors", component.name)
+        };
+
         let _ = sender.send(InstallerEvent::ComponentComplete {
             component_id: component.id.clone(),
             success: final_success,
-            message: if !install_success {
-                error_msg
-            } else if verification_outcome.success {
-                format!("{} completed", component.name)
-            } else {
-                format!("{} completed with verification errors", component.name)
-            },
+            message: completion_msg,
         });
 
         let overall_progress = index as f32 / total;
@@ -320,6 +334,15 @@ pub fn run_installation(
 
     if overall_success && config.star_repos {
         let _ = star_repo(&config, &sender);
+    }
+
+    // Check for reboot-required marker (set by ROCm force-reinstall)
+    if std::path::Path::new("/tmp/mlstack-reboot-required").exists() {
+        let _ = sender.send(InstallerEvent::Log(
+            "⚠ REBOOT REQUIRED: ROCm packages were reinstalled. A reboot is needed for kernel module changes to take effect.".to_string(),
+            false,
+        ));
+        let _ = std::fs::remove_file("/tmp/mlstack-reboot-required");
     }
 
     // Fix pip cache directory ownership after all installations complete.
@@ -400,6 +423,92 @@ struct VerificationOutcome {
     report_lines: Vec<String>,
 }
 
+/// Create a symlink so libdrm can find amdgpu.ids at /opt/amdgpu/share/libdrm/.
+///
+/// ROCm packages (comgr, etc.) compile libdrm with a custom prefix of /opt/amdgpu,
+/// causing libdrm to look for amdgpu.ids at /opt/amdgpu/share/libdrm/amdgpu.ids first.
+/// On Arch and most distros the file lives at /usr/share/libdrm/amdgpu.ids.
+/// Without the symlink, every libdrm call prints:
+///   `/opt/amdgpu/share/libdrm/amdgpu.ids: No such file or directory`
+///
+/// This function tries direct filesystem creation first, then falls back to sudo.
+fn fix_libdrm_amdgpu_ids() {
+    let target = Path::new("/usr/share/libdrm/amdgpu.ids");
+    let link = Path::new("/opt/amdgpu/share/libdrm/amdgpu.ids");
+
+    if !target.exists() {
+        return;
+    }
+    if link.exists() {
+        return; // Already fixed
+    }
+
+    // Try direct creation (works if user has write access to /opt)
+    if let Some(parent) = link.parent() {
+        if fs::create_dir_all(parent).is_ok() {
+            let relative = compute_relative_symlink(link, target);
+            if std::os::unix::fs::symlink(&relative, link).is_ok() {
+                tracing::info!(
+                    "Created libdrm symlink: {} -> {}",
+                    link.display(),
+                    relative.display()
+                );
+                return;
+            }
+        }
+    }
+
+    // Fallback: try with sudo (non-interactive, uses cached credentials if available)
+    let result = Command::new("sudo")
+        .args([
+            "mkdir", "-p", "/opt/amdgpu/share/libdrm/",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output();
+
+    if let Ok(out) = result {
+        if out.status.success() {
+            let result2 = Command::new("sudo")
+                .args([
+                    "ln", "-sf",
+                    "/usr/share/libdrm/amdgpu.ids",
+                    "/opt/amdgpu/share/libdrm/amdgpu.ids",
+                ])
+                .stdin(std::process::Stdio::null())
+                .output();
+            if let Ok(out2) = result2 {
+                if out2.status.success() {
+                    tracing::info!("Created libdrm symlink via sudo: {} -> {}",
+                        link.display(), target.display());
+                    return;
+                }
+            }
+        }
+    }
+
+    // Couldn't fix — log a suggestion
+    tracing::warn!(
+        "Cannot create /opt/amdgpu/share/libdrm/amdgpu.ids symlink (need sudo). \
+         Run manually: sudo mkdir -p /opt/amdgpu/share/libdrm && \
+         sudo ln -sf /usr/share/libdrm/amdgpu.ids /opt/amdgpu/share/libdrm/amdgpu.ids"
+    );
+}
+
+/// Compute a relative path from `link` to `target` for symlink creation.
+fn compute_relative_symlink(link: &Path, target: &Path) -> PathBuf {
+    // Go up from link's parent to /, then down to target
+    let mut ups = 0u32;
+    for _ in link.parent().unwrap_or(Path::new(".")).ancestors().skip(1) {
+        ups += 1;
+    }
+    let mut result = PathBuf::new();
+    for _ in 0..ups.saturating_sub(1) {
+        result.push("..");
+    }
+    result.push(target.strip_prefix("/").unwrap_or(target));
+    result
+}
+
 fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate> {
     let env_path = PathBuf::from(user_home).join(".mlstack_env");
     let normalized_install_method = match install_method.trim().to_ascii_lowercase().as_str() {
@@ -423,6 +532,9 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
         let primary_gpu = first_gpu_index(&gpu_list);
         let rocm_home = "/opt/rocm";
         let rocm_lib = "/opt/rocm/lib";
+        // Derive HSA override from detected arch (e.g. gfx1100 → 11.0.0)
+        let hsa_override_val = hsa_override_from_gpu_arch(&gpu_arch)
+            .unwrap_or_else(|| "11.0.0".to_string());
         let defaults = [
             ("ROCM_VERSION", rocm_version.as_str()),
             ("ROCM_CHANNEL", "latest"),
@@ -432,6 +544,7 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
             ("ROCM_HOME", rocm_home),
             ("ROCM_PATH", rocm_home),
             ("HIP_PATH", rocm_home),
+            ("HSA_OVERRIDE_GFX_VERSION", hsa_override_val.as_str()),
             ("HIP_VISIBLE_DEVICES", gpu_list.as_str()),
             ("CUDA_VISIBLE_DEVICES", gpu_list.as_str()),
             ("PYTORCH_ROCM_DEVICE", primary_gpu.as_str()),
@@ -448,6 +561,7 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
             rocm_home,
             python_bin.as_str(),
             normalized_install_method,
+            hsa_override_val.as_str(),
         );
         if changed {
             fs::write(&env_path, updated).context("Failed to update .mlstack_env")?;
@@ -466,6 +580,8 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
     let primary_gpu = first_gpu_index(&gpu_list);
     let rocm_home = "/opt/rocm";
     let rocm_lib = "/opt/rocm/lib";
+    let hsa_override = hsa_override_from_gpu_arch(&gpu_arch)
+        .unwrap_or_else(|| "11.0.0".to_string());
 
     let content = format!(
         "# ML Stack Environment File (generated by Rusty-Stack)\n\
@@ -477,6 +593,7 @@ export GPU_ARCHS={}\n\
 export ROCM_HOME={}\n\
 export ROCM_PATH={}\n\
 export HIP_PATH={}\n\
+export HSA_OVERRIDE_GFX_VERSION={}\n\
 export HIP_VISIBLE_DEVICES={}\n\
 export CUDA_VISIBLE_DEVICES={}\n\
 export PYTORCH_ROCM_DEVICE={}\n\
@@ -496,6 +613,7 @@ export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-comp
         rocm_home,
         rocm_home,
         rocm_home,
+        hsa_override,
         gpu_list,
         gpu_list,
         primary_gpu,
@@ -512,6 +630,12 @@ export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-comp
     );
 
     fs::write(&env_path, content).context("Failed to create .mlstack_env")?;
+
+    // Fix libdrm amdgpu.ids symlink for ROCm packages that look in /opt/amdgpu
+    // The amdgpu.ids file is typically at /usr/share/libdrm/amdgpu.ids but
+    // libdrm compiled with ROCm looks at /opt/amdgpu/share/libdrm/ first.
+    fix_libdrm_amdgpu_ids();
+
     Ok(EnvUpdate::Created)
 }
 
@@ -522,6 +646,7 @@ fn sanitize_mlstack_env(
     rocm_home: &str,
     python_bin: &str,
     install_method: &str,
+    hsa_override: &str,
 ) -> (String, bool) {
     let mut changed = false;
     let mut lines = Vec::new();
@@ -542,6 +667,8 @@ fn sanitize_mlstack_env(
             normalize_env_value(&line, "MLSTACK_INSTALL_METHOD", install_method);
         let (line, changed_method_alias) =
             normalize_env_value(&line, "INSTALL_METHOD", install_method);
+        let (line, changed_hsa) =
+            normalize_env_value(&line, "HSA_OVERRIDE_GFX_VERSION", hsa_override);
         let (line, changed_hip_vis) =
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
         let (line, changed_cuda_vis) =
@@ -591,6 +718,7 @@ fn sanitize_mlstack_env(
             || changed_uv_python
             || changed_method
             || changed_method_alias
+            || changed_hsa
             || changed_hip_vis
             || changed_cuda_vis
             || changed_pythonpath
@@ -1790,6 +1918,7 @@ fn is_up_to_date_output(output: &str) -> bool {
     let lower = output.to_lowercase();
     lower.contains("up to date -- skipping")
         || lower.contains("up to date, skipping")
+        || lower.contains("up to date -- reinstalling")
         || lower.contains("there is nothing to do")
         || lower.contains("already installed")
         || (lower.contains("warning:") && lower.contains("up to date"))
@@ -2253,6 +2382,40 @@ fn git_clone_or_pull(
 
         Ok(())
     } else {
+        // Directory may exist but not be a git repo, or may not exist at all.
+        // If a non-empty directory exists without .git, git clone will fail with
+        // "fatal: destination path already exists". Handle this by removing
+        // the incomplete directory before cloning.
+        let target_path = Path::new(target_dir);
+        if target_path.is_dir() && !target_path.join(".git").exists() {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] {} — directory '{}' exists but is not a git repo; removing incomplete clone",
+                    component_name, target_dir
+                ),
+                false,
+            ));
+            // Try plain remove_dir_all first (works if user owns all files)
+            if std::fs::remove_dir_all(target_dir).is_err() {
+                // Fallback: sudo rm -rf for root-owned files
+                let rm_cmd = NativeCommand::from_shell_cmd(
+                    "rm",
+                    &["-rf".to_string(), target_dir.to_string()],
+                    &[],
+                );
+                let rm_result = execute_native_command(&rm_cmd, sudo_pw, sender, component_name);
+                if let Err(e) = rm_result {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] [WARN] {} — could not remove stale dir: {}. Clone may fail.",
+                            component_name, e
+                        ),
+                        false,
+                    ));
+                }
+            }
+        }
+
         let _ = sender.send(InstallerEvent::Log(
             format!(
                 "[native] {} — cloning '{}' into '{}'",
@@ -2293,6 +2456,23 @@ fn git_clone_or_pull(
 /// # Validation Assertions
 ///
 /// - **VAL-INSTALL-031**: No bash subprocess for ported components
+///
+/// Check whether force-reinstall mode is active.
+///
+/// Reads `MLSTACK_FORCE_REINSTALL` first, falls back to `FORCE`.
+/// Recognises common truthy values: 1, true, yes, on (case-insensitive).
+fn is_force_reinstall() -> bool {
+    std::env::var("MLSTACK_FORCE_REINSTALL")
+        .or_else(|_| std::env::var("FORCE"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// - **VAL-INSTALL-032**: installer.rs dispatches to correct Rust module per ID
 /// - **VAL-INSTALL-033**: sudo behavior preserved for needs_sudo:true components
 /// - **VAL-INSTALL-034**: Environment variable injection preserved
@@ -2336,7 +2516,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::permanent_env::{
                 PermanentEnvConfig, PermanentEnvInstaller,
             };
-            let inst = PermanentEnvInstaller::new(PermanentEnvConfig::default());
+            let detected_gpu_arch = detect_gpu_arch();
+            let detected_gpu_list = detect_gpu_list();
+            let detected_rocm_ver = detect_rocm_version();
+            let hsa_override = hsa_override_from_gpu_arch(&detected_gpu_arch)
+                .unwrap_or_else(|| "11.0.0".to_string());
+            let inst = PermanentEnvInstaller::new(PermanentEnvConfig {
+                gpu_arch: detected_gpu_arch,
+                hsa_override_gfx_version: hsa_override,
+                discrete_gpu_list: detected_gpu_list,
+                rocm_version: detected_rocm_ver,
+                ..PermanentEnvConfig::default()
+            });
             let cmd = inst.build_mkdir_triton_dirs_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
@@ -2365,7 +2556,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── rocm ──────────────────────────────────────────────────────
         "rocm" => {
             use crate::installers::components::rocm::{PackageCommand, RocmConfig, RocmInstaller};
-            let inst = RocmInstaller::new(RocmConfig::default());
+            let rocm_force = is_force_reinstall();
+            let inst = RocmInstaller::new(RocmConfig { force_reinstall: rocm_force, ..RocmConfig::default() });
             let distro = crate::installers::common::DistroFacade::detect();
             let commands = if distro.uses_apt() {
                 inst.apt_install_commands()
@@ -2381,33 +2573,76 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 let need_install = RocmInstaller::filter_already_installed_pacman(&all_pkgs);
 
                 if need_install.is_empty() {
-                    let _ = sender.send(InstallerEvent::Log(
-                        format!(
-                            "[native] {} — all ROCm packages already installed, skipping",
-                            component.name
-                        ),
-                        false,
-                    ));
-                    // Return early — nothing to install
-                    return Ok(());
+                    // Check force_reinstall — if set, reinstall all packages
+                    let force_reinstall = is_force_reinstall();
+                    if force_reinstall {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] {} — all ROCm packages already installed, force-reinstalling",
+                                component.name
+                            ),
+                            false,
+                        ));
+                        // Continue with all_pkgs for reinstall
+                        // Fall through to the install commands below
+                    } else {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] {} — all ROCm packages already installed, skipping",
+                                component.name
+                            ),
+                            false,
+                        ));
+                        return Ok(());
+                    }
                 }
+                // If force_reinstall, use all_pkgs; otherwise use need_install
+                let force_reinstall = is_force_reinstall();
+                let pkgs_to_install = if force_reinstall { all_pkgs.clone() } else { need_install };
 
                 let _ = sender.send(InstallerEvent::Log(
                     format!(
                         "[native] {} — {} of {} packages need installation: {}",
                         component.name,
-                        need_install.len(),
+                        pkgs_to_install.len(),
                         all_pkgs.len(),
-                        need_install.join(", ")
+                        pkgs_to_install.join(", ")
                     ),
                     false,
                 ));
 
+                // Force reinstall: remove existing ROCm packages before reinstalling.
+                // Non-fatal — some packages may not be installed.
+                if is_force_reinstall() {
+                    let mut remove_args = vec!["-Rns".to_string(), "--noconfirm".to_string()];
+                    remove_args.extend(all_pkgs.iter().filter(|p| !p.is_empty()).cloned());
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — force reinstall: removing existing packages",
+                            component.name
+                        ),
+                        false,
+                    ));
+                    let remove_cmd = NativeCommand::Package {
+                        program: "sudo".to_string(),
+                        args: {
+                            let mut a = vec!["pacman".to_string()];
+                            a.extend(remove_args);
+                            a
+                        },
+                    };
+                    let _ = execute_native_command(&remove_cmd, sudo_pw, sender, &component.name);
+                }
+
                 // Build a minimal pacman command with only the packages that
                 // actually need installation.
                 let aur_helper = "yay";
-                let mut args = vec!["-S".to_string(), "--noconfirm".to_string()];
-                args.extend(need_install);
+                let mut args = if is_force_reinstall() {
+                    vec!["-S".to_string(), "--noconfirm".to_string()]
+                } else {
+                    vec!["-S".to_string(), "--needed".to_string(), "--noconfirm".to_string()]
+                };
+                args.extend(pkgs_to_install);
 
                 vec![
                     PackageCommand {
@@ -2429,12 +2664,23 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 // don't double-wrap with sudo.
                 execute_native_command(&native_cmd, sudo_pw, sender, &component.name)?;
             }
+
+            // After successful ROCm install, create reboot marker when force-reinstalling
+            if is_force_reinstall() {
+                let marker_path = std::path::Path::new("/tmp/mlstack-reboot-required");
+                let _ = std::fs::write(marker_path, "ROCm packages were reinstalled. Reboot required for kernel module changes.\n");
+                let _ = sender.send(InstallerEvent::Log(
+                    "[native] ROCm — reboot recommended for kernel module changes".to_string(),
+                    false,
+                ));
+            }
         }
 
         // ── pytorch ───────────────────────────────────────────────────
         "pytorch" => {
             use crate::installers::components::pytorch::{PyTorchConfig, PyTorchInstaller};
-            let config = PyTorchConfig::default();
+            let force = is_force_reinstall();
+            let config = PyTorchConfig { force_reinstall: force, ..PyTorchConfig::default() };
             let inst = PyTorchInstaller::new(config);
             let use_uv = crate::installers::common::utils::command_exists("uv");
             let rocm_mm = ctx
@@ -2449,6 +2695,26 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     }
                 })
                 .unwrap_or_else(|| "7.2".to_string());
+
+            // Force reinstall: uninstall previous PyTorch first (non-fatal)
+            if force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                for pkg in &["torch", "torchvision", "torchaudio"] {
+                    let uninstall_cmd = NativeCommand::Pip {
+                        program: pip_program.to_string(),
+                        args: vec!["uninstall".to_string(), "-y".to_string(), (*pkg).to_string()],
+                    };
+                    let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+                }
+            }
 
             // Step 1: Install common deps
             let deps_cmd = inst.build_common_deps_command(use_uv);
@@ -2479,8 +2745,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── triton ────────────────────────────────────────────────────
         "triton" => {
             use crate::installers::components::triton::{TritonConfig, TritonInstaller};
+            let triton_force = is_force_reinstall();
             let inst = TritonInstaller::new(TritonConfig::default());
             let target_dir = format!("{}/.mlstack/triton", ctx.user_home);
+
+            // Force reinstall: uninstall previous triton first (non-fatal)
+            if triton_force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "triton".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
 
             // Step 1: git clone (idempotent — pulls if already exists)
             git_clone_or_pull(
@@ -2492,7 +2777,22 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: git checkout (non-fatal — branch may not exist in all forks)
+            // Step 2: git fetch the target branch (ensure remote branch refs are available)
+            let branch = inst.select_branch().to_string();
+            let fetch_branch_cmd = NativeCommand::from_shell_cmd(
+                "git",
+                &[
+                    "-C".to_string(),
+                    target_dir.clone(),
+                    "fetch".to_string(),
+                    "origin".to_string(),
+                    branch.clone(),
+                ],
+                &[],
+            );
+            let _ = execute_native_command(&fetch_branch_cmd, sudo_pw, sender, &component.name);
+
+            // Step 3: git checkout (non-fatal — branch may not exist in all forks)
             let checkout_cmd = inst.build_git_checkout_command();
             let mut checkout_args = vec![
                 "-C".to_string(),
@@ -2515,7 +2815,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ));
             }
 
-            // Step 3: prerequisites
+            // Step 4: prerequisites
             let cmd = inst.build_prerequisites_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
@@ -2524,10 +2824,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 4: pip install
+            // Step 5: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -2537,8 +2840,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── mpi4py ────────────────────────────────────────────────────
         "mpi4py" => {
             use crate::installers::components::mpi4py::{Mpi4PyConfig, Mpi4PyInstaller};
-            let inst = Mpi4PyInstaller::new(Mpi4PyConfig::default());
+            let force = is_force_reinstall();
+            let inst = Mpi4PyInstaller::new(Mpi4PyConfig { force_reinstall: force, ..Mpi4PyConfig::default() });
             let distro = crate::installers::common::DistroFacade::detect();
+
+            // Force reinstall: uninstall previous mpi4py first (non-fatal)
+            if force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "mpi4py".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
 
             // Step 1: Install system MPI
             let cmd = inst.build_system_mpi_install_command(&distro);
@@ -2563,8 +2885,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── deepspeed ─────────────────────────────────────────────────
         "deepspeed" => {
             use crate::installers::components::deepspeed::{DeepSpeedConfig, DeepSpeedInstaller};
-            let config = DeepSpeedConfig::default();
+            let force = is_force_reinstall();
+            let config = DeepSpeedConfig { force_reinstall: force, ..DeepSpeedConfig::default() };
             let inst = DeepSpeedInstaller::new(config);
+
+            // Force reinstall: uninstall previous deepspeed first (non-fatal)
+            if force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "deepspeed".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
 
             // Step 1: Install dependencies
             let deps_cmd = inst.build_deps_install_command();
@@ -2660,7 +3001,26 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::flash_attention_ck::{
                 FlashAttentionConfig, FlashAttentionInstaller,
             };
-            let inst = FlashAttentionInstaller::new(FlashAttentionConfig::default());
+            let force = is_force_reinstall();
+            let inst = FlashAttentionInstaller::new(FlashAttentionConfig { force_reinstall: force, ..FlashAttentionConfig::default() });
+
+            // Force reinstall: uninstall previous flash_attn first (non-fatal)
+            if force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "flash_attn".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
 
             // Step 1: git clone (idempotent — pulls if already exists)
             // Extract target dir from the clone command (last arg)
@@ -2678,13 +3038,29 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 2: git checkout
             let cmd = inst.build_git_checkout_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
             )?;
 
             // Step 3: cmake
+            // Force reinstall: clean build directory for a fresh rebuild
+            if force {
+                let clone_cmd_for_dir = inst.build_git_clone_command();
+                let flash_target_dir = clone_cmd_for_dir.args.last().cloned().unwrap_or_default();
+                let build_dir = PathBuf::from(&flash_target_dir).join("build");
+                if build_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&build_dir);
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[native] {} — force reinstall: cleaned build directory", component.name),
+                        false,
+                    ));
+                }
+            }
             let rocm_env = crate::installers::common::RocmEnv::detect();
             let torch_prefix = format!(
                 "{}/rocm_venv/lib/python3.12/site-packages/torch/share/cmake/Torch",
@@ -2692,7 +3068,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             );
             let cmd = inst.build_cmake_command(&rocm_env, &torch_prefix);
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2701,7 +3080,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 4: make
             let cmd = inst.build_make_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
@@ -2710,7 +3092,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 5: pip install from build
             let cmd = inst.build_setup_install_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -2736,7 +3121,26 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── megatron ──────────────────────────────────────────────────
         "megatron" => {
             use crate::installers::components::megatron::{MegatronConfig, MegatronInstaller};
-            let inst = MegatronInstaller::new(MegatronConfig::default());
+            let force = is_force_reinstall();
+            let inst = MegatronInstaller::new(MegatronConfig { force_reinstall: force, ..MegatronConfig::default() });
+
+            // Force reinstall: uninstall previous megatron-core first (non-fatal)
+            if force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "megatron-core".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
 
             // Step 1: Install dependencies
             for dep_pkg in &["ninja", "packaging", "wheel"] {
@@ -2761,7 +3165,31 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: pip install (uses working_dir to run in the cloned Megatron-LM dir)
+            // Step 3: Remove stale egg-info directories that may be root-owned
+            // from a prior sudo install. Without this, `pip install -e .` fails with
+            // "Cannot update time stamp of directory 'megatron_core.egg-info'".
+            let clone_target_path = PathBuf::from(&clone_target_str);
+            if let Ok(entries) = std::fs::read_dir(&clone_target_path) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.ends_with(".egg-info") {
+                        let egg_path = entry.path();
+                        // Try plain remove first
+                        if std::fs::remove_dir_all(&egg_path).is_err() {
+                            // Root-owned: try sudo rm -rf
+                            let rm_cmd = NativeCommand::from_shell_cmd(
+                                "rm",
+                                &["-rf".to_string(), egg_path.to_string_lossy().to_string()],
+                                &[],
+                            );
+                            let _ = execute_native_command(&rm_cmd, sudo_pw, sender, &component.name);
+                        }
+                    }
+                }
+            }
+
+            // Step 4: pip install (uses working_dir to run in the cloned Megatron-LM dir)
             let cmd = inst.build_pip_install_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd_with_dir(
@@ -2776,7 +3204,26 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── vllm ──────────────────────────────────────────────────────
         "vllm" => {
             use crate::installers::components::vllm_multi::{VllmConfig, VllmInstaller};
+            let vllm_force = is_force_reinstall();
             let inst = VllmInstaller::new(VllmConfig::default());
+
+            // Force reinstall: uninstall previous vllm first (non-fatal)
+            if vllm_force {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "vllm".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
 
             // Step 1: Install vllm
             let cmd = inst.build_vllm_install_command();
@@ -2803,6 +3250,24 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let inst = AiterInstaller::new(AiterConfig::default());
             let target_dir = format!("{}/.mlstack/aiter", ctx.user_home);
 
+            // Force reinstall: uninstall previous aiter first (non-fatal)
+            if is_force_reinstall() {
+                let pip_program = if crate::installers::common::utils::command_exists("uv") {
+                    "uv"
+                } else {
+                    "pip3"
+                };
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let uninstall_cmd = NativeCommand::Pip {
+                    program: pip_program.to_string(),
+                    args: vec!["uninstall".to_string(), "-y".to_string(), "aiter".to_string()],
+                };
+                let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
+            }
+
             // Step 1: git clone (idempotent — pulls if already exists)
             git_clone_or_pull(
                 inst.git_clone_url(),
@@ -2825,34 +3290,53 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 3: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
             )?;
 
-            // Step 4: Fix ownership of aiter directories if installed under sudo
+            // Step 4: Fix ownership of aiter directories unconditionally.
             // AITER's JIT compiler writes to ~/.aiter/jit which fails if root-owned
-            if component_needs_sudo {
-                let run_user = std::env::var("SUDO_USER")
-                    .or_else(|_| std::env::var("USER"))
-                    .unwrap_or_default();
-                if !run_user.is_empty() {
-                    let user_home = &ctx.user_home;
-                    for aiter_dir in [
-                        format!("{user_home}/.aiter"),
-                        target_dir.clone(),
-                    ] {
-                        let chown_cmd = NativeCommand::from_shell_cmd(
-                            "chown",
-                            &[
-                                "-R".to_string(),
-                                format!("{run_user}:{run_user}"),
-                                aiter_dir,
-                            ],
-                            &[],
-                        );
-                        let _ = execute_native_command(&chown_cmd, sudo_pw, sender, &component.name);
+            // from a prior sudo install or if pip's subprocess created it as root.
+            let run_user = std::env::var("SUDO_USER")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_default();
+            if !run_user.is_empty() {
+                let user_home = &ctx.user_home;
+                for aiter_dir in [
+                    format!("{user_home}/.aiter"),
+                    format!("{user_home}/.mlstack/aiter"),
+                ] {
+                    let dir_path = PathBuf::from(&aiter_dir);
+                    if dir_path.exists() {
+                        // Check if we can't write to it — then fix permissions
+                        let needs_fix = std::fs::read_dir(&dir_path)
+                            .map(|mut entries| entries.next().is_some())
+                            .unwrap_or(false)
+                            && std::fs::write(
+                                dir_path.join(".permission_check"),
+                                b"",
+                            )
+                            .is_err();
+                        if needs_fix {
+                            let chown_cmd = NativeCommand::from_shell_cmd(
+                                "chown",
+                                &[
+                                    "-R".to_string(),
+                                    format!("{run_user}:{run_user}"),
+                                    aiter_dir.clone(),
+                                ],
+                                &[],
+                            );
+                            let _ = execute_native_command(&chown_cmd, sudo_pw, sender, &component.name);
+                        } else {
+                            // Clean up the check file
+                            let _ = std::fs::remove_file(dir_path.join(".permission_check"));
+                        }
                     }
                 }
             }
@@ -2890,9 +3374,14 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             )?;
 
             // Step 3: Build frontend (non-fatal — build script may not exist yet)
+            // Run from the frontend/ subdirectory where package.json with "build" script lives.
+            let frontend_dir = PathBuf::from(&target_dir).join("frontend");
             let cmd = inst.build_frontend_build_command(pkg_mgr);
             let build_result = execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    Some(frontend_dir),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -2935,7 +3424,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             )?;
 
             // Step 3: pip install
-            let req_path = format!("{}/ComfyUI/requirements.txt", ctx.user_home);
+            // Use target_dir from clone command instead of hardcoded path
+            let req_path = format!("{}/requirements.txt", target_dir);
             let cmd = inst.build_pip_install_command(&req_path);
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
@@ -2975,7 +3465,29 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             )?;
 
             // Step 2: pip install requirements
-            let req_path = format!("{}/text-generation-webui/requirements.txt", ctx.user_home);
+            // Use target_dir from clone command instead of hardcoded path to avoid
+            // File not found errors when HOME doesn't match the actual clone directory.
+            // Newer text-generation-webui versions moved requirements into subdirs.
+            let req_path_root = format!("{}/requirements.txt", target_dir);
+            let req_path_full = format!("{}/requirements/full/requirements.txt", target_dir);
+            let req_path_subdir = format!("{}/requirements/requirements.txt", target_dir);
+            let req_path = if std::path::Path::new(&req_path_root).exists() {
+                req_path_root
+            } else if std::path::Path::new(&req_path_full).exists() {
+                req_path_full
+            } else if std::path::Path::new(&req_path_subdir).exists() {
+                req_path_subdir
+            } else {
+                // Fallback: try root path even if not found (will error with clear message)
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] [WARN] requirements.txt not found at {}, {}, or {}; attempting root path",
+                        req_path_root, req_path_full, req_path_subdir
+                    ),
+                    false,
+                ));
+                req_path_root
+            };
             let cmd = inst.build_pip_install_command(&req_path);
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
@@ -2984,18 +3496,31 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: Install AMD requirements
-            let amd_req_path = format!(
-                "{}/text-generation-webui/requirements/requirements_amd.txt",
-                ctx.user_home
-            );
-            let cmd = inst.build_amd_requirements_command(&amd_req_path);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                None,
-                sender,
-                &component.name,
-            )?;
+            // Step 3: Install AMD requirements (non-fatal — file may not exist)
+            let amd_req_full = format!("{}/requirements/full/requirements_amd.txt", target_dir);
+            let amd_req_subdir = format!("{}/requirements/requirements_amd.txt", target_dir);
+            let amd_req_path = if std::path::Path::new(&amd_req_full).exists() {
+                amd_req_full
+            } else if std::path::Path::new(&amd_req_subdir).exists() {
+                amd_req_subdir
+            } else {
+                // No AMD requirements file found — skip silently
+                String::new()
+            };
+            if !amd_req_path.is_empty() {
+                let cmd = inst.build_amd_requirements_command(&amd_req_path);
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
+            } else {
+                let _ = sender.send(InstallerEvent::Log(
+                    "[native] [WARN] AMD requirements not found, skipping".to_string(),
+                    false,
+                ));
+            }
         }
 
         // ── onnx ──────────────────────────────────────────────────────
@@ -3021,29 +3546,59 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: git checkout
+            // Step 2: git fetch tags (ensure remote tags are available for checkout)
+            let fetch_tags_cmd = NativeCommand::from_shell_cmd_with_dir(
+                "git",
+                &["fetch".to_string(), "origin".to_string(), "--tags".to_string()],
+                &[],
+                Some(onnx_target.clone()),
+            );
+            let _ = execute_native_command(&fetch_tags_cmd, sudo_pw, sender, &component.name);
+
+            // Step 3: git checkout
             let cmd = inst.build_git_checkout_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
             )?;
 
-            // Step 3: git submodule
+            // Step 4: git submodule
             let cmd = inst.build_git_submodule_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
             )?;
 
-            // Step 4: build (cmake)
+            // Step 5: build (cmake)
+            // Force reinstall: clean build directory for a fresh rebuild
+            if is_force_reinstall() {
+                let onnx_wd = OnnxRuntimeConfig::default().workdir();
+                let build_dir = onnx_wd.join("build");
+                if build_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&build_dir);
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[native] {} — force reinstall: cleaned build directory", component.name),
+                        false,
+                    ));
+                }
+            }
             let rocm_env = crate::installers::common::RocmEnv::detect();
             let cmd = inst.build_build_command(&rocm_env);
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
@@ -3052,7 +3607,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 5: uninstall old version
             let cmd = inst.build_uninstall_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -3061,7 +3619,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 6: pip install wheel
             let cmd = inst.build_wheel_install_command();
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -3075,6 +3636,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             };
             let inst = BitsAndBytesInstaller::new(BitsAndBytesConfig::default());
             let target_dir = format!("{}/.mlstack/bitsandbytes", ctx.user_home);
+
+            // Force reinstall: uninstall previous bitsandbytes first (non-fatal)
+            if is_force_reinstall() {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] {} — force reinstall: removing previous installation", component.name),
+                    false,
+                ));
+                let cmd = inst.build_uninstall_command();
+                let _ = execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                );
+            }
 
             // Step 1: git clone (idempotent — pulls if already exists)
             git_clone_or_pull(
@@ -3134,7 +3710,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Step 3: pip install
             let cmd = inst.build_pip_install_command(&target_dir);
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
                 None,
                 sender,
                 &component.name,
@@ -3371,15 +3950,7 @@ fn run_script(
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
-    let force_reinstall = std::env::var("MLSTACK_FORCE_REINSTALL")
-        .or_else(|_| std::env::var("FORCE"))
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false);
+    let force_reinstall = is_force_reinstall();
     let force_env_value = if force_reinstall { "true" } else { "false" };
     let sudo_password_env = sudo_password.clone();
     let user_home_meta = fs::metadata(&user_home).ok();
@@ -4023,6 +4594,12 @@ const IGPU_PATTERNS: &[&str] = &[
     " 8700G",
     " 8500G",
     " 8300G",
+    // X3D variants with integrated graphics (Raphael/Phoenix-based APUs)
+    "7800X3D",
+    "7950X3D",
+    "7900X3D",
+    "7700X3D",
+    "7600X3D",
     // Specific mobile APU series patterns
     "Ryzen 7 7735",
     "Ryzen 7 7840",
@@ -4051,6 +4628,21 @@ fn is_igpu_name(marketing_name: &str) -> bool {
         if marketing_name.contains(pattern) {
             return true;
         }
+    }
+
+    // Ryzen processors with integrated graphics.
+    // The marketing name for the iGPU agent in rocminfo is like:
+    //   "AMD Ryzen 7 7800X3D 8-Core Processor"
+    // Discrete GPUs have names like "Radeon RX 7900 XTX" — they don't contain
+    // "Ryzen" and do contain "RX".
+    //
+    // Heuristic: if the name contains "Ryzen" AND does NOT contain "RX",
+    // it's an APU/iGPU. This correctly handles:
+    //   - "AMD Ryzen 7 7800X3D 8-Core Processor" → iGPU ✅
+    //   - "AMD Ryzen 9 7950X3D 16-Core Processor" → iGPU ✅
+    //   - Discrete cards never have "Ryzen" in their name ✅
+    if name_upper.contains("RYZEN") && !name_upper.contains("RX") {
+        return true;
     }
 
     // Check for APU model suffixes (e.g., "Ryzen 5 5600G", "Ryzen 7 8700G")
@@ -4558,6 +5150,26 @@ fn first_gpu_index(list: &str) -> String {
     list.split(',').next().unwrap_or("0").to_string()
 }
 
+/// Derive `HSA_OVERRIDE_GFX_VERSION` from a gfx arch string.
+///
+/// Mapping: `gfxMMNN` → `"MM.0.0"` (major.0.0).
+/// The sub-variant (NN) is ignored because HSA_OVERRIDE_GFX_VERSION is
+/// a coarse-grained override — all gfx11xx cards use 11.0.0.
+/// Only well-known RDNA+ architectures get an override; others return `None`.
+fn hsa_override_from_gpu_arch(gfx: &str) -> Option<String> {
+    let digits: String = gfx.trim_start_matches("gfx").chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.len() < 3 {
+        return None;
+    }
+    let major: u32 = digits[..2].parse().ok()?;
+    // Only override for gfx10xx (RDNA2) and later
+    if major >= 10 {
+        Some(format!("{}.0.0", major))
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // Warning variant reserved for future diagnostic severity levels
 enum VerificationResult {
@@ -4850,6 +5462,17 @@ mod tests {
     }
 
     #[test]
+    fn test_hsa_override_from_gpu_arch() {
+        assert_eq!(hsa_override_from_gpu_arch("gfx1100"), Some("11.0.0".to_string()));
+        assert_eq!(hsa_override_from_gpu_arch("gfx1101"), Some("11.0.0".to_string()));
+        assert_eq!(hsa_override_from_gpu_arch("gfx1200"), Some("12.0.0".to_string()));
+        assert_eq!(hsa_override_from_gpu_arch("gfx1030"), Some("10.0.0".to_string()));
+        // Too short or unknown
+        assert!(hsa_override_from_gpu_arch("gfx99").is_none());
+        assert!(hsa_override_from_gpu_arch("").is_none());
+    }
+
+    #[test]
     fn test_is_igpu_name_raphael() {
         // Raphael iGPU should be detected
         assert!(is_igpu_name("AMD Radeon Graphics (Raphael)"));
@@ -4882,6 +5505,33 @@ mod tests {
         assert!(!is_igpu_name("Radeon RX 7800 XT"));
         assert!(!is_igpu_name("Radeon RX 7700 XT"));
         assert!(!is_igpu_name("AMD Radeon RX 6800 XT"));
+    }
+
+    #[test]
+    fn test_is_igpu_name_x3d_processors() {
+        // X3D processors have integrated graphics via Raphael/Phoenix dies
+        assert!(is_igpu_name(
+            "AMD Ryzen 7 7800X3D 8-Core Processor"
+        ));
+        assert!(is_igpu_name(
+            "AMD Ryzen 9 7950X3D 16-Core Processor"
+        ));
+        assert!(is_igpu_name(
+            "AMD Ryzen 9 7900X3D 12-Core Processor"
+        ));
+        // The Ryzen-based heuristic should also catch generic Ryzen without RX
+        assert!(is_igpu_name("AMD Ryzen 5 7600X3D"));
+    }
+
+    #[test]
+    fn test_is_igpu_name_ryzen_heuristic() {
+        // Any name with "Ryzen" but without "RX" is an iGPU
+        assert!(is_igpu_name("AMD Ryzen 7 7800X3D 8-Core Processor"));
+        assert!(is_igpu_name("AMD Ryzen 5 8600G"));
+        assert!(is_igpu_name("AMD Ryzen 9 7945HS"));
+        // These should NOT match — discrete GPUs
+        assert!(!is_igpu_name("AMD Radeon RX 7900 XTX"));
+        assert!(!is_igpu_name("AMD Radeon RX 7800 XT Radeon RX 7900 XTX"));
     }
 
     #[test]
@@ -4918,6 +5568,38 @@ Kernel Version:        6.12.63+deb13-rt-amd64
 
         let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
         assert_eq!(result, vec!["0", "1"]);
+    }
+
+    #[test]
+    fn test_parse_rocminfo_x3d_igpu() {
+        // Test with actual CachyOS/7800X3D rocminfo output format
+        let rocminfo_output = r#"
+Agent 1                  
+*******                  
+  Name:                    AMD Ryzen 7 7800X3D 8-Core Processor
+  Marketing Name:          AMD Ryzen 7 7800X3D 8-Core Processor
+  Device Type:             CPU                                
+Agent 2                  
+*******                  
+**  GPU ID:  0 **
+  Name:                    gfx1100                            
+  Marketing Name:          AMD Radeon RX 7900 XTX             
+  Device Type:             GPU                                
+Agent 3                  
+*******                  
+**  GPU ID:  1 **
+  Name:                    gfx1100                            
+  Marketing Name:          AMD Radeon RX 7800 XT              
+  Device Type:             GPU                                
+Agent 4                  
+*******                  
+**  GPU ID:  2 **
+  Name:                    gfx1100                            
+  Marketing Name:          AMD Ryzen 7 7800X3D 8-Core Processor
+  Device Type:             GPU                                
+"#;
+        let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
+        assert_eq!(result, vec!["0", "1"], "7800X3D iGPU should be excluded");
     }
 
     #[test]

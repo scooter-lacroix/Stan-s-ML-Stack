@@ -333,9 +333,14 @@ impl UpdatePlanner {
             }
         }
 
-        // Apply --all-safe: only keep safe items if flag is set
+        // Apply --all-safe: only keep safe items (and experimental if explicitly included)
         if options.all_safe {
-            items.retain(|i| i.classification == UpdateClassification::Safe);
+            if options.include_experimental {
+                items.retain(|i| matches!(i.classification,
+                    UpdateClassification::Safe | UpdateClassification::Experimental));
+            } else {
+                items.retain(|i| i.classification == UpdateClassification::Safe);
+            }
         }
 
         // Enforce dependency rules

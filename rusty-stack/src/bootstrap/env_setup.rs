@@ -213,9 +213,15 @@ fn detect_gpus_from_rocminfo() -> Vec<u32> {
     let mut discrete_indices: Vec<u32> = Vec::new();
     let mut current_gpu_id: Option<u32> = None;
     let mut is_igpu = false;
+    let mut gpu_agent_counter = 0u32; // Fallback counter for systems without GPU ID lines
 
     for line in output.lines() {
         let trimmed = line.trim();
+
+        // Detect new Agent sections (lines like "Agent N")
+        if trimmed.starts_with("Agent") && trimmed.contains(char::is_numeric) {
+            // Don't increment here — only for GPU agents
+        }
 
         if trimmed.starts_with("GPU ID:") {
             // Save previous GPU if it was discrete
@@ -240,6 +246,12 @@ fn detect_gpus_from_rocminfo() -> Vec<u32> {
             if is_integrated_gpu_name(marketing_name) {
                 is_igpu = true;
             }
+
+            // If no GPU ID lines exist, track by agent counter
+            if current_gpu_id.is_none() {
+                // Only count GPU agents (those with Device Type: GPU)
+                // We'll finalize on Device Type line
+            }
         } else if trimmed.starts_with("Device Type:") {
             let device_type = trimmed
                 .strip_prefix("Device Type:")
@@ -256,6 +268,12 @@ fn detect_gpus_from_rocminfo() -> Vec<u32> {
                 if !is_igpu && !discrete_indices.contains(&id) {
                     discrete_indices.push(id);
                 }
+            } else if device_type.contains("GPU") {
+                // No GPU ID lines in this rocminfo output — use counter
+                if !is_igpu && !discrete_indices.contains(&gpu_agent_counter) {
+                    discrete_indices.push(gpu_agent_counter);
+                }
+                gpu_agent_counter += 1;
             }
         }
     }
@@ -283,37 +301,89 @@ fn detect_gpus_from_lspci() -> Vec<u32> {
         _ => return Vec::new(),
     };
 
-    let gpu_count = output
-        .lines()
-        .filter(|line| {
-            let lower = line.to_lowercase();
-            (lower.contains("amd")
-                || lower.contains("radeon")
-                || lower.contains("advanced micro devices"))
-                && (lower.contains("vga") || lower.contains("3d") || lower.contains("display"))
-        })
-        .count();
+    let mut discrete_count = 0u32;
+    for line in output.lines() {
+        let lower = line.to_lowercase();
+        if !((lower.contains("amd")
+            || lower.contains("radeon")
+            || lower.contains("advanced micro devices"))
+            && (lower.contains("vga") || lower.contains("3d") || lower.contains("display")))
+        {
+            continue;
+        }
+        // Filter out integrated GPUs
+        if is_integrated_gpu_name(line) {
+            continue;
+        }
+        discrete_count += 1;
+    }
 
-    if gpu_count > 0 {
-        (0..gpu_count as u32).collect()
+    if discrete_count > 0 {
+        (0..discrete_count).collect()
     } else {
         Vec::new()
     }
 }
 
 /// Detect GPUs from /dev/dri/render* nodes.
+/// Filters out iGPU render nodes by checking the associated device description.
 fn detect_gpus_from_render_nodes() -> Vec<u32> {
-    let render_count = std::fs::read_dir("/dev/dri")
+    let render_entries: Vec<_> = std::fs::read_dir("/dev/dri")
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_name().to_string_lossy().starts_with("render"))
-                .count()
+                .collect()
         })
-        .unwrap_or(0);
+        .unwrap_or_default();
 
-    if render_count > 0 {
-        (0..render_count as u32).collect()
+    if render_entries.is_empty() {
+        return Vec::new();
+    }
+
+    // Try to filter iGPUs via sysfs device description
+    let discrete_count = render_entries.iter().filter(|entry| {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Extract render node number
+        let node_num: String = name
+            .trim_start_matches("render")
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if node_num.is_empty() {
+            return true; // Can't determine, include it
+        }
+
+        // Check sysfs for the associated device description
+        let sysfs_path = format!("/sys/class/drm/card{}-render/device/uevent", node_num);
+        if let Ok(uevent) = std::fs::read_to_string(&sysfs_path) {
+            // Look for PCI_ID to identify the device
+            for line in uevent.lines() {
+                if line.starts_with("PCI_ID=") {
+                    // Could check specific IDs here if needed
+                    return true;
+                }
+            }
+        }
+
+        // Alternative: check via /sys/class/drm/card<N>/device/device
+        let card_sysfs = format!("/sys/class/drm/card{}/device/device", node_num);
+        if let Ok(pci_id) = std::fs::read_to_string(&card_sysfs) {
+            let pci_id = pci_id.trim();
+            // 0x164e = Raphael iGPU (7800X3D)
+            if pci_id == "0x164e" {
+                return false; // Skip iGPU
+            }
+        }
+
+        true // Include by default
+    }).count();
+
+    if discrete_count > 0 {
+        (0..discrete_count as u32).collect()
+    } else if !render_entries.is_empty() {
+        // Fallback: use all render nodes (safer than returning empty)
+        (0..render_entries.len() as u32).collect()
     } else {
         Vec::new()
     }
@@ -556,17 +626,10 @@ export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compa
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
 export HSA_OVERRIDE_GFX_VERSION={hsa_override_gfx_version}
-if [ -z "${{HSA_ENABLE_SDMA:-}}" ]; then export HSA_ENABLE_SDMA=0; fi
-if [ -z "${{GPU_MAX_HEAP_SIZE:-}}" ]; then export GPU_MAX_HEAP_SIZE=100; fi
-if [ -z "${{GPU_MAX_ALLOC_PERCENT:-}}" ]; then export GPU_MAX_ALLOC_PERCENT=100; fi
-# HSA_TOOLS_LIB must be a library path or 0, not 1
-if [ -z "${{HSA_TOOLS_LIB:-}}" ]; then
-    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
-        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
-    else
-        export HSA_TOOLS_LIB=0
-    fi
-fi
+export HSA_ENABLE_SDMA=0
+export GPU_MAX_HEAP_SIZE=100
+export GPU_MAX_ALLOC_PERCENT=100
+export HSA_TOOLS_LIB=/opt/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so
 
 # MIOpen Settings
 # Only set if not already set
@@ -599,6 +662,9 @@ if [ -z "${{OMPI_MCA_coll_hcoll_enable:-}}" ]; then export OMPI_MCA_coll_hcoll_e
 if [ -z "${{OMPI_MCA_pml:-}}" ]; then export OMPI_MCA_pml=ucx; fi
 if [ -z "${{OMPI_MCA_osc:-}}" ]; then export OMPI_MCA_osc=ucx; fi
 if [ -z "${{OMPI_MCA_btl:-}}" ]; then export OMPI_MCA_btl=^openib,uct; fi
+# Prevent UCX ROCm memory registration segfault on multi-GPU systems
+export UCX_MEMTYPE_CACHE=no
+export UCX_LOG_LEVEL=error
 
 # ONNX Runtime Settings
 # Only add if not already in PYTHONPATH

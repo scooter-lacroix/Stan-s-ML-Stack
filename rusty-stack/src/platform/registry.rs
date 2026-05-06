@@ -449,7 +449,7 @@ fn get_version_command_based(info: &ComponentInfo) -> String {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     if let Some(line) = stdout.lines().next() {
-                        return line.trim().to_string();
+                        return extract_semver(line.trim());
                     }
                 }
             }
@@ -485,6 +485,7 @@ fn get_version_python_single(info: &ComponentInfo) -> String {
 }
 
 /// Get version for git-based components (short hash + subject).
+/// Also stores the short hash for update comparison.
 fn get_version_git(info: &ComponentInfo, home: &Path) -> String {
     let Some(ref clone_dir) = info.clone_dir else {
         return "unknown".to_string();
@@ -496,6 +497,22 @@ fn get_version_git(info: &ComponentInfo, home: &Path) -> String {
         return "not installed".to_string();
     }
 
+    // Try to get a tag-based version first (git describe)
+    if let Ok(output) = Command::new("git")
+        .args(["-C", repo_path.to_str().unwrap_or(".")])
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let tag = stdout.trim().to_string();
+            if !tag.is_empty() {
+                return tag;
+            }
+        }
+    }
+
+    // Fallback to short hash + subject
     if let Ok(output) = Command::new("git")
         .args(["-C", repo_path.to_str().unwrap_or(".")])
         .args(["log", "-1", "--format=%h %s"])
@@ -516,6 +533,69 @@ fn get_version_git(info: &ComponentInfo, home: &Path) -> String {
 // ===========================================================================
 // Batch Python Operations (VAL-PLAT-015, VAL-PLAT-016)
 // ===========================================================================
+
+/// Extract a semantic version substring from a version output string.
+///
+/// Handles strings like:
+/// - `"ROCM-SMI version: 4.0.0+unknown"` → `"4.0.0"`
+/// - `"4.0.0+unknown"` → `"4.0.0"`
+/// - `"v2.6.0"` → `"2.6.0"`
+/// - `"2.6.0"` → `"2.6.0"`
+fn extract_semver(raw: &str) -> String {
+    // Strip common prefixes
+    let s = raw
+        .trim()
+        .trim_start_matches('v')
+        .to_string();
+
+    // Try to find a semver pattern (X.Y.Z or X.Y)
+    let re = regex::Regex::new(r"(\d+\.\d+(?:\.\d+)?)").unwrap();
+    if let Some(caps) = re.captures(&s) {
+        return caps[1].to_string();
+    }
+
+    // No match — return cleaned string
+    s
+}
+
+/// Check if a git-based component has updates available.
+///
+/// Performs `git fetch` then compares local HEAD with remote HEAD.
+/// Returns `true` if remote has new commits.
+pub fn git_component_has_updates(id: &str) -> bool {
+    let Some(info) = get_component(id) else {
+        return false;
+    };
+    let Some(ref clone_dir) = info.clone_dir else {
+        return false;
+    };
+    let home = resolve_user_home();
+    let repo_path = home.join(clone_dir);
+
+    if !repo_path.join(".git").exists() {
+        return false;
+    }
+
+    // Fetch without output
+    let _ = Command::new("git")
+        .args(["-C", repo_path.to_str().unwrap_or(".")])
+        .args(["fetch", "--quiet"])
+        .output();
+
+    // Compare local HEAD with remote HEAD
+    if let Ok(output) = Command::new("git")
+        .args(["-C", repo_path.to_str().unwrap_or(".")])
+        .args(["log", "HEAD..@{u}", "--oneline"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return !stdout.trim().is_empty();
+        }
+    }
+
+    false
+}
 
 /// Python module component IDs and their import names.
 fn python_module_mappings() -> &'static [(String, String)] {

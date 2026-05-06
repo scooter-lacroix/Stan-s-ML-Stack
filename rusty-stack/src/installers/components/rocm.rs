@@ -23,7 +23,7 @@ pub enum RocmChannel {
     Legacy,
     /// ROCm 7.1 — production-ready for RDNA 3 (Stable).
     Stable,
-    /// ROCm 7.2.1 — expanded RDNA 4 support (Latest, default).
+    /// ROCm 7.2.2 — expanded RDNA 4 support (Latest, default).
     Latest,
 }
 
@@ -53,7 +53,7 @@ impl RocmChannel {
         match self {
             RocmChannel::Legacy => "6.4.3",
             RocmChannel::Stable => "7.1",
-            RocmChannel::Latest => "7.2.1",
+            RocmChannel::Latest => "7.2.2",
         }
     }
 
@@ -62,7 +62,7 @@ impl RocmChannel {
         match self {
             RocmChannel::Legacy => "6.4.3",
             RocmChannel::Stable => "7.1",
-            RocmChannel::Latest => "7.2.1",
+            RocmChannel::Latest => "7.2.2",
         }
     }
 
@@ -71,7 +71,7 @@ impl RocmChannel {
         match self {
             RocmChannel::Legacy => "6.4.60403-1",
             RocmChannel::Stable => "7.1.70100-1",
-            RocmChannel::Latest => "7.2.1.70201-1",
+            RocmChannel::Latest => "7.2.2.70202-1",
         }
     }
 
@@ -81,6 +81,34 @@ impl RocmChannel {
             RocmChannel::Legacy => "6.4.3",
             RocmChannel::Stable => "7.1",
             RocmChannel::Latest => "7.2",
+        }
+    }
+
+    /// Get the version for this channel, with optional manifest override.
+    ///
+    /// If a manifest is loaded, uses the manifest version for the "rocm" component.
+    /// Falls back to the hardcoded version if no manifest or manifest doesn't contain rocm.
+    pub fn version_from_manifest(manifest: &crate::core::manifest::Manifest) -> String {
+        manifest
+            .components
+            .iter()
+            .find(|c| c.id == "rocm")
+            .map(|c| c.version.clone())
+            .unwrap_or_else(|| RocmChannel::Latest.version().to_string())
+    }
+
+    /// Get the package version for this channel, with optional manifest override.
+    ///
+    /// Constructs a package version string from the manifest version if available.
+    pub fn pkg_version_from_manifest(manifest: &crate::core::manifest::Manifest) -> String {
+        let version = Self::version_from_manifest(manifest);
+        // Convert "7.2.2" to "7.2.2.YYYYMMDD-1" format
+        // For now, use the manifest version directly if it has enough parts
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() >= 3 {
+            format!("{}.70202-1", version)
+        } else {
+            RocmChannel::Latest.pkg_version().to_string()
         }
     }
 }
@@ -365,7 +393,7 @@ impl RocmInstaller {
     /// Arch uses AUR packages (yay/paru) for ROCm.
     pub fn pacman_install_commands(&self, aur_helper: &str) -> Vec<PackageCommand> {
         let packages = self.pacman_rocm_packages();
-        let mut args = vec!["-S".to_string(), "--noconfirm".to_string()];
+        let mut args = vec!["-S".to_string(), "--needed".to_string(), "--noconfirm".to_string()];
         args.extend(packages);
 
         vec![
@@ -511,6 +539,7 @@ impl RocmInstaller {
         // yay/pacman "up to date" patterns
         lower.contains("up to date -- skipping")
             || lower.contains("up to date, skipping")
+            || lower.contains("up to date -- reinstalling")
             || lower.contains("there is nothing to do")
             || lower.contains("already installed")
             // pacman -S on already-installed package
@@ -596,8 +625,8 @@ mod tests {
     #[test]
     fn test_channel_latest_version() {
         let ch = RocmChannel::Latest;
-        assert_eq!(ch.version(), "7.2.1");
-        assert_eq!(ch.pkg_version(), "7.2.1.70201-1");
+        assert_eq!(ch.version(), "7.2.2");
+        assert_eq!(ch.pkg_version(), "7.2.2.70202-1");
         assert_eq!(ch.major_minor(), "7.2");
     }
 
@@ -624,7 +653,7 @@ mod tests {
 
         // wget download
         assert_eq!(cmds[0].program, "wget");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.1.70201-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.2.70202-1")));
 
         // dpkg install
         assert_eq!(cmds[1].program, "sudo");
@@ -663,7 +692,7 @@ mod tests {
 
         // dnf install RPM
         assert_eq!(cmds[0].program, "sudo");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.1.70201-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.2.70202-1")));
         assert!(cmds[0].args.iter().any(|a| a.contains("el9")));
 
         // rocm-libs metapackage
@@ -710,7 +739,7 @@ mod tests {
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].program, "sudo");
         assert!(cmds[0].args.iter().any(|a| a.contains("zypper")));
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.1.70201-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.2.70202-1")));
     }
 
     // --- Repo URL construction ---
@@ -767,7 +796,7 @@ mod tests {
             ..Default::default()
         });
         let url = installer.amdgpu_install_deb_url();
-        assert!(url.contains("7.2.1.70201-1"));
+        assert!(url.contains("7.2.2.70202-1"));
         assert!(url.contains("ubuntu/noble"));
         assert!(url.ends_with(".deb"));
     }
@@ -779,7 +808,7 @@ mod tests {
             ..Default::default()
         });
         let url = installer.amdgpu_install_rpm_url("9");
-        assert!(url.contains("7.2.1.70201-1"));
+        assert!(url.contains("7.2.2.70202-1"));
         assert!(url.contains("rhel/9"));
         assert!(url.ends_with(".noarch.rpm"));
     }

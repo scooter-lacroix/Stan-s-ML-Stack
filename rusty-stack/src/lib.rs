@@ -15,6 +15,7 @@ pub mod core;
 pub mod hardware;
 pub mod installer;
 pub mod installers;
+pub mod logging;
 pub mod orchestrator;
 pub mod platform;
 pub mod state;

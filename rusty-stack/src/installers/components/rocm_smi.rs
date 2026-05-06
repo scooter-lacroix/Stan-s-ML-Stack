@@ -10,6 +10,7 @@
 
 use crate::installers::common::DistroFacade;
 use crate::platform::detection::DistroFamily;
+use std::path::PathBuf;
 
 // ===========================================================================
 // Types
@@ -24,6 +25,8 @@ pub struct ShellCommand {
     pub args: Vec<String>,
     /// Environment variables to set.
     pub env: Vec<(String, String)>,
+    /// Working directory for the command.
+    pub working_dir: Option<PathBuf>,
 }
 
 impl ShellCommand {
@@ -104,6 +107,7 @@ impl RocmSmiInstaller {
                 target_dir.to_string(),
             ],
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -145,7 +149,7 @@ impl RocmSmiInstaller {
                     "-S".to_string(),
                     "--needed".to_string(),
                     "--noconfirm".to_string(),
-                    "rocm-smi".to_string(),
+                    "rocm-smi-lib".to_string(),
                 ],
             ),
             DistroFamily::Suse => (
@@ -172,6 +176,7 @@ impl RocmSmiInstaller {
             program,
             args,
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -212,11 +217,12 @@ impl RocmSmiInstaller {
             program,
             args,
             env: vec![],
+            working_dir: None,
         }
     }
 
     /// Construct the pip install command for rocm-smi from source.
-    pub fn build_pip_install_command(&self, _src_dir: &str) -> ShellCommand {
+    pub fn build_pip_install_command(&self, src_dir: &str) -> ShellCommand {
         ShellCommand {
             program: self.config.python_bin.clone(),
             args: vec![
@@ -227,6 +233,7 @@ impl RocmSmiInstaller {
                 ".".to_string(),
             ],
             env: vec![],
+            working_dir: Some(PathBuf::from(src_dir)),
         }
     }
 
@@ -329,7 +336,7 @@ mod tests {
         assert!(cmd.args.contains(&"-S".to_string()));
         assert!(cmd.args.contains(&"--needed".to_string()));
         assert!(cmd.args.contains(&"--noconfirm".to_string()));
-        assert!(cmd.args.contains(&"rocm-smi".to_string()));
+        assert!(cmd.args.contains(&"rocm-smi-lib".to_string()));
     }
 
     #[test]

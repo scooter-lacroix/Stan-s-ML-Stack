@@ -63,13 +63,18 @@ enum Subcommands {
         #[arg(long)]
         scan_only: bool,
 
-        /// Apply only safe-classified updates without prompting.
+        /// Apply only safe-classified updates.
+        /// Shows plan with countdown confirmation unless --yes is also set.
         #[arg(long)]
         all_safe: bool,
 
         /// Include experimental components in the plan.
         #[arg(long)]
         include_experimental: bool,
+
+        /// Skip confirmation prompts (auto-apply). Useful for scripting/CI.
+        #[arg(long, short = 'y')]
+        yes: bool,
 
         /// Force JSON output mode.
         #[arg(long)]
@@ -173,11 +178,28 @@ mod update_impl {
         scan_only: bool,
         all_safe: bool,
         include_experimental: bool,
+        yes: bool,
         json: bool,
         components: Vec<String>,
     ) {
         // Determine output mode: JSON if explicitly requested or not a TTY
         let json_mode = json || !io::stdout().is_terminal();
+
+        // Initialize logging for update operations
+        let _log_guard = if json_mode {
+            rusty_stack::logging::init_batch_logging("update")
+        } else {
+            rusty_stack::logging::init_logging("update")
+        };
+        tracing::info!(
+            scan_only = scan_only,
+            all_safe = all_safe,
+            include_experimental = include_experimental,
+            yes = yes,
+            json_mode = json_mode,
+            components = ?components,
+            "Update command started"
+        );
 
         // Build planner options from CLI args
         let options = rusty_stack::orchestrator::planner::PlannerOptions {
@@ -257,9 +279,23 @@ mod update_impl {
                         println!("\n(scan-only mode: no changes will be applied)");
                     } else if plan.summary.selected == 0 {
                         println!("\nNo updates selected.");
-                    } else if all_safe {
-                        // --all-safe: apply immediately without prompting
-                        println!("\nApplying {} safe updates...", plan.summary.selected);
+                        tracing::info!("No updates selected");
+                    } else if yes || all_safe {
+                        // --all-safe or --yes: show countdown unless --yes skips it
+                        if yes {
+                            tracing::info!(count = plan.summary.selected, "Auto-applying (--yes flag)");
+                            println!("\nApplying {} updates (auto-confirmed)...", plan.summary.selected);
+                        } else {
+                            // --all-safe: 10-second countdown with cancel
+                            if !countdown_confirm(plan.summary.selected) {
+                                tracing::info!("Update cancelled during countdown");
+                                println!("\nCancelled.");
+                                return;
+                            }
+                        }
+                        let log_path = rusty_stack::logging::log_dir();
+                        println!("  Logging to: {}", log_path.display());
+                        println!();
                         let apply_result = apply_plan(&plan);
                         print_apply_summary(&apply_result);
                         if apply_result.has_failures() {
@@ -502,49 +538,269 @@ mod update_impl {
         output
     }
 
-    /// Apply the selected items in the plan using the native installer.
+    /// Show a 10-second countdown confirmation before applying updates.
     ///
-    /// Rebuilds PlannerItems from the plan output and delegates to ApplyEngine
-    /// with a real executor that runs the TUI installer in batch mode.
-    fn apply_plan(plan: &rusty_stack::orchestrator::planner::PlanOutput) -> rusty_stack::orchestrator::apply::ApplySummary {
-        use rusty_stack::orchestrator::apply::{ApplyEngine, ApplyExecutor, ApplyOptions};
+    /// Press Enter to apply immediately, 'n' or Ctrl+C to cancel.
+    /// Returns `true` if confirmed, `false` if cancelled.
+    fn countdown_confirm(count: usize) -> bool {
+        use std::io::stdin;
+        use std::thread;
+        use std::time::Duration;
 
-        /// Real executor that triggers reinstallation via the rusty binary.
-        ///
-        /// For each component, runs `rusty` in TUI batch mode targeting just
-        /// that component. If the rusty binary is not available, falls back
-        /// to a no-op success (the user can re-run the TUI manually).
-        struct RustyExecutor;
+        println!("\n  ┌───────────────────────────────────────────────────┐");
+        println!("  │ {} update{} will be applied in 10 seconds.        │", count, if count > 1 { "s" } else { "" });
+        println!("  │ Press Enter to apply now, 'n' to cancel.         │");
+        println!("  └───────────────────────────────────────────────────┘");
 
-        impl ApplyExecutor for RustyExecutor {
-            fn apply_component(&self, component_id: &str, _proposed_version: &str) -> Result<(), String> {
-                // Find the rusty binary — prefer the current executable
-                let rusty_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("rusty"));
+        // Set stdin to non-blocking raw mode for the countdown
+        #[cfg(unix)]
+        {
+            use std::io::Read;
+            let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } == 0 {
+                let original = termios;
+                // Set to raw mode (no echo, no canonical, non-blocking reads)
+                termios.c_lflag &= !(libc::ICANON | libc::ECHO);
+                termios.c_cc[libc::VMIN] = 0;
+                termios.c_cc[libc::VTIME] = 0;
+                let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) };
 
-                // Run the TUI installer in batch mode for this specific component.
-                // The TUI handles sudo, environment, and all installation logic.
-                let result = std::process::Command::new(&rusty_bin)
-                    .env("MLSTACK_BATCH_MODE", "1")
-                    .env("MLSTACK_TARGET_COMPONENT", component_id)
-                    .output();
+                let mut confirmed = false;
+                let mut cancelled = false;
 
-                match result {
-                    Ok(output) => {
-                        if output.status.success() {
-                            Ok(())
-                        } else {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            let code = output.status.code().unwrap_or(-1);
-                            Err(format!("{} installation failed (exit {}): {}", component_id, code, stderr.trim()))
+                for remaining in (1..=10).rev() {
+                    eprint!("\r  ⏳ Applying in {:2}s... ", remaining);
+                    let _ = std::io::stderr().flush();
+
+                    // Check for user input
+                    thread::sleep(Duration::from_millis(100));
+                    let mut buf = [0u8; 1];
+                    if let Ok(1) = stdin().read(&mut buf) {
+                        match buf[0] {
+                            b'\n' | b'\r' => {
+                                confirmed = true;
+                                break;
+                            }
+                            b'n' | b'N' | b'q' | b'Q' => {
+                                cancelled = true;
+                                break;
+                            }
+                            3 => { // Ctrl+C
+                                cancelled = true;
+                                break;
+                            }
+                            _ => {}
                         }
                     }
-                    Err(e) => {
-                        // If we can't run the binary, log a warning and succeed
-                        // so the apply continues for other components.
-                        eprintln!("  [WARN] Could not execute {:?}: {}. Component '{}' may need manual reinstallation.", rusty_bin, e, component_id);
-                        Ok(())
+                }
+
+                // Restore original terminal settings
+                let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+
+                eprint!("\r{}\r", " ".repeat(40));
+
+                if cancelled {
+                    return false;
+                }
+                if confirmed {
+                    println!("  ✓ Confirmed.");
+                    return true;
+                }
+                // Countdown expired — auto-confirm
+                println!("  ✓ Countdown elapsed — auto-applying.");
+                return true;
+            }
+        }
+
+        // Fallback for non-unix: simple prompt
+        print!("  Apply {} updates? [Y/n] ", count);
+        let _ = std::io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_ok() {
+            let answer = input.trim().to_lowercase();
+            answer != "n" && answer != "no"
+        } else {
+            false
+        }
+    }
+    /// Apply the selected items using the native installer (direct function calls).
+    ///
+    /// Uses `DirectInstallerExecutor` which calls `installer::run_installation()`
+    /// directly - no subprocess spawning.
+    fn apply_plan(plan: &rusty_stack::orchestrator::planner::PlanOutput) -> rusty_stack::orchestrator::apply::ApplySummary {
+        use rusty_stack::orchestrator::apply::{ApplyEngine, ApplyExecutor, ApplyOptions};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        /// Read a password from TTY without echo.
+        /// Returns None if not a TTY or reading fails.
+        ///
+        /// Uses `std::io::Read::read()` on raw stdin for secure password input
+        /// (avoids line-buffering artifacts from `Stdin::read_line()`).
+        fn read_password_from_tty() -> Option<String> {
+            use std::io::Read;
+            if !std::io::stdin().is_terminal() {
+                // Not a TTY — try reading from stdin directly (piped input)
+                let mut buf = vec![0u8; 1024];
+                let n = std::io::stdin().read(&mut buf).ok()?;
+                let s = String::from_utf8_lossy(&buf[..n]);
+                return Some(s.trim().to_string());
+            }
+            // Use rpassword-like approach: disable echo via termios
+            #[cfg(unix)]
+            {
+                let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+                if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } != 0 {
+                    return None;
+                }
+                let original = termios;
+                // Disable echo and canonical mode for raw byte reading
+                termios.c_lflag &= !(libc::ECHO | libc::ICANON);
+                if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) } != 0 {
+                    return None;
+                }
+                // Read raw bytes until newline
+                let mut password = Vec::new();
+                let mut byte = [0u8; 1];
+                loop {
+                    match std::io::stdin().read(&mut byte) {
+                        Ok(0) => break, // EOF
+                        Ok(_) if byte[0] == b'\n' => break,
+                        Ok(_) if byte[0] == b'\r' => break,
+                        Ok(_) => password.push(byte[0]),
+                        Err(_) => break,
                     }
                 }
+                // Restore original settings
+                unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original); };
+                eprintln!(); // newline after password input
+                String::from_utf8(password).ok().map(|s| s.trim().to_string())
+            }
+            #[cfg(not(unix))]
+            { None }
+        }
+
+        /// Direct installer executor - calls Rust installer functions in-process.
+        struct DirectInstallerExecutor {
+            cancelled: Arc<AtomicBool>,
+        }
+
+        impl DirectInstallerExecutor {
+            fn new(cancelled: Arc<AtomicBool>) -> Self { Self { cancelled } }
+            fn component_for_id(id: &str) -> Option<rusty_stack::state::Component> {
+                rusty_stack::state::default_components().into_iter().find(|c| c.id == id).map(|mut c| { c.selected = true; c })
+            }
+        }
+
+        impl ApplyExecutor for DirectInstallerExecutor {
+            fn apply_component(&self, component_id: &str, proposed_version: &str) -> Result<(), String> {
+                if self.cancelled.load(Ordering::Relaxed) {
+                    return Err(format!("{} cancelled by user", component_id));
+                }
+                tracing::info!(component = component_id, proposed_version, "Starting component installation");
+                let Some(component) = Self::component_for_id(component_id) else {
+                    return Err(format!("Unknown component ID: {}", component_id));
+                };
+
+                // Resolve sudo password for components that need it
+                let sudo_password = if component.needs_sudo {
+                    // Try to get a sudo password from the user
+                    if unsafe { libc::geteuid() } == 0 {
+                        // Running as root — no sudo needed
+                        None
+                    } else {
+                        // Prompt for sudo password
+                        eprint!("    sudo password for {}: ", component.name);
+                        let _ = std::io::stderr().flush();
+                        let password = read_password_from_tty();
+                        if let Some(ref _pw) = password {
+                            tracing::info!(component = component_id, "Sudo password provided");
+                        } else {
+                            tracing::warn!(component = component_id, "No sudo password provided");
+                        }
+                        password
+                    }
+                } else {
+                    None
+                };
+
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (_, input_rx) = std::sync::mpsc::channel();
+                let scripts_dir = rusty_stack::detect_scripts_dir();
+                let config = rusty_stack::config::InstallerConfig::load_or_default(&scripts_dir)
+                    .unwrap_or_else(|_| rusty_stack::config::InstallerConfig::default_with_paths(
+                        &scripts_dir,
+                        format!("{}/logs", std::env::var("HOME").unwrap_or_else(|_| ".".into())),
+                        rusty_stack::config::config_file_path()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/mlstack/config/config.json")),
+                    ));
+
+                // Propagate config flags to env vars that run_installation reads
+                if config.force_reinstall {
+                    std::env::set_var("MLSTACK_FORCE_REINSTALL", "1");
+                    std::env::set_var("FORCE", "true");
+                    std::env::set_var("PYTORCH_REINSTALL", "true");
+                }
+                if config.install_method != "auto" {
+                    std::env::set_var("MLSTACK_INSTALL_METHOD", &config.install_method);
+                }
+                let component_name = component.name.clone();
+                let cid = component_id.to_string();
+                let handle = std::thread::spawn(move || {
+                    rusty_stack::installer::run_installation(vec![component], config, sudo_password, tx, input_rx);
+                });
+                let mut success = true;
+                let mut error_msg = String::new();
+                let spinner: &[char] = &['\u{280b}','\u{2819}','\u{2839}','\u{2838}','\u{283c}','\u{2834}','\u{2826}','\u{2827}','\u{2807}','\u{280f}'];
+                let mut si = 0usize;
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(rusty_stack::installer::InstallerEvent::Log(line, _)) => {
+                            println!("    | {}", line);
+                            tracing::info!(component = %cid, log = %line);
+                        }
+                        Ok(rusty_stack::installer::InstallerEvent::Progress { progress, message, .. }) => {
+                            let pct = (progress * 100.0) as u8;
+                            let s = spinner[si % spinner.len()]; si += 1;
+                            eprint!("\r    {} {} [{:>3}%] {}    ", s, cid, pct, message);
+                            let _ = std::io::stderr().flush();
+                        }
+                        Ok(rusty_stack::installer::InstallerEvent::ComponentStart { name, .. }) => {
+                            eprint!("\r    ");
+                            println!("    > Installing {}...", name);
+                            tracing::info!(component = %cid, name = %name, "Component started");
+                        }
+                        Ok(rusty_stack::installer::InstallerEvent::ComponentComplete { success: s, message, .. }) => {
+                            eprint!("\r{}\r", " ".repeat(80));
+                            if s {
+                                println!("    ok {} - {}", component_name, message);
+                                tracing::info!(component = %cid, "Completed successfully");
+                            } else {
+                                println!("    FAIL {} - {}", component_name, message);
+                                tracing::error!(component = %cid, error = %message, "Failed");
+                                success = false;
+                                error_msg = message;
+                            }
+                        }
+                        Ok(rusty_stack::installer::InstallerEvent::VerificationReport { lines, .. }) => {
+                            for line in &lines { println!("    | {}", line); }
+                        }
+                        Ok(rusty_stack::installer::InstallerEvent::Finished { success: s }) => {
+                            if !s { success = false; if error_msg.is_empty() { error_msg = "Finished with errors".into(); } }
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if self.cancelled.load(Ordering::Relaxed) {
+                                return Err(format!("{} cancelled", cid));
+                            }
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => { break; }
+                    }
+                }
+                let _ = handle.join();
+                eprint!("\r{}\r", " ".repeat(80));
+                if success { tracing::info!(component=%cid,"Succeeded"); Ok(()) }
+                else { tracing::error!(component=%cid,error=%error_msg,"Failed"); Err(error_msg) }
             }
         }
 
@@ -592,9 +848,9 @@ mod update_impl {
             }
         }).collect();
 
-        let engine = ApplyEngine::new(RustyExecutor);
-        let options = ApplyOptions::default();
-        engine.apply(&items, &options)
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let engine = ApplyEngine::new(DirectInstallerExecutor::new(cancelled));
+        engine.apply(&items, &ApplyOptions::default())
     }
 
     /// Print a human-readable summary of the apply results.
@@ -1077,10 +1333,11 @@ fn main() {
             scan_only,
             all_safe,
             include_experimental,
+            yes,
             json,
             components,
         }) => {
-            update_impl::run(scan_only, all_safe, include_experimental, json, components);
+            update_impl::run(scan_only, all_safe, include_experimental, yes, json, components);
         }
         Some(Subcommands::Upgrade {
             yes,

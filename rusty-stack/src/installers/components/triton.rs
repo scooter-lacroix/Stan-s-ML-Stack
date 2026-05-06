@@ -9,6 +9,7 @@
 //! - **VAL-INSTALL-004**: Triton installer correct pip command
 
 use std::fmt;
+use std::path::PathBuf;
 
 // ===========================================================================
 // Types
@@ -68,6 +69,8 @@ pub struct ShellCommand {
     pub args: Vec<String>,
     /// Environment variables to set.
     pub env: Vec<(String, String)>,
+    /// Working directory for the command.
+    pub working_dir: Option<PathBuf>,
 }
 
 impl ShellCommand {
@@ -144,6 +147,7 @@ impl TritonInstaller {
                 target_dir.to_string(),
             ],
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -154,6 +158,7 @@ impl TritonInstaller {
             program: "git".to_string(),
             args: vec!["checkout".to_string(), branch.to_string()],
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -182,6 +187,7 @@ impl TritonInstaller {
             program: self.config.python_bin.clone(),
             args,
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -191,7 +197,7 @@ impl TritonInstaller {
     /// - GPU_ARCHS=gfx1100
     /// - TRITON_ROCM=1
     /// - MAX_JOBS=<nproc-1>
-    pub fn build_pip_install_command(&self, _src_dir: &str) -> ShellCommand {
+    pub fn build_pip_install_command(&self, src_dir: &str) -> ShellCommand {
         let use_break = self.supports_break_system_packages();
         let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
@@ -217,6 +223,7 @@ impl TritonInstaller {
             program: self.config.python_bin.clone(),
             args,
             env,
+            working_dir: Some(PathBuf::from(src_dir)),
         }
     }
 
@@ -360,6 +367,7 @@ mod tests {
                 "https://github.com/ROCm/triton.git".to_string(),
             ],
             env: vec![],
+            working_dir: None,
         };
         assert_eq!(
             cmd.to_command_string(),
@@ -376,6 +384,7 @@ mod tests {
                 ("TRITON_ROCM".to_string(), "1".to_string()),
                 ("GPU_ARCHS".to_string(), "gfx1100".to_string()),
             ],
+            working_dir: None,
         };
         let s = cmd.to_command_string();
         assert!(s.contains("TRITON_ROCM=1"));

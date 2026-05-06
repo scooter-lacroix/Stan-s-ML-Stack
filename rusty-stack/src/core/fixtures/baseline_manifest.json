@@ -106,21 +106,21 @@
       "version": "latest",
       "script": "scripts/install_comfyui.sh",
       "category": "UiUx",
-      "validation_tier": "Experimental"
+      "validation_tier": "Validated"
     },
     {
       "id": "vllm-studio",
       "version": "latest",
       "script": "scripts/install_vllm_studio.sh",
       "category": "UiUx",
-      "validation_tier": "Experimental"
+      "validation_tier": "Validated"
     },
     {
       "id": "textgen",
       "version": "latest",
       "script": "scripts/install_textgen.sh",
       "category": "UiUx",
-      "validation_tier": "Experimental"
+      "validation_tier": "Validated"
     },
     {
       "id": "permanent-env",

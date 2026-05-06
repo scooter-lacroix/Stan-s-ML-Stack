@@ -975,6 +975,9 @@ impl App {
                 Category::Performance => {
                     if comp.installed {
                         ("Benchmarked", Color::Green, "✓")
+                    } else if comp.progress > 0.0 {
+                        // Was attempted but failed
+                        ("Failed", Color::Red, "✗")
                     } else {
                         ("Pending benchmark", Color::Yellow, "○")
                     }
@@ -2178,10 +2181,16 @@ impl App {
                     self.push_log_ext(message, true);
                 }
                 InstallerEvent::ComponentStart { component_id, name } => {
-                    self.install_status.message = format!("Installing {}", name);
                     if let Some(comp) = self.components.iter_mut().find(|c| c.id == component_id) {
+                        self.install_status.message = if comp.category == Category::Performance {
+                            format!("Running {}", name)
+                        } else {
+                            format!("Installing {}", name)
+                        };
                         comp.progress = 0.05;
                         comp.installed = false;
+                    } else {
+                        self.install_status.message = format!("Installing {}", name);
                     }
                     self.recalculate_overall_progress();
                     self.push_log(self.install_status.message.clone());
@@ -2320,7 +2329,12 @@ impl App {
             }
 
             if comp.category != Category::Verification {
-                lines.push(self.task_line("Install", self.install_task_status(comp)));
+                let task_label = if comp.category == Category::Performance {
+                    "Benchmark"
+                } else {
+                    "Install"
+                };
+                lines.push(self.task_line(task_label, self.install_task_status(comp)));
                 remaining = remaining.saturating_sub(1);
             }
 

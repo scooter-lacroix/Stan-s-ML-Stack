@@ -256,11 +256,10 @@ fn test_integration_version_lookup_git_components_match_shell_format() {
             "version for '{comp_id}' must not be empty"
         );
         if version != "not installed" && version != "installed" {
-            // Git-based version should contain a space (hash + subject)
-            // or be a short hash (7 hex chars)
+            // Git-based version should be: a tag (e.g., "v4.7.3"), hash+subject, or short hash
             assert!(
-                version.contains(' ') || version.len() == 7,
-                "git version for '{comp_id}' should be 'hash subject' format, got: '{version}'"
+                version.contains(' ') || version.len() == 7 || version.starts_with('v') || version.contains('.'),
+                "git version for '{comp_id}' should be tag, 'hash subject' or short hash, got: '{version}'"
             );
         }
     }

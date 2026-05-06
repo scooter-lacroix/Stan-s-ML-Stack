@@ -179,11 +179,19 @@ impl MegatronInstaller {
             ),
         ];
 
-        // HSA_TOOLS_LIB
-        let profiler_lib = rocm_env
-            .path()
-            .map(|p| p.join("lib/librocprofiler-sdk-tool.so"))
-            .filter(|p| p.exists());
+        // HSA_TOOLS_LIB - check for rocprofiler library
+        // Try the ROCm 7.x layout first (lib/rocprofiler-sdk/), then the old layout (lib/)
+        let profiler_lib = rocm_env.path().and_then(|p| {
+            let new_layout = p.join("lib/rocprofiler-sdk/librocprofiler-sdk-tool.so");
+            let old_layout = p.join("lib/librocprofiler-sdk-tool.so");
+            if new_layout.exists() {
+                Some(new_layout)
+            } else if old_layout.exists() {
+                Some(old_layout)
+            } else {
+                None
+            }
+        });
         if let Some(lib) = profiler_lib {
             env.push((
                 "HSA_TOOLS_LIB".to_string(),

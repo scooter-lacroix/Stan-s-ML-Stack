@@ -149,6 +149,7 @@ export HSA_OVERRIDE_GFX_VERSION={hsa_override}
 export HSA_ENABLE_SDMA=0
 export GPU_MAX_HEAP_SIZE=100
 export GPU_MAX_ALLOC_PERCENT=100
+{hsa_tools_lib_line}
 export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
 export MIOPEN_FIND_MODE=3
 export MIOPEN_FIND_ENFORCE=3
@@ -172,6 +173,18 @@ export TRITON_OVERRIDE_DIR=$MLSTACK_TRITON_HOME/override
 export PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_SYSTEM_PYTHON=1
+
+# MPI/UCX Settings (ROCm-aware)
+export OMPI_MCA_opal_cuda_support=true
+export OMPI_MCA_pml=ucx
+export OMPI_MCA_osc=ucx
+export OMPI_MCA_btl=^openib,uct
+export OMPI_MCA_btl_openib_allow_ib=true
+export OMPI_MCA_btl_openib_warn_no_device_params_found=0
+export OMPI_MCA_coll_hcoll_enable=0
+# Prevent UCX ROCm memory registration segfault on multi-GPU systems
+export UCX_MEMTYPE_CACHE=no
+export UCX_LOG_LEVEL=error"
 "#,
             rocm_version = self.config.rocm_version,
             gpu_arch = self.config.gpu_arch,
@@ -185,14 +198,17 @@ export UV_SYSTEM_PYTHON=1
             python_bin = self.config.python_bin,
             install_method = self.config.install_method,
             hsa_override = self.config.hsa_override_gfx_version,
+            hsa_tools_lib_line = self.generate_hsa_tools_lib_line(),
             uid = uid_output,
         )
     }
 
     /// Generate HSA_TOOLS_LIB line based on profiler library presence.
+    /// Uses the resolved path from `resolve_rocprofiler_tool_path()` to handle
+    /// both the new ROCm 7.x layout (`lib/rocprofiler-sdk/`) and the old layout.
     pub fn generate_hsa_tools_lib_line(&self) -> String {
-        if std::path::Path::new("/opt/rocm/lib/librocprofiler-sdk-tool.so").exists() {
-            "export HSA_TOOLS_LIB=/opt/rocm/lib/librocprofiler-sdk-tool.so".to_string()
+        if let Some(path) = crate::installers::common::utils::resolve_rocprofiler_tool_path() {
+            format!("export HSA_TOOLS_LIB={}", path)
         } else {
             "# HSA_TOOLS_LIB not set (profiler not found)".to_string()
         }

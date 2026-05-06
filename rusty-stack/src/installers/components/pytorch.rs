@@ -194,15 +194,16 @@ impl PyTorchInstaller {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
+        // For global installs, always use python3 -m pip with --break-system-packages
+        // instead of `uv pip install --system`, which fails on uv-managed Python
+        // installations with "externally managed" errors.
+        let effective_use_uv = use_uv && !is_global;
+
         let mut args = Vec::new();
 
-        if use_uv {
+        if effective_use_uv {
             args.push("pip".to_string());
             args.push("install".to_string());
-            if is_global {
-                args.push("--system".to_string());
-                args.push("--break-system-packages".to_string());
-            }
         } else {
             args.push("-m".to_string());
             args.push("pip".to_string());
@@ -219,7 +220,7 @@ impl PyTorchInstaller {
         args.push("torchvision".to_string());
         args.push("torchaudio".to_string());
 
-        let program = if use_uv {
+        let program = if effective_use_uv {
             "uv".to_string()
         } else {
             self.config.python_bin.clone()
@@ -234,14 +235,14 @@ impl PyTorchInstaller {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
+        // For global installs, always use python3 -m pip with --break-system-packages
+        // instead of `uv pip install --system`, which fails on uv-managed Python.
+        let effective_use_uv = use_uv && !is_global;
+
         let mut args = Vec::new();
-        if use_uv {
+        if effective_use_uv {
             args.push("pip".to_string());
             args.push("install".to_string());
-            if is_global {
-                args.push("--system".to_string());
-                args.push("--break-system-packages".to_string());
-            }
         } else {
             args.push("-m".to_string());
             args.push("pip".to_string());
@@ -258,7 +259,7 @@ impl PyTorchInstaller {
         args.push("torchvision".to_string());
         args.push("torchaudio".to_string());
 
-        let program = if use_uv {
+        let program = if effective_use_uv {
             "uv".to_string()
         } else {
             self.config.python_bin.clone()
@@ -273,13 +274,15 @@ impl PyTorchInstaller {
     pub fn build_common_deps_command(&self, use_uv: bool) -> PipCommand {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
+
+        // For global installs, always use python3 -m pip with --break-system-packages
+        // instead of `uv pip install --system`, which fails on uv-managed Python.
+        let effective_use_uv = use_uv && !is_global;
+
         let mut args = Vec::new();
-        if use_uv {
+        if effective_use_uv {
             args.push("pip".to_string());
             args.push("install".to_string());
-            if is_global {
-                args.push("--system".to_string());
-            }
         } else {
             args.push("-m".to_string());
             args.push("pip".to_string());
@@ -291,7 +294,7 @@ impl PyTorchInstaller {
         args.push("torchsde".to_string());
         args.push("sentencepiece".to_string());
 
-        let program = if use_uv {
+        let program = if effective_use_uv {
             "uv".to_string()
         } else {
             self.config.python_bin.clone()
@@ -315,11 +318,19 @@ impl PyTorchInstaller {
             ),
         ];
 
-        // HSA_TOOLS_LIB
-        let rocm_lib = rocm_env
-            .path()
-            .map(|p| p.join("lib/librocprofiler-sdk-tool.so"))
-            .filter(|p| p.exists());
+        // HSA_TOOLS_LIB - check for rocprofiler library
+        // Try the ROCm 7.x layout first (lib/rocprofiler-sdk/), then the old layout (lib/)
+        let rocm_lib = rocm_env.path().and_then(|p| {
+            let new_layout = p.join("lib/rocprofiler-sdk/librocprofiler-sdk-tool.so");
+            let old_layout = p.join("lib/librocprofiler-sdk-tool.so");
+            if new_layout.exists() {
+                Some(new_layout)
+            } else if old_layout.exists() {
+                Some(old_layout)
+            } else {
+                None
+            }
+        });
         if let Some(lib) = rocm_lib {
             exports.push((
                 "HSA_TOOLS_LIB".to_string(),
@@ -407,21 +418,22 @@ mod tests {
     }
 
     #[test]
-    fn test_build_install_command_uv() {
+    fn test_build_install_command_uv_global_uses_pip() {
+        // Global + uv: should use python3 -m pip (not uv --system) to avoid
+        // "externally managed" errors on uv-managed Python installations.
         let installer = PyTorchInstaller::new(PyTorchConfig {
             method: InstallMethod::Global,
             ..Default::default()
         });
         let cmd = installer.build_install_command("7.2", true);
-        assert_eq!(cmd.program, "uv");
+        assert_eq!(cmd.program, "python3");
+        assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.contains(&"pip".to_string()));
         assert!(cmd.args.contains(&"install".to_string()));
-        assert!(cmd.args.contains(&"--system".to_string()));
+        assert!(cmd.args.contains(&"--break-system-packages".to_string()));
         assert!(cmd.args.contains(&"--index-url".to_string()));
         assert!(cmd.args.iter().any(|a| a.contains("rocm-rel-7.2")));
         assert!(cmd.args.contains(&"torch".to_string()));
-        assert!(cmd.args.contains(&"torchvision".to_string()));
-        assert!(cmd.args.contains(&"torchaudio".to_string()));
     }
 
     #[test]

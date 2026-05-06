@@ -634,8 +634,8 @@ if [ -z "${HSA_ENABLE_SDMA:-}" ]; then export HSA_ENABLE_SDMA=0; fi
     fn test_parse_env_file_multiline_if_guard() {
         // Some if-guards span multiple lines
         let contents = r#"if [ -z "${HSA_TOOLS_LIB:-}" ]; then
-    if [ -f "/opt/rocm/lib/librocprofiler-sdk-tool.so" ]; then
-        export HSA_TOOLS_LIB="/opt/rocm/lib/librocprofiler-sdk-tool.so"
+    if [ -f "/opt/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so" ]; then
+        export HSA_TOOLS_LIB="/opt/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so"
     else
         export HSA_TOOLS_LIB=0
     fi

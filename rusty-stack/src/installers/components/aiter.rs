@@ -9,6 +9,7 @@
 //! - **VAL-INSTALL-046**: AITER declares dependency on PyTorch and ROCm
 
 use crate::installers::common::RocmEnv;
+use std::path::PathBuf;
 
 // ===========================================================================
 // Types
@@ -77,6 +78,8 @@ pub struct ShellCommand {
     pub args: Vec<String>,
     /// Environment variables to set.
     pub env: Vec<(String, String)>,
+    /// Working directory for the command.
+    pub working_dir: Option<PathBuf>,
 }
 
 impl ShellCommand {
@@ -159,6 +162,7 @@ impl AiterInstaller {
                 target_dir.to_string(),
             ],
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -201,6 +205,7 @@ impl AiterInstaller {
             program: self.config.python_bin.clone(),
             args,
             env: vec![],
+            working_dir: None,
         }
     }
 
@@ -208,7 +213,7 @@ impl AiterInstaller {
     ///
     /// The original script uses:
     /// `pip install --no-cache-dir --no-build-isolation --no-deps .`
-    pub fn build_pip_install_command(&self, _src_dir: &str) -> ShellCommand {
+    pub fn build_pip_install_command(&self, src_dir: &str) -> ShellCommand {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
 
@@ -227,10 +232,9 @@ impl AiterInstaller {
             program: self.config.python_bin.clone(),
             args,
             env: vec![],
+            working_dir: Some(PathBuf::from(src_dir)),
         }
     }
-
-    /// Construct the ROCm build environment for AITER.
     pub fn build_rocm_env(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
         let rocm_path = rocm_env
             .path()
