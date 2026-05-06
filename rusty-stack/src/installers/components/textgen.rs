@@ -319,10 +319,8 @@ impl TextgenInstaller {
                 "pip".to_string(),
                 "install".to_string(),
             ];
-            // For global installs, uv needs --system
-            if self.config.break_system_packages {
-                args.push("--system".to_string());
-            }
+            // uv pip needs --system for global installs (no venv)
+            args.push("--system".to_string());
             // uv pip: respect UV_PYTHON env var or pass --python
             if std::env::var("UV_PYTHON").is_err() {
                 args.push("--python".to_string());

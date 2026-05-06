@@ -3278,6 +3278,25 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
+            // Step 1b: Fix ownership of cloned directory.
+            // git_clone_or_pull may run with sudo, leaving files root-owned.
+            // pip install runs as the user and needs write access for metadata.
+            let run_user = std::env::var("SUDO_USER")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_default();
+            if !run_user.is_empty() {
+                let chown_cmd = NativeCommand::from_shell_cmd(
+                    "chown",
+                    &[
+                        "-R".to_string(),
+                        format!("{run_user}:{run_user}"),
+                        target_dir.clone(),
+                    ],
+                    &[],
+                );
+                let _ = execute_native_command(&chown_cmd, sudo_pw, sender, &component.name);
+            }
+
             // Step 2: Install dependencies
             let cmd = inst.build_deps_install_command();
             execute_native_command(
