@@ -2473,6 +2473,32 @@ fn is_force_reinstall() -> bool {
         .unwrap_or(false)
 }
 
+/// Build a pip uninstall command that works with both `uv` and `pip3`.
+///
+/// `uv` requires `uv pip uninstall` (not `uv uninstall` which doesn't exist).
+fn build_pip_uninstall(packages: &[&str]) -> NativeCommand {
+    let use_uv = crate::installers::common::utils::command_exists("uv");
+    if use_uv {
+        let mut args = vec!["pip".to_string(), "uninstall".to_string(), "-y".to_string()];
+        for pkg in packages {
+            args.push(pkg.to_string());
+        }
+        NativeCommand::Pip {
+            program: "uv".to_string(),
+            args,
+        }
+    } else {
+        let mut args = vec!["uninstall".to_string(), "-y".to_string()];
+        for pkg in packages {
+            args.push(pkg.to_string());
+        }
+        NativeCommand::Pip {
+            program: "pip3".to_string(),
+            args,
+        }
+    }
+}
+
 /// - **VAL-INSTALL-032**: installer.rs dispatches to correct Rust module per ID
 /// - **VAL-INSTALL-033**: sudo behavior preserved for needs_sudo:true components
 /// - **VAL-INSTALL-034**: Environment variable injection preserved
@@ -2698,20 +2724,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous PyTorch first (non-fatal)
             if force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
                 for pkg in &["torch", "torchvision", "torchaudio"] {
-                    let uninstall_cmd = NativeCommand::Pip {
-                        program: pip_program.to_string(),
-                        args: vec!["uninstall".to_string(), "-y".to_string(), (*pkg).to_string()],
-                    };
+                    let uninstall_cmd = build_pip_uninstall(&[pkg]);
                     let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
                 }
             }
@@ -2751,19 +2769,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous triton first (non-fatal)
             if triton_force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "triton".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["triton"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -2846,19 +2856,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous mpi4py first (non-fatal)
             if force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "mpi4py".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["mpi4py"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -2891,19 +2893,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous deepspeed first (non-fatal)
             if force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "deepspeed".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["deepspeed"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -3006,19 +3000,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous flash_attn first (non-fatal)
             if force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "flash_attn".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["flash_attn"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -3126,19 +3112,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous megatron-core first (non-fatal)
             if force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "megatron-core".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["megatron-core"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -3209,19 +3187,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous vllm first (non-fatal)
             if vllm_force {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "vllm".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["vllm"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -3252,19 +3222,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Force reinstall: uninstall previous aiter first (non-fatal)
             if is_force_reinstall() {
-                let pip_program = if crate::installers::common::utils::command_exists("uv") {
-                    "uv"
-                } else {
-                    "pip3"
-                };
                 let _ = sender.send(InstallerEvent::Log(
                     format!("[native] {} — force reinstall: removing previous installation", component.name),
                     false,
                 ));
-                let uninstall_cmd = NativeCommand::Pip {
-                    program: pip_program.to_string(),
-                    args: vec!["uninstall".to_string(), "-y".to_string(), "aiter".to_string()],
-                };
+                let uninstall_cmd = build_pip_uninstall(&["aiter"]);
                 let _ = execute_native_command(&uninstall_cmd, None, sender, &component.name);
             }
 
@@ -3463,11 +3425,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "python3".to_string());
-            let use_uv = crate::installers::common::utils::command_exists("uv");
+            // textgen: always use python -m pip --break-system-packages.
+            // uv pip install --system fails on uv-managed Pythons ("externally managed").
+            // The system Python is the correct target for textgen's dependencies.
             let inst = TextgenInstaller::new(TextgenConfig {
                 python_bin: textgen_python.clone(),
-                use_uv,
-                break_system_packages: !use_uv,
+                use_uv: false,
+                break_system_packages: true,
                 ..Default::default()
             });
 

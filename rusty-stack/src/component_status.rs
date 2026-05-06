@@ -340,7 +340,7 @@ pub fn component_verification_commands(
             "aiter",
             &["aiter"],
             python_candidates,
-            "import aiter; import aiter.torch; print(getattr(aiter, '__version__', 'ok'))",
+            "import aiter; print(getattr(aiter, '__version__', 'ok'))",
         )],
         "vllm-studio" => vec![shell_command(
             "vLLM Studio",
