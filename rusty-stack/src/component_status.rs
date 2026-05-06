@@ -486,6 +486,12 @@ pub fn component_verification_commands(
             "bash",
             &["-c", "test -f \"$HOME/ComfyUI/main.py\" && echo 'ComfyUI installed' || exit 1"],
         )],
+        "textgen" => vec![shell_command(
+            "text-generation-webui",
+            "textgen",
+            "bash",
+            &["-c", "test -f \"$HOME/text-generation-webui/server.py\" && echo 'text-generation-webui installed' || exit 1"],
+        )],
         _ => Vec::new(),
     }
 }
