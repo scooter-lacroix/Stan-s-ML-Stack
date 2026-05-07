@@ -342,7 +342,7 @@ impl UpdatePlan {
 
     /// Sort items by risk tier (ascending: Low, Medium, High).
     pub fn sort_by_risk(&mut self) {
-        self.items.sort_by(|a, b| a.risk_tier.cmp(&b.risk_tier));
+        self.items.sort_by_key(|a| a.risk_tier.order());
     }
 
     /// Get items filtered by risk tier.

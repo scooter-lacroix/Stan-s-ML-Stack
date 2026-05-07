@@ -140,6 +140,33 @@ enum Subcommands {
         list: bool,
     },
 
+    /// Check for Rust dependency updates from crates.io.
+    ///
+    /// Scans Cargo.toml direct dependencies, queries crates.io for the latest
+    /// stable versions, and reports which dependencies have updates available.
+    /// Respects a configurable lag period to avoid freshly-published versions.
+    ///
+    /// Exit codes: 0 = all up to date, 1 = updates available, 2 = error.
+    Deps {
+        /// Set lag period in days (default: 7).
+        /// Only reports updates published more than this many days ago.
+        #[arg(long, default_value = "7")]
+        lag: u64,
+
+        /// Show full API responses for debugging.
+        #[arg(long, short = 'v')]
+        verbose: bool,
+
+        /// Path to the crate directory containing Cargo.toml.
+        /// Defaults to the rusty-stack crate adjacent to this binary.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+
+        /// Output results in JSON format.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Verify ML Stack installation.
     ///
     /// Checks component installation status using native Rust detection
@@ -1274,6 +1301,287 @@ mod bench_impl {
 }
 
 // ===========================================================================
+// Deps subcommand implementation
+// ===========================================================================
+
+mod deps_impl {
+    use super::*;
+
+    pub fn run(lag_days: u64, verbose: bool, dir: Option<PathBuf>, json: bool) {
+        let crate_dir = dir.unwrap_or_else(|| {
+            // Default: look for rusty-stack/ relative to the repo root
+            let exe = std::env::current_exe().unwrap_or_default();
+            let repo_root = exe
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .unwrap_or(Path::new("."));
+            repo_root.join("rusty-stack")
+        });
+
+        let cargo_toml_path = crate_dir.join("Cargo.toml");
+        if !cargo_toml_path.exists() {
+            eprintln!("error: Cargo.toml not found at {}", cargo_toml_path.display());
+            process::exit(2);
+        }
+
+        let cargo_lock_path = crate_dir
+            .join("Cargo.lock")
+            .exists()
+            .then(|| crate_dir.join("Cargo.lock"))
+            .or_else(|| {
+                let project_lock = crate_dir.parent()?.join("Cargo.lock");
+                project_lock.exists().then_some(project_lock)
+            });
+
+        let deps = parse_direct_deps(&cargo_toml_path);
+        if deps.is_empty() {
+            println!("No dependencies found in Cargo.toml");
+            return;
+        }
+
+        if !json {
+            println!("═══════════════════════════════════════════════════════════════");
+            println!("  Dependency Update Check");
+            println!("  Crate:     {}", crate_dir.display());
+            println!("  Lag:       {} days", lag_days);
+            println!("═══════════════════════════════════════════════════════════════");
+            println!();
+            println!("Found {} direct dependencies. Checking crates.io...", deps.len());
+            println!();
+        }
+
+        let mut up_to_date = 0u32;
+        let mut updates_available = 0u32;
+        let mut lag_blocked = 0u32;
+        let mut check_failed = 0u32;
+        let mut results = Vec::new();
+
+        for dep in &deps {
+            let locked_ver = cargo_lock_path
+                .as_ref()
+                .and_then(|p| find_locked_version(p, &dep.name))
+                .unwrap_or_else(|| "0.0.0".to_string());
+
+            match query_crates_io(&dep.name) {
+                Ok(info) => {
+                    if verbose && !json {
+                        println!("  API response for {}: latest={}, updated={}", dep.name, info.latest, info.updated.as_deref().unwrap_or("N/A"));
+                    }
+
+                    let locked = semver::Version::parse(&locked_ver).ok();
+                    let latest = semver::Version::parse(&info.latest).ok();
+
+                    let is_newer = match (&locked, &latest) {
+                        (Some(l), Some(r)) => r > l,
+                        _ => info.latest != locked_ver,
+                    };
+
+                    if !is_newer {
+                        if !json {
+                            println!("  \u{2705} {} \u{2014} {} (up to date)", dep.name, locked_ver);
+                        }
+                        results.push(DepResult {
+                            name: dep.name.clone(),
+                            locked: locked_ver.clone(),
+                            latest: info.latest.clone(),
+                            status: "up_to_date".into(),
+                        });
+                        up_to_date += 1;
+                    } else if let Some(days_since) = info.days_since_publish() {
+                        if days_since >= lag_days as i64 {
+                            if !json {
+                                println!("  \u{1F4E6} {} \u{2014} {} \u{2192} {} (published {} days ago)", dep.name, locked_ver, info.latest, days_since);
+                            }
+                            results.push(DepResult {
+                                name: dep.name.clone(),
+                                locked: locked_ver.clone(),
+                                latest: info.latest.clone(),
+                                status: "update_available".into(),
+                            });
+                            updates_available += 1;
+                        } else {
+                            if !json {
+                                println!("  \u{23F3} {} \u{2014} {} \u{2192} {} (published {} days ago, lag: {}d)", dep.name, locked_ver, info.latest, days_since, lag_days);
+                            }
+                            results.push(DepResult {
+                                name: dep.name.clone(),
+                                locked: locked_ver.clone(),
+                                latest: info.latest.clone(),
+                                status: "lag_blocked".into(),
+                            });
+                            lag_blocked += 1;
+                        }
+                    } else {
+                        if !json {
+                            println!("  \u{1F4E6} {} \u{2014} {} \u{2192} {} (no publish date, assuming eligible)", dep.name, locked_ver, info.latest);
+                        }
+                        results.push(DepResult {
+                            name: dep.name.clone(),
+                            locked: locked_ver.clone(),
+                            latest: info.latest.clone(),
+                            status: "update_available".into(),
+                        });
+                        updates_available += 1;
+                    }
+                }
+                Err(e) => {
+                    if !json {
+                        println!("  \u{26A0}\u{FE0F}  {} \u{2014} failed to query crates.io: {}", dep.name, e);
+                    }
+                    results.push(DepResult {
+                        name: dep.name.clone(),
+                        locked: locked_ver.clone(),
+                        latest: "unknown".into(),
+                        status: "check_failed".into(),
+                    });
+                    check_failed += 1;
+                }
+            }
+        }
+
+        if json {
+            let output = serde_json::json!({
+                "crate": crate_dir.display().to_string(),
+                "lag_days": lag_days,
+                "results": results,
+                "summary": {
+                    "up_to_date": up_to_date,
+                    "updates_available": updates_available,
+                    "lag_blocked": lag_blocked,
+                    "check_failed": check_failed,
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        } else {
+            println!();
+            println!("═══════════════════════════════════════════════════════════════");
+            println!("  Summary");
+            println!("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+            println!("  Up to date:        {}", up_to_date);
+            println!("  Updates available: {}", updates_available);
+            println!("  Lag-blocked:       {}", lag_blocked);
+            println!("  Check failed:      {}", check_failed);
+            println!("═══════════════════════════════════════════════════════════════");
+        }
+
+        if updates_available > 0 {
+            process::exit(1);
+        } else if check_failed > 0 {
+            process::exit(2);
+        }
+    }
+
+    // -- Helpers --
+
+    struct DirectDep {
+        name: String,
+    }
+
+    #[derive(Serialize)]
+    struct DepResult {
+        name: String,
+        locked: String,
+        latest: String,
+        status: String,
+    }
+
+    struct CrateInfo {
+        latest: String,
+        updated: Option<String>,
+    }
+
+    impl CrateInfo {
+        fn days_since_publish(&self) -> Option<i64> {
+            let updated = self.updated.as_ref()?;
+            let published = chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(updated).ok()?;
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(published.with_timezone(&chrono::Utc));
+            Some(duration.num_days())
+        }
+    }
+
+    fn parse_direct_deps(cargo_toml: &Path) -> Vec<DirectDep> {
+        let content = std::fs::read_to_string(cargo_toml).unwrap_or_default();
+        let mut deps = Vec::new();
+        let mut in_deps = false;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed == "[dependencies]" {
+                in_deps = true;
+                continue;
+            }
+            if in_deps && trimmed.starts_with('[') {
+                break;
+            }
+            if in_deps {
+                // Match: name = "version" or name = { version = "...", ... }
+                if let Some(eq_pos) = trimmed.find('=') {
+                    let name = trimmed[..eq_pos].trim().to_string();
+                    if name.is_empty() || name.starts_with('#') {
+                        continue;
+                    }
+                    deps.push(DirectDep { name });
+                }
+            }
+        }
+        deps
+    }
+
+    fn find_locked_version(lock_path: &Path, dep_name: &str) -> Option<String> {
+        let content = std::fs::read_to_string(lock_path).ok()?;
+        let needle = format!("name = \"{}\"", dep_name);
+        let mut found_name = false;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed == needle {
+                found_name = true;
+                continue;
+            }
+            if found_name && trimmed.starts_with("version =") {
+                return trimmed
+                    .split('"')
+                    .nth(1)
+                    .map(|s| s.to_string());
+            }
+            if found_name && trimmed.starts_with("name =") {
+                found_name = false;
+            }
+        }
+        None
+    }
+
+    fn query_crates_io(name: &str) -> anyhow::Result<CrateInfo> {
+        let url = format!("https://crates.io/api/v1/crates/{}", name);
+        let agent = ureq::Agent::new_with_defaults();
+
+        let response = agent
+            .get(&url)
+            .header("User-Agent", "rusty-stack-dep-checker (github.com/scooter-lacroix)")
+            .call()
+            .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
+
+        let body: serde_json::Value = response
+            .into_body()
+            .read_json()
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
+
+        let latest = body["crate"]["max_stable_version"]
+            .as_str()
+            .or_else(|| body["crate"]["max_version"].as_str())
+            .unwrap_or("0.0.0")
+            .to_string();
+
+        let updated = body["crate"]["updated_at"]
+            .as_str()
+            .map(|s: &str| s.to_string());
+
+        Ok(CrateInfo { latest, updated })
+    }
+}
+
+// ===========================================================================
 // Verify subcommand implementation
 // ===========================================================================
 
@@ -1354,6 +1662,14 @@ fn main() {
             list,
         }) => {
             bench_impl::run(benchmark.as_deref(), json, list);
+        }
+        Some(Subcommands::Deps {
+            lag,
+            verbose,
+            dir,
+            json,
+        }) => {
+            deps_impl::run(lag, verbose, dir, json);
         }
         Some(Subcommands::Verify {
             full,
