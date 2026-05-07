@@ -430,12 +430,25 @@ pub fn default_components() -> Vec<Component> {
             estimate: "5-8 min".into(),
             needs_sudo: true,
         },
-        // Verification components
+        Component {
+            id: "fastvideo".into(),
+            name: "FastVideo".into(),
+            description: "Video generation framework with ROCm gfx11 optimizations".into(),
+            script: String::new(), // Native Rust installer
+            category: Extension,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-20 min".into(),
+            needs_sudo: false,
+        },
+        // Verification components (native Rust via verification module)
         Component {
             id: "verify-basic".into(),
             name: "Verify Installation".into(),
             description: "Basic verification".into(),
-            script: "verify_installation.sh".into(),
+            script: String::new(), // Native Rust verification
             category: Verification,
             required: false,
             selected: false,
@@ -448,7 +461,7 @@ pub fn default_components() -> Vec<Component> {
             id: "verify-enhanced".into(),
             name: "Enhanced Verify Installation".into(),
             description: "Advanced verification".into(),
-            script: "enhanced_verify_installation.sh".into(),
+            script: String::new(), // Native Rust verification
             category: Verification,
             required: false,
             selected: false,
@@ -461,7 +474,7 @@ pub fn default_components() -> Vec<Component> {
             id: "verify-build".into(),
             name: "Verify and Build".into(),
             description: "Verify + build components".into(),
-            script: "verify_and_build.sh".into(),
+            script: String::new(), // Native Rust verification
             category: Verification,
             required: false,
             selected: false,
@@ -470,12 +483,12 @@ pub fn default_components() -> Vec<Component> {
             estimate: "10-15 min".into(),
             needs_sudo: true,
         },
-        // Performance components
+        // Performance components (native Rust via benchmark_runners module)
         Component {
             id: "mlperf-inference".into(),
             name: "MLPerf Inference".into(),
             description: "MLPerf benchmark suite for inference performance".into(),
-            script: "run_mlperf_inference.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -488,7 +501,7 @@ pub fn default_components() -> Vec<Component> {
             id: "rocm-benchmarks".into(),
             name: "ROCm Benchmarks".into(),
             description: "ROCm-specific performance benchmarks".into(),
-            script: "run_rocm_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -501,7 +514,7 @@ pub fn default_components() -> Vec<Component> {
             id: "gpu-memory-bandwidth".into(),
             name: "GPU Memory Bandwidth".into(),
             description: "Memory bandwidth performance testing".into(),
-            script: "test_gpu_memory_bandwidth.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -514,7 +527,7 @@ pub fn default_components() -> Vec<Component> {
             id: "rocm-smi-bench".into(),
             name: "ROCm SMI Benchmarks".into(),
             description: "ROCm SMI performance monitoring".into(),
-            script: "run_rocm_smi_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -527,7 +540,7 @@ pub fn default_components() -> Vec<Component> {
             id: "vllm-performance".into(),
             name: "vLLM Performance".into(),
             description: "High-throughput vLLM inference benchmark".into(),
-            script: "run_vllm_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -540,7 +553,7 @@ pub fn default_components() -> Vec<Component> {
             id: "deepspeed-performance".into(),
             name: "DeepSpeed Performance".into(),
             description: "DeepSpeed ZeRO optimization throughput benchmark".into(),
-            script: "run_deepspeed_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -553,7 +566,7 @@ pub fn default_components() -> Vec<Component> {
             id: "megatron-performance".into(),
             name: "Megatron-LM Performance".into(),
             description: "Megatron-LM import and throughput benchmark".into(),
-            script: "run_megatron_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -566,7 +579,7 @@ pub fn default_components() -> Vec<Component> {
             id: "all-benchmarks".into(),
             name: "Full Suite Benchmark".into(),
             description: "Run all post-installation performance tests".into(),
-            script: "run_all_benchmarks_suite.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,

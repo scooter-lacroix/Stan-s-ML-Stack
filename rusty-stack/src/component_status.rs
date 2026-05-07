@@ -236,6 +236,7 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         }
         "pytorch-profiler" => python_any(python_candidates, &["torch"]),
         "wandb" => python_any(python_candidates, &["wandb"]),
+        "fastvideo" => python_any(python_candidates, &["fastvideo"]),
         "permanent-env" => env_file_has_permanent(&home_path(&home, &[".mlstack_env"])),
         "basic-env" => path_exists(home_path(&home, &[".mlstack_env"])),
         "enhanced-env" => env_file_has_enhanced(&home_path(&home, &[".mlstack_env"])),
@@ -388,6 +389,13 @@ pub fn component_verification_commands(
             &["wandb"],
             python_candidates,
             "import wandb; print(wandb.__version__)",
+        )],
+        "fastvideo" => vec![python_command(
+            "FastVideo",
+            "fastvideo",
+            &["fastvideo"],
+            python_candidates,
+            "import fastvideo; print(fastvideo.__version__)",
         )],
         "basic-env" => vec![shell_command(
             "Environment file",
@@ -597,6 +605,13 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             &["wandb"],
             python_candidates,
             "import wandb; print(wandb.__version__)",
+        ),
+        python_command(
+            "FastVideo",
+            "fastvideo",
+            &["fastvideo"],
+            python_candidates,
+            "import fastvideo; print(fastvideo.__version__)",
         ),
         shell_command("vLLM Studio", "vllm-studio", "bun", &["--version"]),
     ]);

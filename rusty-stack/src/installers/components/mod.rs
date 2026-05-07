@@ -64,6 +64,7 @@ pub mod amdgpu_drivers;
 pub mod bitsandbytes_multi;
 pub mod comfyui;
 pub mod deepspeed;
+pub mod fastvideo;
 pub mod flash_attention_ck;
 pub mod megatron;
 pub mod migraphx_multi;
@@ -149,6 +150,18 @@ pub const NATIVE_COMPONENT_IDS: &[&str] = &[
     "amdgpu-drivers",
     "migraphx-python",
     "enhanced-env",
+    // Benchmark components (dispatched via benchmark_runners module)
+    "mlperf-inference",
+    "rocm-benchmarks",
+    "gpu-memory-bandwidth",
+    "rocm-smi-bench",
+    "pytorch-performance",
+    "vllm-performance",
+    "deepspeed-performance",
+    "megatron-performance",
+    "all-benchmarks",
+    // FastVideo component
+    "fastvideo",
 ];
 
 /// Returns `true` if the given component ID has been ported to native Rust
@@ -274,7 +287,8 @@ mod dispatch_tests {
 
     #[test]
     fn test_all_24_native_components_listed() {
-        assert_eq!(NATIVE_COMPONENT_IDS.len(), 24);
+        // 24 installer + 9 benchmark + 1 fastvideo = 34
+        assert_eq!(NATIVE_COMPONENT_IDS.len(), 34);
     }
 
     #[test]
@@ -292,10 +306,11 @@ mod dispatch_tests {
     }
 
     #[test]
-    fn test_is_native_component_false_for_performance() {
-        assert!(!is_native_component("mlperf-inference"));
-        assert!(!is_native_component("rocm-benchmarks"));
-        assert!(!is_native_component("all-benchmarks"));
+    fn test_is_native_component_true_for_performance() {
+        assert!(is_native_component("mlperf-inference"));
+        assert!(is_native_component("rocm-benchmarks"));
+        assert!(is_native_component("all-benchmarks"));
+        assert!(is_native_component("fastvideo"));
     }
 
     #[test]

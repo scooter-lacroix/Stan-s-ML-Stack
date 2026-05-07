@@ -27,10 +27,11 @@ use rusty_stack::state::{default_components, Category, Component};
 
 #[test]
 fn test_all_24_native_components_recognized() {
+    // 24 installer + 9 benchmark + 1 fastvideo = 34
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),
-        24,
-        "Must have exactly 24 native components"
+        34,
+        "Must have exactly 34 native components (24 installers + 9 benchmarks + 1 fastvideo)"
     );
 
     for id in NATIVE_COMPONENT_IDS {
@@ -73,12 +74,12 @@ fn test_ported_components_have_empty_script() {
         .filter(|c| is_native_component(&c.id))
         .collect();
 
-    // 21 of 24 native components appear in default_components().
-    // The other 3 (amdgpu-drivers, migraphx-python, enhanced-env) are
-    // chain-referenced utility scripts not shown as top-level TUI components.
+    // 22 of 34 native components appear in default_components().
+    // The other 12 (amdgpu-drivers, migraphx-python, enhanced-env, plus
+    // 9 benchmark components) are chain-referenced or dispatched differently.
     assert!(
-        native_installers.len() >= 21,
-        "Must have at least 21 ported components in default_components(), got {}",
+        native_installers.len() >= 22,
+        "Must have at least 22 ported components in default_components(), got {}",
         native_installers.len()
     );
 
@@ -122,7 +123,7 @@ fn test_component_is_native_method() {
 // ===========================================================================
 
 #[test]
-fn test_verification_components_still_use_scripts() {
+fn test_verification_components_use_native_rust() {
     let components = default_components();
     let verification: Vec<&Component> = components
         .iter()
@@ -133,21 +134,16 @@ fn test_verification_components_still_use_scripts() {
 
     for comp in &verification {
         assert!(
-            comp.script.ends_with(".sh"),
-            "Verification component '{}' should still reference .sh script, got '{}'",
+            comp.script.is_empty(),
+            "Verification component '{}' should use native Rust (empty script), got '{}'",
             comp.id,
             comp.script
-        );
-        assert!(
-            !is_native_component(&comp.id),
-            "Verification component '{}' should NOT be native",
-            comp.id
         );
     }
 }
 
 #[test]
-fn test_performance_components_still_use_scripts() {
+fn test_performance_components_use_native_rust() {
     let components = default_components();
     let performance: Vec<&Component> = components
         .iter()
@@ -158,14 +154,14 @@ fn test_performance_components_still_use_scripts() {
 
     for comp in &performance {
         assert!(
-            comp.script.ends_with(".sh"),
-            "Performance component '{}' should still reference .sh script, got '{}'",
+            comp.script.is_empty(),
+            "Performance component '{}' should use native Rust (empty script), got '{}'",
             comp.id,
             comp.script
         );
         assert!(
-            !is_native_component(&comp.id),
-            "Performance component '{}' should NOT be native",
+            is_native_component(&comp.id),
+            "Performance component '{}' should be native",
             comp.id
         );
     }
@@ -382,6 +378,16 @@ fn test_every_native_component_has_installer_module() {
                 let _ = RepairInstaller::with_defaults();
             }
             "enhanced-env" => {} // env setup module (no dedicated installer struct yet)
+            // Benchmark components — dispatched via benchmark_runners module
+            "mlperf-inference" | "rocm-benchmarks" | "gpu-memory-bandwidth"
+            | "rocm-smi-bench" | "pytorch-performance" | "vllm-performance"
+            | "deepspeed-performance" | "megatron-performance" | "all-benchmarks" => {
+                // Benchmarks are dispatched via benchmark_runners::run_benchmark()
+            }
+            // FastVideo — uses dedicated installer
+            "fastvideo" => {
+                let _ = rusty_stack::installers::components::fastvideo::FastVideoInstaller::new();
+            }
             _ => panic!("Unknown native component ID: {}", id),
         }
     }
@@ -429,8 +435,8 @@ fn test_native_components_preserve_needs_sudo_flag() {
 #[test]
 fn test_default_components_total_count() {
     let components = default_components();
-    // 21 native TUI installers + 3 verification + 8 performance = 32
-    assert_eq!(components.len(), 32, "Expected 32 total components");
+    // 22 native TUI installers (incl fastvideo) + 3 verification + 8 performance = 33
+    assert_eq!(components.len(), 33, "Expected 33 total components");
 }
 
 #[test]
@@ -449,16 +455,18 @@ fn test_no_script_field_contains_sh_for_native_components() {
 }
 
 #[test]
-fn test_all_script_fields_for_non_native_are_valid() {
+fn test_all_components_are_native() {
+    // All components in default_components() should now have empty script fields —
+    // no component references .sh scripts anymore.
+    // Verification uses a dedicated native path (run_verification), benchmarks
+    // use benchmark_runners module, and installers use the native dispatch.
     let components = default_components();
     for comp in &components {
-        if !is_native_component(&comp.id) {
-            assert!(
-                comp.script.ends_with(".sh"),
-                "Non-native component '{}' should reference .sh script, got '{}'",
-                comp.id,
-                comp.script
-            );
-        }
+        assert!(
+            comp.script.is_empty(),
+            "Component '{}' should have empty script (all scripts ported to Rust), got '{}'",
+            comp.id,
+            comp.script
+        );
     }
 }

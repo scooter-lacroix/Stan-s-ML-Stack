@@ -3969,6 +3969,93 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             ));
         }
 
+        // ── Benchmark components ──────────────────────────────────────
+        "mlperf-inference"
+        | "rocm-benchmarks"
+        | "gpu-memory-bandwidth"
+        | "rocm-smi-bench"
+        | "pytorch-performance"
+        | "vllm-performance"
+        | "deepspeed-performance"
+        | "megatron-performance"
+        | "all-benchmarks" => {
+            run_native_benchmark(&component.id, sender)?;
+        }
+
+        // ── FastVideo ──────────────────────────────────────────────────
+        "fastvideo" => {
+            use crate::installers::components::fastvideo::FastVideoInstaller;
+            let inst = FastVideoInstaller::new();
+            let build_dir = PathBuf::from("/tmp/FastVideo_ROCm_build");
+
+            // mkdir -p build dir
+            let mkdir_cmd = inst.mkdir_build_dir();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&mkdir_cmd.program, &mkdir_cmd.args, &mkdir_cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
+            // git clone into build dir
+            let clone_cmd = inst.git_clone();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &clone_cmd.program, &clone_cmd.args, &clone_cmd.env,
+                    Some(build_dir.clone()),
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
+            // git checkout branch
+            let checkout_cmd = inst.git_checkout();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &checkout_cmd.program, &checkout_cmd.args, &checkout_cmd.env,
+                    Some(build_dir.clone()),
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
+            // cd fastvideo-kernel && ./build.sh --rocm
+            let kernel_dir = build_dir.join("fastvideo-kernel");
+            let build_cmd = inst.build_rocm();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &build_cmd.program, &build_cmd.args, &build_cmd.env,
+                    Some(kernel_dir),
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
+            // pip install from fastvideo-kernel dir
+            let pip_cmd = inst.pip_install();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &pip_cmd.program, &pip_cmd.args, &pip_cmd.env,
+                    Some(build_dir.join("fastvideo-kernel")),
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
+            // cleanup
+            let cleanup_cmd = inst.cleanup();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cleanup_cmd.program, &cleanup_cmd.args, &cleanup_cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+        }
+
         // ── Unknown component ─────────────────────────────────────────
         _ => {
             bail!(
@@ -5479,6 +5566,83 @@ fn is_exception_or_traceback_line(lowercase_line: &str) -> bool {
         || lowercase_line.contains("fatal:")
         || lowercase_line.contains("error:")
         || lowercase_line.starts_with("error ")
+}
+
+/// Run a benchmark component natively via the `benchmark_runners` module.
+///
+/// Maps component IDs to benchmark names and dispatches through the
+/// native Rust benchmark runner instead of spawning bash scripts.
+fn run_native_benchmark(
+    component_id: &str,
+    sender: &Sender<InstallerEvent>,
+) -> Result<()> {
+    use crate::benchmark_runners;
+
+    let bench_name = match component_id {
+        "mlperf-inference" => "all",
+        "rocm-benchmarks" => "gpu-capability",
+        "gpu-memory-bandwidth" => "memory-bandwidth",
+        "rocm-smi-bench" => "gpu-capability",
+        "pytorch-performance" => "pytorch",
+        "vllm-performance" => "vllm",
+        "deepspeed-performance" => "deepspeed",
+        "megatron-performance" => "megatron",
+        "all-benchmarks" => "all",
+        _ => bail!("Unknown benchmark component: {}", component_id),
+    };
+
+    let _ = sender.send(InstallerEvent::Log(
+        format!("[native] Running {} benchmark...", component_id),
+        false,
+    ));
+
+    let _ = sender.send(InstallerEvent::Progress {
+        component_id: component_id.to_string(),
+        progress: 0.3,
+        message: format!("Running {} benchmark", component_id),
+    });
+
+    match benchmark_runners::run_benchmark(bench_name) {
+        Ok(output) => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] {} benchmark completed: {} ({} ms)",
+                    component_id,
+                    if output.success { "SUCCESS" } else { "FAILED" },
+                    output.execution_time_ms
+                ),
+                false,
+            ));
+            if !output.errors.is_empty() {
+                for err in &output.errors {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[native] {} error: {}", component_id, err),
+                        false,
+                    ));
+                }
+            }
+            if !output.success {
+                let error_details = output.errors.join("; ");
+                bail!(
+                    "{} benchmark failed: {}",
+                    component_id,
+                    if error_details.is_empty() {
+                        "unknown error".to_string()
+                    } else {
+                        error_details
+                    }
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!("[native] {} benchmark error: {}", component_id, err),
+                false,
+            ));
+            bail!("{} benchmark error: {}", component_id, err)
+        }
+    }
 }
 
 #[cfg(test)]
