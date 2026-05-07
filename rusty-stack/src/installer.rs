@@ -3177,18 +3177,47 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         }
 
         // ── repair-stack ──────────────────────────────────────────────
+        // VAL-INSTALL-051: Repair dispatches to native Rust installer
+        // modules for each step, not bash scripts.
         "repair-stack" => {
-            use crate::installers::components::repair::{RepairConfig, RepairInstaller};
-            let inst = RepairInstaller::new(RepairConfig::default());
-            let scripts_dir = detect_scripts_dir_internal();
-            let steps = inst.build_all_step_commands(&scripts_dir);
-            for (_step, cmd) in &steps {
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                    sudo_pw,
-                    sender,
-                    &component.name,
-                )?;
+            use crate::installers::components::repair::RepairInstaller;
+            let repair_ids = RepairInstaller::native_component_ids();
+
+            let _ = sender.send(InstallerEvent::Log(
+                "[native] Starting ML Stack repair (8 steps via native installers)...".to_string(),
+                false,
+            ));
+
+            for step_id in &repair_ids {
+                // Build a synthetic Component for the sub-installer
+                // and dispatch through run_native_installer recursively.
+                let sub_component = Component {
+                    id: (*step_id).to_string(),
+                    name: (*step_id).to_string(),
+                    description: String::new(),
+                    script: String::new(),
+                    category: Category::Core,
+                    required: true,
+                    selected: true,
+                    installed: false,
+                    progress: 0.0,
+                    estimate: String::new(),
+                    needs_sudo: component.needs_sudo,
+                };
+
+                let _ = sender.send(InstallerEvent::Progress {
+                    component_id: component.id.clone(),
+                    progress: 0.5,
+                    message: format!("Repairing {}...", step_id),
+                });
+
+                if let Err(err) = run_native_installer(&sub_component, ctx) {
+                    // Log but continue — repair tries all steps
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[native] Repair step '{}' failed: {}", step_id, err),
+                        false,
+                    ));
+                }
             }
         }
 
@@ -4073,20 +4102,6 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
     });
 
     Ok(())
-}
-
-/// Detect the scripts directory (reuses logic from lib.rs).
-fn detect_scripts_dir_internal() -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let scripts = cwd.join("scripts");
-    if scripts.exists() {
-        return scripts.to_string_lossy().to_string();
-    }
-    let parent_scripts = cwd.join("..").join("scripts");
-    if parent_scripts.exists() {
-        return parent_scripts.to_string_lossy().to_string();
-    }
-    "./scripts".to_string()
 }
 
 fn run_script(

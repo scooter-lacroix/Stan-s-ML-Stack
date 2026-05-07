@@ -1,12 +1,13 @@
 //! Repair ML Stack utility — ports `scripts/repair_ml_stack.sh`.
 //!
-//! Calls correct sub-installers in sequence, propagates failures,
-//! and reports a summary of repair results.
+//! Calls correct sub-installers in sequence via native Rust modules,
+//! propagates failures, and reports a summary of repair results.
 //!
 //! # Validation Assertions
 //!
 //! - **VAL-INSTALL-026**: Repair invokes correct sub-installers in order
 //! - **VAL-INSTALL-027**: Repair propagates individual failures
+//! - **VAL-INSTALL-051**: Repair dispatches to native Rust modules, not bash scripts
 
 // ===========================================================================
 // Types
@@ -164,8 +165,6 @@ pub enum RepairStep {
 
 impl RepairStep {
     /// Get all repair steps in the correct order.
-    ///
-    /// This matches the order in the original repair_ml_stack.sh main() function.
     pub fn all_in_order() -> Vec<RepairStep> {
         vec![
             RepairStep::Rocm,
@@ -193,8 +192,24 @@ impl RepairStep {
         }
     }
 
-    /// Get the corresponding installer script name for this step.
-    pub fn installer_script(&self) -> &'static str {
+    /// Get the native component ID that this repair step dispatches to.
+    /// Each repair step re-runs the corresponding native installer module.
+    pub fn native_component_id(&self) -> &'static str {
+        match self {
+            RepairStep::Rocm => "rocm",
+            RepairStep::AmdgpuDrivers => "amdgpu-drivers",
+            RepairStep::PyTorch => "pytorch",
+            RepairStep::MlStackCore => "ml-stack-core",
+            RepairStep::Aiter => "aiter",
+            RepairStep::MigraphxPython => "migraphx-python",
+            RepairStep::DeepSpeed => "deepspeed",
+            RepairStep::EnvironmentVariables => "permanent-env",
+        }
+    }
+
+    /// Legacy script name (kept for documentation/test reference only).
+    #[allow(dead_code)]
+    pub fn legacy_script_name(&self) -> &'static str {
         match self {
             RepairStep::Rocm => "install_rocm.sh",
             RepairStep::AmdgpuDrivers => "install_amdgpu_drivers.sh",
@@ -247,38 +262,19 @@ impl RepairInstaller {
     }
 
     // -----------------------------------------------------------------------
-    // Command construction (VAL-INSTALL-026)
+    // Step enumeration (VAL-INSTALL-026)
     // -----------------------------------------------------------------------
 
     /// Get the repair step sequence in the correct order.
-    ///
-    /// The order matches the original repair_ml_stack.sh main() function.
     pub fn repair_sequence() -> Vec<RepairStep> {
         RepairStep::all_in_order()
     }
 
-    /// Construct the command to run a specific repair step's installer.
-    pub fn build_step_command(&self, step: RepairStep, scripts_dir: &str) -> ShellCommand {
-        let script = step.installer_script();
-        ShellCommand {
-            program: "bash".to_string(),
-            args: vec![format!("{}/{}", scripts_dir, script)],
-            env: vec![
-                ("NONINTERACTIVE".to_string(), "1".to_string()),
-                ("USE_UV".to_string(), "1".to_string()),
-                ("AMD_LOG_LEVEL".to_string(), "0".to_string()),
-            ],
-        }
-    }
-
-    /// Build all repair step commands in the correct order.
-    pub fn build_all_step_commands(&self, scripts_dir: &str) -> Vec<(RepairStep, ShellCommand)> {
+    /// Get the native component IDs for all repair steps, in order.
+    pub fn native_component_ids() -> Vec<&'static str> {
         Self::repair_sequence()
-            .into_iter()
-            .map(|step| {
-                let cmd = self.build_step_command(step, scripts_dir);
-                (step, cmd)
-            })
+            .iter()
+            .map(|s| s.native_component_id())
             .collect()
     }
 
@@ -314,24 +310,10 @@ impl RepairInstaller {
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
-    // VAL-INSTALL-026: Repair invokes correct sub-installers in order
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_repair_sequence_order_matches_original_script() {
         let sequence = RepairInstaller::repair_sequence();
         assert_eq!(sequence.len(), 8);
-
-        // Order must match repair_ml_stack.sh main():
-        // 1. ROCm
-        // 2. AMDGPU drivers
-        // 3. PyTorch
-        // 4. ML Stack Core
-        // 5. AITER
-        // 6. MIGraphX Python
-        // 7. DeepSpeed
-        // 8. Environment variables
         assert_eq!(sequence[0], RepairStep::Rocm);
         assert_eq!(sequence[1], RepairStep::AmdgpuDrivers);
         assert_eq!(sequence[2], RepairStep::PyTorch);
@@ -358,73 +340,41 @@ mod tests {
     }
 
     #[test]
-    fn test_repair_step_scripts() {
-        assert_eq!(RepairStep::Rocm.installer_script(), "install_rocm.sh");
-        assert_eq!(
-            RepairStep::AmdgpuDrivers.installer_script(),
-            "install_amdgpu_drivers.sh"
-        );
-        assert_eq!(
-            RepairStep::PyTorch.installer_script(),
-            "install_pytorch_rocm.sh"
-        );
-        assert_eq!(
-            RepairStep::MlStackCore.installer_script(),
-            "install_ml_stack.sh"
-        );
-        assert_eq!(RepairStep::Aiter.installer_script(), "install_aiter.sh");
-        assert_eq!(
-            RepairStep::MigraphxPython.installer_script(),
-            "install_migraphx_python.sh"
-        );
-        assert_eq!(
-            RepairStep::DeepSpeed.installer_script(),
-            "install_deepspeed.sh"
-        );
-        assert_eq!(
-            RepairStep::EnvironmentVariables.installer_script(),
-            "setup_permanent_rocm_env.sh"
-        );
+    fn test_repair_step_native_component_ids() {
+        assert_eq!(RepairStep::Rocm.native_component_id(), "rocm");
+        assert_eq!(RepairStep::AmdgpuDrivers.native_component_id(), "amdgpu-drivers");
+        assert_eq!(RepairStep::PyTorch.native_component_id(), "pytorch");
+        assert_eq!(RepairStep::MlStackCore.native_component_id(), "ml-stack-core");
+        assert_eq!(RepairStep::Aiter.native_component_id(), "aiter");
+        assert_eq!(RepairStep::MigraphxPython.native_component_id(), "migraphx-python");
+        assert_eq!(RepairStep::DeepSpeed.native_component_id(), "deepspeed");
+        assert_eq!(RepairStep::EnvironmentVariables.native_component_id(), "permanent-env");
     }
 
     #[test]
-    fn test_build_step_command_references_correct_script() {
-        let repair = RepairInstaller::with_defaults();
-        let cmd = repair.build_step_command(RepairStep::Rocm, "/path/to/scripts");
-        assert_eq!(cmd.program, "bash");
-        assert!(cmd.args[0].contains("install_rocm.sh"));
+    fn test_native_component_ids_match_repair_sequence() {
+        let ids = RepairInstaller::native_component_ids();
+        let steps = RepairInstaller::repair_sequence();
+        assert_eq!(ids.len(), steps.len());
+        for (step, id) in steps.iter().zip(ids.iter()) {
+            assert_eq!(step.native_component_id(), *id);
+        }
     }
 
     #[test]
-    fn test_build_all_step_commands_correct_order() {
-        let repair = RepairInstaller::with_defaults();
-        let cmds = repair.build_all_step_commands("/path/to/scripts");
-        assert_eq!(cmds.len(), 8);
-
-        // Verify order
-        assert_eq!(cmds[0].0, RepairStep::Rocm);
-        assert_eq!(cmds[1].0, RepairStep::AmdgpuDrivers);
-        assert_eq!(cmds[2].0, RepairStep::PyTorch);
-        assert_eq!(cmds[3].0, RepairStep::MlStackCore);
-        assert_eq!(cmds[4].0, RepairStep::Aiter);
-        assert_eq!(cmds[5].0, RepairStep::MigraphxPython);
-        assert_eq!(cmds[6].0, RepairStep::DeepSpeed);
-        assert_eq!(cmds[7].0, RepairStep::EnvironmentVariables);
+    fn test_repair_uses_native_dispatch_not_scripts() {
+        // Verify every repair step maps to a native component ID
+        // (no bash script references needed for repair)
+        for step in RepairInstaller::repair_sequence() {
+            let id = step.native_component_id();
+            assert!(
+                crate::installers::components::is_native_component(id),
+                "Repair step '{}' maps to component '{}' which must be native",
+                step.name(),
+                id
+            );
+        }
     }
-
-    #[test]
-    fn test_step_command_includes_noninteractive_env() {
-        let repair = RepairInstaller::with_defaults();
-        let cmd = repair.build_step_command(RepairStep::PyTorch, "/scripts");
-        assert!(cmd
-            .env
-            .iter()
-            .any(|(k, v)| k == "NONINTERACTIVE" && v == "1"));
-    }
-
-    // -----------------------------------------------------------------------
-    // VAL-INSTALL-027: Repair propagates individual failures
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_repair_propagates_failures() {
@@ -435,12 +385,10 @@ mod tests {
             _ => Ok(()),
         });
 
-        // Should have failures for PyTorch and DeepSpeed
         assert_eq!(result.failed_count(), 2);
         assert_eq!(result.successful_count(), 6);
         assert!(!result.all_succeeded());
 
-        // Failed steps should be recorded
         let failed = result.failed_steps();
         assert!(failed.contains(&"PyTorch Installation"));
         assert!(failed.contains(&"DeepSpeed Installation"));
@@ -485,7 +433,6 @@ mod tests {
             }
         });
 
-        // Should have visited ALL steps, not stopped at first failure
         assert_eq!(visited.len(), 8);
         assert_eq!(visited[0], RepairStep::Rocm);
         assert_eq!(visited[7], RepairStep::EnvironmentVariables);
@@ -495,6 +442,6 @@ mod tests {
     fn test_repair_result_default() {
         let result = RepairResult::default();
         assert_eq!(result.steps.len(), 0);
-        assert!(result.all_succeeded()); // vacuously true
+        assert!(result.all_succeeded());
     }
 }
