@@ -81,6 +81,7 @@ impl FastVideoInstaller {
             self.git_clone(),
             self.git_checkout(),
             self.git_submodule_init(),
+            self.patch_cmake(),
             self.install_build_deps(),
             self.pip_install_kernel(),
             self.cleanup(),
@@ -127,6 +128,28 @@ impl FastVideoInstaller {
                 "update".to_string(),
                 "--init".to_string(),
                 "--recursive".to_string(),
+            ],
+            env: vec![],
+            working_dir: None,
+        }
+    }
+
+    /// Patch CMakeLists.txt to remove broken flash_attn_rocm.cpp.
+    ///
+    /// The `feature/rocm-gfx11-support` branch includes `flash_attn_rocm.cpp`
+    /// which depends on `flash_runner.hpp` — a header from AMD's flash-attention-CK
+    /// project that is not present in the fork. Without this patch, the build
+    /// fails with: `fatal error: flash_runner.hpp: No such file or directory`.
+    ///
+    /// The rest of fastvideo-kernel (gemm, norm, quant) compiles fine without
+    /// the flash attention source.
+    pub fn patch_cmake(&self) -> ShellCommand {
+        ShellCommand {
+            program: "sed".to_string(),
+            args: vec![
+                "-i".to_string(),
+                "/flash_attn_rocm\\.cpp/d".to_string(),
+                "CMakeLists.txt".to_string(),
             ],
             env: vec![],
             working_dir: None,
@@ -231,7 +254,7 @@ mod tests {
     fn test_build_commands_count() {
         let inst = FastVideoInstaller::new(FastVideoConfig::default());
         let cmds = inst.build_commands();
-        assert_eq!(cmds.len(), 7, "Should produce 7 commands");
+        assert_eq!(cmds.len(), 8, "Should produce 8 commands");
     }
 
     #[test]
@@ -284,7 +307,7 @@ mod tests {
     fn test_cleanup_removes_build_dir() {
         let inst = FastVideoInstaller::new(FastVideoConfig::default());
         let cmds = inst.build_commands();
-        let cleanup = &cmds[6];
+        let cleanup = &cmds[7];
         assert!(cleanup.args.contains(&"-rf".into()));
         assert!(cleanup.args.contains(&FASTVIDEO_BUILD_DIR.into()));
     }
