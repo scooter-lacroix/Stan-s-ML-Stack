@@ -4013,9 +4013,25 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
         // ── FastVideo ──────────────────────────────────────────────────
         "fastvideo" => {
-            use crate::installers::components::fastvideo::FastVideoInstaller;
-            let inst = FastVideoInstaller::new();
+            use crate::installers::components::fastvideo::{FastVideoConfig, FastVideoInstaller};
+            let gpu_arch = ctx
+                .env_exports
+                .get("GPU_ARCH")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(detect_gpu_arch);
+            let python_bin = ctx
+                .env_exports
+                .get("MLSTACK_PYTHON_BIN")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "python3".to_string());
+            let inst = FastVideoInstaller::new(FastVideoConfig {
+                gpu_arch: gpu_arch.clone(),
+                python_bin: python_bin.clone(),
+            });
             let build_dir = PathBuf::from("/tmp/FastVideo_ROCm_build");
+            let kernel_dir = build_dir.join("fastvideo-kernel");
 
             // mkdir -p build dir
             let mkdir_cmd = inst.mkdir_build_dir();
@@ -4026,13 +4042,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // git clone into build dir
-            let clone_cmd = inst.git_clone();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &clone_cmd.program, &clone_cmd.args, &clone_cmd.env,
-                    Some(build_dir.clone()),
-                ),
+            // git clone into build dir (idempotent)
+            git_clone_or_pull(
+                "https://github.com/scooter-lacroix/FastVideo.git",
+                &build_dir.to_string_lossy(),
+                &[],
                 sudo_pw,
                 sender,
                 &component.name,
@@ -4050,25 +4064,33 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // cd fastvideo-kernel && ./build.sh --rocm
-            let kernel_dir = build_dir.join("fastvideo-kernel");
-            let build_cmd = inst.build_rocm();
+            // git submodule update --init --recursive (in fastvideo-kernel)
+            let submod_cmd = inst.git_submodule_init();
             execute_native_command(
                 &NativeCommand::from_shell_cmd_with_dir(
-                    &build_cmd.program, &build_cmd.args, &build_cmd.env,
-                    Some(kernel_dir),
+                    &submod_cmd.program, &submod_cmd.args, &submod_cmd.env,
+                    Some(kernel_dir.clone()),
                 ),
                 sudo_pw,
                 sender,
                 &component.name,
             )?;
 
-            // pip install from fastvideo-kernel dir
-            let pip_cmd = inst.pip_install();
+            // install build deps (scikit-build-core, cmake, ninja)
+            let deps_cmd = inst.install_build_deps();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&deps_cmd.program, &deps_cmd.args, &deps_cmd.env),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
+            // pip install fastvideo-kernel with ROCm cmake args
+            let pip_cmd = inst.pip_install_kernel();
             execute_native_command(
                 &NativeCommand::from_shell_cmd_with_dir(
                     &pip_cmd.program, &pip_cmd.args, &pip_cmd.env,
-                    Some(build_dir.join("fastvideo-kernel")),
+                    Some(kernel_dir),
                 ),
                 sudo_pw,
                 sender,
@@ -4624,15 +4646,13 @@ fn format_user_friendly_error(component_id: &str, raw_error: &str) -> String {
                 component_id, raw_error
             );
         }
-        "rocm" => {
-            if error_lower.contains("no such file") || error_lower.contains("not found") {
-                return format!(
-                    "{}: ROCm installation failed — required packages or repositories not found. \
-                     Ensure your system's package manager is configured correctly and ROCm repositories are added. \
-                     Original error: {}",
-                    component_id, raw_error
-                );
-            }
+        "rocm" if error_lower.contains("no such file") || error_lower.contains("not found") => {
+            return format!(
+                "{}: ROCm installation failed — required packages or repositories not found. \
+                 Ensure your system's package manager is configured correctly and ROCm repositories are added. \
+                 Original error: {}",
+                component_id, raw_error
+            );
         }
         "pytorch" => {
             if error_lower.contains("no such file") || error_lower.contains("not found") {

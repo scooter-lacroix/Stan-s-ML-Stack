@@ -205,24 +205,20 @@ impl App {
                     self.stage = Stage::Recovery;
                     self.errors.push("User quit".into());
                 }
-                KeyCode::Char(c) => {
-                    if self.entering_password {
-                        if c == '\n' || c == '\r' {
-                            return;
-                        }
-                        self.password_input.push(c);
+                KeyCode::Char(c) if self.entering_password => {
+                    if c == '\n' || c == '\r' {
+                        return;
                     }
+                    self.password_input.push(c);
                 }
-                KeyCode::Backspace => {
-                    if self.entering_password {
-                        self.password_input.pop();
-                    }
+                KeyCode::Char(_) => {}
+                KeyCode::Backspace if self.entering_password => {
+                    self.password_input.pop();
                 }
-                KeyCode::Tab => {
-                    if self.entering_password {
-                        self.sudo_password = Some(self.password_input.clone());
-                        self.entering_password = false;
-                    }
+                KeyCode::Backspace => {}
+                KeyCode::Tab if self.entering_password => {
+                    self.sudo_password = Some(self.password_input.clone());
+                    self.entering_password = false;
                 }
                 _ => {}
             },
@@ -324,22 +320,18 @@ impl App {
                         InputMode::Raw => InputMode::Line,
                     };
                 }
-                KeyCode::Backspace => {
-                    if !self.install_log_popup {
-                        self.install_input_buffer.pop();
-                    }
+                KeyCode::Backspace if !self.install_log_popup => {
+                    self.install_input_buffer.pop();
                 }
-                KeyCode::Enter => {
-                    if !self.install_log_popup {
-                        self.flush_install_input();
-                    }
+                KeyCode::Backspace => {}
+                KeyCode::Enter if !self.install_log_popup => {
+                    self.flush_install_input();
                 }
-                KeyCode::Char(c) => {
-                    if !self.install_log_popup && !key.modifiers.contains(KeyModifiers::CONTROL) {
-                        self.install_input_buffer.push(c);
-                        if self.install_input_mode == InputMode::Raw {
-                            self.send_install_input(c.to_string());
-                        }
+                KeyCode::Enter => {}
+                KeyCode::Char(c) if !self.install_log_popup && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.install_input_buffer.push(c);
+                    if self.install_input_mode == InputMode::Raw {
+                        self.send_install_input(c.to_string());
                     }
                 }
                 _ => {}
@@ -365,16 +357,14 @@ impl App {
                 _ => {}
             },
             Stage::Benchmarks => match key.code {
-                KeyCode::Left => {
-                    if self.benchmark_tab_index > 0 {
-                        self.benchmark_tab_index -= 1;
-                    }
+                KeyCode::Left if self.benchmark_tab_index > 0 => {
+                    self.benchmark_tab_index -= 1;
                 }
-                KeyCode::Right => {
-                    if self.benchmark_tab_index < 7 {
-                        self.benchmark_tab_index += 1;
-                    }
+                KeyCode::Left => {}
+                KeyCode::Right if self.benchmark_tab_index < 7 => {
+                    self.benchmark_tab_index += 1;
                 }
+                KeyCode::Right => {}
                 KeyCode::Char('e') | KeyCode::Char('E') => self.export_benchmark_report(),
                 KeyCode::Esc | KeyCode::Char('q') => self.stage = Stage::Complete,
                 _ => {}

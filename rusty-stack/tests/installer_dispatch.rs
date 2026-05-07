@@ -386,7 +386,8 @@ fn test_every_native_component_has_installer_module() {
             }
             // FastVideo — uses dedicated installer
             "fastvideo" => {
-                let _ = rusty_stack::installers::components::fastvideo::FastVideoInstaller::new();
+                use rusty_stack::installers::components::fastvideo::FastVideoConfig;
+                let _ = rusty_stack::installers::components::fastvideo::FastVideoInstaller::new(FastVideoConfig::default());
             }
             _ => panic!("Unknown native component ID: {}", id),
         }
