@@ -940,7 +940,7 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) 
                         .title("Buffer Size (MB)")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec!["64".into(), "128".into(), "256".into(), "512".into()]),
+                        .labels(vec![Line::from("64"), Line::from("128"), Line::from("256"), Line::from("512")]),
                 )
                 .y_axis(
                     Axis::default()
@@ -948,9 +948,9 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) 
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1005,7 +1005,7 @@ fn render_tensor_core_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResu
                         .title("Matrix Size (N x N)")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec!["512".into(), "1024".into(), "2048".into()]),
+                        .labels(vec![Line::from("512"), Line::from("1024"), Line::from("2048")]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1013,9 +1013,9 @@ fn render_tensor_core_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResu
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1080,7 +1080,7 @@ fn render_pytorch_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults)
                         .title("Benchmark Trial")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec!["Trial 1".into(), "Trial 2".into(), "Trial 3".into()]),
+                        .labels(vec![Line::from("Trial 1"), Line::from("Trial 2"), Line::from("Trial 3")]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1088,9 +1088,9 @@ fn render_pytorch_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults)
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1156,10 +1156,10 @@ fn render_flash_attention_tab(frame: &mut Frame, area: Rect, results: &Benchmark
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "128".into(),
-                            "256".into(),
-                            "512".into(),
-                            "1024".into(),
+                            Line::from("128"),
+                            Line::from("256"),
+                            Line::from("512"),
+                            Line::from("1024"),
                         ]),
                 )
                 .y_axis(
@@ -1168,9 +1168,9 @@ fn render_flash_attention_tab(frame: &mut Frame, area: Rect, results: &Benchmark
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1272,9 +1272,9 @@ fn render_vllm_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "T1".into(),
-                            format!("T{}", v.throughput_samples.len() / 2 + 1).into(),
-                            format!("T{}", v.throughput_samples.len()).into(),
+                            Line::from("T1"),
+                            Line::from(format!("T{}", v.throughput_samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", v.throughput_samples.len())),
                         ]),
                 )
                 .y_axis(
@@ -1283,9 +1283,9 @@ fn render_vllm_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1360,9 +1360,9 @@ fn render_deepspeed_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResult
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "T1".into(),
-                            format!("T{}", ds.samples.len() / 2 + 1).into(),
-                            format!("T{}", ds.samples.len()).into(),
+                            Line::from("T1"),
+                            Line::from(format!("T{}", ds.samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", ds.samples.len())),
                         ]),
                 )
                 .y_axis(
@@ -1371,9 +1371,9 @@ fn render_deepspeed_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResult
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1449,9 +1449,9 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "T1".into(),
-                            format!("T{}", meg.samples.len() / 2 + 1).into(),
-                            format!("T{}", meg.samples.len()).into(),
+                            Line::from("T1"),
+                            Line::from(format!("T{}", meg.samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", meg.samples.len())),
                         ]),
                 )
                 .y_axis(
@@ -1460,9 +1460,9 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],

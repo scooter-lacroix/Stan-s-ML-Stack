@@ -400,7 +400,7 @@ impl App {
                 ]
                 .as_ref(),
             )
-            .split(frame.size());
+            .split(frame.area());
 
         let spinner = self.spinner();
         let title_lines = vec![

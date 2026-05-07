@@ -121,10 +121,10 @@ impl Manifest {
     pub fn compute_signature(&self) -> String {
         let body = self.signatureless_json();
         let mut hasher = Sha256::new();
-        sha2::digest::Update::update(&mut hasher, MANIFEST_SIGNING_KEY);
-        sha2::digest::Update::update(&mut hasher, body.as_bytes());
+        sha2::Digest::update(&mut hasher, MANIFEST_SIGNING_KEY);
+        sha2::Digest::update(&mut hasher, body.as_bytes());
         let result = hasher.finalize();
-        format!("{:x}", result)
+        result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
     }
 
     /// Verify the manifest's signature.

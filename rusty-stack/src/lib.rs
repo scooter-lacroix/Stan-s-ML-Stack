@@ -116,7 +116,10 @@ fn run_app<B: ratatui::backend::Backend>(
     app: &mut crate::app::App,
     tick_rate: std::time::Duration,
     last_tick: &mut std::time::Instant,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
+{
     use crate::state::Stage;
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 
