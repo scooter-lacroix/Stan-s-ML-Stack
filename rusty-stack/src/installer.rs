@@ -2457,6 +2457,94 @@ fn git_clone_or_pull(
 ///
 /// - **VAL-INSTALL-031**: No bash subprocess for ported components
 ///
+/// Filter a pip requirements file to exclude CUDA/nvidia packages and wheels.
+///
+/// This mirrors the original shell script's grep filter:
+/// `grep -v -E '^(nvidia-|cuda|tensorrt|triton([=<>!\[]|$)|xformers|flash-attn|torch([=<>! ]|$)|torchvision|torchaudio)'`
+///
+/// Additionally excludes:
+/// - Any URL containing CUDA markers (`+cu1`, `+cu2`, `cu124`, `cu128`, etc.)
+/// - Any `ik_llama` lines (CUDA-only builds)
+/// - Any `exllamav3` lines with CUDA markers
+/// - Any `flash_attn` wheel URLs with CUDA markers
+fn filter_cuda_requirements(req_path: &str) -> String {
+    let content = match std::fs::read_to_string(req_path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let mut filtered = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Keep empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Extract the package name part (before any version specifiers or markers)
+        let pkg_name = trimmed
+            .split(['=', '>', '<', '!', ';', '[', ' ', '\t'])
+            .next()
+            .unwrap_or("")
+            .trim();
+
+        // Skip CUDA/nvidia packages (matches original grep filter)
+        let pkg_lower = pkg_name.to_lowercase();
+        if pkg_lower.starts_with("nvidia-")
+            || pkg_lower.starts_with("cuda")
+            || pkg_lower.starts_with("tensorrt")
+            || pkg_lower == "triton"
+            || pkg_lower == "xformers"
+            || pkg_lower == "flash-attn"
+            || pkg_lower == "torch"
+            || pkg_lower == "torchvision"
+            || pkg_lower == "torchaudio"
+        {
+            continue;
+        }
+
+        // Also match triton with version specifiers (e.g. triton-windows==3.5.1)
+        if pkg_lower.starts_with("triton-") || pkg_lower.starts_with("triton==") || pkg_lower.starts_with("triton[") {
+            continue;
+        }
+
+        // Skip URL-based wheels with CUDA markers
+        // These are lines like: https://.../llama_cpp_binaries-0.124.0+cu124-...whl; platform_system == "Linux"
+        let line_lower = trimmed.to_lowercase();
+        if line_lower.contains("http://") || line_lower.contains("https://") {
+            // Skip if URL contains CUDA markers
+            if line_lower.contains("+cu1")
+                || line_lower.contains("+cu2")
+                || line_lower.contains("+cu3")
+                || line_lower.contains("cu124")
+                || line_lower.contains("cu128")
+                || line_lower.contains("cu121")
+                || line_lower.contains("cu118")
+            {
+                continue;
+            }
+            // Skip ik_llama lines (CUDA-only builds)
+            if line_lower.contains("ik_llama") {
+                continue;
+            }
+            // Skip exllamav3 with CUDA markers
+            if line_lower.contains("exllamav3") && (line_lower.contains("+cu") || line_lower.contains("cu1")) {
+                continue;
+            }
+            // Skip flash_attn wheel URLs with CUDA markers
+            if line_lower.contains("flash_attn") && (line_lower.contains("+cu") || line_lower.contains("cu1")) {
+                continue;
+            }
+        }
+
+        filtered.push(line.to_string());
+    }
+
+    filtered.join("\n")
+}
+
 /// Check whether force-reinstall mode is active.
 ///
 /// Reads `MLSTACK_FORCE_REINSTALL` first, falls back to `FORCE`.
@@ -3447,39 +3535,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: pip install requirements
-            // Use target_dir from clone command instead of hardcoded path to avoid
-            // File not found errors when HOME doesn't match the actual clone directory.
-            // Newer text-generation-webui versions moved requirements into subdirs.
-            let req_path_root = format!("{}/requirements.txt", target_dir);
-            let req_path_full = format!("{}/requirements/full/requirements.txt", target_dir);
-            let req_path_subdir = format!("{}/requirements/requirements.txt", target_dir);
-            let req_path = if std::path::Path::new(&req_path_root).exists() {
-                req_path_root
-            } else if std::path::Path::new(&req_path_full).exists() {
-                req_path_full
-            } else if std::path::Path::new(&req_path_subdir).exists() {
-                req_path_subdir
-            } else {
-                // Fallback: try root path even if not found (will error with clear message)
-                let _ = sender.send(InstallerEvent::Log(
-                    format!(
-                        "[native] [WARN] requirements.txt not found at {}, {}, or {}; attempting root path",
-                        req_path_root, req_path_full, req_path_subdir
-                    ),
-                    false,
-                ));
-                req_path_root
-            };
-            let cmd = inst.build_pip_install_command(&req_path);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                None,
-                sender,
-                &component.name,
-            )?;
-
-            // Step 3: Install AMD requirements (non-fatal — file may not exist)
+            // Step 2: Install AMD requirements FIRST.
+            // AMD requirements contain ROCm-specific wheels (e.g. llama-cpp+rocm7.2)
+            // that must be installed before the filtered generic requirements.
+            // This ensures ROCm wheels take precedence over any CUDA fallbacks.
             let amd_req_full = format!("{}/requirements/full/requirements_amd.txt", target_dir);
             let amd_req_subdir = format!("{}/requirements/requirements_amd.txt", target_dir);
             let amd_req_path = if std::path::Path::new(&amd_req_full).exists() {
@@ -3487,10 +3546,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             } else if std::path::Path::new(&amd_req_subdir).exists() {
                 amd_req_subdir
             } else {
-                // No AMD requirements file found — skip silently
                 String::new()
             };
             if !amd_req_path.is_empty() {
+                let _ = sender.send(InstallerEvent::Log(
+                    "[native] Installing AMD-specific requirements first (ROCm wheels)".to_string(),
+                    false,
+                ));
                 let cmd = inst.build_amd_requirements_command(&amd_req_path);
                 execute_native_command(
                     &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
@@ -3498,9 +3560,63 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     sender,
                     &component.name,
                 )?;
+            }
+
+            // Step 3: Install filtered main requirements.
+            // The original script filters with grep -v to exclude CUDA/nvidia packages:
+            //   grep -v -E '^(nvidia-|cuda|tensorrt|triton([=<>!\[]|$)|xformers|
+            //                flash-attn|torch([=<>! ]|$)|torchvision|torchaudio)'
+            // Additionally, we exclude any .whl URLs containing CUDA markers (+cu\d)
+            // and any ik_llama lines (CUDA-only builds).
+            let req_path_root = format!("{}/requirements.txt", target_dir);
+            let req_path_full = format!("{}/requirements/full/requirements.txt", target_dir);
+            let req_path_subdir = format!("{}/requirements/requirements.txt", target_dir);
+            let raw_req_path = if std::path::Path::new(&req_path_full).exists() {
+                req_path_full
+            } else if std::path::Path::new(&req_path_root).exists() {
+                req_path_root
+            } else if std::path::Path::new(&req_path_subdir).exists() {
+                req_path_subdir
+            } else {
+                String::new()
+            };
+
+            if !raw_req_path.is_empty() {
+                // Read and filter the requirements file to exclude CUDA deps
+                let filtered = filter_cuda_requirements(&raw_req_path);
+                if !filtered.is_empty() {
+                    // Write filtered requirements to a temp file
+                    let tmp_dir = std::env::temp_dir().join("rusty-stack-textgen");
+                    let _ = std::fs::create_dir_all(&tmp_dir);
+                    let filtered_path = tmp_dir.join("requirements_filtered.txt");
+                    std::fs::write(&filtered_path, &filtered).with_context(|| {
+                        format!("Failed to write filtered requirements to {:?}", filtered_path)
+                    })?;
+                    let filtered_path_str = filtered_path.to_string_lossy().to_string();
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] Installing filtered requirements (CUDA deps excluded) from {}",
+                            raw_req_path
+                        ),
+                        false,
+                    ));
+                    let cmd = inst.build_pip_install_command(&filtered_path_str);
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                    let _ = std::fs::remove_file(&filtered_path);
+                } else {
+                    let _ = sender.send(InstallerEvent::Log(
+                        "[native] [WARN] All requirements were filtered out, nothing to install".to_string(),
+                        false,
+                    ));
+                }
             } else {
                 let _ = sender.send(InstallerEvent::Log(
-                    "[native] [WARN] AMD requirements not found, skipping".to_string(),
+                    "[native] [WARN] requirements.txt not found, skipping dependency installation".to_string(),
                     false,
                 ));
             }
