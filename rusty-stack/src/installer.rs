@@ -4076,6 +4076,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
+            // patch CMakeLists.txt: remove flash_attn_rocm.cpp (CK submodule incompatible with current HIP compiler)
+            let patch_cmd = inst.patch_cmake();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &patch_cmd.program, &patch_cmd.args, &patch_cmd.env,
+                    Some(kernel_dir.clone()),
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+
             // install build deps (scikit-build-core, cmake, ninja)
             let deps_cmd = inst.install_build_deps();
             execute_native_command(
