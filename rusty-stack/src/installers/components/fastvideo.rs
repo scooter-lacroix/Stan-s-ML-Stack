@@ -134,7 +134,7 @@ impl FastVideoInstaller {
         }
     }
 
-    /// Patch CMakeLists.txt to remove flash_attn_rocm.cpp from the build.
+    /// Patch source files to remove flash_attn_rocm.cpp from the build.
     ///
     /// The `feature/rocm-gfx11-support` branch includes `flash_attn_rocm.cpp`
     /// which depends on AMD's composable_kernel MHA device implementations.
@@ -143,15 +143,23 @@ impl FastVideoInstaller {
     /// (`threadIdx`/`blockDim`), missing standard library includes, and
     /// template deduction errors in `device_grouped_mha_bwd_*_v2.hpp`.
     ///
-    /// The rest of fastvideo-kernel (gemm, norm, quant) compiles correctly
-    /// without the flash attention source.
+    /// Three patches are applied:
+    /// 1. Remove `flash_attn_rocm.cpp` from CMakeLists.txt source list
+    /// 2. Remove `#include "attention/flash_attn_rocm.cpp"` and the forward
+    ///    declarations for `mha_varlen_fwd`/`mha_varlen_bwd` from
+    ///    `common_extension.cpp` (lines 4-23)
+    /// 3. Remove pybind11 bindings for `flash_attn_varlen_fwd`/`_bwd`
+    ///    from `common_extension.cpp`
+    ///
+    /// The rest of fastvideo-kernel (gemm, norm, quant) compiles correctly.
     pub fn patch_cmake(&self) -> ShellCommand {
         ShellCommand {
-            program: "sed".to_string(),
+            program: "bash".to_string(),
             args: vec![
-                "-i".to_string(),
-                "/flash_attn_rocm\\.cpp/d".to_string(),
-                "CMakeLists.txt".to_string(),
+                "-c".to_string(),
+                "sed -i '/flash_attn_rocm\\.cpp/d' CMakeLists.txt && \
+                 sed -i '4,23d' csrc/common_extension.cpp && \
+                 sed -i '/Flash Attention ROCm$/d;/flash_attn_varlen_fwd/d;/flash_attn_varlen_bwd/d' csrc/common_extension.cpp".to_string(),
             ],
             env: vec![],
             working_dir: None,
