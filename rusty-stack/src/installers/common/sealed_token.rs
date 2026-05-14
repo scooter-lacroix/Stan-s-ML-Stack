@@ -6,8 +6,14 @@ pub struct SealedToken {
 }
 
 impl SealedToken {
+    /// Create a SealedToken from the compiled-in GITHUB_INSTALLER_TOKEN.
+    ///
+    /// The token is embedded at compile time via `cargo:rustc-env` in build.rs
+    /// and is accessible via `env!("GITHUB_INSTALLER_TOKEN")` in source code.
+    /// This approach is more secure than `std::env::var()` because the token
+    /// exists only as a compiled-in constant, not in the OS environment table.
     pub fn from_env() -> Self {
-        Self::new(std::env::var("GITHUB_INSTALLER_TOKEN").unwrap_or_default())
+        Self::new(env!("GITHUB_INSTALLER_TOKEN"))
     }
 
     pub fn new(token: impl AsRef<str>) -> Self {
