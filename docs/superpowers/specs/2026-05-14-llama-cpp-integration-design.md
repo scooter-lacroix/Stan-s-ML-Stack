@@ -316,25 +316,52 @@ fn cmake_flags_for_channel(channel: &str, gpu_arch: &str) -> Vec<String> {
 
 ---
 
-## Open Questions (Require Empirical Testing)
+## Open Questions — Resolved and Remaining
 
-1. **RDNA4 warpSize:** What does `hipDeviceProp_t::warpSize` return on gfx1200? (32 or 64)
-2. **RDNA4 LDS size:** 64KB (like RDNA2) or 128KB (like RDNA3)?
-3. **WMMA FA correctness:** Does the deprecated `fattn-wmma-f16.cu` produce correct results on RDNA3?
-4. **hipFuncSetAttribute effectiveness:** Does `hipFuncSetAttribute` actually enable >64KB shared memory on RDNA3 despite ROCm docs saying "ignored"?
+### Q1: RDNA4 warpSize — RESOLVED: 32
+`hipDeviceProp_t::warpSize` returns **32** on gfx1200/gfx1201. AMD HIP docs state "AMD devices return 64 for gfx9 and 32 for gfx10 and above." rocWMMA docs list gfx1200/gfx1201 under "RDNA architectures (wave32)." No host/device mismatch exists.
+
+**Impact:** No wave64 handling needed for RDNA4. All existing WARP_SIZE=32 code is correct.
+
+Sources: HIP C++ language extensions (rocmdocs.amd.com), rocWMMA API reference (rocm.docs.amd.com)
+
+### Q2: RDNA4 LDS size — RESOLVED: 64KB per CU
+AMD's RDNA4 ISA guide lists LDS as "64kB." No AMD/ROCm source confirms 128KB opt-in shared memory on gfx1200/gfx1201. The LDS opt-in work (Section 3.3) is RDNA3-specific.
+
+**Impact:** RDNA4 does NOT benefit from LDS opt-in. smpbo fix still needed for RDNA3.
+
+**Remaining verification:** Query `sharedMemPerBlock`, `sharedMemPerBlockOptin`, `sharedMemPerMultiprocessor` on real gfx1200 hardware to confirm HIP reporting.
+
+Sources: RDNA4 ISA guide (docs.amd.com), HIP hardware implementation docs (rocm.docs.amd.com)
+
+### Q3: hipFuncSetAttribute effectiveness — UNVERIFIED
+The API exists in ROCm but docs say some hints are "ignored on AMD devices." The fork already calls it at fattn-mma-f16.cuh:1781. No authoritative source confirms it actually enables >64KB dynamic shared memory on RDNA3.
+
+**Needed test:** On real gfx1100, print `sharedMemPerBlockOptin`, call `hipFuncSetAttribute(kernel, hipFuncAttributeMaxDynamicSharedMemorySize, N)`, then launch kernels with 64KB/96KB/128KB dynamic shared memory.
+
+**Impact on implementation:** The smpbo bug fix (ggml-cuda.cu:259: use `sharedMemPerBlockOptin` instead of `sharedMemPerBlock`) is worth doing regardless — it's a bug that MUSA/NVIDIA paths already handle correctly. But whether it enables >64KB usage depends on this empirical test.
+
+### Q4: WMMA FA correctness on RDNA3 — UNVERIFIED
+Upstream llama.cpp issue #13110 (2025-04-25) confirms the WMMA FA path was still actively built for gfx1201. No authoritative test report proves numerical correctness on gfx1100. No accuracy bug report found either.
+
+**Needed test:** Run FA-vs-non-FA output comparison on real gfx1100 across multiple head sizes / KV types / context lengths with max-abs/max-rel error thresholds.
+
+**Impact on implementation:** Phase 2 MUST validate WMMA FA on RDNA3 before building optimization layers on top of it. If broken, fallback to vec kernel path.
 
 ---
 
 ## Risks and Mitigations
 
-| Risk | Mitigation |
-|------|------------|
-| Private repo access from installer | Support both SSH key and HTTPS token auth |
-| WMMA FA deprecated/broken on RDNA3 | Evaluate upstream llama.cpp WMMA FA for merge; fallback to vec kernel |
-| RDNA4 wave64 mode | Empirical test required before any RDNA4 work; if wave64, scope increases significantly |
-| hipFuncSetAttribute no-op on AMD | Test empirically; if truly no-op, skip LDS opt-in and work within 64KB limit |
-| Template instance explosion | Confirmed: nthreads_KQ_q change needs ZERO new template files (instances parameterized by D/type only) |
-| CMake flag format | Verified: GPU_TARGETS is primary; AMDGPU_TARGETS works via forwarding chain |
+| Risk | Mitigation | Status |
+|------|------------|--------|
+| Private repo access from installer | Support both SSH key and HTTPS token auth | Open |
+| WMMA FA deprecated/broken on RDNA3 | Evaluate upstream llama.cpp WMMA FA for merge; fallback to vec kernel | UNVERIFIED — empirical test needed |
+| RDNA4 wave64 mode | ~~Empirical test required~~ | RESOLVED — warpSize=32 confirmed |
+| hipFuncSetAttribute no-op on AMD | Test empirically; if truly no-op, skip LDS opt-in and work within 64KB limit | UNVERIFIED — empirical test needed |
+| RDNA4 LDS >64KB | ~~Check if 128KB like RDNA3~~ | RESOLVED — 64KB confirmed |
+| Template instance explosion | Confirmed: nthreads_KQ_q change needs ZERO new template files | RESOLVED |
+| CMake flag format | Verified: GPU_TARGETS is primary | RESOLVED |
+| smpbo bug on HIP | Fix ggml-cuda.cu:259 to use sharedMemPerBlockOptin | Confirmed bug |
 
 ---
 
@@ -355,6 +382,6 @@ fn cmake_flags_for_channel(channel: &str, gpu_arch: &str) -> Vec<String> {
 - MoE double-buffer adaptation (Section 3.5)
 
 ### Phase 3: RDNA4 Enablement
-- Confirm wave mode empirically (Section 3.6)
-- WMMA support (Section 3.7)
-- Flash attention path (Section 3.8)
+- ~~Confirm wave mode empirically~~ (RESOLVED: warpSize=32)
+- WMMA support (Section 3.7) — rocWMMA 2.2 with gfx1200
+- Flash attention path (Section 3.8) — wave32, same as RDNA3
