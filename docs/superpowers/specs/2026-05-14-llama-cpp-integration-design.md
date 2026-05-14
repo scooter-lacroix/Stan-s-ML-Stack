@@ -271,12 +271,26 @@ Latest:  -DGGML_HIP=ON -DGGML_HIP_ROCWMMA_FATTN=ON -DGPU_TARGETS=gfx1030;gfx1100
 Based on flash_attention_ck.rs (line 45) and onnxruntime.rs (line 23) patterns:
 
 ```rust
-// HipArchs enum — per-channel GPU targeting
+// HipArchs enum — per-family matching onnxruntime.rs:25 pattern
 enum HipArchs {
-    Gfx1030,                          // Legacy: RDNA2 only
-    Gfx1030_1100_1101,                // Stable: RDNA2 + RDNA3
-    Gfx1030_1100_1101_1200,           // Latest: RDNA2 + RDNA3 + RDNA4
+    Gfx1030,                          // RDNA2 (gfx1030-gfx1037)
+    Gfx1100,                          // RDNA3 (gfx1100-gfx1101)
+    Gfx1200,                          // RDNA4 (gfx1200-gfx1201)
     Default,                          // Fallback
+}
+
+impl HipArchs {
+    fn gpu_targets(&self, channel: &str) -> String {
+        match (self, channel) {
+            (Gfx1030, _) => "gfx1030".into(),
+            (Gfx1100, "legacy") => "gfx1030".into(), // fallback to RDNA2
+            (Gfx1100, _) => "gfx1030;gfx1100;gfx1101".into(),
+            (Gfx1200, "legacy") => "gfx1030".into(),
+            (Gfx1200, "stable") => "gfx1030;gfx1100;gfx1101".into(),
+            (Gfx1200, _) => "gfx1030;gfx1100;gfx1101;gfx1200".into(),
+            _ => "gfx1030".into(), // safe default
+        }
+    }
 }
 
 // CMake command construction
@@ -368,20 +382,191 @@ Upstream llama.cpp issue #13110 (2025-04-25) confirms the WMMA FA path was still
 ## Implementation Phases
 
 ### Phase 1: Foundation + Installer (no kernel changes)
-- Create private GitHub repo
-- Build Rust installer component (12+ files)
-- CMake source build with per-channel flags
-- CommandBased detection + verification
-- Test on RDNA2 (already works)
 
-### Phase 2: RDNA3 Enablement
-- Validate WMMA FA on RDNA3 (Section 3.1)
-- Tune nthreads_KQ_q for RDNA3 (Section 3.2)
-- LDS opt-in if hipFuncSetAttribute works (Section 3.3)
-- Occupancy tuning (Section 3.4)
-- MoE double-buffer adaptation (Section 3.5)
+#### P1.1 — Create private GitHub repo
+- Create `scooter-lacroix/llama.cpp-turboquant-hip` as private repo
+- Push current fork content
+- **Auth mechanism needed:** Current source-build installers use plain `git clone <url>` (installer.rs:2315, fastvideo.rs:17). No credential injection surface exists. Options:
+  - SSH deploy key on build machine (pre-configured)
+  - HTTPS PAT via environment variable (e.g., `LLAMA_CPP_REPO_TOKEN`)
+  - Bundle source tarball instead of git clone (avoids auth entirely)
+- Decision needed before implementation
 
-### Phase 3: RDNA4 Enablement
-- ~~Confirm wave mode empirically~~ (RESOLVED: warpSize=32)
-- WMMA support (Section 3.7) — rocWMMA 2.2 with gfx1200
-- Flash attention path (Section 3.8) — wave32, same as RDNA3
+#### P1.2 — Create llama_cpp.rs installer module
+File: `src/installers/components/llama_cpp.rs` (NEW)
+- CMake source build from private repo (git clone → cmake → make → install)
+- **HipArchs enum pattern:** Use per-family variants matching onnxruntime.rs:25 (`Gfx1030`/`Gfx1100`/`Gfx1200`/`Default`), NOT grouped supersets
+- Map each variant to semicolon-separated GPU_TARGETS string at build time
+- ROCm channel gating: Legacy=RDNA2 only, Stable=RDNA2+3, Latest=RDNA2+3+4
+- CMake flags: `-DGGML_HIP=ON`, `-DGGML_HIP_ROCWMMA_FATTN=ON` (Stable/Latest only), `-DGPU_TARGETS=...`
+- **Build targets:** `llama-cli`, `llama-bench`, `llama-server` (tools/cli/CMakeLists.txt, tools/llama-bench/CMakeLists.txt, tools/server/CMakeLists.txt)
+- **Install:** `cmake --install` with CMAKE_INSTALL_PREFIX
+- Dependency on "rocm" component
+- **Note:** `llama-cli` does NOT support `--version` flag (verified: no `--version`/`print_version` in tools/cli source). Detection must use `--help` exit code or different strategy.
+
+#### P1.3 — Wire into mod.rs
+File: `src/installers/components/mod.rs`
+- Add `pub mod llama_cpp;` (module declaration ~line 68)
+- Add re-export (~line 93)
+- Add to NATIVE_COMPONENT_IDS (~line 135)
+- Add dependency on "rocm" (~line 199)
+- Update hardcoded component count assertions if present (~line 127, 194, 289)
+
+#### P1.4 — Wire into installer.rs
+File: `src/installer.rs`
+- Add match arm for "llama-cpp" in run_native_installer()
+- Call llama_cpp installer
+
+#### P1.5 — Add registry detection
+File: `src/platform/registry.rs`
+- Add ComponentInfo entry in known_components() (~line 68-125)
+- **CRITICAL (Codex finding #2):** CommandBased detection alone is insufficient because `llama-cli` is not on PATH by default (installed to `~/.mlstack/components/llama-cpp/bin/`). Options:
+  - **Option A:** Use PathBased detection pointing to `~/.mlstack/components/llama-cpp/bin/llama-cli`
+  - **Option B:** Add PATH export for component binaries (see P1.6), then use CommandBased
+  - **Option C:** Hybrid — PathBased for primary, CommandBased as fallback
+- Update hardcoded allowlists (~line 809, 821, 1276)
+
+#### P1.6 — PATH/export for component binaries (NEW — Codex finding #1)
+File: `src/installers/components/permanent_env.rs`, `src/platform/environment.rs`
+- Current env generation only exports ROCm bins (permanent_env.rs:144, environment.rs:354)
+- Must add export for `~/.mlstack/components/llama-cpp/bin/` so detection finds `llama-cli`
+- OR: use PathBased detection with known install prefix
+
+#### P1.7 — Add state entry
+File: `src/state.rs`
+- Add Component entry in default_components() (~line 251-460) with Extension category
+
+#### P1.8 — Add component status verification
+File: `src/component_status.rs`
+- Add to is_component_installed_by_id() match (~line 143)
+- Add verification commands:
+  - `llama-cli --help` — functional check (exit code 0)
+  - `llama-bench --help` or `llama-bench --list-devices` — **NOT** `llama-bench -p 1 -n 1` (Codex finding #5: requires model file, defaults to `models/7B/...`)
+  - Linkage check: `ldd` against `amdhip64` or `hipblas` — **NOT** `rocblas` (Codex finding #10: fork links against hipblas/hip, not rocblas directly)
+- Add to enhanced_verification_commands() (~line 549)
+- Add to helper functions (~line 649)
+
+#### P1.9 — Wire verification module
+File: `src/verification/mod.rs`
+- Add to enhanced_verify_components() list (~line 55)
+
+#### P1.10 — Wire orchestrator planner
+File: `src/orchestrator/planner.rs`
+- Add to ROCm requirements allowlist (~line 523)
+- Add dependency derivation (~line 631)
+
+#### P1.11 — Wire adapter
+File: `src/adapter/mod.rs`
+- Add adapter entry (~line 559) — mostly registry-driven, minimal hand-edit needed
+
+#### P1.12 — Wire legacy adapter
+File: `src/adapter/legacy_adapter.rs`
+- Add legacy fallback (~line 180) if component supports legacy install path
+
+#### P1.13 — Windows stub
+File: `src/platform/windows.rs`
+- Add stub or unsupported entry (~lines 219, 243, 300)
+
+#### P1.14 — Test fixtures
+File: `src/core/fixtures/baseline_manifest.json`
+- Add component entry (~line 49)
+
+#### P1.15 — Build and test
+- `cargo build --release` in rusty-stack/
+- Test installer flow
+- Test detection, installation, and verification
+
+**Parallelization (P1):**
+- P1.3, P1.4, P1.7, P1.9, P1.13, P1.14 can run in parallel (distinct integration surfaces)
+- P1.5, P1.6, P1.8 must stay grouped (detection/verification contract)
+- P1.1 must complete before P1.2
+- P1.2 must complete before P1.4
+
+**HARDWARE_BLOCKER:** P1.15 requires real RDNA2 GPU or equivalent CI
+
+### Phase 2: RDNA3 Enablement (kernel changes in fork)
+
+#### P2.1 — Fix smpbo bug
+File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/ggml-cuda.cu:259`
+- Change `info.devices[id].smpbo = prop.sharedMemPerBlock;` to `info.devices[id].smpbo = prop.sharedMemPerBlockOptin;`
+- CONFIRMED BUG: MUSA (line 279) and NVIDIA (line 286) already use Optin
+- Impact: correct shared memory reporting on RDNA3 (may report 128KB vs 64KB)
+- **No hardware needed** — this is a correctness fix
+
+#### P2.2 — Fix CUDA_SET_SHARED_MEMORY_LIMIT no-op on HIP
+File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/common.cuh:215-218`
+- Currently a no-op on HIP: `#if !defined(GGML_USE_HIP)` guards the real implementation
+- For RDNA3: implement the shared memory limit call using `hipFuncSetAttribute`
+- Depends on P2.4 for empirical verification that hipFuncSetAttribute actually works
+- **Also touches:** mmq.cuh:4074 (calls CUDA_SET_SHARED_MEMORY_LIMIT)
+
+#### P2.3 — Validate WMMA FA on RDNA3 **[HARDWARE_BLOCKER]**
+- Build fork with `GGML_HIP_ROCWMMA_FATTN=ON` for gfx1100
+- Run correctness tests: FA-vs-non-FA output comparison on real gfx1100
+- **Dispatch chain:** fattn-wmma-f16.cuh:9 (compile gate) → fattn.cu:539 (runtime dispatch)
+- If broken: evaluate upstream llama.cpp WMMA FA for merge, or fallback to vec kernel
+- If working: proceed with WMMA optimization
+
+#### P2.4 — Tune nthreads_KQ_q for RDNA3 **[REVISED — Codex finding #3]**
+File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/fattn-vec.cuh:65-75`
+- **CORRECTION:** `nthreads_KQ_q` is a compile-time `constexpr` used as a template argument (fattn-vec.cuh:67→81→90). Cannot be switched at runtime.
+- **Revised approach:** Compile-time split — build separate template instantiations for RDNA3 with `nthreads_KQ_q=4` and use runtime dispatch in fattn.cu to select the right kernel based on CC
+- This MAY require additional template instances despite earlier claim of "zero new files"
+- Must audit: fattn.cu dispatch logic and template-instances/ generator
+
+#### P2.5 — hipFuncSetAttribute empirical test **[HARDWARE_BLOCKER]**
+- On real gfx1100: query `sharedMemPerBlockOptin`
+- Test `hipFuncSetAttribute` with 96KB/128KB
+- Launch kernels with >64KB dynamic shared memory
+- If works: proceed with P2.6
+- If doesn't work: skip LDS opt-in, document limitation
+
+#### P2.6 — RDNA3 LDS opt-in **[depends on P2.1, P2.2, P2.5]**
+- If hipFuncSetAttribute works:
+  - Implement shared memory opt-in for MMQ on RDNA3
+  - Larger tile sizes via 128KB LDS
+  - Gate: compile flag + runtime RDNA3 CC check
+- **Note:** Tile selection is bounded by smpbo (mmq.cuh:4178), so P2.1 is prerequisite
+
+#### P2.7 — RDNA3 occupancy tuning **[HARDWARE_BLOCKER]**
+File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/mmq.cuh:3637-3642`
+- Evaluate `amdgpu_waves_per_eu(4,8)` for RDNA3
+- Per-kernel-class tuning: MMQ, FA, MoE, dequant
+- Requires real hardware for benchmark validation
+
+#### P2.8 — RDNA3 MoE double-buffer adaptation **[HARDWARE_BLOCKER]**
+File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/mmq.cuh:3486-3550`
+- Adapt RDNA2 double-buffer pattern for RDNA3
+- New compile flag: `RDNA3_MATMUL_OPT_V1`
+- Runtime gate: `GGML_CUDA_CC_IS_RDNA3`
+- Should wait until P2.3/P2.5 decide viable kernel paths
+
+**Parallelization (P2):**
+- P2.1 is standalone (no hardware, do first)
+- P2.3 and P2.5 can run in parallel on RDNA3 hardware
+- P2.2, P2.6 depend on P2.5 results
+- P2.4 is standalone code work but may need hardware validation
+- P2.7, P2.8 should wait until P2.3/P2.5 resolve
+
+### Phase 3: RDNA4 Enablement (kernel changes in fork)
+
+#### P3.1 — Build test on RDNA4 **[HARDWARE_BLOCKER]**
+- Build fork with `GPU_TARGETS=gfx1200`
+- Verify compilation succeeds
+- Test basic functionality on real gfx1200 hardware
+
+#### P3.2 — WMMA support for RDNA4 **[HARDWARE_BLOCKER]**
+File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/common.cuh:313`
+- Already has RDNA4 range in `amd_wmma_available()`
+- Verify rocWMMA 2.2.0 supports gfx1200 WMMA operations
+- Check if RDNA4 WMMA has different fragment dimensions
+
+#### P3.3 — Flash attention on RDNA4 **[HARDWARE_BLOCKER]**
+- warpSize=32 confirmed — vec kernel path works as-is
+- WMMA path available via fattn-mma-f16.cuh:527 gate (`AMD_WMMA_AVAILABLE && RDNA4`)
+- **Dispatch chain:** fattn-wmma-f16.cuh:18 (compile gate) → fattn.cu:539 (runtime dispatch)
+- Validate both paths on real hardware
+
+**Parallelization (P3):**
+- P3.1 can start independently (just compilation)
+- P3.2, P3.3 need P3.1 and real hardware
