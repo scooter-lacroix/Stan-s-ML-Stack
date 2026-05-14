@@ -1,7 +1,7 @@
 fn main() {
-    // Compile-time enforcement: fail immediately if GITHUB_INSTALLER_TOKEN is absent.
-    // The env!() macro reads the variable at compile time and embeds its value in the
-    // binary's compiled environment, making it available via std::env::var() at runtime.
-    // This is the standard rustc mechanism for build-script-to-binary token injection.
-    let _token = env!("GITHUB_INSTALLER_TOKEN");
+    // Compile-time enforcement: env!() fails the build if the env var is absent.
+    // The value is also re-exported via cargo:rustc-env so it is accessible at runtime
+    // via std::env::var("GITHUB_INSTALLER_TOKEN") without any source-file string literal.
+    let token = env!("GITHUB_INSTALLER_TOKEN");
+    println!("cargo:rustc-env=GITHUB_INSTALLER_TOKEN={}", token);
 }
