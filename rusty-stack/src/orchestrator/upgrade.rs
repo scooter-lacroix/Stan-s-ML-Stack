@@ -241,7 +241,10 @@ pub fn compute_checksum(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
-    result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    result
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 /// Verify that `data` matches the expected SHA-256 `checksum`.

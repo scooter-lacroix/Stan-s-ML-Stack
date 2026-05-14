@@ -1,0 +1,8 @@
+{
+  "pathAccess": {
+    "allowedPaths": [
+      "/opt/rocm/.info/"
+    ]
+  },
+  "version": "0.9.0-20260327"
+}

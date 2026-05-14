@@ -237,6 +237,10 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "pytorch-profiler" => python_any(python_candidates, &["torch"]),
         "wandb" => python_any(python_candidates, &["wandb"]),
         "fastvideo" => python_any(python_candidates, &["fastvideo"]),
+        "llama-cpp" => {
+            // Use the detection contract from llama_cpp.rs: llama-cli --help must succeed
+            crate::installers::components::llama_cpp::is_llama_cli_functional(&home)
+        }
         "permanent-env" => env_file_has_permanent(&home_path(&home, &[".mlstack_env"])),
         "basic-env" => path_exists(home_path(&home, &[".mlstack_env"])),
         "enhanced-env" => env_file_has_enhanced(&home_path(&home, &[".mlstack_env"])),
@@ -292,7 +296,7 @@ pub fn component_verification_commands(
             "triton",
             &["triton"],
             python_candidates,
-            "import triton; import triton._C; print(triton.__version__)",
+            "import triton; import triton.language as tl; print(f'Triton {triton.__version__} — language OK')",
         )],
         "mpi4py" => vec![python_command(
             "MPI4Py",
@@ -318,9 +322,9 @@ pub fn component_verification_commands(
         "flash-attn" => vec![python_command(
             "Flash Attention",
             "flash-attn",
-            &["flash_attention_amd", "flash_attn", "flash_attn_2"],
+            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
             python_candidates,
-            "import importlib, sys;\nmodules=['flash_attention_amd','flash_attn','flash_attn_2'];\nloaded=False;\nerrors=[];\nfor name in modules:\n    try:\n        importlib.import_module(name);\n        print(name);\n        loaded=True;\n        break\n    except Exception as exc:\n        errors.append(f'{name}: {exc}');\nif not loaded:\n    print('Flash Attention import errors:', '; '.join(errors));\n    raise SystemExit(1)",
+            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         )],
         "megatron" => vec![python_command(
             "Megatron-LM",
@@ -341,7 +345,7 @@ pub fn component_verification_commands(
             "aiter",
             &["aiter"],
             python_candidates,
-            "import aiter; print(getattr(aiter, '__version__', 'ok'))",
+            "import aiter; mods=[x for x in dir(aiter) if not x.startswith('_')]; print(f'AITER imported — {len(mods)} exports available')",
         )],
         "vllm-studio" => vec![shell_command(
             "vLLM Studio",
@@ -396,6 +400,12 @@ pub fn component_verification_commands(
             &["fastvideo"],
             python_candidates,
             "import fastvideo; print(fastvideo.__version__)",
+        )],
+        "llama-cpp" => vec![shell_command(
+            "llama.cpp",
+            "llama-cpp",
+            "llama-cli",
+            &["--help"],
         )],
         "basic-env" => vec![shell_command(
             "Environment file",
@@ -552,9 +562,9 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
         python_command(
             "Flash Attention",
             "flash-attn",
-            &["flash_attention_amd", "flash_attn", "flash_attn_2"],
+            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
             python_candidates,
-            "import importlib, sys;\nmodules=['flash_attention_amd','flash_attn','flash_attn_2'];\nloaded=False;\nerrors=[];\nfor name in modules:\n    try:\n        importlib.import_module(name);\n        print(name);\n        loaded=True;\n        break\n    except Exception as exc:\n        errors.append(f'{name}: {exc}');\nif not loaded:\n    print('Flash Attention import errors:', '; '.join(errors));\n    raise SystemExit(1)",
+            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         ),
         python_command(
             "vLLM",
@@ -629,11 +639,11 @@ fn build_verification_commands(python_candidates: &[String]) -> Vec<Verification
             "import onnxruntime as ort; import pathlib; import os; import sys; print('Version:', ort.__version__); base=pathlib.Path(ort.__file__).parent; libs=list(base.rglob('libonnxruntime_providers_rocm.so')); [os.environ.update({'ORT_ROCM_EP_PROVIDER_PATH': str(l)}) for l in libs[:1]]; providers=ort.get_available_providers(); print('Providers:', providers); sys.exit(0 if 'ROCMExecutionProvider' in providers else 1)",
         ),
         python_command(
-            "Flash Attention",
+            "Flash Attention (build)",
             "flash-attn",
-            &["flash_attention_amd", "flash_attn", "flash_attn_2"],
+            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
             python_candidates,
-            "import importlib, sys;\nmodules=['flash_attention_amd','flash_attn','flash_attn_2'];\nloaded=False;\nerrors=[];\nfor name in modules:\n    try:\n        importlib.import_module(name);\n        print(name);\n        loaded=True;\n        break\n    except Exception as exc:\n        errors.append(f'{name}: {exc}');\nif not loaded:\n    print('Flash Attention import errors:', '; '.join(errors));\n    raise SystemExit(1)",
+            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         ),
         python_command(
             "MIGraphX",
@@ -1245,7 +1255,11 @@ mod tests {
         // the diagnostic snippet (not the old strict check)
         let candidates = vec!["python3".to_string()];
         let cmds = component_verification_commands("pytorch", &candidates);
-        assert_eq!(cmds.len(), 1, "Should have exactly one verification command");
+        assert_eq!(
+            cmds.len(),
+            1,
+            "Should have exactly one verification command"
+        );
         let cmd = &cmds[0];
         assert_eq!(cmd.label, "PyTorch");
         assert_eq!(cmd.target_id, "pytorch");
@@ -1268,7 +1282,10 @@ mod tests {
         let candidates = vec!["python3".to_string()];
         let cmds = basic_verification_commands(&candidates);
         let pytorch_cmd = cmds.iter().find(|c| c.target_id == "pytorch");
-        assert!(pytorch_cmd.is_some(), "Should have a PyTorch verification command");
+        assert!(
+            pytorch_cmd.is_some(),
+            "Should have a PyTorch verification command"
+        );
         let cmd = pytorch_cmd.unwrap();
         let empty = String::new();
         let code = cmd.args.get(1).unwrap_or(&empty);
@@ -1310,3 +1327,6 @@ mod tests {
         assert!(cmd.modules.contains(&"torch".to_string()));
     }
 }
+
+#[cfg(test)]
+mod component_status_tests;

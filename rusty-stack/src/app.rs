@@ -328,7 +328,10 @@ impl App {
                     self.flush_install_input();
                 }
                 KeyCode::Enter => {}
-                KeyCode::Char(c) if !self.install_log_popup && !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char(c)
+                    if !self.install_log_popup
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     self.install_input_buffer.push(c);
                     if self.install_input_mode == InputMode::Raw {
                         self.send_install_input(c.to_string());
@@ -2409,12 +2412,16 @@ impl App {
 
     fn refresh_component_statuses(&mut self) {
         let python_candidates = python_interpreters();
+        let force_reinstall = self.config.force_reinstall;
         for component in &mut self.components {
             if component.category == Category::Verification {
                 continue;
             }
             component.installed = is_component_installed(component, &python_candidates);
-            if component.installed {
+            if component.installed && !force_reinstall {
+                // Only auto-deselect when force reinstall is OFF.
+                // When force reinstall is ON, keep installed components selected
+                // so the installer will properly purge and reinstall them.
                 component.selected = false;
             }
         }

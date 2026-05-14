@@ -27,7 +27,11 @@ pub fn detect_hardware() -> Result<HardwareState> {
             state.system.distribution = dist;
         }
     }
-    state.system.cpu_model = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+    state.system.cpu_model = sys
+        .cpus()
+        .first()
+        .map(|c| c.brand().to_string())
+        .unwrap_or_default();
     if state.system.cpu_model.trim().is_empty() {
         if let Some(model) = read_cpu_model_name() {
             state.system.cpu_model = model;

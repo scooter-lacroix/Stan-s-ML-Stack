@@ -45,6 +45,7 @@ fn make_mc(id: &str, version: &str, tier: ValidationTier) -> ManifestComponent {
         validation_tier: tier,
         min_rocm_version: String::new(),
         compatible_channels: vec![],
+        dependencies: vec![],
     }
 }
 
@@ -447,6 +448,7 @@ fn test_integration_manifest_overlay_merges_cleanly() {
             validation_tier: ValidationTier::Candidate,
             min_rocm_version: String::new(),
             compatible_channels: vec![],
+            dependencies: vec![],
         }],
     };
 
@@ -848,30 +850,32 @@ fn test_integration_dependency_ordering_across_stages() {
 
 #[test]
 fn test_integration_circular_deps_detected_at_plan_stage() {
-    let mut plan = UpdatePlan::from_items(vec![
-        PlanItem::new(
-            "a",
-            "1.0.0",
-            "1.1.0",
-            ValidationTier::Validated,
-            true,
-            "",
-            vec!["b".to_string()],
-            true,
-        ),
-        PlanItem::new(
-            "b",
-            "1.0.0",
-            "1.1.0",
-            ValidationTier::Validated,
-            true,
-            "",
-            vec!["a".to_string()],
-            true,
-        ),
-    ]);
+    // The Plan::new constructor should panic when it detects circular dependencies
+    let result = std::panic::catch_unwind(|| {
+        Plan::new(vec![
+            PlanItem::new(
+                "a",
+                "1.0.0",
+                "1.1.0",
+                ValidationTier::Validated,
+                true,
+                "",
+                vec!["b".to_string()],
+                true,
+            ),
+            PlanItem::new(
+                "b",
+                "1.0.0",
+                "1.1.0",
+                ValidationTier::Validated,
+                true,
+                "",
+                vec!["a".to_string()],
+                true,
+            ),
+        ])
+    });
 
-    let result = plan.sort_by_dependencies();
     assert!(
         result.is_err(),
         "circular dependencies must be detected at plan stage"
@@ -1114,6 +1118,7 @@ fn test_integration_manifest_filters_by_platform_context() {
         validation_tier: ValidationTier::Validated,
         min_rocm_version: String::new(),
         compatible_channels: vec!["legacy".to_string()],
+        dependencies: vec![],
     };
 
     let manifest = make_manifest(vec![
@@ -1368,6 +1373,7 @@ fn test_integration_manifest_roundtrip_preserves_data() {
                 validation_tier: ValidationTier::Candidate,
                 min_rocm_version: "7.0.0".to_string(),
                 compatible_channels: vec!["latest".to_string(), "stable".to_string()],
+                dependencies: vec![],
             },
         ],
         42,

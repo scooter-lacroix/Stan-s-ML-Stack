@@ -8,6 +8,8 @@
 
 Integrate the llama.cpp-turboquant-hip fork into Rusty Stack as a native component installer with COMPLETE RDNA 3 and RDNA 4 compatibility. The fork adds TurboQuant (PolarQuant + QJL KV cache compression) with new GGML types TURBO2_0/3_0/4_0 (2/3/4-bit quantization) and 15 flash attention template instances. Currently verified on RDNA 2 only.
 
+**Target hardware:** Developer GPUs are RDNA 3 (gfx1100). All RDNA 3 HARDWARE_BLOCKER items can be empirically tested immediately. RDNA 4 items remain gated on hardware access.
+
 ---
 
 ## Section 1: Fork Hosting and Build Integration
@@ -89,7 +91,7 @@ The fork already has RDNA3/4 support code that must NOT be broken:
 4. **WMMA flash attention** — `fattn-wmma-f16.cuh` gated by `GGML_HIP_ROCWMMA_FATTN`
 5. **DP4A dispatch** — `common.cuh:668`: sudot4 for RDNA3/4
 
-**UNVERIFIED:** WMMA flash attention runtime correctness on RDNA3 hardware. The file `fattn-wmma-f16.cu:1` is marked "old and deprecated". Must validate before building on it (see Section 3.1).
+**UNVERIFIED:** WMMA flash attention runtime correctness on RDNA3 hardware. The file `fattn-wmma-f16.cu:1` is marked "old and deprecated". Must validate before building on it (see Section 3.1). **Developer has RDNA3 hardware — can test empirically.**
 
 ### 2.5 Detection: CommandBased + Runtime Verification
 
@@ -348,17 +350,17 @@ AMD's RDNA4 ISA guide lists LDS as "64kB." No AMD/ROCm source confirms 128KB opt
 
 Sources: RDNA4 ISA guide (docs.amd.com), HIP hardware implementation docs (rocm.docs.amd.com)
 
-### Q3: hipFuncSetAttribute effectiveness — UNVERIFIED
+### Q3: hipFuncSetAttribute effectiveness — UNVERIFIED (testable on developer RDNA3 hardware)
 The API exists in ROCm but docs say some hints are "ignored on AMD devices." The fork already calls it at fattn-mma-f16.cuh:1781. No authoritative source confirms it actually enables >64KB dynamic shared memory on RDNA3.
 
-**Needed test:** On real gfx1100, print `sharedMemPerBlockOptin`, call `hipFuncSetAttribute(kernel, hipFuncAttributeMaxDynamicSharedMemorySize, N)`, then launch kernels with 64KB/96KB/128KB dynamic shared memory.
+**Needed test:** On real gfx1100, print `sharedMemPerBlockOptin`, call `hipFuncSetAttribute(kernel, hipFuncAttributeMaxDynamicSharedMemorySize, N)`, then launch kernels with 64KB/96KB/128KB dynamic shared memory. Developer has RDNA3 — can run this immediately.
 
 **Impact on implementation:** The smpbo bug fix (ggml-cuda.cu:259: use `sharedMemPerBlockOptin` instead of `sharedMemPerBlock`) is worth doing regardless — it's a bug that MUSA/NVIDIA paths already handle correctly. But whether it enables >64KB usage depends on this empirical test.
 
-### Q4: WMMA FA correctness on RDNA3 — UNVERIFIED
+### Q4: WMMA FA correctness on RDNA3 — UNVERIFIED (testable on developer RDNA3 hardware)
 Upstream llama.cpp issue #13110 (2025-04-25) confirms the WMMA FA path was still actively built for gfx1201. No authoritative test report proves numerical correctness on gfx1100. No accuracy bug report found either.
 
-**Needed test:** Run FA-vs-non-FA output comparison on real gfx1100 across multiple head sizes / KV types / context lengths with max-abs/max-rel error thresholds.
+**Needed test:** Run FA-vs-non-FA output comparison on real gfx1100 across multiple head sizes / KV types / context lengths with max-abs/max-rel error thresholds. Developer has RDNA3 — can run this immediately.
 
 **Impact on implementation:** Phase 2 MUST validate WMMA FA on RDNA3 before building optimization layers on top of it. If broken, fallback to vec kernel path.
 
@@ -369,9 +371,9 @@ Upstream llama.cpp issue #13110 (2025-04-25) confirms the WMMA FA path was still
 | Risk | Mitigation | Status |
 |------|------------|--------|
 | Private repo access from installer | Support both SSH key and HTTPS token auth | Open |
-| WMMA FA deprecated/broken on RDNA3 | Evaluate upstream llama.cpp WMMA FA for merge; fallback to vec kernel | UNVERIFIED — empirical test needed |
+| WMMA FA deprecated/broken on RDNA3 | Evaluate upstream llama.cpp WMMA FA for merge; fallback to vec kernel | UNVERIFIED — testable on developer RDNA3 hardware |
 | RDNA4 wave64 mode | ~~Empirical test required~~ | RESOLVED — warpSize=32 confirmed |
-| hipFuncSetAttribute no-op on AMD | Test empirically; if truly no-op, skip LDS opt-in and work within 64KB limit | UNVERIFIED — empirical test needed |
+| hipFuncSetAttribute no-op on AMD | Test empirically; if truly no-op, skip LDS opt-in and work within 64KB limit | UNVERIFIED — testable on developer RDNA3 hardware |
 | RDNA4 LDS >64KB | ~~Check if 128KB like RDNA3~~ | RESOLVED — 64KB confirmed |
 | Template instance explosion | Confirmed: nthreads_KQ_q change needs ZERO new template files | RESOLVED |
 | CMake flag format | Verified: GPU_TARGETS is primary | RESOLVED |
@@ -500,7 +502,7 @@ File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/common.cuh:215-218`
 - Depends on P2.4 for empirical verification that hipFuncSetAttribute actually works
 - **Also touches:** mmq.cuh:4074 (calls CUDA_SET_SHARED_MEMORY_LIMIT)
 
-#### P2.3 — Validate WMMA FA on RDNA3 **[HARDWARE_BLOCKER]**
+#### P2.3 — Validate WMMA FA on RDNA3 **[TESTABLE — developer has RDNA3 gfx1100]**
 - Build fork with `GGML_HIP_ROCWMMA_FATTN=ON` for gfx1100
 - Run correctness tests: FA-vs-non-FA output comparison on real gfx1100
 - **Dispatch chain:** fattn-wmma-f16.cuh:9 (compile gate) → fattn.cu:539 (runtime dispatch)
@@ -514,7 +516,7 @@ File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/fattn-vec.cuh:65-75`
 - This MAY require additional template instances despite earlier claim of "zero new files"
 - Must audit: fattn.cu dispatch logic and template-instances/ generator
 
-#### P2.5 — hipFuncSetAttribute empirical test **[HARDWARE_BLOCKER]**
+#### P2.5 — hipFuncSetAttribute empirical test **[TESTABLE — developer has RDNA3 gfx1100]**
 - On real gfx1100: query `sharedMemPerBlockOptin`
 - Test `hipFuncSetAttribute` with 96KB/128KB
 - Launch kernels with >64KB dynamic shared memory
@@ -528,13 +530,13 @@ File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/fattn-vec.cuh:65-75`
   - Gate: compile flag + runtime RDNA3 CC check
 - **Note:** Tile selection is bounded by smpbo (mmq.cuh:4178), so P2.1 is prerequisite
 
-#### P2.7 — RDNA3 occupancy tuning **[HARDWARE_BLOCKER]**
+#### P2.7 — RDNA3 occupancy tuning **[TESTABLE — developer has RDNA3 gfx1100]**
 File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/mmq.cuh:3637-3642`
 - Evaluate `amdgpu_waves_per_eu(4,8)` for RDNA3
 - Per-kernel-class tuning: MMQ, FA, MoE, dequant
-- Requires real hardware for benchmark validation
+- Requires real hardware for benchmark validation — developer has gfx1100
 
-#### P2.8 — RDNA3 MoE double-buffer adaptation **[HARDWARE_BLOCKER]**
+#### P2.8 — RDNA3 MoE double-buffer adaptation **[TESTABLE — developer has RDNA3 gfx1100]**
 File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/mmq.cuh:3486-3550`
 - Adapt RDNA2 double-buffer pattern for RDNA3
 - New compile flag: `RDNA3_MATMUL_OPT_V1`
@@ -543,7 +545,7 @@ File: `Fork/llama.cpp-turboquant-hip/ggml/src/ggml-cuda/mmq.cuh:3486-3550`
 
 **Parallelization (P2):**
 - P2.1 is standalone (no hardware, do first)
-- P2.3 and P2.5 can run in parallel on RDNA3 hardware
+- P2.3 and P2.5 can run in parallel — developer has RDNA3 hardware
 - P2.2, P2.6 depend on P2.5 results
 - P2.4 is standalone code work but may need hardware validation
 - P2.7, P2.8 should wait until P2.3/P2.5 resolve

@@ -660,9 +660,7 @@ mod tests {
         // The cmake command must include CMAKE_CXX_STANDARD=20 to fix
         // C++20 standard library test failures during cmake configuration.
         assert!(
-            cmd.args
-                .iter()
-                .any(|a| a.contains("CMAKE_CXX_STANDARD=20")),
+            cmd.args.iter().any(|a| a.contains("CMAKE_CXX_STANDARD=20")),
             "build command must include CMAKE_CXX_STANDARD=20 cmake extra define, got args: {:?}",
             cmd.args
         );
@@ -679,7 +677,10 @@ mod tests {
             .args
             .iter()
             .position(|a| a.contains("CMAKE_CXX_STANDARD=20"));
-        assert!(define_idx.is_some(), "CMAKE_CXX_STANDARD=20 not found in args");
+        assert!(
+            define_idx.is_some(),
+            "CMAKE_CXX_STANDARD=20 not found in args"
+        );
 
         let idx = define_idx.unwrap();
         assert!(
@@ -961,6 +962,9 @@ mod tests {
 
     #[test]
     fn test_install_method_default() {
-        assert_eq!(OnnxInstallMethod::default(), OnnxInstallMethod::MigraphxWheel);
+        assert_eq!(
+            OnnxInstallMethod::default(),
+            OnnxInstallMethod::MigraphxWheel
+        );
     }
 }

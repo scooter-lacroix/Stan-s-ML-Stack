@@ -68,6 +68,7 @@ fn enhanced_verify_components() -> Vec<(&'static str, &'static str)> {
         ("comfyui", "ComfyUI"),
         ("textgen", "text-generation-webui"),
         ("vllm-studio", "vLLM Studio"),
+        ("llama-cpp", "llama.cpp (HIP)"),
         ("basic-env", "Basic Environment"),
         ("enhanced-env", "Enhanced Environment"),
         ("permanent-env", "Permanent Environment"),

@@ -1035,7 +1035,12 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) 
                         .title("Buffer Size (MB)")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec![Line::from("64"), Line::from("128"), Line::from("256"), Line::from("512")]),
+                        .labels(vec![
+                            Line::from("64"),
+                            Line::from("128"),
+                            Line::from("256"),
+                            Line::from("512"),
+                        ]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1100,7 +1105,11 @@ fn render_tensor_core_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResu
                         .title("Matrix Size (N x N)")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec![Line::from("512"), Line::from("1024"), Line::from("2048")]),
+                        .labels(vec![
+                            Line::from("512"),
+                            Line::from("1024"),
+                            Line::from("2048"),
+                        ]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1175,7 +1184,11 @@ fn render_pytorch_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults)
                         .title("Benchmark Trial")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec![Line::from("Trial 1"), Line::from("Trial 2"), Line::from("Trial 3")]),
+                        .labels(vec![
+                            Line::from("Trial 1"),
+                            Line::from("Trial 2"),
+                            Line::from("Trial 3"),
+                        ]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1610,9 +1623,7 @@ fn render_onnx_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                         * 100.0;
                     summary.push_str(&format!(
                         "\nBaseline: {:.1} inf/s ({:+.1}%) | Session create: {:.1} ms",
-                        b_onnx.throughput_inf_per_sec,
-                        diff,
-                        onnx.session_create_ms,
+                        b_onnx.throughput_inf_per_sec, diff, onnx.session_create_ms,
                     ));
                 }
             }

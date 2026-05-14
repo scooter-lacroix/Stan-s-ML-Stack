@@ -53,6 +53,7 @@ fn make_comp(id: &str, version: &str, tier: ValidationTier) -> ManifestComponent
         validation_tier: tier,
         min_rocm_version: String::new(),
         compatible_channels: vec![],
+        dependencies: vec![],
     }
 }
 
@@ -412,6 +413,7 @@ fn test_integration_channel_switch_regenerates_correct_plan() {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["legacy".into()],
+            dependencies: vec![],
         },
         ManifestComponent {
             id: "rocm".into(),
@@ -421,6 +423,7 @@ fn test_integration_channel_switch_regenerates_correct_plan() {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".into()],
+            dependencies: vec![],
         },
         make_comp("pytorch", "2.5.0", ValidationTier::Validated),
     ]);
@@ -478,6 +481,7 @@ fn test_integration_channel_switch_no_stale_entries() {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".into()],
+            dependencies: vec![],
         },
         make_comp("pytorch", "2.5.0", ValidationTier::Validated),
     ]);

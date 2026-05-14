@@ -1,0 +1,117 @@
+# Fix Summary: Category D1-D3 + E1 — pacman, Python environment, and exit-code handling
+
+## Changes Made
+
+### Fix 1 + Fix 5: ROCm Platform pacman — add `--needed` to avoid interactive prompt
+
+**Files changed:**
+- `src/installers/components/rocm.rs` — `pacman_install_commands()` method
+- `src/installer.rs` — Arch branch of "rocm" component handler
+
+**Root cause:** When `yay -S --noconfirm <packages>` encounters packages that are already installed, pacman may still offer upgrades to dependencies or other packages in the transaction, triggering the `:: Proceed with installation? [Y/n]` prompt. With `--noconfirm` and pending upgrades, this could produce unexpected behavior.
+
+**Fix:** Added `--needed` flag to the yay/pacman command arguments. This causes pacman to skip packages already installed, avoiding the upgrade prompt entirely.
+
+```diff
+# rocm.rs — pacman_install_commands()
+- let mut args = vec!["-S".to_string(), "--noconfirm".to_string()];
++ let mut args = vec!["-S".to_string(), "--needed".to_string(), "--noconfirm".to_string()];
+
+# installer.rs — Arch branch in "rocm" handler
+- let mut args = vec!["-S".to_string(), "--noconfirm".to_string()];
++ let mut args = vec!["-S".to_string(), "--needed".to_string(), "--noconfirm".to_string()];
+```
+
+**Impact:** First-time installs are unaffected — `--needed` only skips already-installed packages. Packages needing installation are still installed normally.
+
+---
+
+### Fix 2: ROCm SMI — wrong package name on Arch
+
+**File changed:** `src/installers/components/rocm_smi.rs` — `build_package_install_command()` method, `DistroFamily::Arch` arm
+
+**Root cause:** The Arch package is `rocm-smi-lib` (provides the `rocm-smi` binary), not `rocm-smi`. The Arch repositories do not have a package named `rocm-smi`, causing `target not found: rocm-smi`.
+
+**Fix:** Changed the Arch package name from `rocm-smi` to `rocm-smi-lib`.
+
+```diff
+  DistroFamily::Arch => (
+      "sudo".to_string(),
+      vec![
+          "pacman".to_string(),
+          "-S".to_string(),
+          "--needed".to_string(),
+          "--noconfirm".to_string(),
+-         "rocm-smi".to_string(),
++         "rocm-smi-lib".to_string(),
+      ],
+  ),
+```
+
+**Note:** The `rocm-smi-lib` package already appears in the ROCm platform installer's package list (`pacman_rocm_packages()`). This fix makes the standalone SMI installer consistent.
+
+---
+
+### Fix 3: PyTorch — uv pip install on externally-managed Python
+
+**File changed:** `src/installers/components/pytorch.rs` — `build_install_command()`, `build_fallback_command()`, and `build_common_deps_command()` methods
+
+**Root cause:** `uv pip install --system` fails on uv-managed Python installations (e.g., `uv python install 3.12`) because uv considers its own Python installations as "externally managed". This produces the error: `error:_EXTERNALLY_MANAGED`
+
+**Fix:** For global installs (`InstallMethod::Global` or `InstallMethod::Auto`), the code now always uses `python3 -m pip install --break-system-packages` instead of `uv pip install --system`. The `uv` tool is still used for venv-based installs where `--system` is not needed.
+
+```rust
+// For global installs, always use python3 -m pip with --break-system-packages
+// instead of `uv pip install --system`, which fails on uv-managed Python
+// installations with "externally managed" errors.
+let effective_use_uv = use_uv && !is_global;
+```
+
+**Test update:** The test `test_build_install_command_uv` was renamed to `test_build_install_command_uv_global_uses_pip` and updated to assert that the program is `python3` (not `uv`) for global installs.
+
+---
+
+### Fix 4: Improve is_up_to_date_output() for more pacman/yay patterns
+
+**Files changed:**
+- `src/installers/components/rocm.rs` — `is_up_to_date_output()` method
+- `src/installer.rs` — `is_up_to_date_output()` function
+
+**Root cause:** yay sometimes outputs `"is up to date -- reinstalling"` when a package is being reinstalled, and exits with code 1. This pattern was not matched by the existing `is_up_to_date_output()` checks.
+
+**Fix:** Added pattern matching for `"up to date -- reinstalling"` to both `is_up_to_date_output()` implementations.
+
+```diff
+  lower.contains("up to date -- skipping")
+      || lower.contains("up to date, skipping")
++     || lower.contains("up to date -- reinstalling")
+      || lower.contains("there is nothing to do")
+```
+
+**Patterns covered (verified):**
+- `"warning: rocminfo is up to date -- skipping"` ✓
+- `"WARNING: rocminfo is UP TO DATE -- skipping"` ✓ (case-insensitive)
+- `" there is nothing to do\n"` ✓
+- `"package already installed"` ✓
+- `"warning: rocm-hip-sdk is up to date -- skipping"` ✓
+- `"<pkg> is up to date -- reinstalling"` ✓ (NEW)
+- Error output → returns false ✓
+- Empty output → returns false ✓
+- `":: Proceed with installation"` → returns false ✓ (correctly NOT matched)
+
+---
+
+## Validation
+
+- `cargo build --release` — zero errors, zero warnings ✓
+- `cargo test --release` — all 1438+ tests pass, 8 ignored (hardware-dependent) ✓
+- Component-specific tests (`rocm`, `pytorch`): 176 passed, 0 failed ✓
+
+## Files Changed Summary
+
+| File | Change |
+|------|--------|
+| `src/installers/components/rocm.rs` | Added `--needed` to pacman command; added "up to date -- reinstalling" pattern |
+| `src/installers/components/rocm_smi.rs` | Changed Arch package from `rocm-smi` to `rocm-smi-lib` |
+| `src/installers/components/pytorch.rs` | Global installs use `python3 -m pip --break-system-packages` instead of `uv pip --system`; updated test |
+| `src/installer.rs` | Added `--needed` to yay command; added "up to date -- reinstalling" pattern |

@@ -19,6 +19,10 @@ name = "rusty"
 path = "src/bin/rusty.rs"
 required-features = ["unix-deps"]
 
+[[bin]]
+name = "debug_sort"
+path = "debug_sort.rs"
+
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
@@ -36,6 +40,7 @@ console = "0.16"
 time = { version = "0.3", features = ["formatting", "macros"] }
 ureq = { version = "3", features = ["json"] }
 semver = "1"
+tempfile = "3"
 
 # Optional: TUI (cross-platform but only needed for installer)
 crossterm = { version = "0.29", optional = true }

@@ -342,42 +342,45 @@ fn detect_gpus_from_render_nodes() -> Vec<u32> {
     }
 
     // Try to filter iGPUs via sysfs device description
-    let discrete_count = render_entries.iter().filter(|entry| {
-        let name = entry.file_name().to_string_lossy().to_string();
-        // Extract render node number
-        let node_num: String = name
-            .trim_start_matches("render")
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if node_num.is_empty() {
-            return true; // Can't determine, include it
-        }
+    let discrete_count = render_entries
+        .iter()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Extract render node number
+            let node_num: String = name
+                .trim_start_matches("render")
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if node_num.is_empty() {
+                return true; // Can't determine, include it
+            }
 
-        // Check sysfs for the associated device description
-        let sysfs_path = format!("/sys/class/drm/card{}-render/device/uevent", node_num);
-        if let Ok(uevent) = std::fs::read_to_string(&sysfs_path) {
-            // Look for PCI_ID to identify the device
-            for line in uevent.lines() {
-                if line.starts_with("PCI_ID=") {
-                    // Could check specific IDs here if needed
-                    return true;
+            // Check sysfs for the associated device description
+            let sysfs_path = format!("/sys/class/drm/card{}-render/device/uevent", node_num);
+            if let Ok(uevent) = std::fs::read_to_string(&sysfs_path) {
+                // Look for PCI_ID to identify the device
+                for line in uevent.lines() {
+                    if line.starts_with("PCI_ID=") {
+                        // Could check specific IDs here if needed
+                        return true;
+                    }
                 }
             }
-        }
 
-        // Alternative: check via /sys/class/drm/card<N>/device/device
-        let card_sysfs = format!("/sys/class/drm/card{}/device/device", node_num);
-        if let Ok(pci_id) = std::fs::read_to_string(&card_sysfs) {
-            let pci_id = pci_id.trim();
-            // 0x164e = Raphael iGPU (7800X3D)
-            if pci_id == "0x164e" {
-                return false; // Skip iGPU
+            // Alternative: check via /sys/class/drm/card<N>/device/device
+            let card_sysfs = format!("/sys/class/drm/card{}/device/device", node_num);
+            if let Ok(pci_id) = std::fs::read_to_string(&card_sysfs) {
+                let pci_id = pci_id.trim();
+                // 0x164e = Raphael iGPU (7800X3D)
+                if pci_id == "0x164e" {
+                    return false; // Skip iGPU
+                }
             }
-        }
 
-        true // Include by default
-    }).count();
+            true // Include by default
+        })
+        .count();
 
     if discrete_count > 0 {
         (0..discrete_count as u32).collect()
@@ -558,6 +561,7 @@ pub fn create_env_file(
 ) -> EnvFileResult {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     let env_path = format!("{home}/.mlstack_env");
+    let fish_env_path = format!("{home}/.config/fish/conf.d/mlstack_env.fish");
 
     let content = generate_env_file_content(
         hip_visible_devices,
@@ -568,11 +572,31 @@ pub fn create_env_file(
         hsa_override_gfx_version,
     );
 
-    // Write the file
+    // Write the bash env file
     if let Err(e) = std::fs::write(&env_path, &content) {
         let msg = format!("Failed to write environment file: {e}");
         print_error(&msg);
         return EnvFileResult::failure(msg);
+    }
+
+    // Write the fish-compatible env file
+    let fish_content = generate_fish_env_file_content(
+        hip_visible_devices,
+        rocm_path,
+        rocm_version,
+        rocm_channel,
+        gpu_arch,
+        hsa_override_gfx_version,
+    );
+    // Ensure fish conf.d directory exists
+    if let Some(parent) = std::path::Path::new(&fish_env_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&fish_env_path, &fish_content) {
+        // Non-fatal — fish env is best-effort
+        print_warning(&format!("Failed to write fish env file: {e}"));
+    } else {
+        print_success(&format!("Fish env file created: {fish_env_path}"));
     }
 
     print_success(&format!("Environment file created: {env_path}"));
@@ -666,6 +690,14 @@ if [ -z "${{OMPI_MCA_btl:-}}" ]; then export OMPI_MCA_btl=^openib,uct; fi
 export UCX_MEMTYPE_CACHE=no
 export UCX_LOG_LEVEL=error
 
+# Global flags for seamless pip installs (PEP 668 override)
+export PIP_BREAK_SYSTEM_PACKAGES=1
+export UV_PIP_BREAK_SYSTEM_PACKAGES=1
+export UV_SYSTEM_PYTHON=1
+
+# Flash Attention AMD
+export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
+
 # ONNX Runtime Settings
 # Only add if not already in PYTHONPATH
 if ! echo "${{PYTHONPATH:-}}" | grep -q "{home}/onnxruntime_build/onnxruntime/build/Linux/Release"; then
@@ -680,6 +712,110 @@ fi
         gpu_arch = gpu_arch,
         hsa_override_gfx_version = hsa_override_gfx_version,
         home = home,
+    )
+}
+
+/// Generate a fish-compatible environment file.
+///
+/// Produces `~/.config/fish/conf.d/mlstack_env.fish` that natively loads
+/// all ML Stack environment variables without needing to source the bash file.
+/// Fish doesn't support bash syntax (`if [ -z ... ]`, `${VAR:-}`, `fi`, etc.),
+/// so this uses idiomatic fish constructs.
+pub fn generate_fish_env_file_content(
+    hip_visible_devices: &str,
+    rocm_path: &str,
+    rocm_version: &str,
+    rocm_channel: &str,
+    gpu_arch: &str,
+    hsa_override_gfx_version: &str,
+) -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
+
+    // Build ONNX Runtime PYTHONPATH check
+    let onnx_path = format!("{home}/onnxruntime_build/onnxruntime/build/Linux/Release");
+
+    format!(
+        r##"# ML Stack Environment File — Fish Shell Native
+# Generated by Enhanced ML Stack Environment Setup (Rust native)
+# Date: {date}
+#
+# This file is auto-generated. Edit via rusty-stack's env setup, not by hand.
+
+# --- GPU Selection ---
+set -q HIP_VISIBLE_DEVICES; or set -gx HIP_VISIBLE_DEVICES {hip_visible_devices}
+set -q CUDA_VISIBLE_DEVICES; or set -gx CUDA_VISIBLE_DEVICES {hip_visible_devices}
+set -q PYTORCH_ROCM_DEVICE; or set -gx PYTORCH_ROCM_DEVICE {hip_visible_devices}
+
+# --- ROCm Settings ---
+set -q ROCM_HOME; or set -gx ROCM_HOME {rocm_path}
+set -q CUDA_HOME; or set -gx CUDA_HOME {rocm_path}
+set -q ROCM_VERSION; or set -gx ROCM_VERSION {rocm_version}
+set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL {rocm_channel}
+# GPU_ARCH is set based on detected hardware (corrected for rocminfo bugs)
+set -gx GPU_ARCH {gpu_arch}
+
+# --- Path Settings ---
+set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
+set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
+
+# --- Performance Settings ---
+set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}
+set -gx HSA_ENABLE_SDMA 0
+set -gx GPU_MAX_HEAP_SIZE 100
+set -gx GPU_MAX_ALLOC_PERCENT 100
+set -gx HSA_TOOLS_LIB /opt/rocm/lib/rocprofiler-sdk/librocprofiler-sdk-tool.so
+
+# --- MIOpen Settings ---
+set -q MIOPEN_DEBUG_CONV_IMPLICIT_GEMM; or set -gx MIOPEN_DEBUG_CONV_IMPLICIT_GEMM 1
+set -q MIOPEN_FIND_MODE; or set -gx MIOPEN_FIND_MODE 3
+set -q MIOPEN_FIND_ENFORCE; or set -gx MIOPEN_FIND_ENFORCE 3
+
+# --- PyTorch Settings ---
+set -q TORCH_CUDA_ARCH_LIST; or set -gx TORCH_CUDA_ARCH_LIST "7.0;8.0;9.0"
+set -q PYTORCH_ALLOC_CONF; or set -gx PYTORCH_ALLOC_CONF "max_split_size_mb:512"
+set -q PYTORCH_HIP_ALLOC_CONF; or set -gx PYTORCH_HIP_ALLOC_CONF "max_split_size_mb:512"
+set -q VLLM_WORKER_MULTIPROC_METHOD; or set -gx VLLM_WORKER_MULTIPROC_METHOD spawn
+set -q VLLM_ROCM_USE_AITER; or set -gx VLLM_ROCM_USE_AITER 0
+set -q MLSTACK_TRITON_HOME; or set -gx MLSTACK_TRITON_HOME "$HOME/.cache/mlstack/triton"
+set -q TRITON_HOME; or set -gx TRITON_HOME $MLSTACK_TRITON_HOME
+set -q TRITON_CACHE_DIR; or set -gx TRITON_CACHE_DIR "$TRITON_HOME/cache"
+set -q TRITON_DUMP_DIR; or set -gx TRITON_DUMP_DIR "$TRITON_HOME/dump"
+set -q TRITON_OVERRIDE_DIR; or set -gx TRITON_OVERRIDE_DIR "$TRITON_HOME/override"
+mkdir -p $TRITON_CACHE_DIR $TRITON_DUMP_DIR $TRITON_OVERRIDE_DIR 2>/dev/null; or true
+
+# --- Global flags for seamless pip installs (PEP 668 override) ---
+set -gx PIP_BREAK_SYSTEM_PACKAGES 1
+set -gx UV_PIP_BREAK_SYSTEM_PACKAGES 1
+set -gx UV_SYSTEM_PYTHON 1
+
+# --- Flash Attention AMD ---
+set -gx FLASH_ATTENTION_TRITON_AMD_ENABLE TRUE
+
+# --- MPI/UCX Settings ---
+set -q OMPI_MCA_opal_cuda_support; or set -gx OMPI_MCA_opal_cuda_support true
+set -q OMPI_MCA_pml_ucx_opal_cuda_support; or set -gx OMPI_MCA_pml_ucx_opal_cuda_support true
+set -q OMPI_MCA_btl_openib_allow_ib; or set -gx OMPI_MCA_btl_openib_allow_ib true
+set -q OMPI_MCA_btl_openib_warn_no_device_params_found; or set -gx OMPI_MCA_btl_openib_warn_no_device_params_found 0
+set -q OMPI_MCA_coll_hcoll_enable; or set -gx OMPI_MCA_coll_hcoll_enable 0
+set -q OMPI_MCA_pml; or set -gx OMPI_MCA_pml ucx
+set -q OMPI_MCA_osc; or set -gx OMPI_MCA_osc ucx
+set -q OMPI_MCA_btl; or set -gx OMPI_MCA_btl '^openib,uct'
+set -gx UCX_MEMTYPE_CACHE no
+set -gx UCX_LOG_LEVEL error
+
+# --- ONNX Runtime Settings ---
+if not string match -q '*{onnx_path}*' "$PYTHONPATH"
+    set -gx PYTHONPATH {onnx_path} $PYTHONPATH
+end
+"##,
+        date = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        hip_visible_devices = hip_visible_devices,
+        rocm_path = rocm_path,
+        rocm_version = rocm_version,
+        rocm_channel = rocm_channel,
+        gpu_arch = gpu_arch,
+        hsa_override_gfx_version = hsa_override_gfx_version,
+        onnx_path = onnx_path,
     )
 }
 
@@ -1105,9 +1241,10 @@ mod tests {
     // --- create_env_file (VAL-VBA-016) ---
 
     #[test]
-    fn test_create_env_file_creates_file() {
+    fn test_create_env_file_creates_file_and_fish() {
         let tmp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let _env_path = tmp_dir.path().join(".mlstack_env");
+        let _fish_env_path = tmp_dir.path().join(".config/fish/conf.d/mlstack_env.fish");
 
         // Temporarily set HOME to the temp dir
         let original_home = std::env::var("HOME").ok();
@@ -1125,11 +1262,84 @@ mod tests {
         assert!(result.success, "create_env_file should succeed");
         assert!(result.path.is_some());
 
-        // Verify the file exists and has content
+        // Verify the bash file exists and has content
         let path = result.path.unwrap();
         let content = std::fs::read_to_string(&path).expect("Should be able to read env file");
         assert!(content.contains("HIP_VISIBLE_DEVICES"));
         assert!(content.contains("ROCM_HOME"));
+        assert!(content.contains("PIP_BREAK_SYSTEM_PACKAGES=1"));
+        assert!(content.contains("UV_SYSTEM_PYTHON=1"));
+    }
+
+    // --- Fish env file generation ---
+
+    #[test]
+    fn test_generate_fish_env_file_has_fish_syntax() {
+        let content = generate_fish_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+        );
+        // Must NOT contain bash syntax
+        assert!(!content.contains("if [ -z"));
+        assert!(!content.contains("; fi"));
+        assert!(!content.contains("export "));
+        assert!(!content.contains("${"));
+        // Must use fish syntax
+        assert!(content.contains("set -gx"));
+        assert!(content.contains("set -q"));
+        assert!(content.contains("; or set -gx"));
+    }
+
+    #[test]
+    fn test_generate_fish_env_file_has_required_vars() {
+        let content = generate_fish_env_file_content(
+            "0,1",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+        );
+        assert!(content.contains("HIP_VISIBLE_DEVICES"));
+        assert!(content.contains("ROCM_HOME"));
+        assert!(content.contains("ROCM_VERSION"));
+        assert!(content.contains("GPU_ARCH"));
+        assert!(content.contains("HSA_OVERRIDE_GFX_VERSION"));
+        assert!(content.contains("PIP_BREAK_SYSTEM_PACKAGES"));
+        assert!(content.contains("UV_PIP_BREAK_SYSTEM_PACKAGES"));
+        assert!(content.contains("UV_SYSTEM_PYTHON"));
+        assert!(content.contains("FLASH_ATTENTION_TRITON_AMD_ENABLE"));
+        assert!(content.contains("0,1"));
+    }
+
+    #[test]
+    fn test_generate_fish_env_file_has_no_bash_patterns() {
+        let content = generate_fish_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+        );
+        // Should never contain bash-specific constructs
+        assert!(!content.contains("if ! "));
+        assert!(!content.contains("fi\n"));
+        assert!(!content.contains("; then"));
+    }
+
+    #[test]
+    fn test_generate_bash_env_file_has_pip_break_system_packages() {
+        let content =
+            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        assert!(content.contains("export PIP_BREAK_SYSTEM_PACKAGES=1"));
+        assert!(content.contains("export UV_PIP_BREAK_SYSTEM_PACKAGES=1"));
+        assert!(content.contains("export UV_SYSTEM_PYTHON=1"));
+        assert!(content.contains("export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE"));
     }
 
     // --- setup_environment integration ---

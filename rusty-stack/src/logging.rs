@@ -47,21 +47,22 @@ pub fn log_dir() -> PathBuf {
 pub fn init_logging(context: &str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let log_path = log_dir();
     if let Err(e) = std::fs::create_dir_all(&log_path) {
-        eprintln!("[WARN] Could not create log directory {}: {}", log_path.display(), e);
+        eprintln!(
+            "[WARN] Could not create log directory {}: {}",
+            log_path.display(),
+            e
+        );
         // Fall back to stdout-only
         let filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn"));
-        let stdout_layer = fmt::layer()
-            .with_target(false)
-            .with_filter(filter);
-        tracing_subscriber::registry()
-            .with(stdout_layer)
-            .init();
+        let stdout_layer = fmt::layer().with_target(false).with_filter(filter);
+        tracing_subscriber::registry().with(stdout_layer).init();
         return None;
     }
 
     // File appender: daily rotation, max 3 files, prefix with context
-    let file_appender = tracing_appender::rolling::daily(&log_path, format!("{}-rusty-stack", context));
+    let file_appender =
+        tracing_appender::rolling::daily(&log_path, format!("{}-rusty-stack", context));
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // JSON file layer — structured for machine parsing
@@ -73,7 +74,7 @@ pub fn init_logging(context: &str) -> Option<tracing_appender::non_blocking::Wor
         .with_span_events(fmt::format::FmtSpan::CLOSE)
         .with_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug,info"))
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug,info")),
         );
 
     // Stdout layer — compact human-readable for CLI progress
@@ -84,7 +85,7 @@ pub fn init_logging(context: &str) -> Option<tracing_appender::non_blocking::Wor
         ))
         .with_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn"))
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn")),
         );
 
     tracing_subscriber::registry()
@@ -108,11 +109,16 @@ pub fn init_logging(context: &str) -> Option<tracing_appender::non_blocking::Wor
 pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blocking::WorkerGuard> {
     let log_path = log_dir();
     if let Err(e) = std::fs::create_dir_all(&log_path) {
-        eprintln!("[WARN] Could not create log directory {}: {}", log_path.display(), e);
+        eprintln!(
+            "[WARN] Could not create log directory {}: {}",
+            log_path.display(),
+            e
+        );
         return None;
     }
 
-    let file_appender = tracing_appender::rolling::daily(&log_path, format!("{}-rusty-stack", context));
+    let file_appender =
+        tracing_appender::rolling::daily(&log_path, format!("{}-rusty-stack", context));
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     // File layer — full debug detail
@@ -124,7 +130,7 @@ pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blockin
         .with_span_events(fmt::format::FmtSpan::CLOSE)
         .with_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug"))
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug")),
         );
 
     // Stderr layer — warnings and errors only (not stdout)
@@ -133,7 +139,7 @@ pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blockin
         .with_writer(std::io::stderr)
         .with_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn"))
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn")),
         );
 
     tracing_subscriber::registry()

@@ -186,6 +186,15 @@ pub fn known_components() -> &'static [ComponentInfo] {
                 python_import: Some("wandb".into()),
                 clone_dir: None,
             },
+            // Extensions
+            ComponentInfo {
+                id: "llama-cpp".into(),
+                display_name: "llama.cpp (HIP)".into(),
+                detection_method: DetectionMethod::CommandBased,
+                installer_script: String::new(), // Native Rust installer
+                python_import: None,
+                clone_dir: None,
+            },
             // UI/UX
             ComponentInfo {
                 id: "comfyui".into(),
@@ -543,10 +552,7 @@ fn get_version_git(info: &ComponentInfo, home: &Path) -> String {
 /// - `"2.6.0"` → `"2.6.0"`
 fn extract_semver(raw: &str) -> String {
     // Strip common prefixes
-    let s = raw
-        .trim()
-        .trim_start_matches('v')
-        .to_string();
+    let s = raw.trim().trim_start_matches('v').to_string();
 
     // Try to find a semver pattern (X.Y.Z or X.Y)
     let re = regex::Regex::new(r"(\d+\.\d+(?:\.\d+)?)").unwrap();
@@ -807,12 +813,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_registry_has_exactly_17_components() {
+    fn test_registry_has_exactly_19_components() {
         let components = known_components();
         assert_eq!(
             components.len(),
-            18,
-            "Registry must contain exactly 18 known components, found {}",
+            19,
+            "Registry must contain exactly 19 known components, found {}",
             components.len()
         );
     }
@@ -837,6 +843,7 @@ mod tests {
             "textgen",
             "rocm-smi",
             "permanent-env",
+            "llama-cpp",
         ];
         let components = known_components();
         for expected in &expected_ids {
@@ -848,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_known_component_accepts_all_17() {
+    fn test_is_known_component_accepts_all_19() {
         let ids = [
             "rocm",
             "pytorch",
@@ -867,6 +874,7 @@ mod tests {
             "textgen",
             "rocm-smi",
             "permanent-env",
+            "llama-cpp",
         ];
         for id in &ids {
             assert!(
@@ -947,8 +955,8 @@ mod tests {
         let map = display_name_to_id_map();
         assert_eq!(
             map.len(),
-            18,
-            "Display name to ID map must have exactly 18 entries"
+            19,
+            "Display name to ID map must have exactly 19 entries"
         );
 
         // Verify round-trip: display_name(id) -> display_name -> id == original id
@@ -1275,8 +1283,8 @@ mod tests {
 
     #[test]
     fn test_installer_scripts_for_installable_components() {
-        // rocm-smi and permanent-env don't have installer scripts (managed by ROCm / installer)
-        let no_script = ["rocm-smi", "permanent-env"];
+        // rocm-smi, permanent-env, and native Rust components don't have installer scripts
+        let no_script = ["rocm-smi", "permanent-env", "llama-cpp"];
         for c in known_components() {
             if !no_script.contains(&c.id.as_str()) {
                 assert!(

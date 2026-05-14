@@ -1,0 +1,64 @@
+CWD/working_dir Propagation Fix Report
+=======================================
+Date: 2026-05-05
+Scope: Category B + H1 — CWD/working_dir propagation bugs
+
+## Summary
+
+Fixed 5 components where ShellCommand.working_dir was either:
+1. Present but dropped by the dispatch (using from_shell_cmd instead of from_shell_cmd_with_dir)
+2. Missing from the ShellCommand struct entirely
+
+## Changes Made
+
+### Fix 1: flash-attn dispatch (src/installer.rs)
+- Changed 4 from_shell_cmd() calls to from_shell_cmd_with_dir() in the flash-attn dispatch block
+- Affected commands: git checkout, cmake, make, pip install (setup_install)
+- Each now passes cmd.working_dir.clone() to preserve the working directory
+- The flash_attention_ck ShellCommand already had working_dir: Some(...) set correctly
+
+### Fix 2: onnx (onnxruntime) dispatch (src/installer.rs)
+- Changed 5 from_shell_cmd() calls to from_shell_cmd_with_dir() in the onnx dispatch block
+- Affected commands: git checkout, git submodule, cmake build, pip uninstall, pip wheel install
+- Each now passes cmd.working_dir.clone() to preserve the working directory
+- The onnxruntime ShellCommand already had working_dir: Some(...) set correctly
+
+### Fix 3: triton (src/installers/components/triton.rs + src/installer.rs)
+- Added `pub working_dir: Option<PathBuf>` to triton::ShellCommand struct
+- Added `use std::path::PathBuf;` import
+- Updated build_pip_install_command() to accept src_dir and set working_dir: Some(PathBuf::from(src_dir))
+- Added working_dir: None to git_clone, git_checkout, prerequisites ShellCommands
+- Added working_dir: None to test ShellCommand constructions (2 tests)
+- Changed triton dispatch pip install from from_shell_cmd() to from_shell_cmd_with_dir()
+
+### Fix 4: aiter (src/installers/components/aiter.rs + src/installer.rs)
+- Added `pub working_dir: Option<PathBuf>` to aiter::ShellCommand struct
+- Added `use std::path::PathBuf;` import
+- Updated build_pip_install_command() to accept src_dir and set working_dir: Some(PathBuf::from(src_dir))
+- Added working_dir: None to git_clone, deps_install ShellCommands
+- Changed aiter dispatch pip install from from_shell_cmd() to from_shell_cmd_with_dir()
+
+### Fix 5: rocm-smi (src/installers/components/rocm_smi.rs + src/installer.rs)
+- Added `pub working_dir: Option<PathBuf>` to rocm_smi::ShellCommand struct
+- Added `use std::path::PathBuf;` import
+- Updated build_pip_install_command() to accept src_dir and set working_dir: Some(PathBuf::from(src_dir))
+- Added working_dir: None to git_clone, package_install, package_update ShellCommands
+- Changed rocm-smi dispatch pip install from from_shell_cmd() to from_shell_cmd_with_dir()
+
+## Files Modified
+- src/installer.rs (dispatch blocks for flash-attn, onnx, triton, aiter, rocm-smi)
+- src/installers/components/triton.rs (ShellCommand struct + build_pip_install_command)
+- src/installers/components/aiter.rs (ShellCommand struct + build_pip_install_command)
+- src/installers/components/rocm_smi.rs (ShellCommand struct + build_pip_install_command)
+
+## Validation
+- cargo build --release: PASSED (zero errors, zero warnings)
+- cargo test --release: ALL TESTS PASSED (all component unit tests pass, all integration tests pass)
+- Verified no remaining from_shell_cmd() calls exist for components with working_dir fields
+
+## What was NOT changed
+- NativeCommand enum definition (unchanged)
+- from_shell_cmd() and from_shell_cmd_with_dir() signatures (unchanged)
+- execute_native_command() function signature (unchanged)
+- Other components (permanent-env, repair, megatron, vllm, comfyui, etc.) — their ShellCommands
+  don't have working_dir fields and from_shell_cmd() is correct for them

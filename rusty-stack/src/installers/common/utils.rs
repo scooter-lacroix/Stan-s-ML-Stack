@@ -135,11 +135,7 @@ pub fn resolve_rocminfo_path() -> String {
     if let Ok(entries) = std::fs::read_dir("/opt") {
         let mut rocm_dirs: Vec<_> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("rocm-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("rocm-"))
             .collect();
         rocm_dirs.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
         for dir in rocm_dirs {
@@ -659,7 +655,10 @@ mod tests {
     fn test_resolve_rocminfo_path_returns_string() {
         // Should return a string (either a full path or bare "rocminfo")
         let path = resolve_rocminfo_path();
-        assert!(!path.is_empty(), "resolve_rocminfo_path must return non-empty string");
+        assert!(
+            !path.is_empty(),
+            "resolve_rocminfo_path must return non-empty string"
+        );
     }
 
     #[test]
@@ -720,7 +719,10 @@ mod tests {
     #[test]
     fn test_pip_cache_fix_result_equality() {
         assert_eq!(PipCacheFixResult::NoCacheDir, PipCacheFixResult::NoCacheDir);
-        assert_eq!(PipCacheFixResult::OwnershipCorrect, PipCacheFixResult::OwnershipCorrect);
+        assert_eq!(
+            PipCacheFixResult::OwnershipCorrect,
+            PipCacheFixResult::OwnershipCorrect
+        );
         assert_eq!(PipCacheFixResult::Fixed, PipCacheFixResult::Fixed);
         assert_ne!(PipCacheFixResult::NoCacheDir, PipCacheFixResult::Fixed);
     }

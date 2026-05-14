@@ -336,8 +336,12 @@ impl UpdatePlanner {
         // Apply --all-safe: only keep safe items (and experimental if explicitly included)
         if options.all_safe {
             if options.include_experimental {
-                items.retain(|i| matches!(i.classification,
-                    UpdateClassification::Safe | UpdateClassification::Experimental));
+                items.retain(|i| {
+                    matches!(
+                        i.classification,
+                        UpdateClassification::Safe | UpdateClassification::Experimental
+                    )
+                });
             } else {
                 items.retain(|i| i.classification == UpdateClassification::Safe);
             }
@@ -647,6 +651,7 @@ impl UpdatePlanner {
             "textgen" => vec!["pytorch".to_string()],
             "rocm" => vec![],
             "rocm-smi" => vec!["rocm".to_string()],
+            "llama-cpp" => vec!["rocm".to_string()],
             "permanent-env" => vec![],
             _ => vec![],
         }
@@ -915,6 +920,7 @@ mod tests {
             validation_tier: tier,
             min_rocm_version: String::new(),
             compatible_channels: vec![],
+            dependencies: vec![],
         }
     }
 
@@ -1861,6 +1867,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: "99.0.0".to_string(), // impossibly high
             compatible_channels: vec![],
+            dependencies: vec![],
         };
 
         let classification = planner().classify_update(&component, &context);
@@ -1879,6 +1886,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: "7.0.0".to_string(),
             compatible_channels: vec![],
+            dependencies: vec![],
         };
 
         let classification = planner().classify_update(&component, &context);
@@ -1902,6 +1910,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string(), "stable".to_string()],
+            dependencies: vec![],
         };
 
         let classification = planner().classify_update(&component, &context);
@@ -1921,6 +1930,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string(), "stable".to_string()],
+            dependencies: vec![],
         };
 
         let classification = planner().classify_update(&component, &context);
@@ -1940,6 +1950,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string()],
+            dependencies: vec![],
         }]);
 
         let options = PlannerOptions::default();
@@ -2030,6 +2041,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: "99.0.0".to_string(),
             compatible_channels: vec![],
+            dependencies: vec![],
         };
 
         let reason = planner().block_reason(&component, &context);
@@ -2050,6 +2062,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string()],
+            dependencies: vec![],
         };
 
         let reason = planner().block_reason(&component, &context);

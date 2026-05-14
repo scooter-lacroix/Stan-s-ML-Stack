@@ -342,13 +342,25 @@ mod tests {
     #[test]
     fn test_repair_step_native_component_ids() {
         assert_eq!(RepairStep::Rocm.native_component_id(), "rocm");
-        assert_eq!(RepairStep::AmdgpuDrivers.native_component_id(), "amdgpu-drivers");
+        assert_eq!(
+            RepairStep::AmdgpuDrivers.native_component_id(),
+            "amdgpu-drivers"
+        );
         assert_eq!(RepairStep::PyTorch.native_component_id(), "pytorch");
-        assert_eq!(RepairStep::MlStackCore.native_component_id(), "ml-stack-core");
+        assert_eq!(
+            RepairStep::MlStackCore.native_component_id(),
+            "ml-stack-core"
+        );
         assert_eq!(RepairStep::Aiter.native_component_id(), "aiter");
-        assert_eq!(RepairStep::MigraphxPython.native_component_id(), "migraphx-python");
+        assert_eq!(
+            RepairStep::MigraphxPython.native_component_id(),
+            "migraphx-python"
+        );
         assert_eq!(RepairStep::DeepSpeed.native_component_id(), "deepspeed");
-        assert_eq!(RepairStep::EnvironmentVariables.native_component_id(), "permanent-env");
+        assert_eq!(
+            RepairStep::EnvironmentVariables.native_component_id(),
+            "permanent-env"
+        );
     }
 
     #[test]

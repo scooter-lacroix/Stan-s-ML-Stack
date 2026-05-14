@@ -250,7 +250,8 @@ mod update_impl {
                             plan: Some(plan),
                             apply: None,
                             summary: JsonSummary {
-                                status: if scan_only { "scan_only" } else { "no_updates" }.to_string(),
+                                status: if scan_only { "scan_only" } else { "no_updates" }
+                                    .to_string(),
                                 scan_only,
                                 error: None,
                             },
@@ -264,7 +265,12 @@ mod update_impl {
                             plan: Some(plan),
                             apply: Some(serde_json::to_value(&apply_result).unwrap_or_default()),
                             summary: JsonSummary {
-                                status: if apply_result.has_failures() { "partial" } else { "applied" }.to_string(),
+                                status: if apply_result.has_failures() {
+                                    "partial"
+                                } else {
+                                    "applied"
+                                }
+                                .to_string(),
                                 scan_only: false,
                                 error: None,
                             },
@@ -310,8 +316,14 @@ mod update_impl {
                     } else if yes || all_safe {
                         // --all-safe or --yes: show countdown unless --yes skips it
                         if yes {
-                            tracing::info!(count = plan.summary.selected, "Auto-applying (--yes flag)");
-                            println!("\nApplying {} updates (auto-confirmed)...", plan.summary.selected);
+                            tracing::info!(
+                                count = plan.summary.selected,
+                                "Auto-applying (--yes flag)"
+                            );
+                            println!(
+                                "\nApplying {} updates (auto-confirmed)...",
+                                plan.summary.selected
+                            );
                         } else {
                             // --all-safe: 10-second countdown with cancel
                             if !countdown_confirm(plan.summary.selected) {
@@ -549,11 +561,7 @@ mod update_impl {
             };
             output.push_str(&format!(
                 "  {} {:15} {}  ({}){}\n",
-                sel,
-                item.component_id,
-                version_str,
-                item.classification,
-                vis,
+                sel, item.component_id, version_str, item.classification, vis,
             ));
         }
 
@@ -575,7 +583,11 @@ mod update_impl {
         use std::time::Duration;
 
         println!("\n  ┌───────────────────────────────────────────────────┐");
-        println!("  │ {} update{} will be applied in 10 seconds.        │", count, if count > 1 { "s" } else { "" });
+        println!(
+            "  │ {} update{} will be applied in 10 seconds.        │",
+            count,
+            if count > 1 { "s" } else { "" }
+        );
         println!("  │ Press Enter to apply now, 'n' to cancel.         │");
         println!("  └───────────────────────────────────────────────────┘");
 
@@ -612,7 +624,8 @@ mod update_impl {
                                 cancelled = true;
                                 break;
                             }
-                            3 => { // Ctrl+C
+                            3 => {
+                                // Ctrl+C
                                 cancelled = true;
                                 break;
                             }
@@ -654,7 +667,9 @@ mod update_impl {
     ///
     /// Uses `DirectInstallerExecutor` which calls `installer::run_installation()`
     /// directly - no subprocess spawning.
-    fn apply_plan(plan: &rusty_stack::orchestrator::planner::PlanOutput) -> rusty_stack::orchestrator::apply::ApplySummary {
+    fn apply_plan(
+        plan: &rusty_stack::orchestrator::planner::PlanOutput,
+    ) -> rusty_stack::orchestrator::apply::ApplySummary {
         use rusty_stack::orchestrator::apply::{ApplyEngine, ApplyExecutor, ApplyOptions};
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
@@ -699,12 +714,18 @@ mod update_impl {
                     }
                 }
                 // Restore original settings
-                unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original); };
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
+                };
                 eprintln!(); // newline after password input
-                String::from_utf8(password).ok().map(|s| s.trim().to_string())
+                String::from_utf8(password)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             }
             #[cfg(not(unix))]
-            { None }
+            {
+                None
+            }
         }
 
         /// Direct installer executor - calls Rust installer functions in-process.
@@ -713,18 +734,34 @@ mod update_impl {
         }
 
         impl DirectInstallerExecutor {
-            fn new(cancelled: Arc<AtomicBool>) -> Self { Self { cancelled } }
+            fn new(cancelled: Arc<AtomicBool>) -> Self {
+                Self { cancelled }
+            }
             fn component_for_id(id: &str) -> Option<rusty_stack::state::Component> {
-                rusty_stack::state::default_components().into_iter().find(|c| c.id == id).map(|mut c| { c.selected = true; c })
+                rusty_stack::state::default_components()
+                    .into_iter()
+                    .find(|c| c.id == id)
+                    .map(|mut c| {
+                        c.selected = true;
+                        c
+                    })
             }
         }
 
         impl ApplyExecutor for DirectInstallerExecutor {
-            fn apply_component(&self, component_id: &str, proposed_version: &str) -> Result<(), String> {
+            fn apply_component(
+                &self,
+                component_id: &str,
+                proposed_version: &str,
+            ) -> Result<(), String> {
                 if self.cancelled.load(Ordering::Relaxed) {
                     return Err(format!("{} cancelled by user", component_id));
                 }
-                tracing::info!(component = component_id, proposed_version, "Starting component installation");
+                tracing::info!(
+                    component = component_id,
+                    proposed_version,
+                    "Starting component installation"
+                );
                 let Some(component) = Self::component_for_id(component_id) else {
                     return Err(format!("Unknown component ID: {}", component_id));
                 };
@@ -755,12 +792,18 @@ mod update_impl {
                 let (_, input_rx) = std::sync::mpsc::channel();
                 let scripts_dir = rusty_stack::detect_scripts_dir();
                 let config = rusty_stack::config::InstallerConfig::load_or_default(&scripts_dir)
-                    .unwrap_or_else(|_| rusty_stack::config::InstallerConfig::default_with_paths(
-                        &scripts_dir,
-                        format!("{}/logs", std::env::var("HOME").unwrap_or_else(|_| ".".into())),
-                        rusty_stack::config::config_file_path()
-                            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/mlstack/config/config.json")),
-                    ));
+                    .unwrap_or_else(|_| {
+                        rusty_stack::config::InstallerConfig::default_with_paths(
+                            &scripts_dir,
+                            format!(
+                                "{}/logs",
+                                std::env::var("HOME").unwrap_or_else(|_| ".".into())
+                            ),
+                            rusty_stack::config::config_file_path().unwrap_or_else(|_| {
+                                std::path::PathBuf::from("/tmp/mlstack/config/config.json")
+                            }),
+                        )
+                    });
 
                 // Propagate config flags to env vars that run_installation reads
                 if config.force_reinstall {
@@ -774,11 +817,20 @@ mod update_impl {
                 let component_name = component.name.clone();
                 let cid = component_id.to_string();
                 let handle = std::thread::spawn(move || {
-                    rusty_stack::installer::run_installation(vec![component], config, sudo_password, tx, input_rx);
+                    rusty_stack::installer::run_installation(
+                        vec![component],
+                        config,
+                        sudo_password,
+                        tx,
+                        input_rx,
+                    );
                 });
                 let mut success = true;
                 let mut error_msg = String::new();
-                let spinner: &[char] = &['\u{280b}','\u{2819}','\u{2839}','\u{2838}','\u{283c}','\u{2834}','\u{2826}','\u{2827}','\u{2807}','\u{280f}'];
+                let spinner: &[char] = &[
+                    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}',
+                    '\u{2826}', '\u{2827}', '\u{2807}', '\u{280f}',
+                ];
                 let mut si = 0usize;
                 loop {
                     match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -786,18 +838,29 @@ mod update_impl {
                             println!("    | {}", line);
                             tracing::info!(component = %cid, log = %line);
                         }
-                        Ok(rusty_stack::installer::InstallerEvent::Progress { progress, message, .. }) => {
+                        Ok(rusty_stack::installer::InstallerEvent::Progress {
+                            progress,
+                            message,
+                            ..
+                        }) => {
                             let pct = (progress * 100.0) as u8;
-                            let s = spinner[si % spinner.len()]; si += 1;
+                            let s = spinner[si % spinner.len()];
+                            si += 1;
                             eprint!("\r    {} {} [{:>3}%] {}    ", s, cid, pct, message);
                             let _ = std::io::stderr().flush();
                         }
-                        Ok(rusty_stack::installer::InstallerEvent::ComponentStart { name, .. }) => {
+                        Ok(rusty_stack::installer::InstallerEvent::ComponentStart {
+                            name, ..
+                        }) => {
                             eprint!("\r    ");
                             println!("    > Installing {}...", name);
                             tracing::info!(component = %cid, name = %name, "Component started");
                         }
-                        Ok(rusty_stack::installer::InstallerEvent::ComponentComplete { success: s, message, .. }) => {
+                        Ok(rusty_stack::installer::InstallerEvent::ComponentComplete {
+                            success: s,
+                            message,
+                            ..
+                        }) => {
                             eprint!("\r{}\r", " ".repeat(80));
                             if s {
                                 println!("    ok {} - {}", component_name, message);
@@ -809,11 +872,21 @@ mod update_impl {
                                 error_msg = message;
                             }
                         }
-                        Ok(rusty_stack::installer::InstallerEvent::VerificationReport { lines, .. }) => {
-                            for line in &lines { println!("    | {}", line); }
+                        Ok(rusty_stack::installer::InstallerEvent::VerificationReport {
+                            lines,
+                            ..
+                        }) => {
+                            for line in &lines {
+                                println!("    | {}", line);
+                            }
                         }
                         Ok(rusty_stack::installer::InstallerEvent::Finished { success: s }) => {
-                            if !s { success = false; if error_msg.is_empty() { error_msg = "Finished with errors".into(); } }
+                            if !s {
+                                success = false;
+                                if error_msg.is_empty() {
+                                    error_msg = "Finished with errors".into();
+                                }
+                            }
                             break;
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -821,59 +894,70 @@ mod update_impl {
                                 return Err(format!("{} cancelled", cid));
                             }
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => { break; }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            break;
+                        }
                     }
                 }
                 let _ = handle.join();
                 eprint!("\r{}\r", " ".repeat(80));
-                if success { tracing::info!(component=%cid,"Succeeded"); Ok(()) }
-                else { tracing::error!(component=%cid,error=%error_msg,"Failed"); Err(error_msg) }
+                if success {
+                    tracing::info!(component=%cid,"Succeeded");
+                    Ok(())
+                } else {
+                    tracing::error!(component=%cid,error=%error_msg,"Failed");
+                    Err(error_msg)
+                }
             }
         }
 
         // Convert plan output back to PlannerItems for the apply engine.
         // We reconstruct minimal PlannerItems from the plan output data.
-        let items: Vec<rusty_stack::orchestrator::planner::PlannerItem> = plan.plan.iter().map(|item| {
-            use rusty_stack::core::plan::PlanItem;
-            use rusty_stack::core::types::ValidationTier;
-            use rusty_stack::orchestrator::planner::UpdateClassification;
+        let items: Vec<rusty_stack::orchestrator::planner::PlannerItem> = plan
+            .plan
+            .iter()
+            .map(|item| {
+                use rusty_stack::core::plan::PlanItem;
+                use rusty_stack::core::types::ValidationTier;
+                use rusty_stack::orchestrator::planner::UpdateClassification;
 
-            let classification = match item.classification.as_str() {
-                "safe" => UpdateClassification::Safe,
-                "guarded" => UpdateClassification::Guarded,
-                "blocked" => UpdateClassification::Blocked,
-                "candidate" => UpdateClassification::Candidate,
-                "experimental" => UpdateClassification::Experimental,
-                _ => UpdateClassification::Guarded,
-            };
+                let classification = match item.classification.as_str() {
+                    "safe" => UpdateClassification::Safe,
+                    "guarded" => UpdateClassification::Guarded,
+                    "blocked" => UpdateClassification::Blocked,
+                    "candidate" => UpdateClassification::Candidate,
+                    "experimental" => UpdateClassification::Experimental,
+                    _ => UpdateClassification::Guarded,
+                };
 
-            let tier = match item.risk_tier.as_str() {
-                "validated" => ValidationTier::Validated,
-                "candidate" => ValidationTier::Candidate,
-                "experimental" => ValidationTier::Experimental,
-                "blocked" => ValidationTier::Blocked,
-                _ => ValidationTier::Candidate,
-            };
+                let tier = match item.risk_tier.as_str() {
+                    "validated" => ValidationTier::Validated,
+                    "candidate" => ValidationTier::Candidate,
+                    "experimental" => ValidationTier::Experimental,
+                    "blocked" => ValidationTier::Blocked,
+                    _ => ValidationTier::Candidate,
+                };
 
-            rusty_stack::orchestrator::planner::PlannerItem {
-                plan_item: PlanItem::new(
-                    &item.component_id,
-                    &item.current_version,
-                    &item.proposed_version,
-                    tier,
-                    item.selected,
-                    &item.rationale,
-                    item.dependencies.clone(),
-                    true,
-                ),
-                classification,
-                visible: item.visible,
-                selected: item.selected,
-                classification_reason: item.rationale.clone(),
-                requires_hardware_check: false,
-                min_rocm_version: String::new(),
-            }
-        }).collect();
+                rusty_stack::orchestrator::planner::PlannerItem {
+                    plan_item: PlanItem::new(
+                        &item.component_id,
+                        &item.current_version,
+                        &item.proposed_version,
+                        tier,
+                        item.selected,
+                        &item.rationale,
+                        item.dependencies.clone(),
+                        true,
+                    ),
+                    classification,
+                    visible: item.visible,
+                    selected: item.selected,
+                    classification_reason: item.rationale.clone(),
+                    requires_hardware_check: false,
+                    min_rocm_version: String::new(),
+                }
+            })
+            .collect();
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let engine = ApplyEngine::new(DirectInstallerExecutor::new(cancelled));
@@ -888,7 +972,10 @@ mod update_impl {
         if !summary.success.is_empty() {
             println!("\n  Succeeded ({}):", summary.success.len());
             for item in &summary.success {
-                println!("    ✓ {} {} → {}", item.component_id, item.current_version, item.proposed_version);
+                println!(
+                    "    ✓ {} {} → {}",
+                    item.component_id, item.current_version, item.proposed_version
+                );
             }
         }
 
@@ -916,7 +1003,10 @@ mod update_impl {
         let total = summary.total();
         let succeeded = summary.success.len();
         if summary.has_failures() {
-            println!("\n  {}/{} components updated successfully.", succeeded, total);
+            println!(
+                "\n  {}/{} components updated successfully.",
+                succeeded, total
+            );
         } else {
             println!("\n  All {} components updated successfully.", succeeded);
         }
@@ -1321,7 +1411,10 @@ mod deps_impl {
 
         let cargo_toml_path = crate_dir.join("Cargo.toml");
         if !cargo_toml_path.exists() {
-            eprintln!("error: Cargo.toml not found at {}", cargo_toml_path.display());
+            eprintln!(
+                "error: Cargo.toml not found at {}",
+                cargo_toml_path.display()
+            );
             process::exit(2);
         }
 
@@ -1347,7 +1440,10 @@ mod deps_impl {
             println!("  Lag:       {} days", lag_days);
             println!("═══════════════════════════════════════════════════════════════");
             println!();
-            println!("Found {} direct dependencies. Checking crates.io...", deps.len());
+            println!(
+                "Found {} direct dependencies. Checking crates.io...",
+                deps.len()
+            );
             println!();
         }
 
@@ -1366,7 +1462,12 @@ mod deps_impl {
             match query_crates_io(&dep.name) {
                 Ok(info) => {
                     if verbose && !json {
-                        println!("  API response for {}: latest={}, updated={}", dep.name, info.latest, info.updated.as_deref().unwrap_or("N/A"));
+                        println!(
+                            "  API response for {}: latest={}, updated={}",
+                            dep.name,
+                            info.latest,
+                            info.updated.as_deref().unwrap_or("N/A")
+                        );
                     }
 
                     let locked = semver::Version::parse(&locked_ver).ok();
@@ -1379,7 +1480,10 @@ mod deps_impl {
 
                     if !is_newer {
                         if !json {
-                            println!("  \u{2705} {} \u{2014} {} (up to date)", dep.name, locked_ver);
+                            println!(
+                                "  \u{2705} {} \u{2014} {} (up to date)",
+                                dep.name, locked_ver
+                            );
                         }
                         results.push(DepResult {
                             name: dep.name.clone(),
@@ -1427,7 +1531,10 @@ mod deps_impl {
                 }
                 Err(e) => {
                     if !json {
-                        println!("  \u{26A0}\u{FE0F}  {} \u{2014} failed to query crates.io: {}", dep.name, e);
+                        println!(
+                            "  \u{26A0}\u{FE0F}  {} \u{2014} failed to query crates.io: {}",
+                            dep.name, e
+                        );
                     }
                     results.push(DepResult {
                         name: dep.name.clone(),
@@ -1452,7 +1559,10 @@ mod deps_impl {
                     "check_failed": check_failed,
                 }
             });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).unwrap_or_default()
+            );
         } else {
             println!();
             println!("═══════════════════════════════════════════════════════════════");
@@ -1494,7 +1604,8 @@ mod deps_impl {
     impl CrateInfo {
         fn days_since_publish(&self) -> Option<i64> {
             let updated = self.updated.as_ref()?;
-            let published = chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(updated).ok()?;
+            let published =
+                chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(updated).ok()?;
             let now = chrono::Utc::now();
             let duration = now.signed_duration_since(published.with_timezone(&chrono::Utc));
             Some(duration.num_days())
@@ -1540,10 +1651,7 @@ mod deps_impl {
                 continue;
             }
             if found_name && trimmed.starts_with("version =") {
-                return trimmed
-                    .split('"')
-                    .nth(1)
-                    .map(|s| s.to_string());
+                return trimmed.split('"').nth(1).map(|s| s.to_string());
             }
             if found_name && trimmed.starts_with("name =") {
                 found_name = false;
@@ -1558,7 +1666,10 @@ mod deps_impl {
 
         let response = agent
             .get(&url)
-            .header("User-Agent", "rusty-stack-dep-checker (github.com/scooter-lacroix)")
+            .header(
+                "User-Agent",
+                "rusty-stack-dep-checker (github.com/scooter-lacroix)",
+            )
             .call()
             .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
 
@@ -1645,7 +1756,14 @@ fn main() {
             json,
             components,
         }) => {
-            update_impl::run(scan_only, all_safe, include_experimental, yes, json, components);
+            update_impl::run(
+                scan_only,
+                all_safe,
+                include_experimental,
+                yes,
+                json,
+                components,
+            );
         }
         Some(Subcommands::Upgrade {
             yes,

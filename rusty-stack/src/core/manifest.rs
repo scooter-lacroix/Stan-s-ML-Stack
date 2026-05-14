@@ -57,6 +57,9 @@ pub struct ManifestComponent {
     /// ROCm channels this component is compatible with (empty = all).
     #[serde(default)]
     pub compatible_channels: Vec<String>,
+    /// Component dependencies (empty = none).
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 fn default_validation_tier() -> ValidationTier {
@@ -124,7 +127,10 @@ impl Manifest {
         sha2::Digest::update(&mut hasher, MANIFEST_SIGNING_KEY);
         sha2::Digest::update(&mut hasher, body.as_bytes());
         let result = hasher.finalize();
-        result.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+        result
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
     }
 
     /// Verify the manifest's signature.
@@ -407,6 +413,7 @@ mod tests {
             validation_tier: ValidationTier::Validated,
             min_rocm_version: String::new(),
             compatible_channels: vec![],
+            dependencies: vec![],
         }
     }
 
@@ -439,6 +446,12 @@ mod tests {
             assert!(
                 Category::from_label(&comp.category.to_string()).is_some(),
                 "component '{}' has invalid category",
+                comp.id
+            );
+            // Verify dependencies field exists and is a Vec<String>
+            assert!(
+                comp.dependencies.iter().all(|s| !s.is_empty()),
+                "component '{}' has empty dependency string",
                 comp.id
             );
         }
@@ -485,6 +498,7 @@ mod tests {
                     validation_tier: ValidationTier::Validated,
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
+                    dependencies: vec![],
                 },
                 // New component
                 ManifestComponent {
@@ -495,6 +509,7 @@ mod tests {
                     validation_tier: ValidationTier::Candidate,
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
+                    dependencies: vec![],
                 },
             ],
         };
@@ -923,6 +938,7 @@ mod tests {
                     validation_tier: ValidationTier::Validated,
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
+                    dependencies: vec![],
                 },
             ],
         );
@@ -945,6 +961,7 @@ mod tests {
                     validation_tier: ValidationTier::Candidate,
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
+                    dependencies: vec![],
                 },
             ],
         };

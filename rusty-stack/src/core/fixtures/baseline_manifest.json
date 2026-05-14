@@ -128,6 +128,15 @@
       "script": "scripts/install_permanent_env.sh",
       "category": "Environment",
       "validation_tier": "Validated"
+    },
+    {
+      "id": "llama-cpp",
+      "version": "latest",
+      "script": "scripts/install_llama_cpp.sh",
+      "category": "Core",
+      "validation_tier": "Experimental",
+      "compatible_channels": ["legacy", "stable", "latest"],
+      "dependencies": ["rocm"]
     }
   ]
 }

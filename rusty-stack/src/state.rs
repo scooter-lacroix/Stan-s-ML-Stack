@@ -431,6 +431,19 @@ pub fn default_components() -> Vec<Component> {
             needs_sudo: true,
         },
         Component {
+            id: "llama-cpp".into(),
+            name: "llama.cpp (HIP/ROCm)".into(),
+            description: "llama.cpp with HIP/ROCm GPU acceleration".into(),
+            script: String::new(), // Native Rust installer
+            category: Extension,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-15 min".into(),
+            needs_sudo: true,
+        },
+        Component {
             id: "fastvideo".into(),
             name: "FastVideo".into(),
             description: "Video generation framework with ROCm gfx11 optimizations".into(),

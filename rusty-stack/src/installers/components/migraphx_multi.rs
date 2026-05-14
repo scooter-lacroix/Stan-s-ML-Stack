@@ -297,7 +297,10 @@ impl MigraphxInstaller {
     /// attempting to install it will fail. This method returns `true` for
     /// those distros so the caller can skip the pip step gracefully.
     pub fn should_skip_pip_install(&self, distro: &DistroFacade) -> bool {
-        matches!(self.is_available_on_distro(distro), MigraphxSupport::SystemOnly)
+        matches!(
+            self.is_available_on_distro(distro),
+            MigraphxSupport::SystemOnly
+        )
     }
 }
 
@@ -422,7 +425,10 @@ mod tests {
             pkg_manager: PackageManager::Apt,
             ..Default::default()
         });
-        assert_eq!(installer.is_available_on_distro(&distro), MigraphxSupport::Full);
+        assert_eq!(
+            installer.is_available_on_distro(&distro),
+            MigraphxSupport::Full
+        );
     }
 
     #[test]
@@ -464,7 +470,10 @@ mod tests {
             pkg_manager: PackageManager::Dnf,
             ..Default::default()
         });
-        assert_eq!(installer.is_available_on_distro(&distro), MigraphxSupport::Full);
+        assert_eq!(
+            installer.is_available_on_distro(&distro),
+            MigraphxSupport::Full
+        );
     }
 
     #[test]
@@ -539,7 +548,10 @@ mod tests {
             ..Default::default()
         });
         let pkgs = installer.required_packages(&distro);
-        assert!(pkgs.contains(&"migraphx"), "Arch should have migraphx package");
+        assert!(
+            pkgs.contains(&"migraphx"),
+            "Arch should have migraphx package"
+        );
         assert!(
             !pkgs.contains(&"migraphx-dev"),
             "Arch should NOT have migraphx-dev (Debian-specific)"

@@ -393,7 +393,11 @@ impl RocmInstaller {
     /// Arch uses AUR packages (yay/paru) for ROCm.
     pub fn pacman_install_commands(&self, aur_helper: &str) -> Vec<PackageCommand> {
         let packages = self.pacman_rocm_packages();
-        let mut args = vec!["-S".to_string(), "--needed".to_string(), "--noconfirm".to_string()];
+        let mut args = vec![
+            "-S".to_string(),
+            "--needed".to_string(),
+            "--noconfirm".to_string(),
+        ];
         args.extend(packages);
 
         vec![
@@ -514,9 +518,7 @@ impl RocmInstaller {
         packages
             .iter()
             .filter(|pkg| {
-                let status = Command::new("pacman")
-                    .args(["-Qi", pkg.as_str()])
-                    .output();
+                let status = Command::new("pacman").args(["-Qi", pkg.as_str()]).output();
                 match status {
                     Ok(output) => !output.status.success(),
                     Err(_) => true, // If pacman fails to run, assume not installed

@@ -66,6 +66,7 @@ pub mod comfyui;
 pub mod deepspeed;
 pub mod fastvideo;
 pub mod flash_attention_ck;
+pub mod llama_cpp;
 pub mod megatron;
 pub mod migraphx_multi;
 pub mod migraphx_python;
@@ -91,6 +92,7 @@ pub use bitsandbytes_multi::{BitsAndBytesConfig, BitsAndBytesInstaller};
 pub use comfyui::{ComfyuiConfig, ComfyuiInstaller};
 pub use deepspeed::{DeepSpeedConfig, DeepSpeedInstaller};
 pub use flash_attention_ck::{FlashAttentionConfig, FlashAttentionInstaller, GpuArch};
+pub use llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
 pub use megatron::{MegatronConfig, MegatronInstaller};
 pub use migraphx_multi::{MigraphxConfig, MigraphxInstaller, MigraphxSupport};
 pub use migraphx_python::{
@@ -162,6 +164,8 @@ pub const NATIVE_COMPONENT_IDS: &[&str] = &[
     "all-benchmarks",
     // FastVideo component
     "fastvideo",
+    // llama.cpp component (HIP/ROCm CMake source build)
+    "llama-cpp",
 ];
 
 /// Returns `true` if the given component ID has been ported to native Rust
@@ -202,6 +206,7 @@ pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
         "comfyui" => &["pytorch"],
         "pytorch" => &["rocm"], // PyTorch for ROCm requires ROCm installed
         "pytorch-profiler" => &["pytorch"],
+        "llama-cpp" => &["rocm"], // llama.cpp HIP build requires ROCm
         // All other native components have no cross-component dependencies
         _ => &[],
     }
@@ -287,8 +292,8 @@ mod dispatch_tests {
 
     #[test]
     fn test_all_24_native_components_listed() {
-        // 24 installer + 9 benchmark + 1 fastvideo = 34
-        assert_eq!(NATIVE_COMPONENT_IDS.len(), 34);
+        // 24 installer + 9 benchmark + 1 fastvideo + 1 llama-cpp = 35
+        assert_eq!(NATIVE_COMPONENT_IDS.len(), 35);
     }
 
     #[test]
@@ -362,6 +367,12 @@ mod dispatch_tests {
     fn test_comfyui_dependencies() {
         let deps = get_dependencies("comfyui");
         assert!(deps.contains(&"pytorch"));
+    }
+
+    #[test]
+    fn test_llama_cpp_dependencies() {
+        let deps = get_dependencies("llama-cpp");
+        assert!(deps.contains(&"rocm"), "llama-cpp must depend on ROCm");
     }
 
     #[test]

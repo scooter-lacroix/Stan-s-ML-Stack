@@ -171,14 +171,55 @@ pub fn python_interpreters_for_home(home: &Path) -> Vec<PathBuf> {
         }
     }
 
-    // Priority 4: Component venvs relative to home
+    // Priority 4: uv-managed Python installations
+    // uv installs Pythons under ~/.local/share/uv/python/ and symlinks to ~/.local/bin/
+    // These are PREFERRED over system Pythons because they are the user's ML environment.
+    push_if_exists!(home.join(".local/bin/python3"));
+    push_if_exists!(home.join(".local/bin/python"));
+
+    // Scan uv python installations (newest first)
+    let uv_python_dir = home.join(".local/share/uv/python");
+    if let Ok(entries) = fs::read_dir(&uv_python_dir) {
+        let mut uv_pythons: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let bin = e.path().join("bin/python3");
+                if bin.exists() {
+                    Some(bin)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        uv_pythons.sort_by(|a, b| {
+            let va = extract_python_version(a);
+            let vb = extract_python_version(b);
+            // Prefer 3.12 > 3.13 > 3.14 (3.12 is the ML stable target)
+            // Within each, sort by version descending
+            let priority = |v: (u32, u32)| -> (i32, u32) {
+                match v {
+                    (3, 12) => (0, v.1), // highest priority
+                    (3, 13) => (1, v.1),
+                    (3, 11) => (2, v.1),
+                    (3, 10) => (3, v.1),
+                    _ => (4, v.1), // 3.14+ is lowest priority
+                }
+            };
+            priority(va).cmp(&priority(vb))
+        });
+        for p in uv_pythons {
+            push_if_exists!(p);
+        }
+    }
+
+    // Priority 5: Component venvs relative to home
     let component_venvs = ["rocm_venv", "pytorch", "ml_stack"];
     for venv_name in &component_venvs {
         push_if_exists!(home.join(venv_name).join("bin/python"));
         push_if_exists!(home.join(venv_name).join("bin/python3"));
     }
 
-    // Priority 5: System Pythons
+    // Priority 6: System Pythons (lowest priority — fallback only)
     let system_pythons = [
         "/usr/local/bin/python3",
         "/usr/bin/python3",

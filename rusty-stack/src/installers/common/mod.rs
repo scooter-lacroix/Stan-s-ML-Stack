@@ -22,6 +22,7 @@ pub mod guard;
 pub mod package_manager;
 pub mod package_mappings;
 pub mod rocm_env;
+pub mod sealed_token;
 pub mod ui_helper;
 pub mod utils;
 
@@ -40,5 +41,9 @@ pub use guard::{
 pub use package_manager::{DryRunResult, PackageManagerFacade, PackageOperation};
 pub use package_mappings::map_package_name;
 pub use rocm_env::RocmEnv;
+pub use sealed_token::SealedToken;
 pub use ui_helper::{is_system_path, UiArgError, UiArgs};
-pub use utils::{command_exists, fix_pip_cache_ownership, get_colors, Colors, PipCacheFixResult, PythonPkgManager};
+pub use utils::{
+    command_exists, fix_pip_cache_ownership, get_colors, Colors, PipCacheFixResult,
+    PythonPkgManager,
+};

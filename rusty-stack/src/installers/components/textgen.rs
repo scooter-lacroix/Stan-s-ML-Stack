@@ -315,10 +315,7 @@ impl TextgenInstaller {
     /// Returns `(program, args)` ready for additional arguments to be appended.
     fn build_pip_prefix(&self) -> (String, Vec<String>) {
         if self.config.use_uv {
-            let mut args = vec![
-                "pip".to_string(),
-                "install".to_string(),
-            ];
+            let mut args = vec!["pip".to_string(), "install".to_string()];
             // uv pip needs --system for global installs (no venv)
             args.push("--system".to_string());
             // uv pip: respect UV_PYTHON env var or pass --python
@@ -328,11 +325,7 @@ impl TextgenInstaller {
             }
             ("uv".to_string(), args)
         } else {
-            let mut args = vec![
-                "-m".to_string(),
-                "pip".to_string(),
-                "install".to_string(),
-            ];
+            let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
             if self.config.break_system_packages {
                 args.push("--break-system-packages".to_string());
             }

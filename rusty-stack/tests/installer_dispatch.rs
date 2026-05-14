@@ -27,11 +27,11 @@ use rusty_stack::state::{default_components, Category, Component};
 
 #[test]
 fn test_all_24_native_components_recognized() {
-    // 24 installer + 9 benchmark + 1 fastvideo = 34
+    // 24 installer + 9 benchmark + 1 fastvideo + 1 llama-cpp = 35
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),
-        34,
-        "Must have exactly 34 native components (24 installers + 9 benchmarks + 1 fastvideo)"
+        35,
+        "Must have exactly 35 native components (24 installers + 9 benchmarks + 1 fastvideo + 1 llama-cpp)"
     );
 
     for id in NATIVE_COMPONENT_IDS {
@@ -379,15 +379,30 @@ fn test_every_native_component_has_installer_module() {
             }
             "enhanced-env" => {} // env setup module (no dedicated installer struct yet)
             // Benchmark components — dispatched via benchmark_runners module
-            "mlperf-inference" | "rocm-benchmarks" | "gpu-memory-bandwidth"
-            | "rocm-smi-bench" | "pytorch-performance" | "vllm-performance"
-            | "deepspeed-performance" | "megatron-performance" | "all-benchmarks" => {
+            "mlperf-inference"
+            | "rocm-benchmarks"
+            | "gpu-memory-bandwidth"
+            | "rocm-smi-bench"
+            | "pytorch-performance"
+            | "vllm-performance"
+            | "deepspeed-performance"
+            | "megatron-performance"
+            | "all-benchmarks" => {
                 // Benchmarks are dispatched via benchmark_runners::run_benchmark()
             }
             // FastVideo — uses dedicated installer
             "fastvideo" => {
                 use rusty_stack::installers::components::fastvideo::FastVideoConfig;
-                let _ = rusty_stack::installers::components::fastvideo::FastVideoInstaller::new(FastVideoConfig::default());
+                let _ = rusty_stack::installers::components::fastvideo::FastVideoInstaller::new(
+                    FastVideoConfig::default(),
+                );
+            }
+            // llama-cpp — uses dedicated installer
+            "llama-cpp" => {
+                use rusty_stack::installers::components::llama_cpp::LlamaCppConfig;
+                let _ = rusty_stack::installers::components::llama_cpp::LlamaCppInstaller::new(
+                    LlamaCppConfig::default(),
+                );
             }
             _ => panic!("Unknown native component ID: {}", id),
         }
@@ -436,8 +451,8 @@ fn test_native_components_preserve_needs_sudo_flag() {
 #[test]
 fn test_default_components_total_count() {
     let components = default_components();
-    // 22 native TUI installers (incl fastvideo) + 3 verification + 8 performance = 33
-    assert_eq!(components.len(), 33, "Expected 33 total components");
+    // 23 native TUI installers (incl fastvideo + llama-cpp) + 3 verification + 8 performance = 34
+    assert_eq!(components.len(), 34, "Expected 34 total components");
 }
 
 #[test]

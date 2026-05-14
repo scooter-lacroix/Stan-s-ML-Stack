@@ -100,11 +100,7 @@ impl FastVideoInstaller {
     pub fn git_clone(&self) -> ShellCommand {
         ShellCommand {
             program: "git".to_string(),
-            args: vec![
-                "clone".to_string(),
-                self.repo_url.clone(),
-                ".".to_string(),
-            ],
+            args: vec!["clone".to_string(), self.repo_url.clone(), ".".to_string()],
             env: vec![],
             working_dir: None,
         }
@@ -171,13 +167,9 @@ impl FastVideoInstaller {
     /// Uses `python -m pip install` with `--break-system-packages` when needed,
     /// matching the pattern used by Triton, AITER, and other source-build installers.
     pub fn install_build_deps(&self) -> ShellCommand {
-        let use_break = std::env::var("VIRTUAL_ENV").is_err()
-            && std::env::var("CONDA_PREFIX").is_err();
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let use_break =
+            std::env::var("VIRTUAL_ENV").is_err() && std::env::var("CONDA_PREFIX").is_err();
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }
@@ -206,13 +198,9 @@ impl FastVideoInstaller {
     ///
     /// Uses `pip install --no-build-isolation` matching the upstream build.sh.
     pub fn pip_install_kernel(&self) -> ShellCommand {
-        let use_break = std::env::var("VIRTUAL_ENV").is_err()
-            && std::env::var("CONDA_PREFIX").is_err();
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let use_break =
+            std::env::var("VIRTUAL_ENV").is_err() && std::env::var("CONDA_PREFIX").is_err();
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         if use_break {
             args.push("--break-system-packages".to_string());
         }

@@ -450,14 +450,8 @@ mod tests {
             msg.contains("not available"),
             "Message should say not available: {msg}"
         );
-        assert!(
-            msg.contains("Arch"),
-            "Message should mention Arch: {msg}"
-        );
-        assert!(
-            msg.contains("pip"),
-            "Message should mention pip: {msg}"
-        );
+        assert!(msg.contains("Arch"), "Message should mention Arch: {msg}");
+        assert!(msg.contains("pip"), "Message should mention pip: {msg}");
         assert!(
             msg.contains("Docker") || msg.contains("source"),
             "Message should suggest alternatives: {msg}"

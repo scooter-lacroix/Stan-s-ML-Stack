@@ -211,8 +211,9 @@ impl AiterInstaller {
 
     /// Construct the pip install command for AITER from source.
     ///
-    /// The original script uses:
-    /// `pip install --no-cache-dir --no-build-isolation --no-deps .`
+    /// The proven working approach uses `pip install --no-cache-dir .`
+    /// (NOT `--no-build-isolation --no-deps` which skips build dependencies).
+    /// The `--break-system-packages` flag is added for global installs.
     pub fn build_pip_install_command(&self, src_dir: &str) -> ShellCommand {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
@@ -221,17 +222,36 @@ impl AiterInstaller {
         if use_break {
             args.push("--break-system-packages".to_string());
         }
-        args.extend([
-            "--no-cache-dir".to_string(),
-            "--no-build-isolation".to_string(),
-            "--no-deps".to_string(),
-            ".".to_string(),
-        ]);
+        args.extend(["--no-cache-dir".to_string(), ".".to_string()]);
+
+        let primary_arch = self.resolve_primary_arch();
+        let rocm_path = "/opt/rocm".to_string();
 
         ShellCommand {
             program: self.config.python_bin.clone(),
             args,
-            env: vec![],
+            env: vec![
+                ("GPU_ARCH".to_string(), primary_arch.clone()),
+                ("PYTORCH_ROCM_ARCH".to_string(), primary_arch),
+                ("GPU_ARCHS".to_string(), self.config.gpu_arch.clone()),
+                ("ROCM_PATH".to_string(), rocm_path),
+                (
+                    "HSA_OVERRIDE_GFX_VERSION".to_string(),
+                    self.config
+                        .gpu_arch
+                        .split(';')
+                        .next()
+                        .map(|a| {
+                            let raw = a.trim().strip_prefix("gfx").unwrap_or("1100");
+                            match raw.len() {
+                                4 => format!("{}.{}.{}", &raw[0..2], &raw[2..3], &raw[3..4]),
+                                3 => format!("{}.{}.{}", &raw[0..1], &raw[1..2], &raw[2..3]),
+                                _ => "11.0.0".to_string(),
+                            }
+                        })
+                        .unwrap_or_else(|| "11.0.0".to_string()),
+                ),
+            ],
             working_dir: Some(PathBuf::from(src_dir)),
         }
     }
@@ -347,10 +367,15 @@ mod tests {
         let cmd = installer.build_pip_install_command("/tmp/aiter");
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.contains(&"--no-cache-dir".to_string()));
-        assert!(cmd.args.contains(&"--no-build-isolation".to_string()));
-        assert!(cmd.args.contains(&"--no-deps".to_string()));
         assert!(cmd.args.contains(&".".to_string()));
         assert!(cmd.args.contains(&"--break-system-packages".to_string()));
+        // Must NOT use --no-build-isolation (build deps are needed)
+        assert!(!cmd.args.contains(&"--no-build-isolation".to_string()));
+        // Must set ROCm environment variables
+        assert!(cmd.env.iter().any(|(k, _)| k == "GPU_ARCH"));
+        assert!(cmd.env.iter().any(|(k, _)| k == "PYTORCH_ROCM_ARCH"));
+        assert!(cmd.env.iter().any(|(k, _)| k == "ROCM_PATH"));
+        assert!(cmd.env.iter().any(|(k, _)| k == "HSA_OVERRIDE_GFX_VERSION"));
     }
 
     #[test]
