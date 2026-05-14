@@ -361,7 +361,7 @@ impl App {
                     self.benchmark_tab_index -= 1;
                 }
                 KeyCode::Left => {}
-                KeyCode::Right if self.benchmark_tab_index < 7 => {
+                KeyCode::Right if self.benchmark_tab_index < 8 => {
                     self.benchmark_tab_index += 1;
                 }
                 KeyCode::Right => {}

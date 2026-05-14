@@ -283,6 +283,9 @@ pub fn run_deepspeed_benchmark() -> BenchmarkResult {
 pub fn run_megatron_benchmark() -> BenchmarkResult {
     run_python_benchmark("megatron")
 }
+pub fn run_onnx_benchmark() -> BenchmarkResult {
+    run_python_benchmark("onnx")
+}
 
 // ---------------------------------------------------------------------------
 // Embedded Python helper
@@ -1653,6 +1656,306 @@ def _megatron():
         }), [err]
 
 
+def _onnx():
+    import os
+    try:
+        import onnxruntime as ort
+    except Exception as exc:
+        err = f"onnxruntime not available: {exc}"
+        return True, _degraded_metrics("onnx", err, {
+            "ort_version": "unavailable",
+            "provider": "none",
+            "providers_available": [],
+            "model_load_ms": 0.0,
+            "session_create_ms": 0.0,
+            "inference_latency_p50_ms": 0.0,
+            "inference_latency_p95_ms": 0.0,
+            "inference_latency_p99_ms": 0.0,
+            "throughput_inf_per_sec": 0.0,
+            "input_shape": [],
+            "output_shape": [],
+            "graph_opt_level": "unavailable",
+            "inference_samples": [],
+        }), [err]
+
+    ort_version = ort.__version__
+    all_providers = ort.get_available_providers()
+    providers_available = list(all_providers)
+
+    if "MIGraphXExecutionProvider" in all_providers:
+        provider = "MIGraphXExecutionProvider"
+    elif "DmlExecutionProvider" in all_providers:
+        provider = "DmlExecutionProvider"
+    elif "ROCMExecutionProvider" in all_providers:
+        provider = "ROCMExecutionProvider"
+    elif "CUDAExecutionProvider" in all_providers:
+        provider = "CUDAExecutionProvider"
+    else:
+        provider = "CPUExecutionProvider"
+
+    try:
+        import numpy as np
+    except Exception:
+        err = "numpy not available for ONNX benchmark"
+        return True, _degraded_metrics("onnx", err, {
+            "ort_version": ort_version,
+            "provider": provider,
+            "providers_available": providers_available,
+            "model_load_ms": 0.0,
+            "session_create_ms": 0.0,
+            "inference_latency_p50_ms": 0.0,
+            "inference_latency_p95_ms": 0.0,
+            "inference_latency_p99_ms": 0.0,
+            "throughput_inf_per_sec": 0.0,
+            "input_shape": [],
+            "output_shape": [],
+            "graph_opt_level": "ORT_ENABLE_ALL",
+            "inference_samples": [],
+        }), [err]
+
+    try:
+        import onnx
+        from onnx import helper, TensorProto, numpy_helper
+    except Exception:
+        onnx = None
+
+    batch_size = 8
+    hidden = 512
+    input_shape = [batch_size, hidden]
+
+    def _build_test_model():
+        X = helper.make_tensor_value_info("input", TensorProto.FLOAT, input_shape)
+        Y = helper.make_tensor_value_info("output", TensorProto.FLOAT, input_shape)
+        W_init = numpy_helper.from_array(
+            np.random.randn(hidden, hidden).astype(np.float32) * 0.01, name="W"
+        )
+        B_init = numpy_helper.from_array(
+            np.zeros(hidden, dtype=np.float32), name="B"
+        )
+        matmul = helper.make_node("MatMul", ["input", "W"], ["matmul_out"])
+        add = helper.make_node("Add", ["matmul_out", "B"], ["add_out"])
+        relu = helper.make_node("Relu", ["add_out"], ["output"])
+        graph = helper.make_graph(
+            [matmul, add, relu], "bench_graph", [X], [Y], initializer=[W_init, B_init]
+        )
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+        model.ir_version = 8
+        onnx.checker.validate = False
+        return onnx._serialize(model)
+
+    def _build_quantized_model():
+        X = helper.make_tensor_value_info("input", TensorProto.FLOAT, input_shape)
+        Y = helper.make_tensor_value_info("output", TensorProto.FLOAT, input_shape)
+        W_init = numpy_helper.from_array(
+            np.random.randn(hidden, hidden).astype(np.float32) * 0.01, name="W"
+        )
+        B_init = numpy_helper.from_array(
+            np.zeros(hidden, dtype=np.float32), name="B"
+        )
+        dq = helper.make_node(
+            "DynamicQuantizeLinear", ["input"], ["input_quant", "input_scale", "input_zp"]
+        )
+        matmul_int = helper.make_node(
+            "MatMulInteger", ["input_quant", "W"], ["matmul_int_out"]
+        )
+        cast_out = helper.make_node(
+            "Cast", ["matmul_int_out"], ["matmul_fp_out"], to=TensorProto.FLOAT
+        )
+        add = helper.make_node("Add", ["matmul_fp_out", "B"], ["output"])
+        graph = helper.make_graph(
+            [dq, matmul_int, cast_out, add], "quant_bench_graph",
+            [X], [Y], initializer=[W_init, B_init]
+        )
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+        model.ir_version = 8
+        onnx.checker.validate = False
+        return onnx._serialize(model)
+
+    import tempfile
+    sess_opts = ort.SessionOptions()
+    sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_opts.log_severity_level = 3
+
+    results = {}
+    errors = []
+
+    # --- FP32 model benchmark ---
+    try:
+        if onnx is not None:
+            model_bytes = _build_test_model()
+        else:
+            model_bytes = None
+
+        if model_bytes is None:
+            raise RuntimeError("onnx package required to build test model")
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
+            f.write(model_bytes)
+            fp32_path = f.name
+
+        t0 = time.perf_counter()
+        session = ort.InferenceSession(fp32_path, sess_opts, providers=[provider])
+        session_create_ms = (time.perf_counter() - t0) * 1000.0
+
+        input_meta = session.get_inputs()[0]
+        output_meta = session.get_outputs()[0]
+        input_name = input_meta.name
+        actual_input_shape = input_meta.shape
+        output_shape = output_meta.shape
+
+        if isinstance(actual_input_shape[0], int):
+            bench_batch = actual_input_shape[0]
+        else:
+            bench_batch = batch_size
+        actual_input_shape_resolved = [bench_batch] + [
+            d if isinstance(d, int) else hidden for d in actual_input_shape[1:]
+        ]
+
+        feed = {input_name: np.random.randn(*actual_input_shape_resolved).astype(np.float32)}
+
+        for _ in range(3):
+            session.run(None, feed)
+
+        num_runs = 20
+        latencies = []
+        for _ in range(num_runs):
+            t_start = time.perf_counter()
+            session.run(None, feed)
+            latencies.append((time.perf_counter() - t_start) * 1000.0)
+
+        latencies.sort()
+        p50 = latencies[len(latencies) // 2]
+        p95 = latencies[int(len(latencies) * 0.95)]
+        p99 = latencies[int(len(latencies) * 0.99)]
+        avg_latency = sum(latencies) / len(latencies)
+        throughput = bench_batch / (avg_latency / 1000.0) if avg_latency > 0 else 0.0
+
+        mem_rss_mb = 0.0
+        try:
+            import resource
+            mem_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        except Exception:
+            pass
+
+        results.update({
+            "fp32_session_create_ms": round(session_create_ms, 2),
+            "fp32_inference_latency_p50_ms": round(p50, 3),
+            "fp32_inference_latency_p95_ms": round(p95, 3),
+            "fp32_inference_latency_p99_ms": round(p99, 3),
+            "fp32_avg_latency_ms": round(avg_latency, 3),
+            "fp32_throughput_inf_per_sec": round(throughput, 2),
+            "fp32_inference_samples": [round(l, 3) for l in latencies],
+            "input_shape": actual_input_shape_resolved,
+            "output_shape": list(output_shape) if output_shape else [],
+            "input_dtype": str(input_meta.type),
+            "output_dtype": str(output_meta.type),
+            "peak_rss_mb": round(mem_rss_mb, 1),
+            "num_warmup": 3,
+            "num_timed_runs": num_runs,
+        })
+
+        os.unlink(fp32_path)
+        del session
+    except Exception as exc:
+        results["fp32_error"] = str(exc)
+        errors.append(f"FP32 benchmark failed: {exc}")
+
+    # --- Quantized model benchmark ---
+    quantized_ok = False
+    try:
+        if onnx is not None:
+            q_model_bytes = _build_quantized_model()
+            if q_model_bytes is not None:
+                with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
+                    f.write(q_model_bytes)
+                    quant_path = f.name
+
+                t0 = time.perf_counter()
+                q_session = ort.InferenceSession(
+                    quant_path, sess_opts, providers=[provider]
+                )
+                q_create_ms = (time.perf_counter() - t0) * 1000.0
+
+                q_input = q_session.get_inputs()[0]
+                q_feed = {
+                    q_input.name: np.random.randn(
+                        *([batch_size] + [
+                            d if isinstance(d, int) else hidden
+                            for d in q_input.shape[1:]
+                        ])
+                    ).astype(np.float32)
+                }
+
+                for _ in range(3):
+                    q_session.run(None, q_feed)
+
+                q_latencies = []
+                for _ in range(20):
+                    t_start = time.perf_counter()
+                    q_session.run(None, q_feed)
+                    q_latencies.append((time.perf_counter() - t_start) * 1000.0)
+
+                q_latencies.sort()
+                q_p50 = q_latencies[len(q_latencies) // 2]
+                q_avg = sum(q_latencies) / len(q_latencies)
+                q_throughput = batch_size / (q_avg / 1000.0) if q_avg > 0 else 0.0
+
+                results.update({
+                    "quantized_session_create_ms": round(q_create_ms, 2),
+                    "quantized_inference_latency_p50_ms": round(q_p50, 3),
+                    "quantized_avg_latency_ms": round(q_avg, 3),
+                    "quantized_throughput_inf_per_sec": round(q_throughput, 2),
+                    "quantized_inference_samples": [round(l, 3) for l in q_latencies],
+                    "quantized_ops": ["DynamicQuantizeLinear", "MatMulInteger"],
+                })
+                quantized_ok = True
+                os.unlink(quant_path)
+                del q_session
+    except Exception as exc:
+        results["quantized_error"] = str(exc)
+        errors.append(f"Quantized benchmark failed: {exc}")
+
+    p50_val = results.get("fp32_inference_latency_p50_ms", 0.0)
+    p95_val = results.get("fp32_inference_latency_p95_ms", 0.0)
+    p99_val = results.get("fp32_inference_latency_p99_ms", 0.0)
+    tput_val = results.get("fp32_throughput_inf_per_sec", 0.0)
+
+    metrics = {
+        "ort_version": ort_version,
+        "provider": provider,
+        "providers_available": providers_available,
+        "graph_opt_level": "ORT_ENABLE_ALL",
+        "model_load_ms": results.get("fp32_session_create_ms", 0.0),
+        "session_create_ms": results.get("fp32_session_create_ms", 0.0),
+        "inference_latency_p50_ms": p50_val,
+        "inference_latency_p95_ms": p95_val,
+        "inference_latency_p99_ms": p99_val,
+        "throughput_inf_per_sec": tput_val,
+        "input_shape": results.get("input_shape", input_shape),
+        "output_shape": results.get("output_shape", []),
+        "input_dtype": results.get("input_dtype", "tensor(float)"),
+        "output_dtype": results.get("output_dtype", "tensor(float)"),
+        "peak_rss_mb": results.get("peak_rss_mb", 0.0),
+        "num_warmup": results.get("num_warmup", 0),
+        "num_timed_runs": results.get("num_timed_runs", 0),
+        "quantized_supported": quantized_ok,
+        "inference_samples": results.get("fp32_inference_samples", []),
+    }
+
+    for k in ("fp32_inference_samples", "fp32_session_create_ms", "fp32_inference_latency_p50_ms",
+              "fp32_inference_latency_p95_ms", "fp32_inference_latency_p99_ms",
+              "fp32_avg_latency_ms", "fp32_throughput_inf_per_sec",
+              "quantized_session_create_ms", "quantized_inference_latency_p50_ms",
+              "quantized_avg_latency_ms", "quantized_throughput_inf_per_sec",
+              "quantized_inference_samples", "quantized_ops",
+              "quantized_error", "fp32_error"):
+        if k in results:
+            metrics[k] = results[k]
+
+    success = True
+    return success, metrics, errors
+
+
 BENCHES = {
     "gpu-info": _gpu_info,
     "memory-bandwidth": _memory_bandwidth,
@@ -1663,6 +1966,7 @@ BENCHES = {
     "vllm": _vllm,
     "deepspeed": _deepspeed,
     "megatron": _megatron,
+    "onnx": _onnx,
 }
 
 

@@ -354,7 +354,7 @@ pub fn component_verification_commands(
             "onnx",
             &["onnxruntime"],
             python_candidates,
-            "import onnxruntime as ort; import pathlib; import os; import sys; print('Version:', ort.__version__); base=pathlib.Path(ort.__file__).parent; libs=list(base.rglob('libonnxruntime_providers_rocm.so')); [os.environ.update({'ORT_ROCM_EP_PROVIDER_PATH': str(l)}) for l in libs[:1]]; providers=ort.get_available_providers(); print('Providers:', providers); sys.exit(0 if 'ROCMExecutionProvider' in providers else 1)",
+            "import onnxruntime as ort; import sys; print('Version:', ort.__version__); providers=ort.get_available_providers(); print('Providers:', providers); gpu=[p for p in providers if p in ('ROCMExecutionProvider','MIGraphXExecutionProvider','CUDAExecutionProvider')]; sys.exit(0 if gpu else 1)",
         )],
         "bitsandbytes" => vec![python_command(
             "BITSANDBYTES",

@@ -3654,107 +3654,102 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── onnx ──────────────────────────────────────────────────────
         "onnx" => {
             use crate::installers::components::onnxruntime::{
-                OnnxRuntimeConfig, OnnxRuntimeInstaller,
+                OnnxInstallMethod, OnnxRuntimeConfig, OnnxRuntimeInstaller,
             };
-            let inst = OnnxRuntimeInstaller::new(OnnxRuntimeConfig::default());
 
-            // Step 1: git clone (idempotent — pulls if already exists)
-            // ONNX Runtime's build_git_clone_command() does NOT include a target
-            // directory in args — it uses working_dir instead. Compute the actual
-            // clone target from the workdir + "onnxruntime" subdirectory.
-            let onnx_workdir = OnnxRuntimeConfig::default().workdir();
-            let onnx_target = onnx_workdir.join("onnxruntime");
-            let onnx_target_str = onnx_target.to_string_lossy().to_string();
-            git_clone_or_pull(
-                "https://github.com/microsoft/onnxruntime.git",
-                &onnx_target_str,
-                &["--recursive"],
-                sudo_pw,
+            let detected_rocm_version = detect_rocm_version();
+            let detected_gpu_arch = detect_gpu_arch();
+
+            // Build config with detected hardware info
+            let config = OnnxRuntimeConfig {
+                rocm_version: Some(detected_rocm_version.clone()),
+                rocm_release: Some({
+                    // Derive release from version: "7.2.0" -> "7.2.3"
+                    // Use the detected version's major.minor, default patch to .3
+                    let parts: Vec<&str> = detected_rocm_version.split('.').collect();
+                    if parts.len() >= 2 {
+                        format!("{}.{}.3", parts[0], parts[1])
+                    } else {
+                        "7.2.3".to_string()
+                    }
+                }),
+                gpu_arch: Some(detected_gpu_arch),
+                install_method: OnnxInstallMethod::MigraphxWheel,
+                ..Default::default()
+            };
+            let inst = OnnxRuntimeInstaller::new(config);
+
+            // Step 1: Uninstall ALL existing onnxruntime variants
+            let cmd = inst.build_uninstall_command();
+            let _ = execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program, &cmd.args, &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
+                None,
                 sender,
                 &component.name,
-            )?;
-
-            // Step 2: git fetch tags (ensure remote tags are available for checkout)
-            let fetch_tags_cmd = NativeCommand::from_shell_cmd_with_dir(
-                "git",
-                &["fetch".to_string(), "origin".to_string(), "--tags".to_string()],
-                &[],
-                Some(onnx_target.clone()),
             );
-            let _ = execute_native_command(&fetch_tags_cmd, sudo_pw, sender, &component.name);
 
-            // Step 3: git checkout
-            let cmd = inst.build_git_checkout_command();
+            // Step 2: Install onnxruntime-migraphx from AMD repo (default)
+            let _ = sender.send(InstallerEvent::Log(
+                format!("[native] {} — installing onnxruntime-migraphx from AMD repo (ROCm {})",
+                    component.name, detected_rocm_version),
+                false,
+            ));
+            let cmd = inst.build_migraphx_install_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd_with_dir(
                     &cmd.program, &cmd.args, &cmd.env,
                     cmd.working_dir.clone(),
                 ),
-                sudo_pw,
+                None,
                 sender,
                 &component.name,
             )?;
 
-            // Step 4: git submodule
-            let cmd = inst.build_git_submodule_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &cmd.program, &cmd.args, &cmd.env,
-                    cmd.working_dir.clone(),
-                ),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
-
-            // Step 5: build (cmake)
-            // Force reinstall: clean build directory for a fresh rebuild
-            if is_force_reinstall() {
-                let onnx_wd = OnnxRuntimeConfig::default().workdir();
-                let build_dir = onnx_wd.join("build");
-                if build_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&build_dir);
-                    let _ = sender.send(InstallerEvent::Log(
-                        format!("[native] {} — force reinstall: cleaned build directory", component.name),
-                        false,
-                    ));
+            // Step 3: Run model optimizer on known .onnx model paths
+            let model_dirs = [
+                dirs::home_dir().map(|h| h.join(".mlstack/models")),
+                dirs::home_dir().map(|h| h.join(".local/share/models")),
+            ];
+            for model_dir in model_dirs.iter().flatten() {
+                if model_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(model_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().map(|e| e == "onnx").unwrap_or(false) {
+                                let model_path = path.to_string_lossy().to_string();
+                                // Skip already-optimized models
+                                if model_path.ends_with(".onnx.optimized") {
+                                    continue;
+                                }
+                                let _ = sender.send(InstallerEvent::Log(
+                                    format!("[native] {} — optimizing model: {}", component.name, model_path),
+                                    false,
+                                ));
+                                let cmd = inst.build_model_optimizer_command(&model_path);
+                                let _ = execute_native_command(
+                                    &NativeCommand::from_shell_cmd_with_dir(
+                                        &cmd.program, &cmd.args, &cmd.env,
+                                        cmd.working_dir.clone(),
+                                    ),
+                                    None,
+                                    sender,
+                                    &component.name,
+                                );
+                            }
+                        }
+                    }
                 }
             }
-            let rocm_env = crate::installers::common::RocmEnv::detect();
-            let cmd = inst.build_build_command(&rocm_env);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &cmd.program, &cmd.args, &cmd.env,
-                    cmd.working_dir.clone(),
-                ),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
 
-            // Step 5: uninstall old version
-            let cmd = inst.build_uninstall_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &cmd.program, &cmd.args, &cmd.env,
-                    cmd.working_dir.clone(),
-                ),
-                None,
-                sender,
-                &component.name,
-            )?;
-
-            // Step 6: pip install wheel
-            let cmd = inst.build_wheel_install_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &cmd.program, &cmd.args, &cmd.env,
-                    cmd.working_dir.clone(),
-                ),
-                None,
-                sender,
-                &component.name,
-            )?;
+            let _ = sender.send(InstallerEvent::Log(
+                format!("[native] {} — ONNX Runtime (MIGraphX) installed successfully. \
+                    Source build available via OnnxInstallMethod::SourceBuild for ROCMExecutionProvider.",
+                    component.name),
+                false,
+            ));
         }
 
         // ── bitsandbytes ──────────────────────────────────────────────

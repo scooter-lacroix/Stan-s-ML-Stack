@@ -58,6 +58,23 @@ impl HipArchs {
     }
 }
 
+/// ONNX Runtime install method.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnnxInstallMethod {
+    /// Install onnxruntime-migraphx from AMD manylinux repo (default).
+    MigraphxWheel,
+    /// Build from source with ROCm + MIGraphX EP (includes ROCMExecutionProvider).
+    SourceBuild,
+    /// Install prebuilt onnxruntime-rocm from PyPI (legacy, may be ABI-incompatible).
+    PrebuiltWheel,
+}
+
+impl Default for OnnxInstallMethod {
+    fn default() -> Self {
+        OnnxInstallMethod::MigraphxWheel
+    }
+}
+
 /// Configuration for the ONNX Runtime installer.
 #[derive(Debug, Clone)]
 pub struct OnnxRuntimeConfig {
@@ -67,6 +84,8 @@ pub struct OnnxRuntimeConfig {
     pub dry_run: bool,
     /// ROCm version string (e.g., "7.2.0").
     pub rocm_version: Option<String>,
+    /// ROCm release for AMD repo URL (e.g., "7.2.3").
+    pub rocm_release: Option<String>,
     /// GPU architecture string (e.g., "gfx1100").
     pub gpu_arch: Option<String>,
     /// Working directory for the build (defaults to /tmp/onnxruntime-rocm).
@@ -75,6 +94,8 @@ pub struct OnnxRuntimeConfig {
     pub eigen_path: Option<PathBuf>,
     /// Whether to use preinstalled Eigen.
     pub use_preinstalled_eigen: bool,
+    /// Install method (default: MIGraphX wheel from AMD repo).
+    pub install_method: OnnxInstallMethod,
 }
 
 impl Default for OnnxRuntimeConfig {
@@ -83,10 +104,12 @@ impl Default for OnnxRuntimeConfig {
             python_bin: "python3".to_string(),
             dry_run: false,
             rocm_version: None,
+            rocm_release: None,
             gpu_arch: None,
             workdir: None,
             eigen_path: None,
             use_preinstalled_eigen: false,
+            install_method: OnnxInstallMethod::default(),
         }
     }
 }
@@ -107,6 +130,11 @@ impl OnnxRuntimeConfig {
     /// Get the effective ROCm version string.
     pub fn rocm_version(&self) -> &str {
         self.rocm_version.as_deref().unwrap_or("7.2")
+    }
+
+    /// Get the effective ROCm release string (for AMD repo URL).
+    pub fn rocm_release(&self) -> &str {
+        self.rocm_release.as_deref().unwrap_or("7.2.3")
     }
 }
 
@@ -184,6 +212,92 @@ impl OnnxRuntimeInstaller {
                 "--prefer-binary".to_string(),
                 "onnxruntime-rocm".to_string(),
             ],
+            env: vec![],
+            working_dir: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MIGraphX wheel install from AMD repo
+    // -----------------------------------------------------------------------
+
+    /// Construct the AMD manylinux repo URL for onnxruntime-migraphx.
+    ///
+    /// Pattern: `https://repo.radeon.com/rocm/manylinux/rocm-rel-{release}/`
+    ///
+    /// The URL points to a specific wheel matching the Python version and ROCm release.
+    /// ROCm 7.2.3 ships onnxruntime_migraphx 1.23.2.
+    pub fn build_migraphx_wheel_url(&self) -> String {
+        let release = self.config.rocm_release();
+        let python_bin = &self.config.python_bin;
+        // Extract python version from binary (e.g., "python3.12" -> "312")
+        let py_ver = if python_bin.contains('.') {
+            let parts: Vec<&str> = python_bin.split('.').collect();
+            if parts.len() >= 2 {
+                format!("{}{}", parts[0], parts[1])
+            } else {
+                "312".to_string()
+            }
+        } else {
+            "312".to_string()
+        };
+
+        format!(
+            "https://repo.radeon.com/rocm/manylinux/rocm-rel-{release}/\
+             onnxruntime_migraphx-1.23.2-cp{py_ver}-cp{py_ver}-\
+             manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+        )
+    }
+
+    /// Construct the pip install command for onnxruntime-migraphx from AMD repo.
+    ///
+    /// This is the default install method — the AMD-provided wheel includes the
+    /// MIGraphX execution provider and is built against the matching ROCm version,
+    /// avoiding ABI incompatibility issues with PyPI's onnxruntime-rocm.
+    pub fn build_migraphx_install_command(&self) -> ShellCommand {
+        let url = self.build_migraphx_wheel_url();
+        ShellCommand {
+            program: self.config.python_bin.clone(),
+            args: vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "--upgrade".to_string(),
+                url,
+            ],
+            env: vec![],
+            working_dir: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Model optimizer (ORT graph optimization for quantized models)
+    // -----------------------------------------------------------------------
+
+    /// Construct the Python command to run ORT graph optimization on an ONNX model.
+    ///
+    /// Applies `ORT_ENABLE_ALL` optimization level which fuses quantized ops
+    /// (DynamicQuantizeLinear, MatMulInteger, etc.) into custom ops that bypass
+    /// MIGraphX's broken kernels. The optimized model is saved alongside the original.
+    pub fn build_model_optimizer_command(&self, model_path: &str) -> ShellCommand {
+        let optimized_path = if model_path.ends_with(".onnx") {
+            format!("{}.optimized", model_path)
+        } else {
+            format!("{}.optimized", model_path)
+        };
+
+        let script = format!(
+            "import onnxruntime as ort; \
+             opts = ort.SessionOptions(); \
+             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL; \
+             opts.optimized_model_filepath = '{optimized_path}'; \
+             ort.InferenceSession('{model_path}', opts, providers=['CPUExecutionProvider']); \
+             print('Optimized: {model_path} -> {optimized_path}')"
+        );
+
+        ShellCommand {
+            program: self.config.python_bin.clone(),
+            args: vec!["-c".to_string(), script],
             env: vec![],
             working_dir: None,
         }
@@ -364,7 +478,7 @@ impl OnnxRuntimeInstaller {
     // Pip install from build output (VAL-INSTALL-011)
     // -----------------------------------------------------------------------
 
-    /// Construct the pip uninstall command to remove existing onnxruntime.
+    /// Construct the pip uninstall command to remove all onnxruntime variants.
     pub fn build_uninstall_command(&self) -> ShellCommand {
         ShellCommand {
             program: self.config.python_bin.clone(),
@@ -376,6 +490,7 @@ impl OnnxRuntimeInstaller {
                 "onnxruntime".to_string(),
                 "onnxruntime-rocm".to_string(),
                 "onnxruntime-gpu".to_string(),
+                "onnxruntime-migraphx".to_string(),
             ],
             env: vec![],
             working_dir: None,
@@ -668,6 +783,7 @@ mod tests {
         assert!(cmd.args.contains(&"onnxruntime".to_string()));
         assert!(cmd.args.contains(&"onnxruntime-rocm".to_string()));
         assert!(cmd.args.contains(&"onnxruntime-gpu".to_string()));
+        assert!(cmd.args.contains(&"onnxruntime-migraphx".to_string()));
     }
 
     // --- Prebuilt wheel install ---
@@ -786,9 +902,65 @@ mod tests {
         assert_eq!(config.python_bin, "python3");
         assert!(!config.dry_run);
         assert!(config.rocm_version.is_none());
+        assert!(config.rocm_release.is_none());
         assert!(config.gpu_arch.is_none());
         assert!(config.workdir.is_none());
         assert!(!config.use_preinstalled_eigen);
         assert!(config.eigen_path.is_none());
+        assert_eq!(config.install_method, OnnxInstallMethod::MigraphxWheel);
+    }
+
+    // --- MIGraphX wheel install ---
+
+    #[test]
+    fn test_migraphx_wheel_url_default() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let url = installer.build_migraphx_wheel_url();
+        assert!(url.contains("repo.radeon.com/rocm/manylinux/rocm-rel-7.2.3/"));
+        assert!(url.contains("onnxruntime_migraphx-1.23.2"));
+        assert!(url.contains("manylinux_2_27_x86_64"));
+    }
+
+    #[test]
+    fn test_migraphx_wheel_url_custom_release() {
+        let installer = OnnxRuntimeInstaller::new(OnnxRuntimeConfig {
+            rocm_release: Some("7.1.0".to_string()),
+            ..Default::default()
+        });
+        let url = installer.build_migraphx_wheel_url();
+        assert!(url.contains("rocm-rel-7.1.0/"));
+    }
+
+    #[test]
+    fn test_migraphx_install_command() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let cmd = installer.build_migraphx_install_command();
+        assert_eq!(cmd.program, "python3");
+        assert!(cmd.args.contains(&"-m".to_string()));
+        assert!(cmd.args.contains(&"pip".to_string()));
+        assert!(cmd.args.contains(&"install".to_string()));
+        assert!(cmd.args.iter().any(|a| a.contains("repo.radeon.com")));
+        assert!(cmd.args.iter().any(|a| a.contains("onnxruntime_migraphx")));
+    }
+
+    // --- Model optimizer ---
+
+    #[test]
+    fn test_model_optimizer_command() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let cmd = installer.build_model_optimizer_command("/path/to/model.onnx");
+        assert_eq!(cmd.program, "python3");
+        assert!(cmd.args.contains(&"-c".to_string()));
+        let script = &cmd.args[1];
+        assert!(script.contains("ORT_ENABLE_ALL"));
+        assert!(script.contains("/path/to/model.onnx"));
+        assert!(script.contains("/path/to/model.onnx.optimized"));
+    }
+
+    // --- OnnxInstallMethod ---
+
+    #[test]
+    fn test_install_method_default() {
+        assert_eq!(OnnxInstallMethod::default(), OnnxInstallMethod::MigraphxWheel);
     }
 }

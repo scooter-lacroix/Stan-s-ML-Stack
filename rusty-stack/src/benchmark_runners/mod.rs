@@ -42,6 +42,7 @@ pub fn available_benchmarks() -> Vec<&'static str> {
         "vllm",
         "deepspeed",
         "megatron",
+        "onnx",
         "all-pre",
         "all",
     ]
@@ -80,6 +81,7 @@ pub fn run_benchmark(name: &str) -> Result<BenchmarkOutput, String> {
         "vllm" => Ok(convert_result(name, benchmarks::run_vllm_benchmark())),
         "deepspeed" => Ok(convert_result(name, benchmarks::run_deepspeed_benchmark())),
         "megatron" => Ok(convert_result(name, benchmarks::run_megatron_benchmark())),
+        "onnx" => Ok(convert_result(name, benchmarks::run_onnx_benchmark())),
         "all-pre" => Ok(run_all_pre()),
         "all" => Ok(run_all()),
         _ => Err(format!("Unknown benchmark: {}", name)),
@@ -202,6 +204,13 @@ fn run_all() -> BenchmarkOutput {
         "megatron",
         &mut output,
         benchmarks::run_megatron_benchmark(),
+        false,
+    );
+    collect_benchmark(
+        &mut combined,
+        "onnx",
+        &mut output,
+        benchmarks::run_onnx_benchmark(),
         false,
     );
 
@@ -343,6 +352,7 @@ mod tests {
         assert!(names.contains(&"vllm"));
         assert!(names.contains(&"deepspeed"));
         assert!(names.contains(&"megatron"));
+        assert!(names.contains(&"onnx"));
         assert!(names.contains(&"all-pre"));
         assert!(names.contains(&"all"));
     }

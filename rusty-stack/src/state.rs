@@ -362,8 +362,8 @@ pub fn default_components() -> Vec<Component> {
             selected: false,
             installed: false,
             progress: 0.0,
-            estimate: "45-90 min".into(),
-            needs_sudo: true,
+            estimate: "2-5 min".into(),
+            needs_sudo: false,
         },
         Component {
             id: "bitsandbytes".into(),

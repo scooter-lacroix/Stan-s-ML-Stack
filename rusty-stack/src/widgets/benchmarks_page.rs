@@ -32,6 +32,7 @@ pub struct BenchmarkResults {
     pub vllm: Option<VllmData>,
     pub deepspeed: Option<DeepspeedData>,
     pub megatron: Option<MegatronData>,
+    pub onnx: Option<OnnxData>,
     pub errors: Vec<String>,
     pub baseline: Option<Box<BenchmarkResults>>,
 }
@@ -51,6 +52,22 @@ pub struct MegatronData {
     pub avg_latency_ms: f64,
     pub backend: String,
     pub samples: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OnnxData {
+    pub ort_version: String,
+    pub provider: String,
+    pub providers_available: Vec<String>,
+    pub graph_opt_level: String,
+    pub session_create_ms: f64,
+    pub inference_latency_p50_ms: f64,
+    pub inference_latency_p95_ms: f64,
+    pub inference_latency_p99_ms: f64,
+    pub throughput_inf_per_sec: f64,
+    pub peak_rss_mb: f64,
+    pub quantized_supported: bool,
+    pub inference_samples: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +150,7 @@ pub fn load_benchmark_results() -> BenchmarkResults {
         "vllm_benchmarks",
         "deepspeed_benchmarks",
         "megatron_benchmarks",
+        "onnx_benchmarks",
         "full_benchmarks",
     ] {
         if let Some(log_path) = find_latest_log_in_dirs(&log_dirs, pattern) {
@@ -204,6 +222,7 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
         "vllm_benchmarks",
         "deepspeed_benchmarks",
         "megatron_benchmarks",
+        "onnx_benchmarks",
         "full_benchmarks",
     ];
     let mut log_files = collect_matching_logs(log_dirs, &baseline_patterns);
@@ -232,6 +251,7 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
                     vllm: None,
                     deepspeed: None,
                     megatron: None,
+                    onnx: None,
                     errors: Vec::new(),
                     baseline: None,
                 };
@@ -244,6 +264,7 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
                     || baseline_results.vllm.is_some()
                     || baseline_results.deepspeed.is_some()
                     || baseline_results.megatron.is_some()
+                    || baseline_results.onnx.is_some()
                 {
                     return Some(Box::new(baseline_results));
                 }
@@ -361,6 +382,7 @@ fn apply_metrics(val: &serde_json::Value, results: &mut BenchmarkResults, includ
             || obj.contains_key("throughput_tokens_per_sec")
             || obj.contains_key("throughput_samples_per_sec")
             || obj.contains_key("megatron_throughput_samples_per_sec")
+            || obj.contains_key("ort_version")
         {
             apply_metrics_internal(val, results, include_errors);
         } else {
@@ -681,6 +703,67 @@ fn apply_metrics_internal(
                     .unwrap_or_default(),
             });
         }
+
+        if obj.contains_key("ort_version") {
+            results.onnx = Some(OnnxData {
+                ort_version: obj
+                    .get("ort_version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                provider: obj
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("CPU")
+                    .to_string(),
+                providers_available: obj
+                    .get("providers_available")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                graph_opt_level: obj
+                    .get("graph_opt_level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ORI_DISABLE_ALL")
+                    .to_string(),
+                session_create_ms: obj
+                    .get("session_create_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                inference_latency_p50_ms: obj
+                    .get("inference_latency_p50_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                inference_latency_p95_ms: obj
+                    .get("inference_latency_p95_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                inference_latency_p99_ms: obj
+                    .get("inference_latency_p99_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                throughput_inf_per_sec: obj
+                    .get("throughput_inf_per_sec")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                peak_rss_mb: obj
+                    .get("peak_rss_mb")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                quantized_supported: obj
+                    .get("quantized_supported")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                inference_samples: obj
+                    .get("inference_samples")
+                    .map(to_f64_vec)
+                    .unwrap_or_default(),
+            });
+        }
     }
 }
 
@@ -699,6 +782,7 @@ impl BenchmarkResults {
             vllm: None,
             deepspeed: None,
             megatron: None,
+            onnx: None,
             errors: Vec::new(),
             baseline: None,
         }
@@ -721,6 +805,7 @@ pub fn render_benchmark_page(
         Line::from("vLLM"),
         Line::from("DeepSpeed"),
         Line::from("Megatron"),
+        Line::from("ONNX"),
     ])
     .select(tab_index)
     .style(Style::default().fg(Color::Cyan))
@@ -746,6 +831,7 @@ pub fn render_benchmark_page(
         5 => render_vllm_tab(frame, chunks[1], results),
         6 => render_deepspeed_tab(frame, chunks[1], results),
         7 => render_megatron_tab(frame, chunks[1], results),
+        8 => render_onnx_tab(frame, chunks[1], results),
         _ => render_gpu_tab(frame, chunks[1], results),
     }
 }
@@ -846,6 +932,15 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                 content.push_str(&format!(
                     "  • Megatron Throughput: {:.1} samples/s\n",
                     meg.throughput_samples_per_sec
+                ));
+                has_perf = true;
+            }
+        }
+        if let Some(onnx) = &results.onnx {
+            if onnx.throughput_inf_per_sec > 0.0 {
+                content.push_str(&format!(
+                    "  • ONNX Runtime: {:.1} inf/s ({}, {})\n",
+                    onnx.throughput_inf_per_sec, onnx.provider, onnx.ort_version
                 ));
                 has_perf = true;
             }
@@ -1481,6 +1576,117 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
     }
 }
 
+fn render_onnx_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
+    if let Some(onnx) = &results.onnx {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(6), Constraint::Min(7)])
+            .split(area);
+
+        let mut summary = format!(
+            "ORT {} | Provider: {} | Opt: {}\nThroughput: {:.1} inf/s | Latency p50: {:.2} ms p95: {:.2} ms p99: {:.2} ms",
+            onnx.ort_version,
+            onnx.provider,
+            onnx.graph_opt_level,
+            onnx.throughput_inf_per_sec,
+            onnx.inference_latency_p50_ms,
+            onnx.inference_latency_p95_ms,
+            onnx.inference_latency_p99_ms,
+        );
+
+        if onnx.quantized_supported {
+            summary.push_str(" | Quantized: supported");
+        }
+
+        if onnx.peak_rss_mb > 0.0 {
+            summary.push_str(&format!(" | Peak RSS: {:.0} MB", onnx.peak_rss_mb));
+        }
+
+        if let Some(baseline) = &results.baseline {
+            if let Some(b_onnx) = &baseline.onnx {
+                if b_onnx.throughput_inf_per_sec > 0.0 {
+                    let diff = ((onnx.throughput_inf_per_sec - b_onnx.throughput_inf_per_sec)
+                        / b_onnx.throughput_inf_per_sec)
+                        * 100.0;
+                    summary.push_str(&format!(
+                        "\nBaseline: {:.1} inf/s ({:+.1}%) | Session create: {:.1} ms",
+                        b_onnx.throughput_inf_per_sec,
+                        diff,
+                        onnx.session_create_ms,
+                    ));
+                }
+            }
+        }
+
+        if !onnx.providers_available.is_empty() {
+            summary.push_str(&format!(
+                "\nAvailable providers: {}",
+                onnx.providers_available.join(", ")
+            ));
+        }
+
+        frame.render_widget(
+            Paragraph::new(summary).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("ONNX Runtime Summary"),
+            ),
+            chunks[0],
+        );
+
+        let series = prepare_data(&onnx.inference_samples);
+        let mut datasets = Vec::new();
+        if !series.is_empty() {
+            datasets.push(series_dataset("ONNX Inference", &series, Color::LightGreen));
+        }
+        let (y0, y1) = y_bounds(&onnx.inference_samples);
+        let x_bounds = [0.0, (onnx.inference_samples.len().max(1) - 1) as f64];
+
+        frame.render_widget(
+            Chart::new(datasets)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("ONNX Inference Latency per Trial"),
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Benchmark Trial")
+                        .style(Style::default().fg(Color::Gray))
+                        .bounds(x_bounds)
+                        .labels(vec![
+                            Line::from("T1"),
+                            Line::from(format!("T{}", onnx.inference_samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", onnx.inference_samples.len())),
+                        ]),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title("ms")
+                        .style(Style::default().fg(Color::Gray))
+                        .bounds([y0, y1])
+                        .labels(vec![
+                            Line::from(format!("{:.2}", y0)),
+                            Line::from(format!("{:.2}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.2}", y1)),
+                        ]),
+                ),
+            chunks[1],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("No ONNX Runtime data available\n\nRun ONNX Performance benchmark")
+                .alignment(Alignment::Left)
+                .block(
+                    Block::default()
+                        .title("ONNX Runtime Performance")
+                        .borders(Borders::ALL),
+                ),
+            area,
+        );
+    }
+}
+
 fn series_dataset<'a>(name: &'a str, data: &'a [(f64, f64)], color: Color) -> Dataset<'a> {
     Dataset::default()
         .name(name)
@@ -1550,7 +1756,8 @@ pub fn export_benchmark_report_html(
             "flash_optimized": results.flash_attention.as_ref().map(|f| f.flash_samples.clone()).unwrap_or_default(),
             "vllm": results.vllm.as_ref().map(|v| v.throughput_samples.clone()).unwrap_or_default(),
             "deepspeed": results.deepspeed.as_ref().map(|d| d.samples.clone()).unwrap_or_default(),
-            "megatron": results.megatron.as_ref().map(|m| m.samples.clone()).unwrap_or_default()
+            "megatron": results.megatron.as_ref().map(|m| m.samples.clone()).unwrap_or_default(),
+            "onnx": results.onnx.as_ref().map(|o| o.inference_samples.clone()).unwrap_or_default()
         },
         "key_metrics": {
             "memory_hbm_peak": results.memory_bandwidth.as_ref().map(|m| m.hbm_peak_gb_s).unwrap_or(0.0),
@@ -1559,7 +1766,11 @@ pub fn export_benchmark_report_html(
             "flash_speedup": results.flash_attention.as_ref().map(|f| f.speedup).unwrap_or(0.0),
             "vllm_tps": results.vllm.as_ref().map(|v| v.throughput_tokens_per_sec).unwrap_or(0.0),
             "deepspeed_sps": results.deepspeed.as_ref().map(|d| d.throughput_samples_per_sec).unwrap_or(0.0),
-            "megatron_sps": results.megatron.as_ref().map(|m| m.throughput_samples_per_sec).unwrap_or(0.0)
+            "megatron_sps": results.megatron.as_ref().map(|m| m.throughput_samples_per_sec).unwrap_or(0.0),
+            "onnx_inf_s": results.onnx.as_ref().map(|o| o.throughput_inf_per_sec).unwrap_or(0.0),
+            "onnx_p50_ms": results.onnx.as_ref().map(|o| o.inference_latency_p50_ms).unwrap_or(0.0),
+            "onnx_provider": results.onnx.as_ref().map(|o| o.provider.clone()).unwrap_or_default(),
+            "onnx_ort_version": results.onnx.as_ref().map(|o| o.ort_version.clone()).unwrap_or_default()
         }
     });
     let report_json = serde_json::to_string_pretty(&report_data)
@@ -1779,6 +1990,7 @@ pub fn export_benchmark_report_html(
         <div class="plot"><h3>vLLM Throughput</h3><canvas id="chartVllm"></canvas></div>
         <div class="plot"><h3>DeepSpeed Throughput</h3><canvas id="chartDeepspeed"></canvas></div>
         <div class="plot"><h3>Megatron Throughput</h3><canvas id="chartMegatron"></canvas></div>
+        <div class="plot"><h3>ONNX Inference Latency</h3><canvas id="chartOnnx"></canvas></div>
       </div>
     </div>
 
@@ -1799,7 +2011,8 @@ pub fn export_benchmark_report_html(
       ["Flash Speedup (x)", reportData.key_metrics.flash_speedup],
       ["vLLM tok/s", reportData.key_metrics.vllm_tps],
       ["DeepSpeed samp/s", reportData.key_metrics.deepspeed_sps],
-      ["Megatron samp/s", reportData.key_metrics.megatron_sps]
+      ["Megatron samp/s", reportData.key_metrics.megatron_sps],
+      ["ONNX inf/s", reportData.key_metrics.onnx_inf_s]
     ];
     const metricCards = document.getElementById("metricCards");
     cards.forEach((entry, idx) => {{
@@ -1973,6 +2186,7 @@ pub fn export_benchmark_report_html(
     drawMultiLine("chartVllm", [{{name: "vLLM", color: "#74a7ff", values: reportData.charts.vllm}}]);
     drawMultiLine("chartDeepspeed", [{{name: "DeepSpeed", color: "#ffd166", values: reportData.charts.deepspeed}}]);
     drawMultiLine("chartMegatron", [{{name: "Megatron", color: "#ff8fab", values: reportData.charts.megatron}}]);
+    drawMultiLine("chartOnnx", [{{name: "ONNX Inference", color: "#90ee90", values: reportData.charts.onnx}}]);
   </script>
 </body>
 </html>"###
@@ -2069,6 +2283,14 @@ fn build_summary_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
             "detail": format!("backend {}, latency {:.2} ms", m.backend, m.avg_latency_ms)
         }));
     }
+    if let Some(o) = &results.onnx {
+        rows.push(serde_json::json!({
+            "component": "ONNX Runtime",
+            "status": if o.throughput_inf_per_sec > 0.0 { "ok" } else { "degraded" },
+            "metric": format!("{:.2} inf/s", o.throughput_inf_per_sec),
+            "detail": format!("{} v{}, provider {}, latency p50 {:.2} ms p95 {:.2} ms p99 {:.2} ms", o.ort_version, "", o.provider, o.inference_latency_p50_ms, o.inference_latency_p95_ms, o.inference_latency_p99_ms)
+        }));
+    }
 
     rows
 }
@@ -2108,6 +2330,14 @@ fn build_metric_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
         rows.push(serde_json::json!({"component":"Megatron","metric":"Throughput","value":m.throughput_samples_per_sec,"unit":"samples/s"}));
         rows.push(serde_json::json!({"component":"Megatron","metric":"Latency","value":m.avg_latency_ms,"unit":"ms"}));
     }
+    if let Some(o) = &results.onnx {
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Throughput","value":o.throughput_inf_per_sec,"unit":"inf/s"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Latency p50","value":o.inference_latency_p50_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Latency p95","value":o.inference_latency_p95_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Latency p99","value":o.inference_latency_p99_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Session Create","value":o.session_create_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Peak RSS","value":o.peak_rss_mb,"unit":"MB"}));
+    }
 
     rows
 }
@@ -2140,6 +2370,9 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     }
     if let Some(m) = &results.megatron {
         rows.push(serde_json::json!({"benchmark":"Megatron","series":"Throughput samples/s","samples":m.samples}));
+    }
+    if let Some(o) = &results.onnx {
+        rows.push(serde_json::json!({"benchmark":"ONNX","series":"Inference latency ms","samples":o.inference_samples}));
     }
 
     rows
