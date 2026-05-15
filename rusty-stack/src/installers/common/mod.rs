@@ -23,6 +23,7 @@ pub mod package_manager;
 pub mod package_mappings;
 pub mod rocm_env;
 pub mod sealed_token;
+pub mod telemetry;
 pub mod ui_helper;
 pub mod utils;
 
@@ -42,6 +43,7 @@ pub use package_manager::{DryRunResult, PackageManagerFacade, PackageOperation};
 pub use package_mappings::map_package_name;
 pub use rocm_env::RocmEnv;
 pub use sealed_token::SealedToken;
+pub use telemetry::{submit_build_report, BuildReport, BuildReportStatus};
 pub use ui_helper::{is_system_path, UiArgError, UiArgs};
 pub use utils::{
     command_exists, fix_pip_cache_ownership, get_colors, Colors, PipCacheFixResult,

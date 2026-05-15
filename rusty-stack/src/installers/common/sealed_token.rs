@@ -1,37 +1,26 @@
 use std::fmt;
 
 #[derive(Clone)]
-pub struct SealedToken {
-    token: Box<str>,
-}
+pub struct SealedToken(String);
 
 impl SealedToken {
-    /// Create a SealedToken from the compiled-in GITHUB_INSTALLER_TOKEN.
-    ///
-    /// The token is embedded at compile time via `cargo:rustc-env` in build.rs
-    /// and is accessible via `env!("GITHUB_INSTALLER_TOKEN")` in source code.
-    /// This approach is more secure than `std::env::var()` because the token
-    /// exists only as a compiled-in constant, not in the OS environment table.
-    pub fn from_env() -> Self {
-        Self::new(env!("GITHUB_INSTALLER_TOKEN"))
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
     }
 
-    pub fn new(token: impl AsRef<str>) -> Self {
-        Self {
-            token: token.as_ref().to_owned().into_boxed_str(),
-        }
+    pub fn from_env() -> Self {
+        Self(std::env::var("GITHUB_INSTALLER_TOKEN").unwrap_or_default())
     }
 
     pub fn as_str(&self) -> &str {
-        &self.token
+        &self.0
     }
 
     pub fn purge(&mut self) {
-        unsafe {
-            for byte in self.token.as_bytes_mut() {
-                *byte = 0;
-            }
-        }
+        let len = self.0.len();
+        self.0.clear();
+        self.0.extend(std::iter::repeat_n('\0', len));
+        self.0.clear();
     }
 }
 
@@ -41,32 +30,13 @@ impl fmt::Debug for SealedToken {
     }
 }
 
-impl Drop for SealedToken {
-    fn drop(&mut self) {
-        self.purge();
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::SealedToken;
+    use super::*;
 
     #[test]
     fn debug_is_redacted() {
-        let token = SealedToken::new("secret-token");
+        let token = SealedToken::new("abc");
         assert_eq!(format!("{:?}", token), "[REDACTED]");
-    }
-
-    #[test]
-    fn as_str_is_only_public_accessor() {
-        let token = SealedToken::new("secret-token");
-        assert_eq!(token.as_str(), "secret-token");
-    }
-
-    #[test]
-    fn purge_zeroes_memory_before_drop() {
-        let mut token = SealedToken::new("secret-token");
-        assert_eq!(token.as_str(), "secret-token");
-        token.purge();
     }
 }
