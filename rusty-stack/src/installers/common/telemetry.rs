@@ -1,7 +1,6 @@
 use super::{log_warn, SealedToken};
 use crate::state::GPUInfo;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum BuildReportStatus {
@@ -78,7 +77,6 @@ pub fn submit_build_report(report: BuildReport) {
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-Agent", "rusty-stack")
-        .timeout(Duration::from_secs(30))
         .send_json(payload);
 
     if let Err(err) = response {
