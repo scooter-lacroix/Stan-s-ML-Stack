@@ -477,7 +477,7 @@ fn get_version_python_single(info: &ComponentInfo) -> String {
     let interpreters = super::environment::python_interpreters();
     for python in &interpreters {
         let script = format!(
-            "import {import_name}; print({import_name}.__version__)",
+            "try:\n    import {import_name}\n    ver = getattr({import_name}, '__version__', None)\n    if ver is None:\n        import importlib.metadata as im\n        for _n in ['{import_name}', '{import_name}'.replace('-', '_'), 'amd_' + '{import_name}'.replace('-', '_'), 'amd-' + '{import_name}']:\n            try:\n                ver = im.version(_n)\n                break\n            except Exception:\n                pass\n    if ver is not None:\n        print(ver)\nexcept (ImportError, AttributeError):\n    pass",
             import_name = import_name
         );
         if let Ok(output) = Command::new(python).arg("-c").arg(&script).output() {
@@ -704,18 +704,7 @@ pub fn get_versions_batch_with_interpreters(
         ));
     }
     script.push_str(
-        "}\n\
-for comp_id in sys.argv[1:]:\n\
-    if comp_id not in mapping:\n\
-        print(f'{comp_id}=unknown')\n\
-        continue\n\
-    mod_name, ver_attr = mapping[comp_id]\n\
-    try:\n\
-        mod = __import__(mod_name)\n\
-        ver = getattr(mod, ver_attr, 'unknown')\n\
-        print(f'{comp_id}={ver}')\n\
-    except ImportError:\n\
-        print(f'{comp_id}=not installed')\n",
+        "}\nfor comp_id in sys.argv[1:]:\n    if comp_id not in mapping:\n        print(f'{comp_id}=unknown')\n        continue\n    mod_name, ver_attr = mapping[comp_id]\n    try:\n        mod = __import__(mod_name)\n        ver = getattr(mod, ver_attr, 'unknown')\n        if ver == 'unknown':\n            try:\n                import importlib.metadata as im\n                for _n in [mod_name, mod_name.replace('-', '_'), 'amd_' + mod_name.replace('-', '_'), 'amd-' + mod_name]:\n                    try:\n                        ver = im.version(_n)\n                        break\n                    except Exception:\n                        pass\n            except Exception:\n                pass\n        print(f'{comp_id}={ver}')\n    except ImportError:\n        print(f'{comp_id}=not installed')\n",
     );
 
     for python in interpreters {

@@ -120,6 +120,8 @@ pub struct App {
     pub benchmark_tab_index: usize,
     benchmark_notice: Option<UiNotice>,
     telemetry_gate: Option<OptInGate>,
+    telemetry_prompt_pending: bool,
+    telemetry_prompt_active: bool,
     install_log_popup: bool,
     install_log_scroll: usize,
     install_log_file_path: Option<String>,
@@ -169,6 +171,8 @@ impl App {
             benchmark_tab_index: 0,
             benchmark_notice: None,
             telemetry_gate: OptInGate::new().ok(),
+            telemetry_prompt_pending: false,
+            telemetry_prompt_active: false,
             install_log_popup: false,
             install_log_scroll: 0,
             install_log_file_path: None,
@@ -332,6 +336,31 @@ impl App {
                 }
                 KeyCode::Backspace => {}
                 KeyCode::Enter if !self.install_log_popup => {
+                    if self.telemetry_prompt_active {
+                        if let Some(gate) = self.telemetry_gate.as_ref() {
+                            if gate.is_enabled() {
+                                let gpu = self.hardware.gpu.clone();
+                                let report = crate::installers::common::BuildReport::from_hardware(
+                                    &gpu,
+                                    std::env::consts::OS.to_string(),
+                                    std::env::var("ID").unwrap_or_else(|_| "unknown".to_string()),
+                                    std::time::Duration::from_secs(
+                                        self.install_status.progress as u64,
+                                    ),
+                                    "unknown",
+                                    self.config.install_path.clone(),
+                                    vec![],
+                                    self.config.install_path.clone(),
+                                    "unknown",
+                                    false,
+                                );
+                                crate::installers::common::submit_build_report(report);
+                            }
+                        }
+                        self.telemetry_prompt_pending = false;
+                        self.telemetry_prompt_active = false;
+                        return;
+                    }
                     self.flush_install_input();
                 }
                 KeyCode::Enter => {}
@@ -339,6 +368,47 @@ impl App {
                     if !self.install_log_popup
                         && !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
+                    if self.telemetry_prompt_active {
+                        match c {
+                            'y' | 'Y' => {
+                                if let Some(gate) = self.telemetry_gate.as_ref() {
+                                    if gate.is_enabled() {
+                                        let gpu = self.hardware.gpu.clone();
+                                        let report =
+                                            crate::installers::common::BuildReport::from_hardware(
+                                                &gpu,
+                                                std::env::consts::OS.to_string(),
+                                                std::env::var("ID")
+                                                    .unwrap_or_else(|_| "unknown".to_string()),
+                                                std::time::Duration::from_secs(
+                                                    self.install_status.progress as u64,
+                                                ),
+                                                "unknown",
+                                                self.config.install_path.clone(),
+                                                vec![],
+                                                self.config.install_path.clone(),
+                                                "unknown",
+                                                false,
+                                            );
+                                        crate::installers::common::submit_build_report(report);
+                                    }
+                                }
+                                self.telemetry_prompt_pending = false;
+                                self.telemetry_prompt_active = false;
+                            }
+                            'n' | 'N' => {
+                                self.telemetry_prompt_pending = false;
+                                self.telemetry_prompt_active = false;
+                            }
+                            _ => {
+                                self.install_input_buffer.push(c);
+                                if self.install_input_mode == InputMode::Raw {
+                                    self.send_install_input(c.to_string());
+                                }
+                            }
+                        }
+                        return;
+                    }
                     self.install_input_buffer.push(c);
                     if self.install_input_mode == InputMode::Raw {
                         self.send_install_input(c.to_string());
@@ -1218,7 +1288,8 @@ impl App {
             .constraints(
                 [
                     Constraint::Length(3),
-                    Constraint::Length(4),
+                    Constraint::Length(2),
+                    Constraint::Length(6),
                     Constraint::Min(5),
                 ]
                 .as_ref(),
@@ -1260,15 +1331,68 @@ impl App {
             .label(label);
         frame.render_widget(gauge, chunks[0]);
 
+        let install_path_text = Paragraph::new(Line::from(format!(
+            "Install Path: {}",
+            self.config.install_path
+        )))
+        .block(Block::default().borders(Borders::ALL).title("Target"));
+        frame.render_widget(install_path_text, chunks[1]);
+
+        let install_details = vec![
+            Line::from(format!(
+                "Target binary: {}/bin/llama-cli",
+                self.config.install_path
+            )),
+            Line::from(format!("Install prefix: {}", self.config.install_path)),
+        ];
+        let install_details_panel = Paragraph::new(Text::from(install_details)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Install Location"),
+        );
+        frame.render_widget(install_details_panel, chunks[2]);
+
         let stage_title = self.install_stage_title();
-        let stage_panel = Paragraph::new(stage_title)
-            .block(Block::default().borders(Borders::ALL).title("llama.cpp"));
-        frame.render_widget(stage_panel, chunks[1]);
+        let stage_title_area = if self.telemetry_prompt_pending {
+            let prompt = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(2)].as_ref())
+                .split(chunks[3]);
+            let stage_panel = Paragraph::new(stage_title)
+                .block(Block::default().borders(Borders::ALL).title("llama.cpp"));
+            frame.render_widget(stage_panel, prompt[1]);
+            Some(prompt[0])
+        } else {
+            let stage_panel = Paragraph::new(stage_title)
+                .block(Block::default().borders(Borders::ALL).title("llama.cpp"));
+            frame.render_widget(stage_panel, chunks[3]);
+            None
+        };
+
+        if let Some(prompt_area) = stage_title_area {
+            let prompt_text = Paragraph::new(Text::from(vec![
+                Line::from(Span::styled(
+                    "Share anonymized build data to help validate future releases? [Y/n]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from("Y/y/Enter submits build data • n/N skips silently"),
+                Line::from("This prompt is part of the install flow."),
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Telemetry Opt-In"),
+            )
+            .wrap(Wrap { trim: true });
+            frame.render_widget(prompt_text, prompt_area);
+        }
 
         let body = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
-            .split(chunks[2]);
+            .split(chunks[4]);
 
         let log_height = body[0].height.saturating_sub(2) as usize;
         let log_items: Vec<ListItem> = if self.logs.is_empty() {
@@ -2287,6 +2411,8 @@ impl App {
                     self.install_input_buffer.clear();
                     self.recalculate_overall_progress();
                     self.install_status.progress = 1.0;
+                    self.telemetry_prompt_pending = success;
+                    self.telemetry_prompt_active = success;
                     self.stage = Stage::Benchmarks;
                 }
             }

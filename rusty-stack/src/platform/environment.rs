@@ -129,6 +129,26 @@ pub fn python_interpreters() -> Vec<PathBuf> {
     python_interpreters_for_home(&home)
 }
 
+/// Resolve the canonical Python binary path.
+///
+/// Returns the highest-priority Python interpreter available on the system.
+/// This is the interpreter that ALL ML components will be installed to.
+///
+/// Resolution order:
+/// 1. `MLSTACK_PYTHON_BIN` / `UV_PYTHON` env vars (or from ~/.mlstack_env)
+/// 2. Active virtualenv
+/// 3. uv-managed Python (preferred for ML workloads)
+/// 4. System Python
+///
+/// Falls back to `"python3"` if no interpreter is found.
+pub fn resolve_canonical_python_bin() -> String {
+    let interpreters = python_interpreters();
+    if let Some(first) = interpreters.first() {
+        return first.to_string_lossy().to_string();
+    }
+    "python3".to_string()
+}
+
 /// Discover Python interpreters for a given home directory (testable).
 pub fn python_interpreters_for_home(home: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();

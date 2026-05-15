@@ -2776,7 +2776,9 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let detected_rocm_ver = detect_rocm_version();
             let hsa_override = hsa_override_from_gpu_arch(&detected_gpu_arch)
                 .unwrap_or_else(|| "11.0.0".to_string());
+            let resolved_python = resolve_python_bin();
             let inst = PermanentEnvInstaller::new(PermanentEnvConfig {
+                python_bin: resolved_python,
                 gpu_arch: detected_gpu_arch,
                 hsa_override_gfx_version: hsa_override,
                 discrete_gpu_list: detected_gpu_list,

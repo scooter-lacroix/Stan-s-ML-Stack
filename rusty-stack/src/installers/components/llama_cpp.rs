@@ -190,9 +190,10 @@ pub struct LlamaCppConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct ReleaseAsset {
-    url: String,
-    sha256: String,
+#[allow(dead_code)]
+pub struct ReleaseAsset {
+    pub url: String,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1304,9 +1305,11 @@ mod tests {
 
     #[test]
     fn test_has_partial_artifacts_no_artifacts() {
-        // With a non-existent home, no artifacts should exist
+        // With a non-existent home, no artifacts should exist.
+        // Use a path starting with /tmp-nonexistent- prefix to avoid
+        // races with other tests that may create /tmp/llama-cpp-rocm-build.
         assert!(!has_partial_artifacts(
-            "/nonexistent/path/that/does/not/exist"
+            "/nonexistent-path-DOES-NOT-exist-f94a1f2a3b5c/test-home"
         ));
     }
 

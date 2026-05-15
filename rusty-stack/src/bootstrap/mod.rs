@@ -231,6 +231,7 @@ mod tests {
             "latest",    // rocm_channel
             "gfx1100",   // gpu_arch
             "11.0.0",    // hsa_override_gfx_version
+            "/usr/bin/python3",
         );
         // Must contain all required variable exports
         assert!(
@@ -271,6 +272,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "/usr/bin/python3",
         );
         // The content should be valid shell syntax — test with bash -n
         // (We can't actually run bash -n in unit tests, but we can check structure)
@@ -301,6 +303,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "/usr/bin/python3",
         );
         assert!(
             content.contains("HSA_OVERRIDE_GFX_VERSION"),
@@ -321,6 +324,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "/usr/bin/python3",
         );
         assert!(
             content.contains("MIOPEN_DEBUG_CONV_IMPLICIT_GEMM"),
@@ -345,6 +349,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "/usr/bin/python3",
         );
         assert!(
             content.contains("HSA_ENABLE_SDMA"),
@@ -369,6 +374,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "/usr/bin/python3",
         );
         assert!(
             content.contains("TORCH_CUDA_ARCH_LIST"),
@@ -393,6 +399,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "/usr/bin/python3",
         );
         assert!(
             content.contains("OMPI_MCA_opal_cuda_support"),
@@ -410,6 +417,7 @@ mod tests {
             "legacy",
             "gfx1030",
             "10.3.0",
+            "/usr/bin/python3",
         );
         assert!(content.contains("ROCM_CHANNEL"), "must set ROCM_CHANNEL");
         assert!(content.contains("legacy"), "must contain the channel value");

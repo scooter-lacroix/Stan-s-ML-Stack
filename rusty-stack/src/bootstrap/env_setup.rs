@@ -558,6 +558,7 @@ pub fn create_env_file(
     rocm_channel: &str,
     gpu_arch: &str,
     hsa_override_gfx_version: &str,
+    python_bin: &str,
 ) -> EnvFileResult {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     let env_path = format!("{home}/.mlstack_env");
@@ -570,6 +571,7 @@ pub fn create_env_file(
         rocm_channel,
         gpu_arch,
         hsa_override_gfx_version,
+        python_bin,
     );
 
     // Write the bash env file
@@ -587,6 +589,7 @@ pub fn create_env_file(
         rocm_channel,
         gpu_arch,
         hsa_override_gfx_version,
+        python_bin,
     );
     // Ensure fish conf.d directory exists
     if let Some(parent) = std::path::Path::new(&fish_env_path).parent() {
@@ -620,6 +623,7 @@ pub fn generate_env_file_content(
     rocm_channel: &str,
     gpu_arch: &str,
     hsa_override_gfx_version: &str,
+    python_bin: &str,
 ) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
 
@@ -695,6 +699,12 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_SYSTEM_PYTHON=1
 
+# Python Interpreter
+# Canonical Python binary — all ML components install to this interpreter.
+# Ensures a single unified environment regardless of how many Pythons exist.
+export MLSTACK_PYTHON_BIN={python_bin}
+export UV_PYTHON={python_bin}
+
 # Flash Attention AMD
 export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
 
@@ -712,6 +722,7 @@ fi
         gpu_arch = gpu_arch,
         hsa_override_gfx_version = hsa_override_gfx_version,
         home = home,
+        python_bin = python_bin,
     )
 }
 
@@ -728,6 +739,7 @@ pub fn generate_fish_env_file_content(
     rocm_channel: &str,
     gpu_arch: &str,
     hsa_override_gfx_version: &str,
+    python_bin: &str,
 ) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
 
@@ -784,9 +796,15 @@ set -q TRITON_OVERRIDE_DIR; or set -gx TRITON_OVERRIDE_DIR "$TRITON_HOME/overrid
 mkdir -p $TRITON_CACHE_DIR $TRITON_DUMP_DIR $TRITON_OVERRIDE_DIR 2>/dev/null; or true
 
 # --- Global flags for seamless pip installs (PEP 668 override) ---
-set -gx PIP_BREAK_SYSTEM_PACKAGES 1
-set -gx UV_PIP_BREAK_SYSTEM_PACKAGES 1
+set -q PIP_BREAK_SYSTEM_PACKAGES; or set -gx PIP_BREAK_SYSTEM_PACKAGES 1
+set -q UV_PIP_BREAK_SYSTEM_PACKAGES; or set -gx UV_PIP_BREAK_SYSTEM_PACKAGES 1
 set -gx UV_SYSTEM_PYTHON 1
+
+# --- Python Interpreter ---
+# Canonical Python binary — all ML components install to this interpreter.
+# Ensures a single unified environment regardless of how many Pythons exist.
+set -gx MLSTACK_PYTHON_BIN {python_bin}
+set -gx UV_PYTHON {python_bin}
 
 # --- Flash Attention AMD ---
 set -gx FLASH_ATTENTION_TRITON_AMD_ENABLE TRUE
@@ -815,6 +833,7 @@ end
         rocm_channel = rocm_channel,
         gpu_arch = gpu_arch,
         hsa_override_gfx_version = hsa_override_gfx_version,
+        python_bin = python_bin,
         onnx_path = onnx_path,
     )
 }
@@ -873,8 +892,9 @@ pub fn setup_environment() -> (EnvFileResult, GpuFilterResult, GpuArchInfo) {
     // Step 3: Detect GPU architecture
     let gpu_arch_info = detect_gpu_arch_from_system();
 
-    // Step 4: Create environment file
+    // Step 4: Resolve canonical Python and create environment file
     print_step("Creating environment file...");
+    let python_bin = crate::platform::environment::resolve_canonical_python_bin();
     let env_result = create_env_file(
         &gpu_filter.hip_visible_devices,
         &rocm_path,
@@ -882,6 +902,7 @@ pub fn setup_environment() -> (EnvFileResult, GpuFilterResult, GpuArchInfo) {
         &rocm_channel,
         &gpu_arch_info.gpu_arch,
         &gpu_arch_info.hsa_override_gfx_version,
+        &python_bin,
     );
 
     if env_result.success {
@@ -1110,15 +1131,29 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_header() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.starts_with("# ML Stack Environment File"));
     }
 
     #[test]
     fn test_generate_env_file_has_gpu_selection() {
-        let content =
-            generate_env_file_content("0,1", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0,1",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("HIP_VISIBLE_DEVICES"));
         assert!(content.contains("CUDA_VISIBLE_DEVICES"));
         assert!(content.contains("PYTORCH_ROCM_DEVICE"));
@@ -1127,8 +1162,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_rocm_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("ROCM_HOME"));
         assert!(content.contains("CUDA_HOME"));
         assert!(content.contains("ROCM_VERSION"));
@@ -1139,8 +1181,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_path_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("PATH="));
         assert!(content.contains("LD_LIBRARY_PATH"));
         assert!(content.contains("/opt/rocm/bin"));
@@ -1148,8 +1197,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_performance_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("HSA_OVERRIDE_GFX_VERSION"));
         assert!(content.contains("HSA_ENABLE_SDMA"));
         assert!(content.contains("GPU_MAX_HEAP_SIZE"));
@@ -1159,8 +1215,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_miopen_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("MIOPEN_DEBUG_CONV_IMPLICIT_GEMM"));
         assert!(content.contains("MIOPEN_FIND_MODE"));
         assert!(content.contains("MIOPEN_FIND_ENFORCE"));
@@ -1168,8 +1231,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_pytorch_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("TORCH_CUDA_ARCH_LIST"));
         assert!(content.contains("PYTORCH_ALLOC_CONF"));
         assert!(content.contains("PYTORCH_HIP_ALLOC_CONF"));
@@ -1178,8 +1248,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_triton_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("MLSTACK_TRITON_HOME"));
         assert!(content.contains("TRITON_HOME"));
         assert!(content.contains("TRITON_CACHE_DIR"));
@@ -1187,8 +1264,15 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_mpi_settings() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("OMPI_MCA_opal_cuda_support"));
         assert!(content.contains("OMPI_MCA_pml"));
         assert!(content.contains("OMPI_MCA_osc"));
@@ -1197,16 +1281,30 @@ mod tests {
 
     #[test]
     fn test_generate_env_file_has_onnx_runtime() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("PYTHONPATH"));
         assert!(content.contains("onnxruntime"));
     }
 
     #[test]
     fn test_generate_env_file_uses_guard_syntax() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         // Should use "if [ -z ... ]" guards for conditional exports
         assert!(content.contains("if [ -z \"${HIP_VISIBLE_DEVICES:-}\" ]"));
         assert!(content.contains("if [ -z \"${ROCM_HOME:-}\" ]"));
@@ -1215,8 +1313,15 @@ mod tests {
     #[test]
     fn test_generate_env_file_gpu_arch_not_guarded() {
         // GPU_ARCH should be exported unconditionally (not guarded)
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("export GPU_ARCH=gfx1100"));
     }
 
@@ -1229,6 +1334,7 @@ mod tests {
             "legacy",
             "gfx1030",
             "10.3.0",
+            "python3",
         );
         assert!(content.contains("0,1"));
         assert!(content.contains("/opt/rocm-6.4.3"));
@@ -1250,7 +1356,15 @@ mod tests {
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp_dir.path());
 
-        let result = create_env_file("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let result = create_env_file(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
 
         // Restore HOME
         if let Some(home) = original_home {
@@ -1282,6 +1396,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "python3",
         );
         // Must NOT contain bash syntax
         assert!(!content.contains("if [ -z"));
@@ -1303,6 +1418,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "python3",
         );
         assert!(content.contains("HIP_VISIBLE_DEVICES"));
         assert!(content.contains("ROCM_HOME"));
@@ -1325,6 +1441,7 @@ mod tests {
             "latest",
             "gfx1100",
             "11.0.0",
+            "python3",
         );
         // Should never contain bash-specific constructs
         assert!(!content.contains("if ! "));
@@ -1334,8 +1451,15 @@ mod tests {
 
     #[test]
     fn test_generate_bash_env_file_has_pip_break_system_packages() {
-        let content =
-            generate_env_file_content("0", "/opt/rocm", "7.2.0", "latest", "gfx1100", "11.0.0");
+        let content = generate_env_file_content(
+            "0",
+            "/opt/rocm",
+            "7.2.0",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
         assert!(content.contains("export PIP_BREAK_SYSTEM_PACKAGES=1"));
         assert!(content.contains("export UV_PIP_BREAK_SYSTEM_PACKAGES=1"));
         assert!(content.contains("export UV_SYSTEM_PYTHON=1"));
