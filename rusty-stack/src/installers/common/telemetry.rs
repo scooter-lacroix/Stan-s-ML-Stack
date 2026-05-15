@@ -1,6 +1,7 @@
 use super::{log_warn, SealedToken};
 use crate::state::GPUInfo;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum BuildReportStatus {
@@ -126,6 +127,7 @@ pub fn submission_endpoint() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn build_report_serializes_all_fields() {

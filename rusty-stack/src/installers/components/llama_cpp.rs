@@ -31,12 +31,13 @@
 //! - **VAL-CROSS-003**: Install path and detection strategy are consistent
 //! - **VAL-CROSS-012**: Detection and verification operate on the same binary contract
 
-use crate::installers::common::{log_warn, SealedToken};
+use crate::installers::common::{log_warn, submit_build_report, BuildReport, BuildReportStatus, SealedToken};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 use tempfile::NamedTempFile;
 
 // ===========================================================================
@@ -721,19 +722,39 @@ impl LlamaCppInstaller {
     }
 
     pub fn install(&self, home: &str, manifest: Option<&ReleaseManifest>) -> Result<(), String> {
+        let start = Instant::now();
         match self.resolve_install_strategy(home, manifest) {
             InstallStrategy::Prebuilt(plan) => match self.download_prebuilt_binary(&plan) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    self.submit_telemetry(home, start, true, Some(&plan.binary_path))
+                        .ok();
+                    Ok(())
+                }
                 Err(err) if err.contains("checksum mismatch") => {
                     log_warn(&format!("{err} Falling back to source compile."));
-                    self.run_source_install(home)
+                    let result = self.run_source_install(home);
+                    if result.is_ok() {
+                        self.submit_telemetry(home, start, false, None).ok();
+                    }
+                    result
                 }
                 Err(_) => {
                     log_warn("Prebuilt download unavailable; using source compile.");
-                    self.run_source_install(home)
+                    let result = self.run_source_install(home);
+                    if result.is_ok() {
+                        self.submit_telemetry(home, start, false, None).ok();
+                    }
+                    result
                 }
             },
-            InstallStrategy::Source(_) => self.run_source_install(home),
+            InstallStrategy::Source(plan) => {
+                let result = self.run_source_install(home);
+                if result.is_ok() {
+                    self.submit_telemetry(home, start, false, Some(&plan.binary_path))
+                        .ok();
+                }
+                result
+            }
         }
     }
 
@@ -911,6 +932,67 @@ impl LlamaCppInstaller {
             env: vec![],
             working_dir: Some(PathBuf::from(build_dir)),
         }
+    }
+
+    fn submit_telemetry(
+        &self,
+        home: &str,
+        build_start: Instant,
+        was_prebuilt: bool,
+        binary_path: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        let gpu = crate::hardware::detect_hardware()
+            .map(|state| state.gpu)
+            .unwrap_or_default();
+        let report = BuildReport {
+            gpu_arch: if gpu.architecture.is_empty() {
+                self.config.gpu_arch.clone()
+            } else {
+                gpu.architecture
+            },
+            gpu_count: gpu.gpu_count,
+            gpu_name: gpu.model,
+            rocm_version: gpu.rocm_version,
+            os: std::env::consts::OS.to_string(),
+            os_distro: std::env::var("ID").unwrap_or_else(|_| "unknown".to_string()),
+            build_duration_seconds: build_start.elapsed().as_secs(),
+            git_commit: Self::current_git_commit().unwrap_or_else(|| "unknown".to_string()),
+            build_status: BuildReportStatus::Success,
+            install_path: binary_path
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| {
+                    self.config
+                        .detection_binary_path(home)
+                        .display()
+                        .to_string()
+                }),
+            cmake_flags: self.cmake_flags(),
+            verification_path: self
+                .config
+                .detection_binary_path(home)
+                .display()
+                .to_string(),
+            rdna3_validation_passed: false,
+            wmma_available: false,
+            shared_memory_ok: false,
+            tokens_per_second_wmma: None,
+            tokens_per_second_fallback: None,
+            binary_version: self.config.branch.clone(),
+            was_prebuilt,
+        };
+        submit_build_report(report);
+        Ok(())
+    }
+
+    fn current_git_commit() -> Option<String> {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 }
 
