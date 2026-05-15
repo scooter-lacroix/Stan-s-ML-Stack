@@ -31,7 +31,9 @@
 //! - **VAL-CROSS-003**: Install path and detection strategy are consistent
 //! - **VAL-CROSS-012**: Detection and verification operate on the same binary contract
 
-use crate::installers::common::{log_warn, submit_build_report, BuildReport, BuildReportStatus, SealedToken};
+use crate::installers::common::{
+    log_warn, submit_build_report, BuildReport, BuildReportStatus, SealedToken,
+};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
