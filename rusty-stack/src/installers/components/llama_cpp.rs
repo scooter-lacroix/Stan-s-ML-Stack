@@ -32,8 +32,8 @@
 //! - **VAL-CROSS-012**: Detection and verification operate on the same binary contract
 
 use crate::installers::common::{log_warn, SealedToken};
-use sha2::{Digest, Sha256};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -1205,8 +1205,8 @@ mod tests {
         // --- Branch 1: with GITHUB_TOKEN set ---
         let config = LlamaCppConfig::default();
         let installer = LlamaCppInstaller::new(config);
-        let commands_with_token =
-            installer.build_commands_with_auth("/home/testuser", Some(SealedToken::new("mock_token")));
+        let commands_with_token = installer
+            .build_commands_with_auth("/home/testuser", Some(SealedToken::new("mock_token")));
 
         // The clone command is at index 1 (after mkdir)
         let clone_cmd = &commands_with_token[1];
