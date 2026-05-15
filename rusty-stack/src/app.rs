@@ -2,10 +2,10 @@ use crate::component_status::{is_component_installed, python_interpreters};
 use crate::config::InstallerConfig;
 use crate::hardware::{detect_hardware, run_preflight_checks};
 use crate::installer::{run_installation, InstallerEvent};
+use crate::installers::components::llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
 use crate::state::{
     default_components, Category, Component, HardwareState, InstallStatus, PreflightResult, Stage,
 };
-use crate::installers::components::llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
 use crate::telemetry::opt_in::{
     OptInGate, TELEMETRY_DESCRIPTION, TELEMETRY_DISABLE_LABEL, TELEMETRY_ENABLE_LABEL,
     TELEMETRY_PRIVACY_NOTE, TELEMETRY_STATUS_DISABLED, TELEMETRY_STATUS_ENABLED,
@@ -1215,11 +1215,14 @@ impl App {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Length(4),
-                Constraint::Min(5),
-            ].as_ref())
+            .constraints(
+                [
+                    Constraint::Length(3),
+                    Constraint::Length(4),
+                    Constraint::Min(5),
+                ]
+                .as_ref(),
+            )
             .split(area);
 
         let clean_msg = self.install_status.message.trim_start_matches(|c: char| {
@@ -1557,7 +1560,9 @@ impl App {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "llama.cpp Turbo Quant",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from("Experimental tier • o"));
         if let Some(summary) = self.llama_completion_summary() {
@@ -2452,7 +2457,13 @@ impl App {
         let status = self
             .telemetry_gate
             .as_ref()
-            .map(|gate| if gate.is_enabled() { TELEMETRY_STATUS_ENABLED } else { TELEMETRY_STATUS_DISABLED })
+            .map(|gate| {
+                if gate.is_enabled() {
+                    TELEMETRY_STATUS_ENABLED
+                } else {
+                    TELEMETRY_STATUS_DISABLED
+                }
+            })
             .unwrap_or(TELEMETRY_STATUS_DISABLED);
         format!(
             "{} | {} / {} | {}",

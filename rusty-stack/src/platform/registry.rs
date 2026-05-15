@@ -646,7 +646,11 @@ pub fn detect_python_modules_with_interpreters(interpreters: &[PathBuf]) -> Vec<
 
     for python in interpreters {
         if let Ok(output) = Command::new(python).arg("-c").arg(&script).output() {
-            tracing::debug!("Python detection: Interpreter {} returned status: {}", python.display(), output.status);
+            tracing::debug!(
+                "Python detection: Interpreter {} returned status: {}",
+                python.display(),
+                output.status
+            );
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 return stdout
