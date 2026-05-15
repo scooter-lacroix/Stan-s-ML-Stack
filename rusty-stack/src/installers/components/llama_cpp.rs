@@ -203,6 +203,30 @@ pub struct ReleaseArchs {
     pub gfx1200: ReleaseAsset,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrebuiltInstallPlan {
+    pub manifest_version: String,
+    pub arch: String,
+    pub url: String,
+    pub sha256: String,
+    pub install_prefix: String,
+    pub binary_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceInstallPlan {
+    pub reason: String,
+    pub build_commands: Vec<ShellCommand>,
+    pub install_prefix: String,
+    pub binary_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallStrategy {
+    Prebuilt(PrebuiltInstallPlan),
+    Source(SourceInstallPlan),
+}
+
 impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
@@ -443,17 +467,48 @@ impl LlamaCppInstaller {
 
     /// Build the sequence of commands to install llama.cpp with ROCm support.
     pub fn build_commands(&self, home: &str) -> Vec<ShellCommand> {
-        let build_dir = self.config.build_dir().to_string();
-        let install_prefix = format!("{}/{}", home, self.config.install_prefix());
+        self.build_commands_with_auth(home, None)
+    }
 
-        vec![
-            self.mkdir_build_dir(&build_dir),
-            self.git_clone(&build_dir),
-            self.git_checkout(&build_dir),
-            self.cmake_configure(&build_dir, &install_prefix),
-            self.cmake_build(&build_dir),
-            self.cmake_install(&build_dir),
-        ]
+    /// Resolve the install strategy for the detected GPU and latest release manifest.
+    pub fn resolve_install_strategy(
+        &self,
+        home: &str,
+        manifest: Option<&ReleaseManifest>,
+    ) -> InstallStrategy {
+        let install_prefix = format!("{}/{}", home, self.config.install_prefix());
+        let binary_path = self.config.detection_binary_path(home);
+        if let Some(manifest) = manifest {
+            if let Some(asset) = self.release_asset_for_arch(manifest, &self.config.gpu_arch) {
+                return InstallStrategy::Prebuilt(PrebuiltInstallPlan {
+                    manifest_version: manifest.version.clone(),
+                    arch: self.config.gpu_arch.clone(),
+                    url: asset.url.clone(),
+                    sha256: asset.sha256.clone(),
+                    install_prefix,
+                    binary_path,
+                });
+            }
+        }
+
+        let reason = if manifest.is_some() {
+            format!(
+                "No pre-built binary available for {}; falling back to source compile.",
+                self.config.gpu_arch
+            )
+        } else {
+            format!(
+                "Unable to fetch release manifest or match {}; falling back to source compile.",
+                self.config.gpu_arch
+            )
+        };
+
+        InstallStrategy::Source(SourceInstallPlan {
+            reason,
+            build_commands: self.build_commands_with_auth(home, None),
+            install_prefix,
+            binary_path,
+        })
     }
 
     /// Purge source build artifacts after a successful install.
@@ -550,7 +605,7 @@ impl LlamaCppInstaller {
     pub fn build_commands_with_auth(
         &self,
         home: &str,
-        mut token: SealedToken,
+        token: Option<SealedToken>,
     ) -> Vec<ShellCommand> {
         let build_dir = self.config.build_dir().to_string();
         let install_prefix = format!("{}/{}", home, self.config.install_prefix());
@@ -559,8 +614,12 @@ impl LlamaCppInstaller {
         let mut commands = Vec::new();
         commands.push(self.mkdir_build_dir(&build_dir));
 
-        commands.push(self.git_clone_with_auth(&build_dir, token.as_str()));
-        token.purge();
+        if let Some(mut token) = token {
+            commands.push(self.git_clone_with_auth(&build_dir, token.as_str()));
+            token.purge();
+        } else {
+            commands.push(self.git_clone(&build_dir));
+        }
 
         commands.push(self.git_checkout(&build_dir));
         commands.push(self.cmake_configure(&build_dir, &install_prefix));
@@ -963,14 +1022,15 @@ mod tests {
         let installer = LlamaCppInstaller::new(config);
         let commands = installer.build_commands("/home/testuser");
 
-        // Should have 6 commands: mkdir, clone, checkout, cmake configure, build, install
-        assert_eq!(commands.len(), 6);
+        // Should have 7 commands: mkdir, clone, checkout, cmake configure, build, install, purge
+        assert_eq!(commands.len(), 7);
         assert_eq!(commands[0].program, "mkdir");
         assert_eq!(commands[1].program, "git");
         assert_eq!(commands[2].program, "git");
         assert_eq!(commands[3].program, "cmake");
         assert_eq!(commands[4].program, "cmake");
         assert_eq!(commands[5].program, "cmake");
+        assert_eq!(commands[6].program, "sh");
     }
 
     #[test]
@@ -1054,7 +1114,7 @@ mod tests {
         let config = LlamaCppConfig::default();
         let installer = LlamaCppInstaller::new(config);
         let commands_with_token =
-            installer.build_commands_with_auth("/home/testuser", SealedToken::new("mock_token"));
+            installer.build_commands_with_auth("/home/testuser", Some(SealedToken::new("mock_token")));
 
         // The clone command is at index 1 (after mkdir)
         let clone_cmd = &commands_with_token[1];

@@ -4412,7 +4412,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ..Default::default()
             });
             let home = ctx.user_home;
-            let commands = inst.build_commands_with_auth(&home);
+            let commands = inst.build_commands_with_auth(
+                &home,
+                Some(crate::installers::common::SealedToken::from_env()),
+            );
             for cmd in &commands {
                 execute_native_command(
                     &NativeCommand::from_shell_cmd_with_dir(
