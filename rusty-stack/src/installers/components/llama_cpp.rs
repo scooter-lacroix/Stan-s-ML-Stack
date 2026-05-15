@@ -32,6 +32,7 @@
 //! - **VAL-CROSS-012**: Detection and verification operate on the same binary contract
 
 use crate::installers::common::{log_warn, SealedToken};
+use serde::Deserialize;
 use std::path::PathBuf;
 
 // ===========================================================================
@@ -181,6 +182,27 @@ pub struct LlamaCppConfig {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ReleaseAsset {
+    url: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseManifest {
+    pub version: String,
+    pub archs: ReleaseArchs,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseArchs {
+    pub gfx1030: ReleaseAsset,
+    pub gfx1100: ReleaseAsset,
+    pub gfx1200: ReleaseAsset,
+}
+
 impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
@@ -256,6 +278,29 @@ impl LlamaCppInstaller {
     /// llama.cpp depends on ROCm.
     pub fn dependencies(&self) -> &[&str] {
         &["rocm"]
+    }
+
+    /// Fetch the latest release manifest from GitHub.
+    ///
+    /// Returns `None` for HTTP/API failures, including 404.
+    pub fn check_latest_release(&self) -> Option<ReleaseManifest> {
+        let mut token = SealedToken::from_env();
+        let result = self.fetch_latest_release_manifest(token.as_str());
+        token.purge();
+        result
+    }
+
+    pub fn release_asset_for_arch<'a>(
+        &self,
+        manifest: &'a ReleaseManifest,
+        gpu_arch: &str,
+    ) -> Option<&'a ReleaseAsset> {
+        match gpu_arch {
+            "gfx1030" => Some(&manifest.archs.gfx1030),
+            "gfx1100" | "gfx1101" => Some(&manifest.archs.gfx1100),
+            "gfx1200" | "gfx1201" => Some(&manifest.archs.gfx1200),
+            _ => None,
+        }
     }
 
     // -------------------------------------------------------------------
@@ -340,6 +385,32 @@ impl LlamaCppInstaller {
         Ok(())
     }
 
+    fn fetch_latest_release_manifest(&self, token: &str) -> Option<ReleaseManifest> {
+        let url =
+            "https://api.github.com/repos/scooter-lacroix/llama.cpp-turboquant-hip/releases/latest";
+        let response = ureq::get(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "rusty-stack")
+            .call();
+
+        let mut response = match response {
+            Ok(response) => response,
+            Err(_) => return None,
+        };
+
+        if response.status() == 404 {
+            return None;
+        }
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        response.body_mut().read_json::<ReleaseManifest>().ok()
+    }
+
     // -------------------------------------------------------------------
     // CMake flag generation
     // -------------------------------------------------------------------
@@ -357,8 +428,9 @@ impl LlamaCppInstaller {
             format!("-DGPU_TARGETS={}", gpu_targets),
         ];
 
-        // WMMA flash attention: enabled for stable/latest channels only
+        // RDNA3 probes and WMMA flash attention are enabled for stable/latest only
         if channel.enable_wmma_fa() {
+            flags.push("-DGGML_HIP_RDNA3_PROBES=ON".to_string());
             flags.push("-DGGML_HIP_ROCWMMA_FATTN=ON".to_string());
         }
 
@@ -384,7 +456,6 @@ impl LlamaCppInstaller {
         ]
     }
 
-
     /// Purge source build artifacts after a successful install.
     ///
     /// Removes repo metadata, git credential cache/store entries, and the build tree.
@@ -395,28 +466,64 @@ impl LlamaCppInstaller {
         let build_dir = self.config.build_dir().to_string();
         let install_bin = self.config.detection_binary_path(home);
         let mut had_error = None::<String>;
-
-        let mlstack_dir = format!("{}/.mlstack", home);
-        let credentials_file = format!("{}/.git-credentials", home);
-        let commands = vec![
-            vec!["find", mlstack_dir.as_str(), "-type", "d", "-name", ".git", "-prune", "-exec", "rm", "-rf", "{}", ";"],
-            vec!["git", "credential-store", "erase", "--file", credentials_file.as_str()],
-            vec!["git", "credential-cache", "exit"],
-            vec!["rm", "-rf", build_dir.as_str()],
+        let purge_plan = [
+            (
+                "source repository metadata",
+                std::process::Command::new("find")
+                    .args([
+                        format!("{}/.mlstack", home),
+                        "-type".to_string(),
+                        "d".to_string(),
+                        "-name".to_string(),
+                        ".git".to_string(),
+                        "-prune".to_string(),
+                        "-exec".to_string(),
+                        "rm".to_string(),
+                        "-rf".to_string(),
+                        "{}".to_string(),
+                        ";".to_string(),
+                    ])
+                    .output(),
+            ),
+            (
+                "git credential store",
+                std::process::Command::new("git")
+                    .args([
+                        "credential-store".to_string(),
+                        "erase".to_string(),
+                        "--file".to_string(),
+                        format!("{}/.git-credentials", home),
+                    ])
+                    .output(),
+            ),
+            (
+                "git credential cache",
+                std::process::Command::new("git")
+                    .args(["credential-cache".to_string(), "exit".to_string()])
+                    .output(),
+            ),
+            (
+                "source build tree",
+                std::process::Command::new("rm")
+                    .args(["-rf".to_string(), build_dir.clone()])
+                    .output(),
+            ),
         ];
 
-        for cmd in commands {
-            let output = std::process::Command::new(cmd[0])
-                .args(&cmd[1..])
-                .output();
+        for (label, output) in purge_plan {
             match output {
                 Ok(output) if output.status.success() => {}
                 Ok(output) => {
-                    had_error = Some(String::from_utf8_lossy(&output.stderr).trim().to_string());
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    had_error = Some(if stderr.is_empty() {
+                        format!("{} purge failed", label)
+                    } else {
+                        stderr
+                    });
                     break;
                 }
                 Err(err) => {
-                    had_error = Some(err.to_string());
+                    had_error = Some(format!("{} purge failed: {}", label, err));
                     break;
                 }
             }
@@ -440,7 +547,11 @@ impl LlamaCppInstaller {
     }
 
     /// Build the sequence of commands to install llama.cpp with ROCm support, handling private repo auth.
-    pub fn build_commands_with_auth(&self, home: &str, mut token: SealedToken) -> Vec<ShellCommand> {
+    pub fn build_commands_with_auth(
+        &self,
+        home: &str,
+        mut token: SealedToken,
+    ) -> Vec<ShellCommand> {
         let build_dir = self.config.build_dir().to_string();
         let install_prefix = format!("{}/{}", home, self.config.install_prefix());
 
@@ -455,8 +566,27 @@ impl LlamaCppInstaller {
         commands.push(self.cmake_configure(&build_dir, &install_prefix));
         commands.push(self.cmake_build(&build_dir));
         commands.push(self.cmake_install(&build_dir));
+        commands.push(self.purge_source_artifacts_command(home));
 
         commands
+    }
+
+    fn purge_source_artifacts_command(&self, home: &str) -> ShellCommand {
+        let build_dir = self.config.build_dir().to_string();
+        let mlstack_dir = format!("{}/.mlstack", home);
+        let credentials_file = format!("{}/.git-credentials", home);
+        ShellCommand {
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "find '{}' -type d -name .git -prune -exec rm -rf '{{}}' ';' ; git credential-store erase --file '{}' ; git credential-cache exit ; rm -rf '{}'",
+                    mlstack_dir, credentials_file, build_dir
+                ),
+            ],
+            env: vec![],
+            working_dir: None,
+        }
     }
 
     /// Build a git clone command with HTTPS authentication using the provided token.
@@ -742,6 +872,7 @@ mod tests {
         assert!(flags.contains(&"-DGGML_HIP=ON".to_string()));
         assert!(flags.contains(&"-DGPU_TARGETS=gfx1030".to_string()));
         // Legacy should NOT have WMMA FA enabled
+        assert!(!flags.iter().any(|f| f.contains("RDNA3_PROBES")));
         assert!(!flags.iter().any(|f| f.contains("ROCWMMA_FATTN")));
     }
 
@@ -757,6 +888,7 @@ mod tests {
 
         assert!(flags.contains(&"-DGGML_HIP=ON".to_string()));
         assert!(flags.contains(&"-DGPU_TARGETS=gfx1030;gfx1100;gfx1101".to_string()));
+        assert!(flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
         assert!(flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
     }
 
@@ -772,7 +904,39 @@ mod tests {
 
         assert!(flags.contains(&"-DGGML_HIP=ON".to_string()));
         assert!(flags.contains(&"-DGPU_TARGETS=gfx1030;gfx1100;gfx1101;gfx1200".to_string()));
+        assert!(flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
         assert!(flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
+    }
+
+    #[test]
+    fn test_rocm_channel_rdna3_gating() {
+        let legacy = LlamaCppInstaller::new(LlamaCppConfig {
+            gpu_arch: "gfx1100".to_string(),
+            channel: "legacy".to_string(),
+            ..Default::default()
+        });
+        let stable = LlamaCppInstaller::new(LlamaCppConfig {
+            gpu_arch: "gfx1100".to_string(),
+            channel: "stable".to_string(),
+            ..Default::default()
+        });
+        let latest = LlamaCppInstaller::new(LlamaCppConfig {
+            gpu_arch: "gfx1100".to_string(),
+            channel: "latest".to_string(),
+            ..Default::default()
+        });
+
+        let legacy_flags = legacy.cmake_flags();
+        let stable_flags = stable.cmake_flags();
+        let latest_flags = latest.cmake_flags();
+
+        assert!(!legacy_flags
+            .iter()
+            .any(|flag| flag.contains("RDNA3_PROBES") || flag.contains("ROCWMMA_FATTN")));
+        assert!(stable_flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
+        assert!(stable_flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
+        assert!(latest_flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
+        assert!(latest_flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
     }
 
     #[test]
@@ -889,10 +1053,8 @@ mod tests {
         // --- Branch 1: with GITHUB_TOKEN set ---
         let config = LlamaCppConfig::default();
         let installer = LlamaCppInstaller::new(config);
-        let commands_with_token = installer.build_commands_with_auth(
-            "/home/testuser",
-            SealedToken::new("mock_token"),
-        );
+        let commands_with_token =
+            installer.build_commands_with_auth("/home/testuser", SealedToken::new("mock_token"));
 
         // The clone command is at index 1 (after mkdir)
         let clone_cmd = &commands_with_token[1];
@@ -914,6 +1076,74 @@ mod tests {
             .env
             .iter()
             .any(|(k, v)| k == "GIT_TERMINAL_PROMPT" && v == "0"));
+    }
+
+    #[test]
+    fn test_release_manifest_parse_and_lookup() {
+        let json = r#"{
+            "version": "v0.3.2",
+            "archs": {
+                "gfx1030": {"url": "https://example.com/a", "sha256": "aaa"},
+                "gfx1100": {"url": "https://example.com/b", "sha256": "bbb"},
+                "gfx1200": {"url": "https://example.com/c", "sha256": "ccc"}
+            }
+        }"#;
+
+        let manifest: ReleaseManifest = serde_json::from_str(json).unwrap();
+        let installer = LlamaCppInstaller::with_defaults();
+        assert_eq!(manifest.version, "v0.3.2");
+        assert_eq!(
+            installer
+                .release_asset_for_arch(&manifest, "gfx1030")
+                .unwrap()
+                .url,
+            "https://example.com/a"
+        );
+        assert_eq!(
+            installer
+                .release_asset_for_arch(&manifest, "gfx1100")
+                .unwrap()
+                .sha256,
+            "bbb"
+        );
+        assert!(installer
+            .release_asset_for_arch(&manifest, "gfx9999")
+            .is_none());
+    }
+
+    #[test]
+    fn test_release_manifest_rejects_unknown_fields() {
+        let json = r#"{
+            "version": "v0.3.2",
+            "unexpected": true,
+            "archs": {
+                "gfx1030": {"url": "https://example.com/a", "sha256": "aaa"},
+                "gfx1100": {"url": "https://example.com/b", "sha256": "bbb"},
+                "gfx1200": {"url": "https://example.com/c", "sha256": "ccc"}
+            }
+        }"#;
+
+        assert!(serde_json::from_str::<ReleaseManifest>(json).is_err());
+    }
+
+    #[test]
+    fn test_purge_source_artifacts_is_idempotent() {
+        let installer = LlamaCppInstaller::with_defaults();
+        let temp_home = tempfile::tempdir().unwrap();
+        let home = temp_home.path().to_string_lossy().to_string();
+
+        std::fs::create_dir_all(format!("{home}/.mlstack/components/llama-cpp")).unwrap();
+        std::fs::create_dir_all(format!("{home}/.mlstack/components/llama-cpp/.git")).unwrap();
+        std::fs::create_dir_all("/tmp/llama-cpp-rocm-build").unwrap();
+        std::fs::create_dir_all(format!("{home}/.mlstack/components/llama-cpp/bin")).unwrap();
+        std::fs::write(
+            format!("{home}/.mlstack/components/llama-cpp/bin/llama-cli"),
+            "#!/bin/sh\nexit 0\n",
+        )
+        .unwrap();
+
+        assert!(installer.purge_source_artifacts(&home, true).is_ok());
+        assert!(installer.purge_source_artifacts(&home, true).is_ok());
     }
 
     #[test]
@@ -946,4 +1176,3 @@ mod tests {
     // Note: `validate_repo_access` is not tested here because it requires real git/network access.
     // It is tested indirectly via integration tests or manual validation.
 }
-
