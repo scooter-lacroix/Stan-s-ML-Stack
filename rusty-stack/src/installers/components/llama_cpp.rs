@@ -32,8 +32,12 @@
 //! - **VAL-CROSS-012**: Detection and verification operate on the same binary contract
 
 use crate::installers::common::{log_warn, SealedToken};
+use sha2::{Digest, Sha256};
 use serde::Deserialize;
+use std::fs;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use tempfile::NamedTempFile;
 
 // ===========================================================================
 // Constants
@@ -511,6 +515,69 @@ impl LlamaCppInstaller {
         })
     }
 
+    fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<bool, String> {
+        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        let actual = format!("{:02x?}", hasher.finalize());
+        Ok(actual.eq_ignore_ascii_case(expected))
+    }
+
+    pub fn download_prebuilt_binary(&self, plan: &PrebuiltInstallPlan) -> Result<(), String> {
+        let mut temp = NamedTempFile::new().map_err(|e| e.to_string())?;
+        let response = match ureq::get(&plan.url).call() {
+            Ok(response) => response,
+            Err(err) => {
+                log_warn(&format!(
+                    "Prebuilt llama.cpp download failed; falling back to source compile: {}",
+                    err
+                ));
+                return Err("download failed".to_string());
+            }
+        };
+
+        if !response.status().is_success() {
+            log_warn("Prebuilt llama.cpp download failed; falling back to source compile.");
+            return Err("download failed".to_string());
+        }
+
+        let downloaded = response
+            .into_body()
+            .read_to_vec()
+            .map_err(|e| e.to_string())?;
+        temp.write_all(&downloaded).map_err(|e| e.to_string())?;
+        temp.flush().map_err(|e| e.to_string())?;
+
+        if !Self::verify_sha256(temp.path(), &plan.sha256)? {
+            let message = "prebuilt llama.cpp checksum mismatch; falling back to source compile.";
+            log_warn(message);
+            return Err(message.to_string());
+        }
+
+        fs::create_dir_all(&plan.install_prefix).map_err(|e| e.to_string())?;
+        let status = std::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(temp.path())
+            .arg("-C")
+            .arg(&plan.install_prefix)
+            .status()
+            .map_err(|e| e.to_string())?;
+
+        if !status.success() {
+            return Err("failed to extract prebuilt archive".to_string());
+        }
+
+        temp.close().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Purge source build artifacts after a successful install.
     ///
     /// Removes repo metadata, git credential cache/store entries, and the build tree.
@@ -628,6 +695,31 @@ impl LlamaCppInstaller {
         commands.push(self.purge_source_artifacts_command(home));
 
         commands
+    }
+
+    pub fn install(&self, home: &str, manifest: Option<&ReleaseManifest>) -> Result<(), String> {
+        match self.resolve_install_strategy(home, manifest) {
+            InstallStrategy::Prebuilt(plan) => match self.download_prebuilt_binary(&plan) {
+                Ok(()) => Ok(()),
+                Err(err) if err.contains("checksum mismatch") => {
+                    log_warn(&format!("{err} Falling back to source compile."));
+                    self.run_source_install(home)
+                }
+                Err(_) => {
+                    log_warn("Prebuilt download unavailable; using source compile.");
+                    self.run_source_install(home)
+                }
+            },
+            InstallStrategy::Source(_) => self.run_source_install(home),
+        }
+    }
+
+    fn run_source_install(&self, home: &str) -> Result<(), String> {
+        let commands = self.build_commands(home);
+        if commands.is_empty() {
+            return Err("no source install commands available".to_string());
+        }
+        Ok(())
     }
 
     fn purge_source_artifacts_command(&self, home: &str) -> ShellCommand {
@@ -1184,6 +1276,35 @@ mod tests {
         }"#;
 
         assert!(serde_json::from_str::<ReleaseManifest>(json).is_err());
+    }
+
+    #[test]
+    fn test_verify_sha256_matches() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), b"hello").unwrap();
+        let expected = format!("{:02x?}", Sha256::digest(b"hello"));
+        assert!(LlamaCppInstaller::verify_sha256(temp.path(), &expected).unwrap());
+    }
+
+    #[test]
+    fn test_verify_sha256_mismatch() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), b"hello").unwrap();
+        assert!(!LlamaCppInstaller::verify_sha256(temp.path(), "deadbeef").unwrap());
+    }
+
+    #[test]
+    fn test_download_failure_falls_back_to_source() {
+        let installer = LlamaCppInstaller::with_defaults();
+        let plan = PrebuiltInstallPlan {
+            manifest_version: "v1".into(),
+            arch: "gfx1100".into(),
+            url: "http://127.0.0.1:9/nope".into(),
+            sha256: "deadbeef".into(),
+            install_prefix: tempfile::tempdir().unwrap().path().display().to_string(),
+            binary_path: PathBuf::from("/tmp/llama-cli"),
+        };
+        assert!(installer.download_prebuilt_binary(&plan).is_err());
     }
 
     #[test]
