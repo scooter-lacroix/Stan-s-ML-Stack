@@ -641,17 +641,12 @@ pub fn detect_python_modules_with_interpreters(interpreters: &[PathBuf]) -> Vec<
         script.push_str(&format!("    ({comp_id:?}, {import_name:?}),\n"));
     }
     script.push_str(
-        "]\n\
-for comp_id, import_name in mods:\n\
-    try:\n\
-        __import__(import_name)\n\
-        print(comp_id)\n\
-    except ImportError:\n\
-        pass\n",
+        "]\nfor comp_id, import_name in mods:\n    try:\n        __import__(import_name)\n        print(comp_id)\n    except ImportError:\n        pass\n",
     );
 
     for python in interpreters {
         if let Ok(output) = Command::new(python).arg("-c").arg(&script).output() {
+            tracing::debug!("Python detection: Interpreter {} returned status: {}", python.display(), output.status);
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 return stdout

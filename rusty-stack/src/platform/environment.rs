@@ -253,6 +253,16 @@ pub fn python_interpreters_for_home(home: &Path) -> Vec<PathBuf> {
         }
     }
 
+    // Fallback: Always check common user-local Python installations
+    // This handles cases where uv installs Python to ~/.local/bin but the directory
+    // scanning above might have failed or the canonicalize check earlier didn't work.
+    let local_python3 = home.join(".local/bin/python3");
+    if local_python3.exists() {
+        if seen.insert(local_python3.clone()) {
+            paths.push(local_python3);
+        }
+    }
+
     paths
 }
 

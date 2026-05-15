@@ -19,14 +19,14 @@
     },
     {
       "id": "pytorch",
-      "version": "2.6.0",
+      "version": "2.13.0",
       "script": "scripts/install_pytorch_rocm.sh",
       "category": "Core",
       "validation_tier": "Validated"
     },
     {
       "id": "triton",
-      "version": "3.2.0",
+      "version": "3.7.0",
       "script": "scripts/install_triton.sh",
       "category": "Core",
       "validation_tier": "Validated"
@@ -47,7 +47,7 @@
     },
     {
       "id": "flash-attn",
-      "version": "2.7.0",
+      "version": "2.8.4",
       "script": "scripts/install_flash_attention.sh",
       "category": "Core",
       "validation_tier": "Validated"

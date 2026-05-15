@@ -5,6 +5,11 @@ use crate::installer::{run_installation, InstallerEvent};
 use crate::state::{
     default_components, Category, Component, HardwareState, InstallStatus, PreflightResult, Stage,
 };
+use crate::installers::components::llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
+use crate::telemetry::opt_in::{
+    OptInGate, TELEMETRY_DESCRIPTION, TELEMETRY_DISABLE_LABEL, TELEMETRY_ENABLE_LABEL,
+    TELEMETRY_PRIVACY_NOTE, TELEMETRY_STATUS_DISABLED, TELEMETRY_STATUS_ENABLED,
+};
 use crate::widgets::benchmarks_page::{
     export_benchmark_report_html, load_benchmark_results, render_benchmark_page,
 };
@@ -114,6 +119,7 @@ pub struct App {
     pub summary_scroll: u16,
     pub benchmark_tab_index: usize,
     benchmark_notice: Option<UiNotice>,
+    telemetry_gate: Option<OptInGate>,
     install_log_popup: bool,
     install_log_scroll: usize,
     install_log_file_path: Option<String>,
@@ -162,6 +168,7 @@ impl App {
             summary_scroll: 0,
             benchmark_tab_index: 0,
             benchmark_notice: None,
+            telemetry_gate: OptInGate::new().ok(),
             install_log_popup: false,
             install_log_scroll: 0,
             install_log_file_path: None,
@@ -1208,7 +1215,11 @@ impl App {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(5)].as_ref())
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(4),
+                Constraint::Min(5),
+            ].as_ref())
             .split(area);
 
         let clean_msg = self.install_status.message.trim_start_matches(|c: char| {
@@ -1246,10 +1257,15 @@ impl App {
             .label(label);
         frame.render_widget(gauge, chunks[0]);
 
+        let stage_title = self.install_stage_title();
+        let stage_panel = Paragraph::new(stage_title)
+            .block(Block::default().borders(Borders::ALL).title("llama.cpp"));
+        frame.render_widget(stage_panel, chunks[1]);
+
         let body = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
-            .split(chunks[1]);
+            .split(chunks[2]);
 
         let log_height = body[0].height.saturating_sub(2) as usize;
         let log_items: Vec<ListItem> = if self.logs.is_empty() {
@@ -1540,6 +1556,17 @@ impl App {
         let (env, verification) = self.partition_categories();
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
+            "llama.cpp Turbo Quant",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from("Experimental tier • o"));
+        if let Some(summary) = self.llama_completion_summary() {
+            for line in summary {
+                lines.push(line);
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
             "Environment:",
             Style::default()
                 .fg(Color::Blue)
@@ -1681,6 +1708,39 @@ impl App {
             .wrap(Wrap { trim: true })
             .scroll((self.summary_scroll, 0));
         frame.render_widget(paragraph, area);
+    }
+
+    fn llama_completion_summary(&self) -> Option<Vec<Line<'_>>> {
+        let comp = self.components.iter().find(|c| c.id == "llama-cpp")?;
+        if !comp.installed {
+            return None;
+        }
+        Some(vec![
+            Line::from(format!("Version: {}", self.llama_version_label())),
+            Line::from(format!("Path: {}", self.config.install_path)),
+            Line::from(format!("GPU Arch: {}", self.hardware.gpu.architecture)),
+            Line::from(format!("Install Type: {}", self.llama_install_type_label())),
+        ])
+    }
+
+    fn llama_version_label(&self) -> String {
+        self.verification_reports
+            .get("llama-cpp")
+            .and_then(|lines| lines.iter().find(|line| line.contains("version")))
+            .cloned()
+            .unwrap_or_else(|| "installed".into())
+    }
+
+    fn llama_install_type_label(&self) -> &'static str {
+        if self
+            .logs
+            .iter()
+            .any(|line| line.contains("prebuilt") || line.contains("download"))
+        {
+            "pre-built"
+        } else {
+            "source"
+        }
     }
 
     fn draw_benchmarks(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -1919,7 +1979,10 @@ impl App {
                 Line::from("Persist current settings to config.json."),
                 Line::from("Dirty=yes means there are unsaved changes."),
             ],
-            _ => vec![Line::from("Select a setting for details.")],
+            _ => vec![
+                Line::from("Select a setting for details."),
+                Line::from(TELEMETRY_PRIVACY_NOTE),
+            ],
         }
     }
 
@@ -2345,6 +2408,56 @@ impl App {
         }
 
         lines
+    }
+
+    fn install_stage_title(&self) -> Text<'_> {
+        let lines = match self.install_status.message.as_str() {
+            m if m.contains("download") => vec![
+                Line::from("Pre-built download in progress"),
+                Line::from("Progress is tied to download completion."),
+            ],
+            m if m.contains("configure") => vec![
+                Line::from("Source build stage: configure"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+            m if m.contains("compile") => vec![
+                Line::from("Source build stage: compile"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+            m if m.contains("link") => vec![
+                Line::from("Source build stage: link"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+            _ => vec![
+                Line::from("Installing llama.cpp Turbo Quant"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+        };
+        let mut lines = lines;
+        lines.push(Line::from(""));
+        lines.push(Line::from(self.telemetry_inline_prompt()));
+        Text::from(lines)
+    }
+
+    fn llama_build_flags_line(&self) -> String {
+        let config = LlamaCppConfig {
+            gpu_arch: self.hardware.gpu.architecture.clone(),
+            ..Default::default()
+        };
+        let flags = LlamaCppInstaller::new(config).cmake_flags().join(" ");
+        format!("Build flags: {}", flags)
+    }
+
+    fn telemetry_inline_prompt(&self) -> String {
+        let status = self
+            .telemetry_gate
+            .as_ref()
+            .map(|gate| if gate.is_enabled() { TELEMETRY_STATUS_ENABLED } else { TELEMETRY_STATUS_DISABLED })
+            .unwrap_or(TELEMETRY_STATUS_DISABLED);
+        format!(
+            "{} | {} / {} | {}",
+            TELEMETRY_DESCRIPTION, TELEMETRY_ENABLE_LABEL, TELEMETRY_DISABLE_LABEL, status
+        )
     }
 
     fn task_line(&self, label: &str, status: TaskStatus) -> Line<'_> {
