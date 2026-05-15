@@ -1,5 +1,6 @@
 use super::{log_warn, SealedToken};
 use crate::state::GPUInfo;
+use crate::telemetry::OptInGate;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -70,6 +71,14 @@ impl BuildReport {
 }
 
 pub fn submit_build_report(report: BuildReport) {
+    // Check opt-in gate before attempting any network call (VAL-TELEM-003/004)
+    if let Ok(gate) = OptInGate::new() {
+        if !gate.is_enabled() {
+            log_warn("telemetry opt-in disabled, skipping build report submission");
+            return;
+        }
+    }
+
     let mut token = SealedToken::from_env();
     let payload = build_report_payload(&report);
 
