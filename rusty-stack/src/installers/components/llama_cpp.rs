@@ -719,6 +719,49 @@ impl LlamaCppInstaller {
         if commands.is_empty() {
             return Err("no source install commands available".to_string());
         }
+
+        for command in commands {
+            let mut process = std::process::Command::new(&command.program);
+            process.args(&command.args);
+            for (key, value) in &command.env {
+                process.env(key, value);
+            }
+            if let Some(dir) = &command.working_dir {
+                process.current_dir(dir);
+            }
+
+            let output = process.output().map_err(|err| {
+                format!(
+                    "failed to run source install command '{}': {}",
+                    command.program, err
+                )
+            })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let mut details = String::new();
+                if !stderr.is_empty() {
+                    details.push_str(&stderr);
+                }
+                if !stdout.is_empty() {
+                    if !details.is_empty() {
+                        details.push_str(" | ");
+                    }
+                    details.push_str(&stdout);
+                }
+
+                return Err(if details.is_empty() {
+                    format!("source install command '{}' failed", command.program)
+                } else {
+                    format!(
+                        "source install command '{}' failed: {}",
+                        command.program, details
+                    )
+                });
+            }
+        }
+
         Ok(())
     }
 
