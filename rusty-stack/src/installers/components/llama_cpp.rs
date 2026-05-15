@@ -526,7 +526,7 @@ impl LlamaCppInstaller {
             }
             hasher.update(&buffer[..count]);
         }
-        let actual = format!("{:02x?}", hasher.finalize());
+        let actual = Self::sha256_hex_bytes(&hasher.finalize());
         Ok(actual.eq_ignore_ascii_case(expected))
     }
 
@@ -556,9 +556,14 @@ impl LlamaCppInstaller {
         temp.flush().map_err(|e| e.to_string())?;
 
         if !Self::verify_sha256(temp.path(), &plan.sha256)? {
-            let message = "prebuilt llama.cpp checksum mismatch; falling back to source compile.";
-            log_warn(message);
-            return Err(message.to_string());
+            let message = format!(
+                "Checksum mismatch for {} binary: expected {}, got {}. Download may be corrupted. Falling back to source build.",
+                plan.arch,
+                plan.sha256,
+                Self::sha256_hex(temp.path())?
+            );
+            log_warn(&message);
+            return Err(message);
         }
 
         fs::create_dir_all(&plan.install_prefix).map_err(|e| e.to_string())?;
@@ -576,6 +581,24 @@ impl LlamaCppInstaller {
 
         temp.close().map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn sha256_hex(path: &std::path::Path) -> Result<String, String> {
+        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = file.read(&mut buffer).map_err(|e| e.to_string())?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        Ok(Self::sha256_hex_bytes(&hasher.finalize()))
+    }
+
+    fn sha256_hex_bytes(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{:02x}", byte)).collect()
     }
 
     /// Purge source build artifacts after a successful install.
@@ -714,7 +737,7 @@ impl LlamaCppInstaller {
         }
     }
 
-    fn run_source_install(&self, home: &str) -> Result<(), String> {
+    pub fn run_source_install(&self, home: &str) -> Result<(), String> {
         let commands = self.build_commands(home);
         if commands.is_empty() {
             return Err("no source install commands available".to_string());
@@ -1325,7 +1348,10 @@ mod tests {
     fn test_verify_sha256_matches() {
         let temp = tempfile::NamedTempFile::new().unwrap();
         fs::write(temp.path(), b"hello").unwrap();
-        let expected = format!("{:02x?}", Sha256::digest(b"hello"));
+        let expected = Sha256::digest(b"hello")
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<String>();
         assert!(LlamaCppInstaller::verify_sha256(temp.path(), &expected).unwrap());
     }
 

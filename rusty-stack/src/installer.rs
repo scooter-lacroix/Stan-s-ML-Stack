@@ -4412,22 +4412,42 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ..Default::default()
             });
             let home = ctx.user_home;
-            let commands = inst.build_commands_with_auth(
-                &home,
-                Some(crate::installers::common::SealedToken::from_env()),
-            );
-            for cmd in &commands {
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd_with_dir(
-                        &cmd.program,
-                        &cmd.args,
-                        &cmd.env,
-                        cmd.working_dir.clone(),
-                    ),
-                    sudo_pw,
-                    sender,
-                    &component.name,
-                )?;
+            let manifest = inst.check_latest_release();
+            let strategy = inst.resolve_install_strategy(&home, manifest.as_ref());
+            match &strategy {
+                crate::installers::components::llama_cpp::InstallStrategy::Prebuilt(plan) => {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "llama-cpp install strategy selected: prebuilt ({})",
+                            plan.arch
+                        ),
+                        false,
+                    ));
+                    if let Err(err) = inst.download_prebuilt_binary(plan) {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "llama-cpp prebuilt download failed; falling back to source: {}",
+                                err
+                            ),
+                            false,
+                        ));
+                        inst.run_source_install(&home).map_err(|source_err| {
+                            anyhow::anyhow!(
+                                "llama-cpp prebuilt install failed and source fallback failed: {}",
+                                source_err
+                            )
+                        })?;
+                    }
+                }
+                crate::installers::components::llama_cpp::InstallStrategy::Source(plan) => {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("llama-cpp install strategy selected: source ({})", plan.reason),
+                        false,
+                    ));
+                    inst.run_source_install(&home).map_err(|err| {
+                        anyhow::anyhow!("llama-cpp source install failed: {}", err)
+                    })?;
+                }
             }
         }
 
