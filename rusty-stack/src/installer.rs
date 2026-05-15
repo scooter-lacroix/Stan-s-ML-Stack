@@ -4441,7 +4441,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 }
                 crate::installers::components::llama_cpp::InstallStrategy::Source(plan) => {
                     let _ = sender.send(InstallerEvent::Log(
-                        format!("llama-cpp install strategy selected: source ({})", plan.reason),
+                        format!(
+                            "llama-cpp install strategy selected: source ({})",
+                            plan.reason
+                        ),
                         false,
                     ));
                     inst.run_source_install(&home).map_err(|err| {
