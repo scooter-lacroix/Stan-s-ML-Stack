@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a Question
+    url: https://github.com/scooter-lacroix/Stan-s-ML-Stack/discussions
+    about: Ask questions and discuss Rusty Stack with the community
+  - name: Documentation
+    url: https://github.com/scooter-lacroix/Stan-s-ML-Stack/tree/main/docs
+    about: Check the documentation before opening an issue

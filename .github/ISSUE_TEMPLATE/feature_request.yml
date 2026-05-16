@@ -1,0 +1,87 @@
+name: Feature Request
+description: Suggest a feature or enhancement for Rusty Stack
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **⚠️ AI/clanker/slop issues WILL be rejected.**
+        >
+        > Feature requests must come from genuine users who have personally
+        > encountered the problem they want solved. AI-generated feature requests
+        > will be closed without review.
+
+        Thank you for suggesting a feature for Rusty Stack. Please describe the
+        problem and your proposed solution clearly.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Rusty Stack would this feature affect?
+      options:
+        - Installer (TUI)
+        - Installer (CLI - rusty command)
+        - Component installation (new component support)
+        - Verification (rusty verify)
+        - Benchmarks (rusty bench)
+        - Update system (rusty update)
+        - Upgrade system (rusty upgrade)
+        - Hardware detection
+        - Environment setup
+        - Telemetry
+        - Documentation
+        - CI/CD
+        - Cross-platform support
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Description
+      description: |
+        What problem does this feature request address? What limitation are you
+        running into?
+      placeholder: |
+        I'm trying to install [component] on [GPU/hardware], but Rusty Stack
+        doesn't support [specific scenario]. Currently I have to manually...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: |
+        How do you think this should work? What would the ideal user experience
+        look like?
+      placeholder: |
+        Rusty Stack should detect [condition] and automatically [action].
+        In the TUI, this could appear as [description].
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: |
+        What other approaches have you considered? Are there workarounds you
+        currently use?
+      placeholder: |
+        I tried manually configuring [X], but it breaks when [Y].
+        An alternative would be to [Z], but that has the downside of...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: |
+        Any other context — links to relevant documentation, similar features
+        in other tools, screenshots, etc.
+    validations:
+      required: false
