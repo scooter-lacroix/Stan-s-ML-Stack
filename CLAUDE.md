@@ -20,7 +20,7 @@ cd rusty-stack && cargo build --release
 curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
 
 # PyPI installation (backward compat)
-pip install stans-ml-stack
+pip install Rusty-Stack
 ```
 
 ### Component Updates

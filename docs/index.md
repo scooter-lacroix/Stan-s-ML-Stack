@@ -8,7 +8,7 @@
 
 **Rusty Stack** is a comprehensive machine learning environment optimized for AMD GPUs. It provides a complete set of tools and libraries for training and deploying machine learning models, with a focus on large language models (LLMs) and deep learning.
 
-Formerly known as "Stan's ML Stack", this project is undergoing a gradual rebranding to "Rusty Stack" to reflect its modern Rust-based TUI installer. The Python package (`stans-ml-stack`) remains available for backward compatibility.
+Formerly known as "Stan's ML Stack", this project is undergoing a gradual rebranding to "Rusty Stack" to reflect its modern Rust-based TUI installer. The Python package (`Rusty-Stack`) is available on PyPI.
 
 This stack is designed to work with AMD's ROCm platform, providing CUDA compatibility through HIP, allowing you to run most CUDA-based machine learning code on AMD GPUs with minimal modifications.
 
@@ -167,7 +167,7 @@ The TUI provides a responsive, interactive experience with real-time feedback du
 Install via PyPI (Python package, maintained for backward compatibility):
 
 ```bash
-pip install stans-ml-stack
+pip install Rusty-Stack
 ```
 
 ### Legacy Installers (Deprecated)

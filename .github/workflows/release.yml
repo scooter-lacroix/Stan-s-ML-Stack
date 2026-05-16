@@ -266,29 +266,17 @@ jobs:
     needs: [detect, github-release]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC trusted publishing
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check PYPI_TOKEN availability
-        id: check_token
-        env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          if [ -z "$PYPI_TOKEN" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "⚠️ PYPI_TOKEN not set — skipping PyPI publish"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Python
-        if: steps.check_token.outputs.available == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Verify version parity
-        if: steps.check_token.outputs.available == 'true'
         run: |
           CARGO_VERSION=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           PYPI_VERSION=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project'].get('version',''))" 2>/dev/null || true)
@@ -301,30 +289,11 @@ jobs:
           fi
           echo "Versions match: v${CARGO_VERSION}"
 
-      - name: Install build tools
-        if: steps.check_token.outputs.available == 'true'
-        run: pip install build twine
-
       - name: Build package
-        if: steps.check_token.outputs.available == 'true'
         run: python -m build
 
       - name: Publish to PyPI
-        if: steps.check_token.outputs.available == 'true'
-        run: |
-          PYPI_VER=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project'].get('version',''))" 2>/dev/null || true)
-          if [ -z "$PYPI_VER" ] && [ -f "VERSION" ]; then
-            PYPI_VER=$(cat VERSION)
-          fi
-          PKG_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-          if pip install "${PKG_NAME}==${PYPI_VER}" --dry-run 2>&1 | grep -q "Would install"; then
-            echo "Version ${PYPI_VER} already on PyPI — skipping upload"
-          else
-            twine upload dist/* --non-interactive
-          fi
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        uses: pypa/gh-action-pypi-publish@release/v1
 
   # ── Final summary ────────────────────────────────────────────────────
   summary:
@@ -373,7 +342,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Registry notes" >> "$GITHUB_STEP_SUMMARY"
           echo "- **crates.io**: Publishes the Rust crate (required)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **PyPI**: Thin Python wrapper that installs via cargo (optional — needs PYPI_TOKEN)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PyPI**: Thin Python wrapper that installs via cargo (OIDC trusted publishing)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Windows ALPHA" >> "$GITHUB_STEP_SUMMARY"
           echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**" >> "$GITHUB_STEP_SUMMARY"
