@@ -1,0 +1,143 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "New semver version (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump version to ${{ github.event.inputs.version }}
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Validate REPO_PAT secret
+        run: |
+          if [ -z "${{ secrets.REPO_PAT }}" ]; then
+            echo "::error::REPO_PAT secret is not configured. This workflow requires a Personal Access Token with write access to push the version bump commit."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REPO_PAT }}
+
+      - name: Validate semver format
+        env:
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if ! echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version format '${NEW_VERSION}'. Expected: X.Y.Z (e.g. 0.2.0)"
+            exit 1
+          fi
+          echo "Version format valid: ${NEW_VERSION}"
+
+      - name: Extract current version
+        id: current
+        run: |
+          CURRENT=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=${CURRENT}" >> "$GITHUB_OUTPUT"
+          echo "Current version: ${CURRENT}"
+
+      - name: Validate version is higher than current
+        env:
+          CURRENT_VERSION: ${{ steps.current.outputs.version }}
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ "$CURRENT_VERSION" = "$NEW_VERSION" ]; then
+            echo "::error::Version ${NEW_VERSION} is the same as current version. No change needed."
+            exit 1
+          fi
+          # Use sort -V: higher version sorts last
+          HIGHEST=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$NEW_VERSION" | sort -V | tail -1)
+          if [ "$HIGHEST" != "$NEW_VERSION" ]; then
+            echo "::error::Version ${NEW_VERSION} is not higher than current ${CURRENT_VERSION}. Downgrades not allowed."
+            exit 1
+          fi
+          echo "Version ${NEW_VERSION} > ${CURRENT_VERSION} — OK"
+
+      - name: Bump version in rusty-stack/Cargo.toml
+        env:
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" rusty-stack/Cargo.toml
+          ACTUAL=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$ACTUAL" != "$NEW_VERSION" ]; then
+            echo "::error::Cargo.toml version mismatch after sed: got '${ACTUAL}', expected '${NEW_VERSION}'"
+            exit 1
+          fi
+          echo "rusty-stack/Cargo.toml → ${NEW_VERSION}"
+
+      - name: Regenerate Cargo.lock
+        working-directory: rusty-stack
+        run: cargo check --locked 2>/dev/null || cargo generate-lockfile
+
+      - name: Bump version in pyproject.toml
+        env:
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # pyproject.toml uses dynamic version from VERSION file
+          # Ensure the version is not hardcoded; the VERSION file is the source of truth
+          grep -q 'dynamic = \["version"\]' pyproject.toml && echo "pyproject.toml uses dynamic version (from VERSION file)"
+          grep -q 'version = {file = "VERSION"}' pyproject.toml && echo "pyproject.toml references VERSION file"
+
+      - name: Create/update VERSION file
+        env:
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          echo "${NEW_VERSION}" > VERSION
+          ACTUAL=$(cat VERSION | tr -d '[:space:]')
+          if [ "$ACTUAL" != "$NEW_VERSION" ]; then
+            echo "::error::VERSION file mismatch: got '${ACTUAL}', expected '${NEW_VERSION}'"
+            exit 1
+          fi
+          echo "VERSION → ${NEW_VERSION}"
+
+      - name: Verify version parity
+        env:
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          CARGO=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          VERSION_FILE=$(cat VERSION | tr -d '[:space:]')
+          if [ "$CARGO" != "$NEW_VERSION" ] || [ "$VERSION_FILE" != "$NEW_VERSION" ]; then
+            echo "::error::Version parity check failed: Cargo=${CARGO} VERSION=${VERSION_FILE} expected=${NEW_VERSION}"
+            exit 1
+          fi
+          echo "All versions match: ${NEW_VERSION}"
+          echo "  rusty-stack/Cargo.toml: ${CARGO}"
+          echo "  VERSION (pyproject.toml dynamic): ${VERSION_FILE}"
+
+      - name: Commit and push
+        env:
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rusty-stack/Cargo.toml rusty-stack/Cargo.lock VERSION
+          git commit -m "chore(release): bump version to ${NEW_VERSION}"
+          git push
+
+      - name: Print summary
+        env:
+          OLD_VERSION: ${{ steps.current.outputs.version }}
+          NEW_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          echo "## Version Bump: ${OLD_VERSION} → ${NEW_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Files changed:**" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`rusty-stack/Cargo.toml\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`rusty-stack/Cargo.lock\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`VERSION\` (dynamic version source for \`pyproject.toml\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The \`release.yml\` workflow will now detect this version change and handle building, publishing, and GitHub release creation." >> "$GITHUB_STEP_SUMMARY"
