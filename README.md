@@ -37,6 +37,15 @@ For a detailed guide to help you get started from the ground up, head over to [B
 - **Opt-in Anonymous Telemetry**: 180-second stability benchmark with anonymous HTTPS submission
 - **Windows Cross-Compilation**: Full Windows support with WSL2 bridging, path translation, and service management
 
+### 🦙 Rusty Llama — Optimized Llama.cpp Runtime
+
+> ### 🚀 **2.10× TurboQuant prefill speedup** on MoE models · **153 t/s decode** on RX 7900 XTX
+>
+> Rusty Llama is our optimized llama.cpp runtime featuring TurboQuant compression, RDNA3 WMMA flash attention, and pre-built binary distribution for AMD GPUs. Benchmarked on real hardware — see [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for full results.
+
+Docs: https://github.com/scooter-lacroix/rusty-llama-docs
+Install: `rusty install llama-cpp`
+
 ## Windows Support (ALPHA)
 
 > **Windows support is in ALPHA testing. We are openly accepting testers!** The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.
@@ -107,34 +116,29 @@ The ML Stack consists of the following core components:
 
 | Component | Description | Version |
 |-----------|-------------|---------|
-| **ROCm** | AMD's open software platform for GPU computing | 6.4.43482 |
-| **PyTorch** | Deep learning framework with ROCm support | 2.6.0+rocm6.4.43482 |
-| **ONNX Runtime** | Cross-platform inference accelerator | 1.22.0 |
-| **MIGraphX** | AMD's graph optimization library | 2.12.0 |
-| **Flash Attention (Triton)** | High-performance Triton-based kernels | 2.5.6 |
+| **ROCm** | AMD's open software platform for GPU computing | 7.2.3 |
+| **PyTorch** | Deep learning framework with ROCm support | 2.13.0+rocm7.2 |
+| **ONNX Runtime** | Cross-platform inference accelerator | 1.23.2 |
+| **MIGraphX** | AMD's graph optimization library | 7.2.3 |
+| **Flash Attention (Triton)** | High-performance Triton-based kernels | 2.8.4 |
 | **Flash Attention CK** | Composable Kernel variant (Pre-release) | Latest |
 | **RCCL** | ROCm Collective Communication Library | Latest |
-| **MPI** | Message Passing Interface for distributed computing | Open MPI 5.0.7 |
+| **MPI** | Message Passing Interface for distributed computing | Open MPI 5.0.10 |
 | **Megatron-LM** | Framework for training large language models | Latest |
 
 ### Extension Components
 
 | Component | Description | Version |
 |-----------|-------------|---------|
-| **Triton** | Compiler for parallel programming | 3.2.0 |
-| **BITSANDBYTES** | Efficient quantization for deep learning models | 0.45.5 |
-| **vLLM** | High-throughput inference engine for LLMs | 0.8.5 |
+| **Triton** | Compiler for parallel programming | 3.7.0 |
+| **BITSANDBYTES** | Efficient quantization for deep learning models | 0.49.2 |
+| **vLLM** | High-throughput inference engine for LLMs | 0.16.0 |
 | **vLLM Studio** | Web UI for vLLM model management and deployment | [Latest](https://github.com/0xSero/vllm-studio) |
 | **ROCm SMI** | System monitoring and management for AMD GPUs | Latest |
 | **ComfyUI** | Node-based UI for AI image generation with ROCm support | [Latest](https://github.com/comfyanonymous/ComfyUI) |
+| **DeepSpeed** | Optimized training for large models with AMD GPU support | 0.18.6 |
 | **PyTorch Profiler** | Performance analysis for PyTorch models | Latest |
-| **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
-### Rusty Llama — llama.cpp Runtime
-
-Rusty Stack includes Rusty Llama, our optimized llama.cpp runtime with TurboQuant compression, RDNA3 WMMA flash attention, and pre-built binary distribution for AMD GPUs.
-
-Docs: https://github.com/scooter-lacroix/rusty-llama-docs
-Install: `rusty install llama-cpp`
+| **Weights & Biases** | Experiment tracking and visualization | 0.26.1 |
 
 ## Rusty Stack Platform Architecture
 
@@ -204,9 +208,9 @@ cargo build --target x86_64-pc-windows-msvc
 
 Rusty Stack installer now offers three ROCm channels so you can balance stability against cutting-edge features:
 
-1. **Legacy (ROCm 6.4.3)** – production-proven for maximum stability
-2. **Stable (ROCm 7.1)** – production-ready for RDNA 3 GPUs
-3. **Latest (ROCm 7.2.1)** – default choice with expanded RDNA 4 support
+1. **Legacy (ROCm 7.0.0)** – production-proven for maximum stability
+2. **Stable (ROCm 7.2.1)** – production-ready for RDNA 3 GPUs
+3. **Latest (ROCm 7.2.3)** – default choice with expanded RDNA 4 support
 
 You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-3). See [docs/MULTI_CHANNEL_GUIDE.md](docs/MULTI_CHANNEL_GUIDE.md) for helper scripts covering PyTorch, Triton, Flash Attention, vLLM, ONNX Runtime, MIGraphX, bitsandbytes, and RCCL.
 
@@ -299,22 +303,6 @@ The deprecated script is still available at `scripts/install_ml_stack_curses.py`
 </details>
 
 <details>
-<summary>Python Textual Installer (Deprecated)</summary>
-
-The Python Textual-based installer is deprecated. Use the unified `rusty` CLI instead:
-
-```bash
-cd rusty-stack && cargo build --release
-./target/release/rusty
-```
-
-The deprecated script is still available at `scripts/install_ml_stack_ui.py` for backward compatibility.
-
-**Note**: This installer is deprecated. Please use the `rusty` CLI instead.
-
-</details>
-
-<details>
 <summary>Go Installer (Deprecated)</summary>
 
 The Go-based installer in `mlstack-installer/` is deprecated and no longer maintained.
@@ -337,7 +325,12 @@ If you prefer to install components manually, follow these steps:
    cargo build --release
    ```
 
-3. **Set up the environment**:
+3. **Run the TUI installer**:
+   ```bash
+   ./target/release/rusty
+   ```
+
+4. **Set up the environment**:
    ```bash
    source ~/.mlstack_env
    ```
@@ -347,85 +340,14 @@ If you prefer to install components manually, follow these steps:
    source ~/.mlstack_env
    ```
 
-4. **Run the TUI installer**:
-   ```bash
-   ./target/release/rusty
-   ```
-
 5. **Verify the installation**:
-   ```bash
-   ./target/release/rusty verify --full
-   ```
-
-3. **Install components via the rusty TUI**:
-   ```bash
-   ./target/release/rusty
-   ```
-   The TUI will guide you through selecting and installing core and extension components.
-
-4. **Verify the installation**:
    ```bash
    ./target/release/rusty verify --full
    ```
 
 ### Docker Installation
 
-For a containerized installation, you have several options:
-
-### Option 1: Pull the Pre-built Image
-
-```bash
-# Pull the Docker image
-docker pull bartholemewii/stans-ml-stack:latest
-
-# Run the container with GPU access
-docker run --device=/dev/kfd --device=/dev/dri --group-add video -it bartholemewii/stans-ml-stack:latest
-
-# To verify the installation, run the following command inside the container
-/workspace/verify_ml_stack.sh
-
-The pre-built image includes the core components of Stan's ML Stack. After starting the container, you'll need to install PyTorch with ROCm support and MIGraphX using the provided scripts in /workspace/Stan-s-ML-Stack/scripts/.
-
-Option 2: Build from Dockerfile
-
-# Build the Docker image
-docker build -t stans-ml-stack .
-
-# Run the container with GPU access
-docker run --device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it stans-ml-stack
-
-# Building from the Dockerfile allows you to customize the installation according to your needs.
-
-Option 3: Use Docker Compose
-
-# Start the container
-docker-compose up -d
-
-# Access the container
-docker-compose exec ml-stack bash
-
-# Stop the container
-docker-compose down
-
-Docker Image Contents
-The Docker container includes:
-
-ONNX Runtime
-Transformers
-DeepSpeed
-MPI
-All necessary scripts to install PyTorch with ROCm support and MIGraphX
-Architecture Support
-The Docker image is optimized for AMD GPUs and requires:
-
-AMD GPU with ROCm support
-Docker with GPU passthrough capabilities
-Troubleshooting
-If you encounter architecture compatibility issues, ensure your system architecture matches the Docker image architecture. The image is built for x86_64/amd64 systems.
-
-### For large model training, consider using the --shm-size=8g flag to increase shared memory:
-
-docker run --device=/dev/kfd --device=/dev/dri --group-add video --shm-size=8g -it bartholemewii/stans-ml-stack:latest
+> **⚠️ Docker support is deprecated and no longer maintained.** We recommend using the [Rust TUI installer](#rusty-stack-tui-primary-installer) or [CLI](#cli-commands) instead.
 
 ## Environment Setup
 
@@ -752,23 +674,24 @@ The custom verification script is designed to detect components installed in non
 === ML Stack Verification Summary ===
 
 Core Components:
-✓ ROCm: Successfully installed (version 6.4.43482)
-✓ PyTorch: Successfully installed (version 2.6.0+rocm6.2.4)
-✓ ONNX Runtime: Successfully installed (version 1.22.0)
-✓ MIGraphX: Successfully installed (version 2.12.0)
-✓ Flash Attention: Successfully installed (version 2.5.6)
+✓ ROCm: Successfully installed (version 7.2.3)
+✓ PyTorch: Successfully installed (version 2.13.0+rocm7.2)
+✓ ONNX Runtime: Successfully installed (version 1.23.2)
+✓ MIGraphX: Successfully installed (version 7.2.3)
+✓ Flash Attention: Successfully installed (version 2.8.4)
 ✓ RCCL: Successfully installed
-✓ MPI: Successfully installed (version Open MPI 5.0.7)
+✓ MPI: Successfully installed (version Open MPI 5.0.10)
 ✓ Megatron-LM: Successfully installed
 
 Extension Components:
-✓ Triton: Successfully installed (version 3.2.0)
-✓ BITSANDBYTES: Successfully installed (version 0.45.5)
-✓ vLLM: Successfully installed (version 0.8.5)
+✓ Triton: Successfully installed (version 3.7.0)
+✓ BITSANDBYTES: Successfully installed (version 0.49.2)
+✓ vLLM: Successfully installed (version 0.16.0)
 ✓ ROCm SMI: Successfully installed
 ✓ ComfyUI: Successfully installed (ROCm edition)
+✓ DeepSpeed: Successfully installed (version 0.18.6)
 ✓ PyTorch Profiler: Successfully installed
-✓ Weights & Biases: Successfully installed (version 0.19.9)
+✓ Weights & Biases: Successfully installed (version 0.26.1)
 ```
 
 ### Testing Your Installation
