@@ -38,6 +38,7 @@ pub fn available_benchmarks() -> Vec<&'static str> {
         "tensor-core",
         "gemm",
         "pytorch",
+        "llama-cpp",
         "flash-attention",
         "vllm",
         "deepspeed",
@@ -74,6 +75,7 @@ pub fn run_benchmark(name: &str) -> Result<BenchmarkOutput, String> {
         )),
         "gemm" => Ok(convert_result(name, benchmarks::run_gemm_benchmark())),
         "pytorch" => Ok(convert_result(name, benchmarks::run_pytorch_benchmark())),
+        "llama-cpp" => Ok(convert_result(name, benchmarks::run_llama_cpp_benchmark())),
         "flash-attention" => Ok(convert_result(
             name,
             benchmarks::run_flash_attention_benchmark(),
@@ -176,6 +178,13 @@ fn run_all() -> BenchmarkOutput {
         "pytorch",
         &mut output,
         benchmarks::run_pytorch_benchmark(),
+        false,
+    );
+    collect_benchmark(
+        &mut combined,
+        "llama_cpp",
+        &mut output,
+        benchmarks::run_llama_cpp_benchmark(),
         false,
     );
     collect_benchmark(

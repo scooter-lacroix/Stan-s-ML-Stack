@@ -271,6 +271,9 @@ pub fn run_gemm_benchmark() -> BenchmarkResult {
 pub fn run_pytorch_benchmark() -> BenchmarkResult {
     run_python_benchmark("pytorch")
 }
+pub fn run_llama_cpp_benchmark() -> BenchmarkResult {
+    run_python_benchmark("llama-cpp")
+}
 pub fn run_flash_attention_benchmark() -> BenchmarkResult {
     run_python_benchmark("flash-attention")
 }
@@ -298,6 +301,7 @@ import shutil
 import subprocess
 import sys
 import time
+from glob import glob
 
 _GPU_RUNTIME_CACHE = None
 _DEFAULT_TINY_SAFETENSORS_MODEL = "HuggingFaceTB/SmolLM2-135M-Instruct"
@@ -332,6 +336,151 @@ def _resolve_gguf_model_path(raw):
             if entry.lower().endswith(".gguf"):
                 return os.path.join(expanded, entry)
     return ""
+
+
+def _find_llama_cpp_binary():
+    candidates = [
+        os.path.expanduser("~/.mlstack/components/llama-cpp/bin/llama-bench"),
+        shutil.which("llama-bench"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return ""
+
+
+def _find_gguf_model():
+    candidates = []
+    candidates.extend(sorted(glob(os.path.expanduser("~/.mlstack/models/*.gguf"))))
+    candidates.extend(sorted(glob(os.path.expanduser("~/.cache/huggingface/hub/*/snapshots/*/*.gguf"))))
+    candidates.extend(sorted(glob(os.path.expanduser("~/.cache/**/*.gguf"), recursive=True)))
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _detect_llama_cpp_gpus():
+    gpu_names = []
+    try:
+        proc = subprocess.run(
+            ["rocm-smi", "--showproductname"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            lowered = line.lower()
+            if "gfx" in lowered or "amd" in lowered or "radeon" in lowered or "instinct" in lowered:
+                gpu_names.append(line)
+    except Exception:
+        pass
+    if gpu_names:
+        return gpu_names
+
+    try:
+        proc = subprocess.run(
+            "rocminfo | grep gfx",
+            shell=True,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        for line in output.splitlines():
+            line = line.strip()
+            if "gfx" in line.lower():
+                gpu_names.append(line)
+    except Exception:
+        pass
+    return gpu_names
+
+
+def _llama_cpp():
+    start = time.perf_counter()
+    bench = _find_llama_cpp_binary()
+    if not bench:
+        return False, {
+            "name": "llama-cpp",
+            "success": False,
+            "execution_time_ms": 0,
+            "metrics": {},
+            "errors": ["llama-cpp not installed"],
+        }, ["llama-cpp not installed"]
+
+    model = _find_gguf_model()
+    if not model:
+        elapsed = int((time.perf_counter() - start) * 1000)
+        return False, {
+            "name": "llama-cpp",
+            "success": False,
+            "execution_time_ms": elapsed,
+            "metrics": {},
+            "errors": ["no GGUF model found"],
+        }, ["no GGUF model found"]
+
+    gpus = _detect_llama_cpp_gpus()
+    if not gpus:
+        elapsed = int((time.perf_counter() - start) * 1000)
+        return False, {
+            "name": "llama-cpp",
+            "success": False,
+            "execution_time_ms": elapsed,
+            "metrics": {},
+            "errors": ["no ROCm GPUs detected"],
+        }, ["no ROCm GPUs detected"]
+
+    metrics = {}
+    errors = []
+    for gpu_idx, _ in enumerate(gpus):
+        env = os.environ.copy()
+        env["ROCM_VISIBLE_DEVICES"] = str(gpu_idx)
+        try:
+            proc = subprocess.run(
+                [bench, "-m", model, "-p", "512", "-p", "2048", "-p", "8192", "-n", "128", "-o", "json", "-r", "3"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            raw = (proc.stdout or "").strip()
+            parsed = json.loads(raw) if raw else []
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            for entry in parsed:
+                if not isinstance(entry, dict):
+                    continue
+                n_prompt = int(entry.get("n_prompt", 0) or 0)
+                n_gen = int(entry.get("n_gen", 0) or 0)
+                avg_ts = entry.get("avg_ts")
+                if avg_ts is None:
+                    avg_ts = entry.get("avg_tps")
+                stddev_ts = entry.get("stddev_ts", 0.0)
+                prefix = "prefill" if n_prompt > 0 and n_gen == 0 else "decode" if n_prompt == 0 and n_gen > 0 else "other"
+                if prefix == "other" or avg_ts is None:
+                    continue
+                context = n_prompt if prefix == "prefill" else n_gen
+                metrics[f"{prefix}_{context}_tps_gpu{gpu_idx}"] = float(avg_ts)
+                metrics[f"{prefix}_{context}_stddev_tps_gpu{gpu_idx}"] = float(stddev_ts or 0.0)
+        except Exception as exc:
+            errors.append(str(exc))
+
+    elapsed = int((time.perf_counter() - start) * 1000)
+    success = bool(metrics) and not errors
+    result = {
+        "name": "llama-cpp",
+        "success": success,
+        "execution_time_ms": elapsed,
+        "metrics": metrics,
+        "errors": errors,
+    }
+    print("---BENCHMARK_RESULTS_START---")
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return success, result, errors
 
 
 def _resolve_vllm_model_candidates():
@@ -1967,6 +2116,7 @@ BENCHES = {
     "deepspeed": _deepspeed,
     "megatron": _megatron,
     "onnx": _onnx,
+    "llama-cpp": _llama_cpp,
 }
 
 

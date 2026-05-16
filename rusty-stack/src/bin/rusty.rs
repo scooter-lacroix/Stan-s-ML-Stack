@@ -1379,6 +1379,7 @@ mod bench_impl {
         println!();
         println!("Component Benchmarks:");
         println!("  pytorch              - PyTorch performance tests");
+        println!("  llama-cpp            - LLaMA.cpp benchmark suite");
         println!("  flash-attention      - Flash Attention vs standard");
         println!("  vllm                 - vLLM throughput benchmark");
         println!("  deepspeed            - DeepSpeed ZeRO performance");
