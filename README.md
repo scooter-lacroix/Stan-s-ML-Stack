@@ -342,6 +342,11 @@ If you prefer to install components manually, follow these steps:
    source ~/.mlstack_env
    ```
 
+   For fish shell:
+   ```fish
+   source ~/.mlstack_env
+   ```
+
 4. **Run the TUI installer**:
    ```bash
    ./target/release/rusty
@@ -431,6 +436,12 @@ The ML Stack includes a comprehensive environment setup script that automaticall
 To set up the environment automatically:
 
 ```bash
+# bash / zsh
+source ~/.mlstack_env
+```
+
+```fish
+# fish
 source ~/.mlstack_env
 ```
 
@@ -438,8 +449,8 @@ The environment is configured during installation by the rusty CLI bootstrap mod
 1. Detect your AMD GPUs
 2. Detect ROCm installation
 3. Configure environment variables
-4. Create a persistent environment file
-5. Add the environment to your .bashrc
+4. Create a persistent environment file (`~/.mlstack_env` for bash/zsh, `~/.config/fish/conf.d/mlstack_env.fish` for fish)
+5. Add the environment to your shell config (`.bashrc` / `.config/fish/conf.d/`)
 
 ### Manual Environment Setup
 
@@ -470,6 +481,36 @@ export CUDA_HOME=$ROCM_PATH
 # ONNX Runtime
 export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
 ```
+
+For **fish shell**, add the following to `~/.config/fish/config.fish`:
+
+```fish
+# ROCm Setup
+set -gx ROCM_PATH /opt/rocm
+set -gx PATH $PATH $ROCM_PATH/bin $ROCM_PATH/hip/bin
+set -gx LD_LIBRARY_PATH $ROCM_PATH/lib $ROCM_PATH/hip/lib $ROCM_PATH/opencl/lib $LD_LIBRARY_PATH
+
+# GPU Selection
+set -gx HIP_VISIBLE_DEVICES 0,1  # Adjust based on your GPU count
+set -gx CUDA_VISIBLE_DEVICES 0,1  # Adjust based on your GPU count
+set -gx PYTORCH_ROCM_DEVICE 0,1  # Adjust based on your GPU count
+
+# Performance Settings
+set -gx HSA_OVERRIDE_GFX_VERSION 11.0.0
+set -gx HSA_ENABLE_SDMA 0
+set -gx GPU_MAX_HEAP_SIZE 100
+set -gx GPU_MAX_ALLOC_PERCENT 100
+set -gx HSA_TOOLS_LIB 1
+
+# CUDA Compatibility
+set -gx ROCM_HOME $ROCM_PATH
+set -gx CUDA_HOME $ROCM_PATH
+
+# ONNX Runtime
+set -gx PYTHONPATH /HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release $PYTHONPATH
+```
+
+> **Note**: The rusty CLI bootstrap module generates both `~/.mlstack_env` (bash/zsh) and `~/.config/fish/conf.d/mlstack_env.fish` (fish) automatically during installation. Manual setup is only needed if you're configuring the environment without using the installer.
 
 ### Persistent Environment Setup
 
@@ -505,7 +546,13 @@ Here's a description of the key environment variables:
 **Solution**: This warning is harmless and doesn't affect functionality. It's related to ROCm's profiling tools. To fix it, set the following environment variable:
 
 ```bash
+# bash / zsh
 export HSA_TOOLS_LIB=1
+```
+
+```fish
+# fish
+set -gx HSA_TOOLS_LIB 1
 ```
 
 #### CUDA_HOME Not Set
@@ -515,7 +562,13 @@ export HSA_TOOLS_LIB=1
 **Solution**: For compatibility with CUDA-based applications, set CUDA_HOME to point to your ROCm installation:
 
 ```bash
+# bash / zsh
 export CUDA_HOME=/opt/rocm
+```
+
+```fish
+# fish
+set -gx CUDA_HOME /opt/rocm
 ```
 
 #### Python Module Not Found
@@ -525,13 +578,25 @@ export CUDA_HOME=/opt/rocm
 **Solution**: Check your PYTHONPATH and ensure it includes the necessary directories:
 
 ```bash
+# bash / zsh
 export PYTHONPATH=/path/to/module:$PYTHONPATH
+```
+
+```fish
+# fish
+set -gx PYTHONPATH /path/to/module $PYTHONPATH
 ```
 
 For ONNX Runtime specifically:
 
 ```bash
+# bash / zsh
 export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$PYTHONPATH
+```
+
+```fish
+# fish
+set -gx PYTHONPATH /HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release $PYTHONPATH
 ```
 
 #### GPU Not Detected
@@ -546,9 +611,17 @@ export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$P
    ```
 3. Set the appropriate environment variables:
    ```bash
+   # bash / zsh
    export HIP_VISIBLE_DEVICES=0,1
    export CUDA_VISIBLE_DEVICES=0,1
    export PYTORCH_ROCM_DEVICE=0,1
+   ```
+
+   ```fish
+   # fish
+   set -gx HIP_VISIBLE_DEVICES 0,1
+   set -gx CUDA_VISIBLE_DEVICES 0,1
+   set -gx PYTORCH_ROCM_DEVICE 0,1
    ```
 
 #### Out of Memory Errors
@@ -558,13 +631,25 @@ export PYTHONPATH=/HOME/usr/onnxruntime_build/onnxruntime/build/Linux/Release:$P
 **Solution**:
 1. Increase the maximum heap size and allocation percentage:
    ```bash
+   # bash / zsh
    export GPU_MAX_HEAP_SIZE=100
    export GPU_MAX_ALLOC_PERCENT=100
    ```
+   ```fish
+   # fish
+   set -gx GPU_MAX_HEAP_SIZE 100
+   set -gx GPU_MAX_ALLOC_PERCENT 100
+   ```
 2. For PyTorch, set the maximum split size:
    ```bash
+   # bash / zsh
    export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"
    export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"
+   ```
+   ```fish
+   # fish
+   set -gx PYTORCH_CUDA_ALLOC_CONF "max_split_size_mb:512"
+   set -gx PYTORCH_HIP_ALLOC_CONF "max_split_size_mb:512"
    ```
 
 ### Diagnostic Tools
