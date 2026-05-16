@@ -827,8 +827,8 @@ mod tests {
     fn test_rocm_version_formatting() {
         let installer = OnnxRuntimeInstaller::with_defaults();
         assert_eq!(installer.format_rocm_version_for_ort("7.2.0"), "070200");
-        assert_eq!(installer.format_rocm_version_for_ort("6.4.3"), "060403");
-        assert_eq!(installer.format_rocm_version_for_ort("7.1.0"), "070100");
+        assert_eq!(installer.format_rocm_version_for_ort("7.0.0"), "070000");
+        assert_eq!(installer.format_rocm_version_for_ort("7.2.1"), "070201");
     }
 
     // --- HipArchs ---
@@ -925,11 +925,11 @@ mod tests {
     #[test]
     fn test_migraphx_wheel_url_custom_release() {
         let installer = OnnxRuntimeInstaller::new(OnnxRuntimeConfig {
-            rocm_release: Some("7.1.0".to_string()),
+            rocm_release: Some("7.2.1".to_string()),
             ..Default::default()
         });
         let url = installer.build_migraphx_wheel_url();
-        assert!(url.contains("rocm-rel-7.1.0/"));
+        assert!(url.contains("rocm-rel-7.2.1/"));
     }
 
     #[test]

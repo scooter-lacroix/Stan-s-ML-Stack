@@ -413,7 +413,7 @@ mod tests {
         let content = env_setup::generate_env_file_content(
             "0",
             "/opt/rocm",
-            "6.4.3",
+            "7.0.0",
             "legacy",
             "gfx1030",
             "10.3.0",

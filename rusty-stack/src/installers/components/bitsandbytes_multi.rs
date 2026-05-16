@@ -353,12 +353,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rocm_version_short_6_4() {
+    fn test_rocm_version_short_legacy() {
         let installer = BitsAndBytesInstaller::new(BitsAndBytesConfig {
-            rocm_version: "6.4.3".to_string(),
+            rocm_version: "7.0.0".to_string(),
             ..Default::default()
         });
-        assert_eq!(installer.rocm_version_short(), "64");
+        assert_eq!(installer.rocm_version_short(), "70");
     }
 
     #[test]

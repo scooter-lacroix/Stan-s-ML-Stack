@@ -1,0 +1,37 @@
+{
+  "featureId": "fork-docs-rewrite",
+  "reviewedAt": "2026-05-15T09:55:00Z",
+  "commitId": null,
+  "repoPath": "/home/scooter/Documents/Product/Stan-s-ML-Stack/Fork/llama.cpp-turboquant-hip",
+  "transcriptSkeletonReviewed": false,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "Documentation rewrite completed and verified. All 7 targeted tasks meet requirements: README bears 'Rusty Llama' primary branding with complete rewrite, docs/rdna3-optimization.md exists and covers WMMA/TurboQuant/dispatch, docs/rdna2-experimental.md notes RDNA3 primary / RDNA2 compatibility, CLAUDE.md/AGENTS.md/CONTRIBUTING.md fully carry fork context with no upstream references, VALIDATION_RESULTS.md presents dual-GPU validation data (7900 XTX + 7800 XT) matching benchmark-data.json.",
+    "issues": []
+  },
+  "sharedStateObservations": [
+    {
+      "area": "docs",
+      "observation": "20 doc files under docs/ still contain upstream references (ggml-org URLs, ggerganov attribution, 'llama.cpp' as project name) — android.md, build.md, docker.md, install.md, multimodal/* files, preset.md, and all backend/*.md files. The fork-docs-rewrite task only targeted 7 items, so this is expected but means 89 upstream-reference occurrences survive in docs/. Future scope expansion should address these.",
+      "evidence": "grep -r 'Stormrage|ggerganov|@ggerganov|/ggml-org/' docs/ --include='*.md' returned 20 files / 89 total occurrences across android.md, build.md, docker.md, install.md, multimodal/* presets, preset.md, and all backend/*.md files"
+    },
+    {
+      "area": "docs",
+      "observation": "docs/rdna3-optimization.md could reinforce the 'Rusty Llama as primary source' framing more explicitly. Currently it says 'Rusty Llama uses RDNA3...' but never states that this fork supersedes the upstream. No author or ownership claim.",
+      "evidence": "docs/rdna3-optimization.md — first paragraph introduces RDNA3 focus but does not assert fork ownership or fork-as-primary stance"
+    },
+    {
+      "area": "docs",
+      "observation": "docs/rdna2-experimental.md contains 211 lines and is a substantial technical document (MoE prefill accelerator, triple gate, safety gates, stabilization root cause) but references no upstream ownership. This is correct for this fork, but the content appears to be full deep dives that may not be canonical-level documentation yet.",
+      "evidence": "docs/rdna2-experimental.md — 211 lines, very detailed technical content with performance tables and stabilization details"
+    },
+    {
+      "area": "docs",
+      "observation": "README title is '# Rusty Llama: llama.cpp-turboquant-hip' — the subtitle string 'llama.cpp-turboquant-hip' could potentially be reduced once fork name identity is fully established. Consider shortening to '# Rusty Llama' over time.",
+      "evidence": "README.md line 1: '# Rusty Llama: llama.cpp-turboquant-hip'"
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "fork-docs-rewrite review: PASS. The README title is correctly set to 'Rusty Llama: llama.cpp-turboquant-hip' with a complete rewrite covering RDNA2/RDNA3/RDNA4 GPU table, benchmark data from validation/benchmark-data.json, and ROCm recommendations per family. docs/rdna3-optimization.md exists and covers WMMA flash attention, TurboQuant dispatch logic, and GPU-specific benchmarks. docs/rdna2-experimental.md correctly states RDNA3 is primary / RDNA2 is compatibility-focused. CLAUDE.md, AGENTS.md, and CONTRIBUTING.md all carry fork Rusty Llama branding with zero upstream references. VALIDATION_RESULTS.md shows 7900 XTX and 7800 XT dual-GPU validation data matching the benchmark JSON source. The rewritten files (README.md, rdna3-optimization.md, rdna2-experimental.md, CLAUDE.md, AGENTS.md, CONTRIBUTING.md, VALIDATION_RESULTS.md) contain zero occurrences of 'Stormrage', 'ggml-org', or 'ggerganov'. One advisory note: 20 sibling doc files under docs/ still carry upstream references; these were not in scope but represent residual upstream branding for future passes."
+}

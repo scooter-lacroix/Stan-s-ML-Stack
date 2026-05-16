@@ -451,14 +451,14 @@ mod tests {
     }
 
     #[test]
-    fn test_rocm_index_url_other_version() {
+    fn test_rocm_index_url_legacy_version() {
         let installer = VllmInstaller::new(VllmConfig {
-            rocm_version: "6.4.3".to_string(),
+            rocm_version: "7.0.0".to_string(),
             ..Default::default()
         });
         assert_eq!(
             installer.rocm_index_url(),
-            "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/"
+            "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/"
         );
     }
 

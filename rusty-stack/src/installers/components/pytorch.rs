@@ -172,9 +172,9 @@ impl PyTorchInstaller {
         format!("https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm_mm}/")
     }
 
-    /// Get the fallback index URL (ROCm 6.4 stable).
+    /// Get the fallback index URL (ROCm 7.0 stable).
     pub fn fallback_index_url(&self) -> String {
-        "https://download.pytorch.org/whl/rocm6.4".to_string()
+        "https://download.pytorch.org/whl/rocm7.0".to_string()
     }
 
     // -----------------------------------------------------------------------
@@ -230,7 +230,7 @@ impl PyTorchInstaller {
     }
 
     /// Construct the fallback command when primary install fails.
-    /// Tries the ROCm 6.4 stable index.
+    /// Tries the ROCm 7.0 stable index.
     pub fn build_fallback_command(&self, use_uv: bool) -> PipCommand {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
@@ -362,10 +362,10 @@ mod tests {
     }
 
     #[test]
-    fn test_index_url_rocm_71() {
+    fn test_index_url_rocm_70() {
         let installer = PyTorchInstaller::with_defaults();
-        let url = installer.index_url_for_rocm("7.1");
-        assert_eq!(url, "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/");
+        let url = installer.index_url_for_rocm("7.0");
+        assert_eq!(url, "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/");
     }
 
     #[test]
@@ -469,7 +469,7 @@ mod tests {
             ..Default::default()
         });
         let cmd = installer.build_fallback_command(true);
-        assert!(cmd.args.iter().any(|a| a.contains("rocm6.4")));
+        assert!(cmd.args.iter().any(|a| a.contains("rocm7.0")));
         assert!(cmd.args.contains(&"torch".to_string()));
     }
 

@@ -1,0 +1,58 @@
+{
+  "featureId": "fork-benchmark-gpus",
+  "reviewedAt": "2026-05-15T13:55:00Z",
+  "commitId": "bde842a39f25868ce06b7170da209ea3a976c525",
+  "repoPath": "/home/scooter/Documents/Product/Stan-s-ML-Stack/Fork/llama.cpp-turboquant-hip",
+  "transcriptSkeletonReviewed": false,
+  "diffReviewed": true,
+  "status": "FAIL",
+  "codeReview": {
+    "summary": "benchmark-data.json has correct top-level schema and values, but scripts/collect_llama_benchmarks.py is unchanged from its introduction commit and still has all three original bugs. The data fix was a one-time manual file rewrite in bde842a39, not a re-run of the Python script.",
+    "issues": [
+      {
+        "file": "scripts/collect_llama_benchmarks.py",
+        "line": 18,
+        "severity": "blocking",
+        "description": "parse_output() regex searches for literal strings 'prefill' and 'decode' but llama-bench emits 'pp<N>' (pp512, pp2048) for prefill/prompt runs and 'tg<N>' (tg128) for decode/target-gen runs. The regex never matches any line, so prefill and decode remain None. Every entry in the serialized JSON shows null prefill_tokens_per_second and null decode_tokens_per_second already — evidence in commit 9d686f933 diff."
+      },
+      {
+        "file": "scripts/collect_llama_benchmarks.py",
+        "line": 18,
+        "severity": "blocking",
+        "description": "parse_output() captures at most one prefill and one decode value per entire invocation (prefill/decode/peak_vram are module-level None and guarded by 'if X is None'). With per-context 3-run loops (ctx=512/2048/8192), only the first match is ever captured — context-size granularity is lost."
+      },
+      {
+        "file": "scripts/collect_llama_benchmarks.py",
+        "line": 53,
+        "severity": "blocking",
+        "description": "commit 9d686f933 the -o json flag is not actually used or implemented; parse_output() only tries to parse text/markdown output without the flag; the command is `[llama-bench, -m, model, -p, ctx, -n, 128]` – no `-o json` flag appears in the subprocess call"
+      },
+      {
+        "file": "scripts/collect_llama_benchmarks.py",
+        "line": 43,
+        "severity": "non_blocking",
+        "description": "main() still writes the old schema: top-level keys 'model' and 'benchmarks', benchmark entries with 'gpu_name', 'gfx', 'rocm_visible_devices', 'vram_gb', 'model_family'. This is the schema that was FIXED manually in commit bde842a39 directly into validation/benchmark-data.json. Re-running the unmodified script would silently overwrite the corrected JSON with the wrong schema again."
+      },
+      {
+        "file": "scripts/collect_llama_benchmarks.py",
+        "line": 43,
+        "severity": "blocking",
+        "description": "commit 9d686f933 the MAJOR issue: the script was IN FACT NOT EDITED by the fix commit — 'git diff 9d686f933..bde842a39 -- scripts/collect_llama_benchmarks.py' returns identical content. The fix was entirely a data-file content change in validation/benchmark-data.json"
+      }
+    ]
+  },
+  "sharedStateObservations": [
+    {
+      "area": "conventions",
+      "observation": "The benchmark-data.json schema was silently rewritten in a 'docs' commit (bde842a39) rather than 'benchmark:' or 'fix(' prefix, making it unclear that this was a bug fix rather than a doc-only change. The convention in this repo for actual fixes uses 'fix(' or 'benchmark:' prefixes per the git log.",
+      "evidence": "bde842a39 message = 'docs: fix benchmark data json schema'; only changed validation/benchmark-data.json, not scripts/"
+    },
+    {
+      "area": "services",
+      "observation": "Feature task outcome does not verify that the script actually WORKED — the process has to manually validate that the script was actually fixed and run; requires an execution model",
+      "evidence": "bde842a39, the schema fix"
+    }
+  ],
+  "addressesFailureFrom": null,
+  "summary": "FAIL: benchmark-data.json is currently correct (right schema, right values, right VRAM) thanks to a manual data-file rewrite in commit bde842a39. However scripts/collect_llama_benchmarks.py — the very script supposed to produce this file — is completely unchanged from the broken commit 9d686f933, still has all three original bugs (wrong regex, single-value capture, wrong output schema). The fix commit only touched the JSON data, not the script. All blocking issues remain open in the Python script."
+}

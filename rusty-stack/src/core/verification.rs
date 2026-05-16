@@ -212,7 +212,7 @@ mod tests {
             "rocm",
             vec![
                 VerificationCheck::passed("rocm_detect", "ROCm found at /opt/rocm"),
-                VerificationCheck::warning("version_old", "ROCm 6.4 is not the latest"),
+                VerificationCheck::warning("version_old", "ROCm 7.0 is not the latest"),
             ],
         );
         assert!(result.success, "Warnings-only should have success=true");

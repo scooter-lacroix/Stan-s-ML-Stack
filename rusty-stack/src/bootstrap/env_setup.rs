@@ -1329,16 +1329,16 @@ mod tests {
     fn test_generate_env_file_custom_values() {
         let content = generate_env_file_content(
             "0,1",
-            "/opt/rocm-6.4.3",
-            "6.4.3",
+            "/opt/rocm-7.0",
+            "7.0.0",
             "legacy",
             "gfx1030",
             "10.3.0",
             "python3",
         );
         assert!(content.contains("0,1"));
-        assert!(content.contains("/opt/rocm-6.4.3"));
-        assert!(content.contains("6.4.3"));
+        assert!(content.contains("/opt/rocm-7.0"));
+        assert!(content.contains("7.0.0"));
         assert!(content.contains("legacy"));
         assert!(content.contains("gfx1030"));
         assert!(content.contains("10.3.0"));

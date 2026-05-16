@@ -432,10 +432,20 @@ mod update_impl {
             };
 
             // Determine channel from version
-            let rocm_channel = if rocm_version.starts_with("6.") {
+            let rocm_channel = if rocm_version.starts_with("7.0") {
                 "legacy".to_string()
-            } else if rocm_version.starts_with("7.0") || rocm_version.starts_with("7.1") {
-                "stable".to_string()
+            } else if rocm_version.starts_with("7.1") || rocm_version.starts_with("7.2") {
+                // 7.1.x or early 7.2.x → stable; newer 7.2.x → latest
+                let patch: u32 = rocm_version
+                    .split('.')
+                    .nth(2)
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(0);
+                if rocm_version.starts_with("7.1") || patch <= 1 {
+                    "stable".to_string()
+                } else {
+                    "latest".to_string()
+                }
             } else {
                 "latest".to_string()
             };

@@ -19,11 +19,11 @@ use std::fmt;
 /// ROCm release channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RocmChannel {
-    /// ROCm 6.4.3 — production-proven stability (Legacy).
+    /// ROCm 7.0.0 — production-proven stability (Legacy).
     Legacy,
-    /// ROCm 7.1 — production-ready for RDNA 3 (Stable).
+    /// ROCm 7.2.1 — production-ready for RDNA 3 (Stable).
     Stable,
-    /// ROCm 7.2.2 — expanded RDNA 4 support (Latest, default).
+    /// ROCm 7.2.3 — expanded RDNA 4 support (Latest, default).
     Latest,
 }
 
@@ -51,35 +51,35 @@ impl RocmChannel {
     /// Get the ROCm version string for this channel.
     pub fn version(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4.3",
-            RocmChannel::Stable => "7.1",
-            RocmChannel::Latest => "7.2.2",
+            RocmChannel::Legacy => "7.0.0",
+            RocmChannel::Stable => "7.2.1",
+            RocmChannel::Latest => "7.2.3",
         }
     }
 
     /// Get the ROCm directory path component for this channel.
     pub fn dir_path(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4.3",
-            RocmChannel::Stable => "7.1",
-            RocmChannel::Latest => "7.2.2",
+            RocmChannel::Legacy => "7.0",
+            RocmChannel::Stable => "7.2.1",
+            RocmChannel::Latest => "7.2.3",
         }
     }
 
     /// Get the package version string used in installer package names.
     pub fn pkg_version(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4.60403-1",
-            RocmChannel::Stable => "7.1.70100-1",
-            RocmChannel::Latest => "7.2.2.70202-1",
+            RocmChannel::Legacy => "7.0.0.70000-1",
+            RocmChannel::Stable => "7.2.1.70201-1",
+            RocmChannel::Latest => "7.2.3.70203-1",
         }
     }
 
     /// Get the major.minor version (e.g., "7.2") for repo URLs.
     pub fn major_minor(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4.3",
-            RocmChannel::Stable => "7.1",
+            RocmChannel::Legacy => "7.0",
+            RocmChannel::Stable => "7.2",
             RocmChannel::Latest => "7.2",
         }
     }
@@ -102,11 +102,14 @@ impl RocmChannel {
     /// Constructs a package version string from the manifest version if available.
     pub fn pkg_version_from_manifest(manifest: &crate::core::manifest::Manifest) -> String {
         let version = Self::version_from_manifest(manifest);
-        // Convert "7.2.2" to "7.2.2.YYYYMMDD-1" format
-        // For now, use the manifest version directly if it has enough parts
+        // Convert "7.2.3" to "7.2.3.MMmmDD-1" format where MMmmDD is derived from version
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() >= 3 {
-            format!("{}.70202-1", version)
+            let major: u64 = parts[0].parse().unwrap_or(7);
+            let minor: u64 = parts[1].parse().unwrap_or(2);
+            let patch: u64 = parts[2].parse().unwrap_or(0);
+            let build = format!("{major:02}{minor:02}{patch:02}");
+            format!("{}.{build}-1", version)
         } else {
             RocmChannel::Latest.pkg_version().to_string()
         }
@@ -611,24 +614,24 @@ mod tests {
     #[test]
     fn test_channel_legacy_version() {
         let ch = RocmChannel::Legacy;
-        assert_eq!(ch.version(), "6.4.3");
-        assert_eq!(ch.pkg_version(), "6.4.60403-1");
-        assert_eq!(ch.major_minor(), "6.4.3");
+        assert_eq!(ch.version(), "7.0.0");
+        assert_eq!(ch.pkg_version(), "7.0.0.70000-1");
+        assert_eq!(ch.major_minor(), "7.0");
     }
 
     #[test]
     fn test_channel_stable_version() {
         let ch = RocmChannel::Stable;
-        assert_eq!(ch.version(), "7.1");
-        assert_eq!(ch.pkg_version(), "7.1.70100-1");
-        assert_eq!(ch.major_minor(), "7.1");
+        assert_eq!(ch.version(), "7.2.1");
+        assert_eq!(ch.pkg_version(), "7.2.1.70201-1");
+        assert_eq!(ch.major_minor(), "7.2");
     }
 
     #[test]
     fn test_channel_latest_version() {
         let ch = RocmChannel::Latest;
-        assert_eq!(ch.version(), "7.2.2");
-        assert_eq!(ch.pkg_version(), "7.2.2.70202-1");
+        assert_eq!(ch.version(), "7.2.3");
+        assert_eq!(ch.pkg_version(), "7.2.3.70203-1");
         assert_eq!(ch.major_minor(), "7.2");
     }
 
@@ -655,9 +658,7 @@ mod tests {
 
         // wget download
         assert_eq!(cmds[0].program, "wget");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.2.70202-1")));
-
-        // dpkg install
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.3.70203-1")));
         assert_eq!(cmds[1].program, "sudo");
         assert!(cmds[1].args.contains(&"dpkg".to_string()));
 
@@ -694,7 +695,7 @@ mod tests {
 
         // dnf install RPM
         assert_eq!(cmds[0].program, "sudo");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.2.70202-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.3.70203-1")));
         assert!(cmds[0].args.iter().any(|a| a.contains("el9")));
 
         // rocm-libs metapackage
@@ -741,7 +742,7 @@ mod tests {
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].program, "sudo");
         assert!(cmds[0].args.iter().any(|a| a.contains("zypper")));
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.2.70202-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.3.70203-1")));
     }
 
     // --- Repo URL construction ---
@@ -777,7 +778,7 @@ mod tests {
         let distro = fedora_distro();
         let url = installer.repo_base_url(&distro);
         // Fedora version "41" doesn't match 8/9/10, defaults to 9
-        assert_eq!(url, "https://repo.radeon.com/amdgpu/7.1/rhel/9");
+        assert_eq!(url, "https://repo.radeon.com/amdgpu/7.2/rhel/9");
     }
 
     #[test]
@@ -798,7 +799,7 @@ mod tests {
             ..Default::default()
         });
         let url = installer.amdgpu_install_deb_url();
-        assert!(url.contains("7.2.2.70202-1"));
+        assert!(url.contains("7.2.3.70203-1"));
         assert!(url.contains("ubuntu/noble"));
         assert!(url.ends_with(".deb"));
     }
@@ -810,7 +811,7 @@ mod tests {
             ..Default::default()
         });
         let url = installer.amdgpu_install_rpm_url("9");
-        assert!(url.contains("7.2.2.70202-1"));
+        assert!(url.contains("7.2.3.70203-1"));
         assert!(url.contains("rhel/9"));
         assert!(url.ends_with(".noarch.rpm"));
     }

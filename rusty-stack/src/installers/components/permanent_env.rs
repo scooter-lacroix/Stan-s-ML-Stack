@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn test_custom_config_values_in_env_file() {
         let config = PermanentEnvConfig {
-            rocm_version: "6.4.3".to_string(),
+            rocm_version: "7.0.0".to_string(),
             gpu_arch: "gfx1030".to_string(),
             discrete_gpu_list: "0".to_string(),
             python_bin: "python3.11".to_string(),
@@ -530,7 +530,7 @@ mod tests {
         let installer = PermanentEnvInstaller::new(config);
         let content = installer.generate_env_file_content();
 
-        assert!(content.contains("ROCM_VERSION=6.4.3"));
+        assert!(content.contains("ROCM_VERSION=7.0.0"));
         assert!(content.contains("GPU_ARCH=gfx1030"));
         assert!(content.contains("HIP_VISIBLE_DEVICES=0"));
         assert!(content.contains("MLSTACK_PYTHON_BIN=python3.11"));
