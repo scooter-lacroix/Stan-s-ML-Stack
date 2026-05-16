@@ -37,6 +37,10 @@ For a detailed guide to help you get started from the ground up, head over to [B
 - **Opt-in Anonymous Telemetry**: 180-second stability benchmark with anonymous HTTPS submission
 - **Windows Cross-Compilation**: Full Windows support with WSL2 bridging, path translation, and service management
 
+## Windows Support (ALPHA)
+
+> **Windows support is in ALPHA testing. We are openly accepting testers!** The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.
+
 ## Hardware Requirements
 
 ### Minimum Requirements
@@ -125,6 +129,13 @@ The ML Stack consists of the following core components:
 | **ComfyUI** | Node-based UI for AI image generation with ROCm support | [Latest](https://github.com/comfyanonymous/ComfyUI) |
 | **PyTorch Profiler** | Performance analysis for PyTorch models | Latest |
 | **Weights & Biases** | Experiment tracking and visualization | 0.19.9 |
+### Rusty Llama — llama.cpp Runtime
+
+Rusty Stack includes Rusty Llama, our optimized llama.cpp runtime with TurboQuant compression, RDNA3 WMMA flash attention, and pre-built binary distribution for AMD GPUs.
+
+Docs: https://github.com/scooter-lacroix/rusty-llama-docs
+Install: `rusty install llama-cpp`
+
 ## Rusty Stack Platform Architecture
 
 The Rusty Stack engine is organized into five layered modules that handle the full component lifecycle — from detection through planning, execution, verification, and reporting.

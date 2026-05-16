@@ -45,6 +45,7 @@ All notable changes to Stan's ML Stack will be documented in this file.
 - **Planned Anagami Release Gate**: Anagami release cut remains reserved for the milestone where installer/backend scripts are fully migrated to Rust and packaged as a single crates.io deliverable.
 
 ### Added
+- **Windows Alpha Support**: Initial Windows x86_64 builds available. Windows support is in ALPHA testing — we are openly accepting testers! Open issues following the issue template when problems are encountered.
 - **ComfyUI**: Node-based AI image generation UI with full ROCm GPU acceleration support
 - **UI/UX Category**: New component category in Rusty-Stack installer for user-facing applications
 - **Smart Sudo Detection**: Components that install to user home directory (ComfyUI, vLLM Studio) no longer require sudo password
