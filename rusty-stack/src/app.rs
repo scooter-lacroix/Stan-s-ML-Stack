@@ -1287,10 +1287,11 @@ impl App {
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Length(3),
-                    Constraint::Length(2),
-                    Constraint::Length(6),
-                    Constraint::Min(5),
+                    Constraint::Length(3),  // [0] progress gauge
+                    Constraint::Length(2),  // [1] install path
+                    Constraint::Length(6),  // [2] install details
+                    Constraint::Min(5),     // [3] stage title / telemetry prompt
+                    Constraint::Min(10),    // [4] body (log + sidebar)
                 ]
                 .as_ref(),
             )
