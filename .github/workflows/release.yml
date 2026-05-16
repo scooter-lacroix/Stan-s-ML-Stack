@@ -2,87 +2,115 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
-  pull_request:
-    types: [closed]
     branches: [main]
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+    paths:
+      # Only trigger when version-carrying or publishable files change
+      - 'rusty-stack/Cargo.toml'
+      - 'rusty-stack/Cargo.lock'
+      - 'rusty-stack/src/**'
 
 permissions:
   contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  # ── Gate: only proceed for version tags or merged "chore(deps)" PRs ──
-  check-trigger:
-    name: Check Release Trigger
+  # ── Verify version parity across published surfaces ────────────────
+  version-parity:
+    name: Verify published-surface versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Cargo.toml / pyproject.toml versions match
+        run: |
+          set -e
+          CARGO_VER=$(grep -m1 '^version' rusty-stack/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          PYPI_VER=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project'].get('version','MISSING'))" 2>/dev/null || echo "MISSING")
+          # pyproject.toml uses dynamic version from VERSION file
+          if [ "$PYPI_VER" = "MISSING" ] || [ -z "$PYPI_VER" ]; then
+            if [ -f "VERSION" ]; then
+              PYPI_VER=$(cat VERSION)
+            else
+              PYPI_VER="MISSING"
+            fi
+          fi
+          echo "Cargo: ${CARGO_VER}  PyPI (pyproject.toml/VERSION): ${PYPI_VER}"
+          if [ "$CARGO_VER" != "$PYPI_VER" ]; then
+            echo "ERROR: Version mismatch! Cargo=$CARGO_VER PyPI=$PYPI_VER"
+            exit 1
+          fi
+          echo "All versions match: ${CARGO_VER}"
+
+  # ── Detect version bump ──────────────────────────────────────────────
+  detect:
+    name: Detect version change
+    needs: [version-parity]
     runs-on: ubuntu-latest
     outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      version: ${{ steps.check.outputs.version }}
+      version: ${{ steps.ver.outputs.version }}
+      changed: ${{ steps.ver.outputs.changed }}
     steps:
-      - name: Determine if this should trigger a release
-        id: check
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for tag listing and changelog
+
+      - name: Extract version from Cargo.toml
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          VERSION=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            # Triggered by a version tag
-            tag="${{ github.ref_name }}"
-            if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-              version="${tag#v}"
-              echo "should_release=true" >> "$GITHUB_OUTPUT"
-              echo "version=$version" >> "$GITHUB_OUTPUT"
-              echo "Triggered by tag: $tag (version: $version)"
-            else
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              echo "Tag $tag does not match version pattern"
-            fi
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # Triggered by PR merge — only if it contains "chore(deps)" in the title or commit message
-            if [[ "${{ github.event.pull_request.merged }}" != "true" ]]; then
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              echo "PR was not merged, skipping"
-              exit 0
-            fi
+          # Fetch all tags explicitly (ensures tag list is accurate)
+          git fetch --tags
 
-            title="${{ github.event.pull_request.title }}"
-            body="${{ github.event.pull_request.body }}"
-
-            if echo "$title" | grep -qi "chore(deps)"; then
-              echo "should_release=true" >> "$GITHUB_OUTPUT"
-              echo "Triggered by merged deps PR: $title"
-            else
-              echo "should_release=false" >> "$GITHUB_OUTPUT"
-              echo "PR '$title' does not contain 'chore(deps)', skipping"
-            fi
+          # Check if a published (non-draft) release for this version already exists
+          if gh release view "v${VERSION}" --json isDraft --jq '.isDraft' 2>/dev/null | grep -q false; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Published release v${VERSION} already exists — skipping"
           else
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "New version or draft-only: v${VERSION}"
           fi
 
-  # ── Build release binary for linux x86_64 ──
+  # ── Build native binaries ────────────────────────────────────────────
   build:
-    name: Build Release Binary
-    needs: check-trigger
-    if: needs.check-trigger.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.asset_name }}
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: linux-x86_64
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset_name: windows-x86_64
+
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: rusty-stack
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust stable
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -91,89 +119,261 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rusty-stack/target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('rusty-stack/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('rusty-stack/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Read version from Cargo.toml
-        id: version
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Strip binaries (Linux only)
+        if: runner.os == 'Linux'
         run: |
-          version=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Building version: $version"
+          strip target/${{ matrix.target }}/release/rusty-stack
+          strip target/${{ matrix.target }}/release/rusty || true
 
-      - name: Build release binary
+      - name: Package release bundle
+        shell: bash
         run: |
-          cargo build --release --all-features 2>&1
+          VERSION="${{ needs.detect.outputs.version }}"
+          EXT="${{ matrix.asset_name == 'windows-x86_64' && '.exe' || '' }}"
+          BUNDLE_DIR="rusty-stack-${VERSION}-${{ matrix.asset_name }}"
+          mkdir -p "$BUNDLE_DIR/bin"
 
-      - name: Strip and prepare binary
-        run: |
-          strip --strip-all target/release/rusty-stack
-          strip --strip-all target/release/rusty || true
-          mkdir -p /tmp/release
-          cp target/release/rusty-stack /tmp/release/rusty-stack-x86_64-unknown-linux-gnu
-          cp target/release/rusty /tmp/release/rusty-x86_64-unknown-linux-gnu || true
-          chmod +x /tmp/release/*
+          # Copy both binaries
+          cp "target/${{ matrix.target }}/release/rusty-stack${EXT}" "$BUNDLE_DIR/bin/rusty-stack${EXT}"
+          cp "target/${{ matrix.target }}/release/rusty${EXT}" "$BUNDLE_DIR/bin/rusty${EXT}" || true
 
-      - name: Generate checksums
-        run: |
-          cd /tmp/release
-          sha256sum * > checksums-sha256.txt
-          echo "## Checksums" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat checksums-sha256.txt >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Create archive
+          if [ "${{ matrix.asset_name }}" = "windows-x86_64" ]; then
+            7z a -tzip "${BUNDLE_DIR}.zip" "$BUNDLE_DIR"
+          else
+            tar czf "${BUNDLE_DIR}.tar.gz" "$BUNDLE_DIR"
+          fi
+          echo "BUNDLE_DIR=$BUNDLE_DIR" >> "$GITHUB_ENV"
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-binaries
-          path: /tmp/release/*
-          retention-days: 7
+          name: bundle-${{ matrix.asset_name }}
+          path: |
+            rusty-stack/rusty-stack-*.tar.gz
+            rusty-stack/rusty-stack-*.zip
+          if-no-files-found: error
 
-  # ── Create GitHub release ──
-  release:
-    name: Create GitHub Release
-    needs: [check-trigger, build]
-    if: needs.check-trigger.outputs.should_release == 'true'
+  # ── Create GitHub Release (draft) ────────────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: [detect, build]
+    if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Read version from Cargo.toml
-        id: version
-        run: |
-          cd rusty-stack
-          version=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Download release artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: release-binaries
-          path: /tmp/release
+          path: release-artifacts
+          pattern: bundle-*
+          merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Generate SHA256 checksums
+        working-directory: release-artifacts
+        run: |
+          shopt -s nullglob
+          sha256sum rusty-stack-*.tar.gz rusty-stack-*.zip > ../SHA256SUMS
+          cat ../SHA256SUMS
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+
+          {
+            echo "## What's Changed"
+            echo ""
+            echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**"
+            echo ""
+
+            if [ -n "$PREV_TAG" ]; then
+              echo "Changes since ${PREV_TAG}:"
+              echo ""
+              git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...v${VERSION}"
+            else
+              echo "Initial release."
+            fi
+          } > CHANGELOG.md
+
+      - name: Create GitHub Release (draft)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Release v${{ steps.version.outputs.version }}
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          tag_name: v${{ needs.detect.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ needs.detect.outputs.version }}
+          body_path: CHANGELOG.md
+          draft: true
+          prerelease: false
           files: |
-            /tmp/release/rusty-stack-x86_64-unknown-linux-gnu
-            /tmp/release/rusty-x86_64-unknown-linux-gnu
-            /tmp/release/checksums-sha256.txt
+            release-artifacts/rusty-stack-*.tar.gz
+            release-artifacts/rusty-stack-*.zip
+            SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Summary
+  # ── Publish to crates.io ─────────────────────────────────────────────
+  crates-io:
+    name: Publish crates.io
+    needs: [detect, github-release]
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rusty-stack
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: publish-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Publish to crates.io
         run: |
-          echo "# Release Summary" >> "$GITHUB_STEP_SUMMARY"
+          VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          # Skip if this version already exists on crates.io (idempotent for retries)
+          if cargo search rusty-stack 2>/dev/null | grep -q "^rusty-stack = \"${VERSION}\""; then
+            echo "Version ${VERSION} already published to crates.io — skipping"
+          else
+            cargo publish --allow-dirty
+          fi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # ── Publish PyPI package (thin wrapper) ──────────────────────────────
+  pypi:
+    name: Publish PyPI
+    needs: [detect, github-release]
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check PYPI_TOKEN availability
+        id: check_token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ -z "$PYPI_TOKEN" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ PYPI_TOKEN not set — skipping PyPI publish"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python
+        if: steps.check_token.outputs.available == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify version parity
+        if: steps.check_token.outputs.available == 'true'
+        run: |
+          CARGO_VERSION=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          PYPI_VERSION=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project'].get('version',''))" 2>/dev/null || true)
+          if [ -z "$PYPI_VERSION" ] && [ -f "VERSION" ]; then
+            PYPI_VERSION=$(cat VERSION)
+          fi
+          if [ "$CARGO_VERSION" != "$PYPI_VERSION" ]; then
+            echo "::error::Version mismatch: Cargo.toml=$CARGO_VERSION, pyproject.toml/VERSION=$PYPI_VERSION"
+            exit 1
+          fi
+          echo "Versions match: v${CARGO_VERSION}"
+
+      - name: Install build tools
+        if: steps.check_token.outputs.available == 'true'
+        run: pip install build twine
+
+      - name: Build package
+        if: steps.check_token.outputs.available == 'true'
+        run: python -m build
+
+      - name: Publish to PyPI
+        if: steps.check_token.outputs.available == 'true'
+        run: |
+          PYPI_VER=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project'].get('version',''))" 2>/dev/null || true)
+          if [ -z "$PYPI_VER" ] && [ -f "VERSION" ]; then
+            PYPI_VER=$(cat VERSION)
+          fi
+          PKG_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          if pip install "${PKG_NAME}==${PYPI_VER}" --dry-run 2>&1 | grep -q "Would install"; then
+            echo "Version ${PYPI_VER} already on PyPI — skipping upload"
+          else
+            twine upload dist/* --non-interactive
+          fi
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+
+  # ── Final summary ────────────────────────────────────────────────────
+  summary:
+    name: Release Summary
+    needs: [detect, github-release, crates-io, pypi]
+    if: always() && needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify HEAD matches release commit
+        if: needs.github-release.result == 'success'
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          RELEASE_SHA=$(gh release view "v${VERSION}" --json targetCommitish --jq '.targetCommitish')
+          BRANCH_HEAD_SHA=$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')
+          if [ "$RELEASE_SHA" != "$BRANCH_HEAD_SHA" ]; then
+            echo "ERROR: Release SHA ($RELEASE_SHA) != ${GITHUB_REF_NAME} HEAD ($BRANCH_HEAD_SHA)"
+            echo "New commits landed during release — aborting undraft."
+            exit 1
+          fi
+          echo "SHA verified: $BRANCH_HEAD_SHA"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish draft release
+        if: needs.github-release.result == 'success'
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          gh release edit "v${VERSION}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print summary
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          echo "## 🚀 Release v${VERSION} Pipeline" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version:** v${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Tag:** v${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Pre-release:** ${{ contains(steps.version.outputs.version, '-') }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Step | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GitHub Release | ${{ needs.github-release.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| crates.io | ${{ needs.crates-io.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PyPI | ${{ needs.pypi.result }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Registry notes" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **crates.io**: Publishes the Rust crate (required)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PyPI**: Thin Python wrapper that installs via cargo (optional — needs PYPI_TOKEN)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Windows ALPHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**" >> "$GITHUB_STEP_SUMMARY"
