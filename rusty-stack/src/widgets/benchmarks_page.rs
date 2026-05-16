@@ -28,6 +28,7 @@ pub struct BenchmarkResults {
     pub memory_bandwidth: Option<MemoryBandwidthData>,
     pub tensor_core: Option<TensorCoreData>,
     pub pytorch: Option<PyTorchData>,
+    pub llama_cpp: Option<LlamaCppData>,
     pub flash_attention: Option<FlashAttentionData>,
     pub vllm: Option<VllmData>,
     pub deepspeed: Option<DeepspeedData>,
@@ -112,6 +113,31 @@ pub struct PyTorchData {
 }
 
 #[derive(Debug, Clone)]
+pub struct LlamaCppData {
+    pub gpus: Vec<LlamaCppGpu>,
+    pub prefill: Vec<LlamaCppPerfPoint>,
+    pub decode: Vec<LlamaCppPerfPoint>,
+    pub model: String,
+    pub rocm_version: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlamaCppGpu {
+    pub name: String,
+    pub arch: String,
+    pub vram_gb: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlamaCppPerfPoint {
+    pub gpu: usize,
+    pub context: Option<u32>,
+    pub n_gen: Option<u32>,
+    pub avg_tps: f64,
+    pub stddev: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct FlashAttentionData {
     pub standard_attention_speed: f64,
     pub flash_attention_speed: f64,
@@ -146,6 +172,8 @@ pub fn load_benchmark_results() -> BenchmarkResults {
         "rocm_benchmarks",
         "gpu_memory_bandwidth",
         "pytorch_performance",
+        "llama_cpp_benchmarks",
+        "llama-cpp",
         "mlperf_inference",
         "vllm_benchmarks",
         "deepspeed_benchmarks",
@@ -247,6 +275,7 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
                     memory_bandwidth: None,
                     tensor_core: None,
                     pytorch: None,
+                    llama_cpp: None,
                     flash_attention: None,
                     vllm: None,
                     deepspeed: None,
@@ -383,6 +412,7 @@ fn apply_metrics(val: &serde_json::Value, results: &mut BenchmarkResults, includ
             || obj.contains_key("throughput_samples_per_sec")
             || obj.contains_key("megatron_throughput_samples_per_sec")
             || obj.contains_key("ort_version")
+            || obj.keys().any(|k| k.contains("_tps_gpu"))
         {
             apply_metrics_internal(val, results, include_errors);
         } else {
@@ -764,6 +794,90 @@ fn apply_metrics_internal(
                     .unwrap_or_default(),
             });
         }
+
+        // llama-cpp benchmark: keys like prefill_512_tps_gpu0, decode_128_tps_gpu0
+        if obj.keys().any(|k| k.contains("_tps_gpu")) {
+            let mut gpus = Vec::new();
+            let mut prefill = Vec::new();
+            let mut decode = Vec::new();
+
+            // Collect unique GPU indices from metric keys
+            let mut gpu_indices: Vec<usize> = obj
+                .keys()
+                .filter_map(|k| {
+                    k.rsplit("_gpu")
+                        .next()
+                        .and_then(|s| s.parse::<usize>().ok())
+                })
+                .collect();
+            gpu_indices.sort();
+            gpu_indices.dedup();
+
+            for gpu_idx in &gpu_indices {
+                gpus.push(LlamaCppGpu {
+                    name: format!("GPU {}", gpu_idx),
+                    arch: String::new(),
+                    vram_gb: 0.0,
+                });
+            }
+
+            for (key, value) in obj.iter() {
+                let tps = value.as_f64().unwrap_or(0.0);
+                let gpu_idx = key
+                    .rsplit("_gpu")
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+
+                if key.starts_with("prefill_") && !key.contains("stddev") {
+                    // prefill_{context}_tps_gpu{idx}
+                    let context = key
+                        .trim_start_matches("prefill_")
+                        .trim_end_matches(&format!("_tps_gpu{}", gpu_idx))
+                        .parse::<u32>()
+                        .ok();
+                    prefill.push(LlamaCppPerfPoint {
+                        gpu: gpu_idx,
+                        context,
+                        n_gen: None,
+                        avg_tps: tps,
+                        stddev: obj
+                            .get(&key.replace("_tps_", "_stddev_tps_"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0),
+                    });
+                } else if key.starts_with("decode_") && !key.contains("stddev") {
+                    // decode_{n_gen}_tps_gpu{idx}
+                    let n_gen = key
+                        .trim_start_matches("decode_")
+                        .trim_end_matches(&format!("_tps_gpu{}", gpu_idx))
+                        .parse::<u32>()
+                        .ok();
+                    decode.push(LlamaCppPerfPoint {
+                        gpu: gpu_idx,
+                        context: None,
+                        n_gen,
+                        avg_tps: tps,
+                        stddev: obj
+                            .get(&key.replace("_tps_", "_stddev_tps_"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0),
+                    });
+                }
+            }
+
+            // Sort by GPU index then context/n_gen
+            prefill.sort_by(|a, b| a.gpu.cmp(&b.gpu).then(a.context.cmp(&b.context)));
+            decode.sort_by(|a, b| a.gpu.cmp(&b.gpu).then(a.n_gen.cmp(&b.n_gen)));
+
+            results.llama_cpp = Some(LlamaCppData {
+                gpus,
+                prefill,
+                decode,
+                model: String::new(),
+                rocm_version: String::new(),
+            });
+        }
     }
 }
 
@@ -778,6 +892,7 @@ impl BenchmarkResults {
             memory_bandwidth: None,
             tensor_core: None,
             pytorch: None,
+            llama_cpp: None,
             flash_attention: None,
             vllm: None,
             deepspeed: None,
@@ -806,6 +921,7 @@ pub fn render_benchmark_page(
         Line::from("DeepSpeed"),
         Line::from("Megatron"),
         Line::from("ONNX"),
+        Line::from("LLaMA"),
     ])
     .select(tab_index)
     .style(Style::default().fg(Color::Cyan))
@@ -832,6 +948,7 @@ pub fn render_benchmark_page(
         6 => render_deepspeed_tab(frame, chunks[1], results),
         7 => render_megatron_tab(frame, chunks[1], results),
         8 => render_onnx_tab(frame, chunks[1], results),
+        9 => render_llama_cpp_tab(frame, chunks[1], results),
         _ => render_gpu_tab(frame, chunks[1], results),
     }
 }
@@ -897,6 +1014,14 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
             content.push_str(&format!(
                 "  • PyTorch GEMM: {:.1} GFLOPS\n",
                 torch.gemm_gflops
+            ));
+            has_perf = true;
+        }
+        if let Some(llama) = &results.llama_cpp {
+            content.push_str(&format!(
+                "  • LLaMA.cpp: {} on {} GPU(s)\n",
+                llama.model,
+                llama.gpus.len()
             ));
             has_perf = true;
         }
@@ -1290,6 +1415,110 @@ fn render_flash_attention_tab(frame: &mut Frame, area: Rect, results: &Benchmark
                 .block(
                     Block::default()
                         .title("Flash Attention vs Standard")
+                        .borders(Borders::ALL),
+                ),
+            area,
+        );
+    }
+}
+
+fn render_llama_cpp_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
+    if let Some(llama) = &results.llama_cpp {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Length(8),
+                Constraint::Min(8),
+            ])
+            .split(area);
+
+        let summary = format!(
+            "Model: {} | ROCm: {} | GPUs: {}",
+            llama.model,
+            llama.rocm_version,
+            llama.gpus.len()
+        );
+        frame.render_widget(
+            Paragraph::new(summary).block(Block::default().borders(Borders::ALL).title("Summary")),
+            chunks[0],
+        );
+
+        let gpu_lines = llama
+            .gpus
+            .iter()
+            .enumerate()
+            .map(|(idx, gpu)| {
+                Line::from(format!(
+                    "GPU {}: {} | {} | {:.1} GB",
+                    idx, gpu.name, gpu.arch, gpu.vram_gb
+                ))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(Text::from(gpu_lines))
+                .block(Block::default().borders(Borders::ALL).title("GPU Info")),
+            chunks[1],
+        );
+
+        let mut body = String::from("Prefill Throughput (tokens/sec)\n");
+        for gpu in &llama.gpus {
+            body.push_str(&format!("GPU: {} ({})\n", gpu.name, gpu.arch));
+            for context in [512_u32, 2048_u32, 8192_u32] {
+                let value = llama
+                    .prefill
+                    .iter()
+                    .find(|p| {
+                        p.gpu
+                            == llama
+                                .gpus
+                                .iter()
+                                .position(|g| g.name == gpu.name)
+                                .unwrap_or(0)
+                            && p.context == Some(context)
+                    })
+                    .map(|p| p.avg_tps)
+                    .unwrap_or(0.0);
+                body.push_str(&format!("  {}: {:.2}\n", context, value));
+            }
+            body.push('\n');
+        }
+        body.push_str("Decode Throughput (tokens/sec)\n");
+        for gpu in &llama.gpus {
+            body.push_str(&format!("GPU: {} ({})\n", gpu.name, gpu.arch));
+            for n_gen in [128_u32] {
+                let value = llama
+                    .decode
+                    .iter()
+                    .find(|p| {
+                        p.gpu
+                            == llama
+                                .gpus
+                                .iter()
+                                .position(|g| g.name == gpu.name)
+                                .unwrap_or(0)
+                            && p.n_gen == Some(n_gen)
+                    })
+                    .map(|p| p.avg_tps)
+                    .unwrap_or(0.0);
+                body.push_str(&format!("  {}: {:.2}\n", n_gen, value));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(body).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Throughput Tables"),
+            ),
+            chunks[2],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("No LLaMA.cpp data available\n\nRun llama-cpp benchmark")
+                .alignment(Alignment::Left)
+                .block(
+                    Block::default()
+                        .title("LLaMA.cpp Performance")
                         .borders(Borders::ALL),
                 ),
             area,
@@ -1763,6 +1992,7 @@ pub fn export_benchmark_report_html(
             "tensor_fp16": results.tensor_core.as_ref().map(|t| t.fp16_samples.clone()).unwrap_or_default(),
             "pytorch_gemm": results.pytorch.as_ref().map(|p| p.gemm_samples.clone()).unwrap_or_default(),
             "pytorch_conv": results.pytorch.as_ref().map(|p| p.conv_samples.clone()).unwrap_or_default(),
+            "llama_cpp": results.llama_cpp.as_ref().map(|l| l.prefill.iter().map(|p| p.avg_tps).collect::<Vec<_>>()).unwrap_or_default(),
             "flash_standard": results.flash_attention.as_ref().map(|f| f.standard_samples.clone()).unwrap_or_default(),
             "flash_optimized": results.flash_attention.as_ref().map(|f| f.flash_samples.clone()).unwrap_or_default(),
             "vllm": results.vllm.as_ref().map(|v| v.throughput_samples.clone()).unwrap_or_default(),
@@ -1774,6 +2004,7 @@ pub fn export_benchmark_report_html(
             "memory_hbm_peak": results.memory_bandwidth.as_ref().map(|m| m.hbm_peak_gb_s).unwrap_or(0.0),
             "tensor_fp16_tflops": results.tensor_core.as_ref().map(|t| t.fp16_tflops).unwrap_or(0.0),
             "pytorch_gemm_gflops": results.pytorch.as_ref().map(|p| p.gemm_gflops).unwrap_or(0.0),
+            "llama_cpp_model": results.llama_cpp.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
             "flash_speedup": results.flash_attention.as_ref().map(|f| f.speedup).unwrap_or(0.0),
             "vllm_tps": results.vllm.as_ref().map(|v| v.throughput_tokens_per_sec).unwrap_or(0.0),
             "deepspeed_sps": results.deepspeed.as_ref().map(|d| d.throughput_samples_per_sec).unwrap_or(0.0),
@@ -1997,6 +2228,7 @@ pub fn export_benchmark_report_html(
         <div class="plot"><h3>Memory Bandwidth</h3><canvas id="chartMemory"></canvas></div>
         <div class="plot"><h3>Tensor Core FP16</h3><canvas id="chartTensor"></canvas></div>
         <div class="plot"><h3>PyTorch (GEMM/Conv)</h3><canvas id="chartPytorch"></canvas></div>
+        <div class="plot"><h3>LLaMA.cpp Prefill</h3><canvas id="chartLlamaCpp"></canvas></div>
         <div class="plot"><h3>Flash Attention</h3><canvas id="chartFlash"></canvas></div>
         <div class="plot"><h3>vLLM Throughput</h3><canvas id="chartVllm"></canvas></div>
         <div class="plot"><h3>DeepSpeed Throughput</h3><canvas id="chartDeepspeed"></canvas></div>
@@ -2019,6 +2251,7 @@ pub fn export_benchmark_report_html(
       ["HBM Peak (GB/s)", reportData.key_metrics.memory_hbm_peak],
       ["FP16 TFLOPS", reportData.key_metrics.tensor_fp16_tflops],
       ["PyTorch GEMM (GFLOPS)", reportData.key_metrics.pytorch_gemm_gflops],
+      ["LLaMA.cpp Model", reportData.key_metrics.llama_cpp_model],
       ["Flash Speedup (x)", reportData.key_metrics.flash_speedup],
       ["vLLM tok/s", reportData.key_metrics.vllm_tps],
       ["DeepSpeed samp/s", reportData.key_metrics.deepspeed_sps],
@@ -2190,6 +2423,9 @@ pub fn export_benchmark_report_html(
       {{name: "GEMM", color: "#3ddc84", values: reportData.charts.pytorch_gemm}},
       {{name: "Conv", color: "#ffa24d", values: reportData.charts.pytorch_conv}}
     ]);
+    drawMultiLine("chartLlamaCpp", [
+      {{name: "LLaMA.cpp", color: "#74a7ff", values: reportData.charts.llama_cpp}}
+    ]);
     drawMultiLine("chartFlash", [
       {{name: "Standard", color: "#8a99b6", values: reportData.charts.flash_standard}},
       {{name: "Optimized", color: "#27d7c6", values: reportData.charts.flash_optimized}}
@@ -2262,6 +2498,14 @@ fn build_summary_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
             "detail": format!("Conv {:.2} GFLOPS, autograd overhead {:.2}%", p.convolution_gflops, p.autograd_overhead_percent)
         }));
     }
+    if let Some(l) = &results.llama_cpp {
+        rows.push(serde_json::json!({
+            "component": "LLaMA.cpp",
+            "status": "ok",
+            "metric": format!("{} GPUs", l.gpus.len()),
+            "detail": format!("Model {} | ROCm {}", l.model, l.rocm_version)
+        }));
+    }
     if let Some(f) = &results.flash_attention {
         rows.push(serde_json::json!({
             "component": "Flash Attention",
@@ -2324,6 +2568,10 @@ fn build_metric_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
         rows.push(serde_json::json!({"component":"PyTorch","metric":"Convolution","value":p.convolution_gflops,"unit":"GFLOPS"}));
         rows.push(serde_json::json!({"component":"PyTorch","metric":"Autograd Overhead","value":p.autograd_overhead_percent,"unit":"%"}));
     }
+    if let Some(l) = &results.llama_cpp {
+        rows.push(serde_json::json!({"component":"LLaMA.cpp","metric":"Prefill Tokens/s","value":l.prefill.iter().map(|p| p.avg_tps).sum::<f64>(),"unit":"t/s"}));
+        rows.push(serde_json::json!({"component":"LLaMA.cpp","metric":"Decode Tokens/s","value":l.decode.iter().map(|p| p.avg_tps).sum::<f64>(),"unit":"t/s"}));
+    }
     if let Some(f) = &results.flash_attention {
         rows.push(serde_json::json!({"component":"Flash Attention","metric":"Standard","value":f.standard_attention_speed,"unit":"tok/s"}));
         rows.push(serde_json::json!({"component":"Flash Attention","metric":"Flash","value":f.flash_attention_speed,"unit":"tok/s"}));
@@ -2368,6 +2616,10 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     if let Some(p) = &results.pytorch {
         rows.push(serde_json::json!({"benchmark":"PyTorch","series":"GEMM GFLOPS","samples":p.gemm_samples}));
         rows.push(serde_json::json!({"benchmark":"PyTorch","series":"Conv GFLOPS","samples":p.conv_samples}));
+    }
+    if let Some(l) = &results.llama_cpp {
+        rows.push(serde_json::json!({"benchmark":"LLaMA.cpp","series":"Prefill t/s","samples":l.prefill.iter().map(|p| p.avg_tps).collect::<Vec<_>>()}));
+        rows.push(serde_json::json!({"benchmark":"LLaMA.cpp","series":"Decode t/s","samples":l.decode.iter().map(|p| p.avg_tps).collect::<Vec<_>>()}));
     }
     if let Some(f) = &results.flash_attention {
         rows.push(serde_json::json!({"benchmark":"Flash Attention","series":"Standard tok/s","samples":f.standard_samples}));
