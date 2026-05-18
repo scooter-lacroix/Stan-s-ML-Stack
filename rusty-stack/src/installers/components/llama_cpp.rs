@@ -1120,7 +1120,8 @@ const VERIFICATION_MODEL_SEARCH_PATHS: &[&str] = &[
 /// Locate a model file for llama-bench verification.
 fn find_verification_model(home: &str, fork_dir: &str) -> Option<PathBuf> {
     for relative in VERIFICATION_MODEL_SEARCH_PATHS {
-        let candidate = PathBuf::from(home).join("Documents/Product/Stan-s-ML-Stack/Fork")
+        let candidate = PathBuf::from(home)
+            .join("Documents/Product/Stan-s-ML-Stack/Fork")
             .join(relative.trim_start_matches("llama.cpp-turboquant-hip/"));
         if candidate.exists() {
             return Some(candidate);
@@ -1128,9 +1129,8 @@ fn find_verification_model(home: &str, fork_dir: &str) -> Option<PathBuf> {
     }
     // Also check the fork_dir directly
     for relative in VERIFICATION_MODEL_SEARCH_PATHS {
-        let candidate = PathBuf::from(fork_dir).join(
-            relative.trim_start_matches("llama.cpp-turboquant-hip/")
-        );
+        let candidate =
+            PathBuf::from(fork_dir).join(relative.trim_start_matches("llama.cpp-turboquant-hip/"));
         if candidate.exists() {
             return Some(candidate);
         }
@@ -1734,15 +1734,12 @@ mod tests {
     // Note: `validate_repo_access` is not tested here because it requires real git/network access.
     // It is tested indirectly via integration tests or manual validation.
 
-
     // ── Post-install verification tests (VAL-CROSS-008/009/010/011) ──
 
     #[test]
     fn test_post_install_verification_no_binaries() {
-        let result = verify_installed_binary(
-            "/nonexistent/path/that/does/not/exist",
-            "/nonexistent/fork",
-        );
+        let result =
+            verify_installed_binary("/nonexistent/path/that/does/not/exist", "/nonexistent/fork");
         assert!(!result.help_check_passed);
         assert!(!result.stronger_check_attempted);
         assert!(!result.rdna3_check_attempted);
@@ -1752,10 +1749,8 @@ mod tests {
 
     #[test]
     fn test_post_install_verification_struct_fields() {
-        let result = verify_installed_binary(
-            "/nonexistent/path/that/does/not/exist",
-            "/nonexistent/fork",
-        );
+        let result =
+            verify_installed_binary("/nonexistent/path/that/does/not/exist", "/nonexistent/fork");
         assert!(!result.help_check_passed);
         assert!(!result.stronger_check_attempted);
         assert!(!result.stronger_check_passed);
@@ -1789,10 +1784,7 @@ mod tests {
             .unwrap();
         }
 
-        let result = verify_installed_binary(
-            tmp.path().to_str().unwrap(),
-            "/nonexistent/fork",
-        );
+        let result = verify_installed_binary(tmp.path().to_str().unwrap(), "/nonexistent/fork");
         assert!(result.help_check_passed);
         assert!(!result.stronger_check_attempted);
         assert!(!result.rdna3_check_attempted);
@@ -1823,5 +1815,4 @@ mod tests {
         assert_eq!(parse_bench_tps(""), None);
         assert_eq!(parse_bench_tps("| col1 | col2 |"), None);
     }
-
 }

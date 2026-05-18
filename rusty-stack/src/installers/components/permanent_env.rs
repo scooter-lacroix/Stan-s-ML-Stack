@@ -175,7 +175,6 @@ export UV_PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_SYSTEM_PYTHON=1
 
 # MPI/UCX Settings (ROCm-aware)
-export OMPI_MCA_opal_cuda_support=true
 export OMPI_MCA_pml=ucx
 export OMPI_MCA_osc=ucx
 export OMPI_MCA_btl=^openib,uct

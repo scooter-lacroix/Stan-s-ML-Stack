@@ -560,7 +560,6 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
             ("HIP_PATH", rocm_home),
             ("HSA_OVERRIDE_GFX_VERSION", hsa_override_val.as_str()),
             ("HIP_VISIBLE_DEVICES", gpu_list.as_str()),
-            ("CUDA_VISIBLE_DEVICES", gpu_list.as_str()),
             ("PYTORCH_ROCM_DEVICE", primary_gpu.as_str()),
             ("MLSTACK_PYTHON_BIN", python_bin.as_str()),
             ("UV_PYTHON", python_bin.as_str()),
@@ -609,7 +608,6 @@ export ROCM_PATH={}\n\
 export HIP_PATH={}\n\
 export HSA_OVERRIDE_GFX_VERSION={}\n\
 export HIP_VISIBLE_DEVICES={}\n\
-export CUDA_VISIBLE_DEVICES={}\n\
 export PYTORCH_ROCM_DEVICE={}\n\
 export MLSTACK_PYTHON_BIN={}\n\
 export UV_PYTHON={}\n\
@@ -628,7 +626,6 @@ export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-comp
         rocm_home,
         rocm_home,
         hsa_override,
-        gpu_list,
         gpu_list,
         primary_gpu,
         python_bin,
@@ -685,8 +682,6 @@ fn sanitize_mlstack_env(
             normalize_env_value(&line, "HSA_OVERRIDE_GFX_VERSION", hsa_override);
         let (line, changed_hip_vis) =
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
-        let (line, changed_cuda_vis) =
-            normalize_visible_devices(&line, "CUDA_VISIBLE_DEVICES", gpu_list);
         let (line, changed_pythonpath) = if line.starts_with("export PYTHONPATH=") {
             let desired = format!("export PYTHONPATH={}/lib:$PYTHONPATH", rocm_home);
             if line.trim() != desired {
@@ -734,7 +729,6 @@ fn sanitize_mlstack_env(
             || changed_method_alias
             || changed_hsa
             || changed_hip_vis
-            || changed_cuda_vis
             || changed_pythonpath
             || changed_path
             || changed_ld;
@@ -1348,7 +1342,6 @@ fn collect_env_info(user_home: &str) -> Vec<(String, String)> {
         "GPU_ARCHS",
         "PYTORCH_ROCM_ARCH",
         "HIP_VISIBLE_DEVICES",
-        "CUDA_VISIBLE_DEVICES",
         "PYTORCH_ROCM_DEVICE",
         "HSA_OVERRIDE_GFX_VERSION",
         "ROCM_HOME",
@@ -1681,19 +1674,12 @@ fn run_verification_command(
         .get("HIP_VISIBLE_DEVICES")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let mut cuda_visible = env_exports
-        .get("CUDA_VISIBLE_DEVICES")
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| hip_visible.clone());
     if step.target_id == "aiter" {
         let base_list = hip_visible
             .clone()
-            .or_else(|| cuda_visible.clone())
             .unwrap_or_else(detect_gpu_list);
         let ordered = prioritize_gpu_list_for_arch(&base_list, &gpu_archs);
         hip_visible = Some(ordered.clone());
-        cuda_visible = Some(ordered);
     }
     let hsa_override = env_exports
         .get("HSA_OVERRIDE_GFX_VERSION")
@@ -1719,9 +1705,6 @@ fn run_verification_command(
 
     if let Some(value) = hip_visible {
         command.env("HIP_VISIBLE_DEVICES", value);
-    }
-    if let Some(value) = cuda_visible {
-        command.env("CUDA_VISIBLE_DEVICES", value);
     }
     if let Some(value) = hsa_override {
         command.env("HSA_OVERRIDE_GFX_VERSION", value);
@@ -2263,7 +2246,6 @@ fn build_common_env(ctx: &NativeInstallerContext) -> Vec<(String, String)> {
         "GPU_ARCHS",
         "PYTORCH_ROCM_ARCH",
         "HIP_VISIBLE_DEVICES",
-        "CUDA_VISIBLE_DEVICES",
         "PYTORCH_ROCM_DEVICE",
         "HSA_OVERRIDE_GFX_VERSION",
         "MLSTACK_PYTHON_BIN",
@@ -3444,7 +3426,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let repair_ids = RepairInstaller::native_component_ids();
 
             let _ = sender.send(InstallerEvent::Log(
-                "[native] Starting ML Stack repair (8 steps via native installers)...".to_string(),
+                "[native] Starting ML Stack repair (8 steps via native installers)..."
+                    .to_string(),
                 false,
             ));
 
@@ -3495,7 +3478,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 purge_component_packages(&["megatron-core", "megatron"], sender, &component.name);
             }
 
-            // Step 1: Install dependencies
+            // Step 1: Install safe dependencies only.
             for dep_pkg in &["ninja", "packaging", "wheel"] {
                 let cmd = inst.build_dep_install_command(dep_pkg);
                 execute_native_command(
@@ -3556,6 +3539,42 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Step 5: Install filtered Megatron requirements without CUDA/NVIDIA deps.
+            let requirements_candidates = [
+                clone_target_path.join("requirements").join("requirements.txt"),
+                clone_target_path.join("requirements.txt"),
+                clone_target_path.join("requirements").join("requirements_amd.txt"),
+            ];
+            for req_path in requirements_candidates.iter().filter(|p| p.exists()) {
+                let filtered = filter_cuda_requirements(&req_path.to_string_lossy());
+                if filtered.is_empty() {
+                    continue;
+                }
+                let tmp_dir = std::env::temp_dir().join("rusty-stack-megatron");
+                let _ = std::fs::create_dir_all(&tmp_dir);
+                let filtered_path = tmp_dir.join("requirements_filtered.txt");
+                std::fs::write(&filtered_path, &filtered).with_context(|| {
+                    format!(
+                        "Failed to write filtered Megatron requirements to {:?}",
+                        filtered_path
+                    )
+                })?;
+                let filtered_path_str = filtered_path.to_string_lossy().to_string();
+                let filtered_cmd = inst.build_requirements_install_command(&filtered_path_str);
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(
+                        &filtered_cmd.program,
+                        &filtered_cmd.args,
+                        &filtered_cmd.env,
+                    ),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
+                let _ = std::fs::remove_file(&filtered_path);
+                break;
+            }
         }
 
         // ── vllm ──────────────────────────────────────────────────────
@@ -4460,10 +4479,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 "{}/Documents/Product/Stan-s-ML-Stack/Fork/llama.cpp-turboquant-hip",
                 home
             );
-            let verification = crate::installers::components::llama_cpp::verify_installed_binary(
-                &home,
-                &fork_dir,
-            );
+            let verification =
+                crate::installers::components::llama_cpp::verify_installed_binary(&home, &fork_dir);
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "llama-cpp post-install verification: {}",
@@ -4522,7 +4539,7 @@ fn run_script(
 ) -> Result<()> {
     let user_home = resolve_mlstack_user_home();
     let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
+    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
 
     let venv_bin = PathBuf::from(&user_home).join("rocm_venv").join("bin");
     let local_bin = PathBuf::from(&user_home).join(".local").join("bin");
@@ -4638,12 +4655,6 @@ fn run_script(
         .get("HIP_VISIBLE_DEVICES")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
-        .or_else(|| {
-            env_exports
-                .get("CUDA_VISIBLE_DEVICES")
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
         .unwrap_or_else(detect_gpu_list);
     let hsa_override = env_exports
         .get("HSA_OVERRIDE_GFX_VERSION")
@@ -4689,7 +4700,6 @@ fn run_script(
         .env("ROCM_ROOT", "/opt/rocm")
         .env("HIPCC_BIN_DIR", "/opt/rocm/bin")
         .env("HIP_VISIBLE_DEVICES", &gpu_list)
-        .env("CUDA_VISIBLE_DEVICES", &gpu_list)
         .env("MLSTACK_BATCH_MODE", if batch_mode { "1" } else { "0" })
         .env("MLSTACK_INSTALL_METHOD", install_method)
         .env("INSTALL_METHOD", install_method)
