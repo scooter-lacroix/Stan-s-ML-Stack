@@ -359,6 +359,7 @@ impl App {
                         }
                         self.telemetry_prompt_pending = false;
                         self.telemetry_prompt_active = false;
+                        self.stage = Stage::Benchmarks;
                         return;
                     }
                     self.flush_install_input();
@@ -395,10 +396,12 @@ impl App {
                                 }
                                 self.telemetry_prompt_pending = false;
                                 self.telemetry_prompt_active = false;
+                                self.stage = Stage::Benchmarks;
                             }
                             'n' | 'N' => {
                                 self.telemetry_prompt_pending = false;
                                 self.telemetry_prompt_active = false;
+                                self.stage = Stage::Benchmarks;
                             }
                             _ => {
                                 self.install_input_buffer.push(c);
@@ -2412,9 +2415,15 @@ impl App {
                     self.install_input_buffer.clear();
                     self.recalculate_overall_progress();
                     self.install_status.progress = 1.0;
-                    self.telemetry_prompt_pending = success;
-                    self.telemetry_prompt_active = success;
-                    self.stage = Stage::Benchmarks;
+                    if success {
+                        // Stay in Installing to present the telemetry opt-in prompt.
+                        // The prompt is rendered by draw_installing() and resolved in
+                        // handle_key() (Y/n/Enter) which transitions to Benchmarks.
+                        self.telemetry_prompt_pending = true;
+                        self.telemetry_prompt_active = true;
+                    } else {
+                        self.stage = Stage::Complete;
+                    }
                 }
             }
         }
