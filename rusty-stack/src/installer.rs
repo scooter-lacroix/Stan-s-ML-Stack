@@ -4454,6 +4454,42 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     })?;
                 }
             }
+
+            // ── Post-install verification (VAL-CROSS-008/009/010/011) ──
+            let fork_dir = format!(
+                "{}/Documents/Product/Stan-s-ML-Stack/Fork/llama.cpp-turboquant-hip",
+                home
+            );
+            let verification = crate::installers::components::llama_cpp::verify_installed_binary(
+                &home,
+                &fork_dir,
+            );
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "llama-cpp post-install verification: {}",
+                    verification.summary
+                ),
+                false,
+            ));
+            if verification.stronger_check_passed {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "llama-cpp llama-bench: prefill={:.0} t/s, decode={:.0} t/s",
+                        verification.bench_prefill_tps.unwrap_or(0.0),
+                        verification.bench_decode_tps.unwrap_or(0.0),
+                    ),
+                    false,
+                ));
+            }
+            if verification.rdna3_is_valid.unwrap_or(false) {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "llama-cpp RDNA3 proof: device=RDNA3, WMMA={:.0} t/s",
+                        verification.rdna3_wmma_tps.unwrap_or(0.0),
+                    ),
+                    false,
+                ));
+            }
         }
 
         // ── Unknown component ─────────────────────────────────────────

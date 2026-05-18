@@ -1078,6 +1078,227 @@ pub fn has_rocm_linkage(home: &str) -> bool {
 }
 
 // ===========================================================================
+// Post-install verification (follow-up hardening)
+// ===========================================================================
+
+/// Result of stronger-than---help post-install verification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostInstallVerification {
+    /// Whether the basic --help check passed.
+    pub help_check_passed: bool,
+    /// Whether a stronger verification (llama-bench) was attempted.
+    pub stronger_check_attempted: bool,
+    /// Whether the stronger verification passed.
+    pub stronger_check_passed: bool,
+    /// Prefill tokens/second from llama-bench (if run).
+    pub bench_prefill_tps: Option<f64>,
+    /// Decode tokens/second from llama-bench (if run).
+    pub bench_decode_tps: Option<f64>,
+    /// Whether RDNA3 validation was attempted.
+    pub rdna3_check_attempted: bool,
+    /// Whether RDNA3 validation passed (is_rdna3 = YES).
+    pub rdna3_is_valid: Option<bool>,
+    /// WMMA throughput from rdna3_validation.
+    pub rdna3_wmma_tps: Option<f64>,
+    /// Whether the GPU is RDNA3.
+    pub is_rdna3_device: Option<bool>,
+    /// Whether WMMA is supported on the detected GPU.
+    pub wmma_supported: Option<bool>,
+    /// Path to the binary that was verified.
+    pub verified_binary_path: String,
+    /// Any human-readable summary of the verification.
+    pub summary: String,
+}
+
+/// Default verification model search paths relative to home.
+const VERIFICATION_MODEL_SEARCH_PATHS: &[&str] = &[
+    "models/Qwen3-0.6B-F16.gguf",
+    ".mlstack/models/Qwen3-0.6B-F16.gguf",
+    "llama.cpp-turboquant-hip/models/Qwen3-0.6B-F16.gguf",
+];
+
+/// Locate a model file for llama-bench verification.
+fn find_verification_model(home: &str, fork_dir: &str) -> Option<PathBuf> {
+    for relative in VERIFICATION_MODEL_SEARCH_PATHS {
+        let candidate = PathBuf::from(home).join("Documents/Product/Stan-s-ML-Stack/Fork")
+            .join(relative.trim_start_matches("llama.cpp-turboquant-hip/"));
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    // Also check the fork_dir directly
+    for relative in VERIFICATION_MODEL_SEARCH_PATHS {
+        let candidate = PathBuf::from(fork_dir).join(
+            relative.trim_start_matches("llama.cpp-turboquant-hip/")
+        );
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Performs stronger-than---help post-install verification on the installed binary.
+///
+/// Runs from the installed path (VAL-CROSS-009, VAL-CROSS-011).
+/// Attempts llama-bench with a small model for VAL-CROSS-010.
+/// Runs rdna3_validation if available for RDNA3 proof (VAL-CROSS-011).
+pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerification {
+    let bin_dir = resolve_install_bin_dir(home);
+    let cli_path = bin_dir.join(DETECTION_BINARY);
+    let bench_path = bin_dir.join("llama-bench");
+    let rdna3_path = bin_dir.join("rdna3_validation");
+
+    let mut result = PostInstallVerification {
+        help_check_passed: false,
+        stronger_check_attempted: false,
+        stronger_check_passed: false,
+        bench_prefill_tps: None,
+        bench_decode_tps: None,
+        rdna3_check_attempted: false,
+        rdna3_is_valid: None,
+        rdna3_wmma_tps: None,
+        is_rdna3_device: None,
+        wmma_supported: None,
+        verified_binary_path: cli_path.display().to_string(),
+        summary: String::new(),
+    };
+
+    // ── Step 1: Basic --help check ──────────────────────────────────
+    if cli_path.exists() {
+        match std::process::Command::new(&cli_path)
+            .arg(DETECTION_SUBCOMMAND)
+            .output()
+        {
+            Ok(out) => {
+                result.help_check_passed = out.status.success();
+            }
+            Err(_) => {
+                result.help_check_passed = false;
+            }
+        }
+    }
+
+    // ── Step 2: Stronger check via llama-bench (if available) ──────
+    if bench_path.exists() {
+        result.stronger_check_attempted = true;
+        if let Some(model_path) = find_verification_model(home, fork_dir) {
+            match std::process::Command::new(&bench_path)
+                .arg("-m")
+                .arg(model_path.to_str().unwrap_or(""))
+                .arg("-p")
+                .arg("128")
+                .arg("-n")
+                .arg("32")
+                .arg("-ngl")
+                .arg("33")
+                .output()
+            {
+                Ok(out) => {
+                    if out.status.success() {
+                        result.stronger_check_passed = true;
+                        // Parse prefill and decode t/s from output
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        for line in stdout.lines() {
+                            if line.contains("pp128") {
+                                // Extract the t/s value (last numeric column)
+                                if let Some(tps) = parse_bench_tps(line) {
+                                    result.bench_prefill_tps = Some(tps);
+                                }
+                            } else if line.contains("tg32") {
+                                if let Some(tps) = parse_bench_tps(line) {
+                                    result.bench_decode_tps = Some(tps);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    // ── Step 3: RDNA3 proof (if available) ─────────────────────────
+    if rdna3_path.exists() {
+        result.rdna3_check_attempted = true;
+        match std::process::Command::new(&rdna3_path).output() {
+            Ok(out) => {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    result.is_rdna3_device = Some(stdout.contains("Is RDNA3: YES"));
+                    result.wmma_supported = Some(stdout.contains("WMMA Supported: YES"));
+                    result.rdna3_is_valid = result.is_rdna3_device;
+
+                    // Extract WMMA throughput
+                    for line in stdout.lines() {
+                        if line.starts_with("WMMA Throughput:") {
+                            if let Some(val) = line.split_whitespace().nth(2) {
+                                if let Ok(tps) = val.parse::<f64>() {
+                                    result.rdna3_wmma_tps = Some(tps);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    // ── Build summary ──────────────────────────────────────────────
+    let mut parts: Vec<String> = vec![];
+    if result.help_check_passed {
+        parts.push("basic check PASSED".to_string());
+    } else {
+        parts.push("basic check FAILED".to_string());
+    }
+    if result.stronger_check_attempted {
+        if result.stronger_check_passed {
+            parts.push(format!(
+                "llama-bench PASSED (prefill={:.0} t/s, decode={:.0} t/s)",
+                result.bench_prefill_tps.unwrap_or(0.0),
+                result.bench_decode_tps.unwrap_or(0.0)
+            ));
+        } else {
+            parts.push("llama-bench FAILED".to_string());
+        }
+    } else {
+        parts.push("llama-bench SKIPPED (binary unavailable)".to_string());
+    }
+    if result.rdna3_check_attempted {
+        if result.rdna3_is_valid.unwrap_or(false) {
+            parts.push(format!(
+                "RDNA3 proof PASSED (WMMA={:.0} t/s)",
+                result.rdna3_wmma_tps.unwrap_or(0.0)
+            ));
+        } else {
+            parts.push("RDNA3 proof: not an RDNA3 device".to_string());
+        }
+    } else {
+        parts.push("RDNA3 proof SKIPPED (rdna3_validation unavailable)".to_string());
+    }
+
+    result.summary = parts.join("; ");
+    result
+}
+
+/// Parse tokens/second from a llama-bench output line.
+/// Lines look like: `| qwen3 0.6B F16 | 1.11 GiB | 596.05 M | ROCm | 33 | pp128 | 6254.94 ± 1534.82 |`
+fn parse_bench_tps(line: &str) -> Option<f64> {
+    let parts: Vec<&str> = line.split('|').collect();
+    if parts.len() >= 8 {
+        let tps_cell = parts[7].trim();
+        // Extract the number before any ±
+        tps_cell
+            .split('±')
+            .next()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+    } else {
+        None
+    }
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -1512,4 +1733,95 @@ mod tests {
 
     // Note: `validate_repo_access` is not tested here because it requires real git/network access.
     // It is tested indirectly via integration tests or manual validation.
+
+
+    // ── Post-install verification tests (VAL-CROSS-008/009/010/011) ──
+
+    #[test]
+    fn test_post_install_verification_no_binaries() {
+        let result = verify_installed_binary(
+            "/nonexistent/path/that/does/not/exist",
+            "/nonexistent/fork",
+        );
+        assert!(!result.help_check_passed);
+        assert!(!result.stronger_check_attempted);
+        assert!(!result.rdna3_check_attempted);
+        assert!(!result.summary.is_empty());
+        assert!(result.summary.contains("FAILED"));
+    }
+
+    #[test]
+    fn test_post_install_verification_struct_fields() {
+        let result = verify_installed_binary(
+            "/nonexistent/path/that/does/not/exist",
+            "/nonexistent/fork",
+        );
+        assert!(!result.help_check_passed);
+        assert!(!result.stronger_check_attempted);
+        assert!(!result.stronger_check_passed);
+        assert_eq!(result.bench_prefill_tps, None);
+        assert_eq!(result.bench_decode_tps, None);
+        assert!(!result.rdna3_check_attempted);
+        assert_eq!(result.rdna3_is_valid, None);
+        assert_eq!(result.rdna3_wmma_tps, None);
+        assert_eq!(result.is_rdna3_device, None);
+        assert_eq!(result.wmma_supported, None);
+        assert!(result.verified_binary_path.contains("llama-cli"));
+    }
+
+    #[test]
+    fn test_post_install_verification_cli_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join(".mlstack/components/llama-cpp/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(
+            bin_dir.join("llama-cli"),
+            "#!/bin/sh\necho 'usage: llama-cli'\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                bin_dir.join("llama-cli"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+
+        let result = verify_installed_binary(
+            tmp.path().to_str().unwrap(),
+            "/nonexistent/fork",
+        );
+        assert!(result.help_check_passed);
+        assert!(!result.stronger_check_attempted);
+        assert!(!result.rdna3_check_attempted);
+        assert!(result.summary.contains("PASSED"));
+        assert!(result.summary.contains("SKIPPED"));
+    }
+
+    #[test]
+    fn test_parse_bench_tps_valid() {
+        let line =
+            "| qwen3 0.6B F16 | 1.11 GiB | 596.05 M | ROCm | 33 | pp128 | 6254.94 ± 1534.82 |";
+        let tps = parse_bench_tps(line);
+        assert!(tps.is_some());
+        assert!((tps.unwrap() - 6254.94).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_bench_tps_no_uncertainty() {
+        let line = "| qwen3 0.6B F16 | 1.11 GiB | 596.05 M | ROCm | 33 | tg32 | 152.17 |";
+        let tps = parse_bench_tps(line);
+        assert!(tps.is_some());
+        assert!((tps.unwrap() - 152.17).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_bench_tps_invalid_line() {
+        assert_eq!(parse_bench_tps("not a bench line"), None);
+        assert_eq!(parse_bench_tps(""), None);
+        assert_eq!(parse_bench_tps("| col1 | col2 |"), None);
+    }
+
 }
