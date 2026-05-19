@@ -3559,9 +3559,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 5: Install filtered Megatron requirements without CUDA/NVIDIA deps.
             let requirements_candidates = [
-                clone_target_path.join("requirements").join("requirements.txt"),
+                clone_target_path
+                    .join("requirements")
+                    .join("requirements.txt"),
                 clone_target_path.join("requirements.txt"),
-                clone_target_path.join("requirements").join("requirements_amd.txt"),
+                clone_target_path
+                    .join("requirements")
+                    .join("requirements_amd.txt"),
             ];
             for req_path in requirements_candidates.iter().filter(|p| p.exists()) {
                 let filtered = filter_cuda_requirements(&req_path.to_string_lossy());
@@ -4496,10 +4500,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 "{}/Documents/Product/Stan-s-ML-Stack/Fork/llama.cpp-turboquant-hip",
                 home
             );
-            let verification = crate::installers::components::llama_cpp::verify_installed_binary(
-                &home,
-                &fork_dir,
-            );
+            let verification =
+                crate::installers::components::llama_cpp::verify_installed_binary(&home, &fork_dir);
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "llama-cpp post-install verification: {}",
