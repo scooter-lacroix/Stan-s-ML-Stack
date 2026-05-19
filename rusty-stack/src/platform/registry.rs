@@ -483,16 +483,7 @@ fn get_version_python_single(info: &ComponentInfo) -> String {
         if let Ok(output) = Command::new(python).arg("-c").arg(&script).output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // Take the last non-empty line that doesn't look like a Python
-                // library warning (some libs like accelerate write warnings to
-                // stdout instead of stderr).
-                let version = stdout
-                    .lines()
-                    .map(|l| l.trim())
-                    .filter(|l| !l.is_empty() && !l.contains("[WARNING]") && !l.contains("[ERROR]"))
-                    .last()
-                    .unwrap_or("")
-                    .to_string();
+                let version = stdout.trim().to_string();
                 if !version.is_empty() {
                     return version;
                 }
@@ -665,7 +656,7 @@ pub fn detect_python_modules_with_interpreters(interpreters: &[PathBuf]) -> Vec<
                 return stdout
                     .lines()
                     .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty() && is_known_component(l))
+                    .filter(|l| !l.is_empty())
                     .collect();
             }
         }
@@ -733,12 +724,6 @@ pub fn get_versions_batch_with_interpreters(
                             return None;
                         }
                         let (id, version) = line.split_once('=')?;
-                        // Skip lines where id contains characters typical of
-                        // Python library warnings that leak to stdout instead
-                        // of stderr (e.g. "[2026-05-18 ...] [WARNING] ...").
-                        if id.contains('[') || id.contains(' ') || id.contains(']') {
-                            return None;
-                        }
                         Some(VersionInfo {
                             component_id: id.to_string(),
                             version: version.to_string(),
