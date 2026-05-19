@@ -288,6 +288,28 @@ impl MegatronInstaller {
         }
     }
 
+    /// Construct a pip install command for a requirements file.
+    pub fn build_requirements_install_command(&self, requirements_path: &str) -> ShellCommand {
+        let is_global = self.config.method == InstallMethod::Global
+            || self.config.method == InstallMethod::Auto;
+
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
+
+        if is_global {
+            args.push("--break-system-packages".to_string());
+        }
+
+        args.push("-r".to_string());
+        args.push(requirements_path.to_string());
+
+        ShellCommand {
+            program: self.config.python_bin.clone(),
+            args,
+            env: vec![],
+            working_dir: None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Safe dependency filtering
     // -----------------------------------------------------------------------
@@ -496,6 +518,18 @@ mod tests {
         });
         let cmd = installer.build_dep_install_command("numpy");
         assert!(cmd.args.contains(&"numpy".to_string()));
+        assert!(cmd.args.contains(&"--break-system-packages".to_string()));
+    }
+
+    #[test]
+    fn test_requirements_install_command() {
+        let installer = MegatronInstaller::new(MegatronConfig {
+            method: InstallMethod::Global,
+            ..Default::default()
+        });
+        let cmd = installer.build_requirements_install_command("/tmp/req.txt");
+        assert!(cmd.args.contains(&"-r".to_string()));
+        assert!(cmd.args.contains(&"/tmp/req.txt".to_string()));
         assert!(cmd.args.contains(&"--break-system-packages".to_string()));
     }
 

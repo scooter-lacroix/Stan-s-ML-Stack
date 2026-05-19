@@ -3556,6 +3556,42 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Step 5: Install filtered Megatron requirements without CUDA/NVIDIA deps.
+            let requirements_candidates = [
+                clone_target_path.join("requirements").join("requirements.txt"),
+                clone_target_path.join("requirements.txt"),
+                clone_target_path.join("requirements").join("requirements_amd.txt"),
+            ];
+            for req_path in requirements_candidates.iter().filter(|p| p.exists()) {
+                let filtered = filter_cuda_requirements(&req_path.to_string_lossy());
+                if filtered.is_empty() {
+                    continue;
+                }
+                let tmp_dir = std::env::temp_dir().join("rusty-stack-megatron");
+                let _ = std::fs::create_dir_all(&tmp_dir);
+                let filtered_path = tmp_dir.join("requirements_filtered.txt");
+                std::fs::write(&filtered_path, &filtered).with_context(|| {
+                    format!(
+                        "Failed to write filtered Megatron requirements to {:?}",
+                        filtered_path
+                    )
+                })?;
+                let filtered_path_str = filtered_path.to_string_lossy().to_string();
+                let filtered_cmd = inst.build_requirements_install_command(&filtered_path_str);
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(
+                        &filtered_cmd.program,
+                        &filtered_cmd.args,
+                        &filtered_cmd.env,
+                    ),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
+                let _ = std::fs::remove_file(&filtered_path);
+                break;
+            }
         }
 
         // ── vllm ──────────────────────────────────────────────────────
