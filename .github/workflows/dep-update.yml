@@ -96,7 +96,7 @@ jobs:
             echo "### Checking $dep..."
 
             # Get current locked version from Cargo.lock
-            locked_ver=$(grep -A2 "name = \"$dep\"" ../Cargo.lock 2>/dev/null | grep "version" | head -1 | grep -oP '"\K[^"]+' || echo "0.0.0")
+            locked_ver=$(grep -A2 "name = \"$dep\"" Cargo.lock 2>/dev/null | grep "version" | head -1 | grep -oP '"\K[^"]+' || echo "0.0.0")
 
             # Query crates.io API
             api_response=$(curl -sf "https://crates.io/api/v1/crates/$dep" -H "User-Agent: rusty-stack-dep-checker (github.com/scooter-lacroix)") || {

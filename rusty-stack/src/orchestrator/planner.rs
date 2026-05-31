@@ -266,6 +266,16 @@ impl UpdatePlanner {
         // Check runtime version compatibility
         self.check_runtime_version(manifest, context)?;
 
+        if !options.target_components.is_empty() {
+            for target in &options.target_components {
+                if !manifest.components.iter().any(|c| c.id == *target) {
+                    return Err(PlannerError::ComponentUnknown {
+                        component_id: target.clone(),
+                    });
+                }
+            }
+        }
+
         let mut items = Vec::new();
 
         for component in &manifest.components {
@@ -273,21 +283,6 @@ impl UpdatePlanner {
             if !options.target_components.is_empty() {
                 if !options.target_components.contains(&component.id) {
                     continue;
-                }
-                // Verify the targeted component is known
-                if !options
-                    .target_components
-                    .iter()
-                    .all(|t| manifest.components.iter().any(|c| c.id == *t))
-                {
-                    // Check if any target is not in the manifest
-                    for target in &options.target_components {
-                        if !manifest.components.iter().any(|c| c.id == *target) {
-                            return Err(PlannerError::ComponentUnknown {
-                                component_id: target.clone(),
-                            });
-                        }
-                    }
                 }
             }
 
@@ -318,21 +313,6 @@ impl UpdatePlanner {
             items.push(self.build_planner_item(component, classification, context));
         }
 
-        // If targeting specific components, check all were found
-        if !options.target_components.is_empty() {
-            let found_ids: HashSet<&str> = items
-                .iter()
-                .map(|i| i.plan_item.component_id.as_str())
-                .collect();
-            for target in &options.target_components {
-                if !found_ids.contains(target.as_str()) {
-                    return Err(PlannerError::ComponentUnknown {
-                        component_id: target.clone(),
-                    });
-                }
-            }
-        }
-
         // Apply --all-safe: only keep safe items (and experimental if explicitly included)
         if options.all_safe {
             if options.include_experimental {
@@ -344,6 +324,21 @@ impl UpdatePlanner {
                 });
             } else {
                 items.retain(|i| i.classification == UpdateClassification::Safe);
+            }
+        }
+
+        // Explicit targets should be selected even when classification defaults are non-safe.
+        if !options.target_components.is_empty() {
+            let target_set: HashSet<&str> = options
+                .target_components
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            for item in &mut items {
+                if target_set.contains(item.plan_item.component_id.as_str()) {
+                    item.selected = true;
+                    item.plan_item.selected = true;
+                }
             }
         }
 
@@ -430,6 +425,7 @@ impl UpdatePlanner {
 
         let visible = classification.is_visible();
         let selected = classification.is_preselected();
+        let isolation_safe = matches!(classification, UpdateClassification::Safe);
 
         let classification_reason = self.classification_reason(component, classification, context);
 
@@ -445,7 +441,7 @@ impl UpdatePlanner {
                 selected,
                 &classification_reason,
                 dependencies,
-                true, // isolation_safe by default
+                isolation_safe,
             ),
             classification,
             visible,
@@ -496,6 +492,11 @@ impl UpdatePlanner {
     ) -> bool {
         // Components that don't need ROCm are always compatible
         if !self.requires_rocm(&component.id) {
+            return true;
+        }
+
+        // ROCm itself must remain installable on fresh systems.
+        if component.id == "rocm" {
             return true;
         }
 
@@ -664,12 +665,31 @@ impl UpdatePlanner {
 
         match (cur_parts, pro_parts) {
             (Some(cur), Some(pro)) if !cur.is_empty() && !pro.is_empty() => {
-                if pro[0] > cur[0] {
-                    BumpLevel::Major
-                } else if cur.len() >= 2 && pro.len() >= 2 && pro[1] > cur[1] {
-                    BumpLevel::Minor
-                } else {
-                    BumpLevel::Patch
+                let len = cur.len().max(pro.len());
+                let mut cmp = std::cmp::Ordering::Equal;
+                for idx in 0..len {
+                    let cur_part = *cur.get(idx).unwrap_or(&0);
+                    let pro_part = *pro.get(idx).unwrap_or(&0);
+                    cmp = pro_part.cmp(&cur_part);
+                    if cmp != std::cmp::Ordering::Equal {
+                        break;
+                    }
+                }
+
+                match cmp {
+                    std::cmp::Ordering::Less => BumpLevel::Unknown,
+                    std::cmp::Ordering::Equal => BumpLevel::Patch,
+                    std::cmp::Ordering::Greater => {
+                        if pro.get(0).copied().unwrap_or(0) > cur.get(0).copied().unwrap_or(0) {
+                            BumpLevel::Major
+                        } else if pro.get(1).copied().unwrap_or(0)
+                            > cur.get(1).copied().unwrap_or(0)
+                        {
+                            BumpLevel::Minor
+                        } else {
+                            BumpLevel::Patch
+                        }
+                    }
                 }
             }
             _ => BumpLevel::Unknown,
@@ -1351,6 +1371,32 @@ mod tests {
         assert_eq!(items[0].plan_item.component_id, "pytorch");
     }
 
+    #[test]
+    fn test_targeted_candidate_is_selected() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("pytorch".to_string(), "2.4.0".to_string());
+        context.installed_components.insert("pytorch".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "pytorch",
+            "3.0.0",
+            ValidationTier::Validated,
+        )]);
+
+        let options = PlannerOptions {
+            target_components: vec!["pytorch".to_string()],
+            ..Default::default()
+        };
+
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].classification, UpdateClassification::Candidate);
+        assert!(items[0].selected);
+        assert!(items[0].plan_item.selected);
+    }
+
     // -----------------------------------------------------------------------
     // VAL-UPD-021: Targeted component still runs full compatibility check
     // -----------------------------------------------------------------------
@@ -1822,6 +1868,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_version_bump_downgrade_is_unknown() {
+        assert_eq!(
+            planner().version_bump_level("7.3.0", "7.2.4"),
+            BumpLevel::Unknown
+        );
+        assert_eq!(
+            planner().version_bump_level("2.5.1", "2.5.0"),
+            BumpLevel::Unknown
+        );
+    }
+
     // -----------------------------------------------------------------------
     // version_gte helper
     // -----------------------------------------------------------------------
@@ -2023,6 +2081,51 @@ mod tests {
         let component = make_component("pytorch", "3.0.0", ValidationTier::Validated);
         let classification = planner().classify_update(&component, &context);
         assert_eq!(classification, UpdateClassification::Blocked);
+    }
+
+    #[test]
+    fn test_rocm_component_allowed_when_rocm_not_installed() {
+        let mut context = CompatibilityContext::new();
+        context.rocm_version = String::new();
+        context.available_executors =
+            HashSet::from([ExecutorKind::LegacyScript, ExecutorKind::Rust]);
+
+        let component = make_component("rocm", "7.2.4", ValidationTier::Validated);
+        let classification = planner().classify_update(&component, &context);
+        assert_ne!(classification, UpdateClassification::Blocked);
+    }
+
+    #[test]
+    fn test_isolation_safe_tracks_classification() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("pytorch".to_string(), "2.4.0".to_string());
+        context.installed_components.insert("pytorch".to_string());
+        context
+            .installed_versions
+            .insert("triton".to_string(), "3.0.0".to_string());
+        context.installed_components.insert("triton".to_string());
+
+        let manifest = make_manifest(vec![
+            make_component("pytorch", "2.4.1", ValidationTier::Validated), // safe
+            make_component("triton", "3.1.0", ValidationTier::Validated),  // guarded
+        ]);
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+
+        let pytorch = items
+            .iter()
+            .find(|i| i.plan_item.component_id == "pytorch")
+            .unwrap();
+        let triton = items
+            .iter()
+            .find(|i| i.plan_item.component_id == "triton")
+            .unwrap();
+
+        assert!(pytorch.plan_item.isolation_safe);
+        assert!(!triton.plan_item.isolation_safe);
     }
 
     // -----------------------------------------------------------------------

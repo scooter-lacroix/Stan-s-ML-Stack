@@ -688,11 +688,8 @@ mod update_impl {
         fn read_password_from_tty() -> Option<String> {
             use std::io::Read;
             if !std::io::stdin().is_terminal() {
-                // Not a TTY — try reading from stdin directly (piped input)
-                let mut buf = vec![0u8; 1024];
-                let n = std::io::stdin().read(&mut buf).ok()?;
-                let s = String::from_utf8_lossy(&buf[..n]);
-                return Some(s.trim().to_string());
+                // Not a TTY — do not consume piped stdin as sudo password.
+                return None;
             }
             // Use rpassword-like approach: disable echo via termios
             #[cfg(unix)]

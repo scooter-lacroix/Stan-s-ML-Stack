@@ -1,7 +1,7 @@
 //! Component registry and installed component detection.
 //!
 //! Provides:
-//! - **Component registry** — 17 known components with display names and installer mappings
+//! - **Component registry** — 19 known components with display names and installer mappings
 //!   (VAL-PLAT-009, VAL-PLAT-010)
 //! - **Installed component detection** — path-based, Python module, and git-based strategies
 //!   (VAL-PLAT-011, VAL-PLAT-012, VAL-PLAT-013)
@@ -65,7 +65,7 @@ pub struct VersionInfo {
 // Component Registry (VAL-PLAT-009, VAL-PLAT-010)
 // ===========================================================================
 
-/// Returns the canonical list of all 17 known components.
+/// Returns the canonical list of all 19 known components.
 pub fn known_components() -> &'static [ComponentInfo] {
     // Built once, reused across calls.
     static COMPONENTS: std::sync::OnceLock<Vec<ComponentInfo>> = std::sync::OnceLock::new();
@@ -246,7 +246,7 @@ pub fn get_component(id: &str) -> Option<&'static ComponentInfo> {
 /// Return the human-readable display name for a component ID.
 ///
 /// Unknown IDs are returned as-is (passthrough).
-/// VAL-PLAT-010: The mapping must be bijective for all 17 known components.
+/// VAL-PLAT-010: The mapping must be bijective for all 19 known components.
 pub fn display_name(id: &str) -> String {
     get_component(id)
         .map(|c| c.display_name.clone())
@@ -336,6 +336,11 @@ fn detect_command_based(info: &ComponentInfo) -> bool {
     match info.id.as_str() {
         "rocm-smi" => Command::new("rocm-smi")
             .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false),
+        "llama-cpp" => Command::new("llama-cli")
+            .arg("--help")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false),
@@ -461,6 +466,24 @@ fn get_version_command_based(info: &ComponentInfo) -> String {
                         return extract_semver(line.trim());
                     }
                 }
+            }
+            "not installed".to_string()
+        }
+        "llama-cpp" => {
+            if let Ok(output) = Command::new("llama-cli").arg("--version").output() {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let combined = format!("{stdout}\n{stderr}");
+                    let parsed = extract_semver(combined.trim());
+                    if parsed != "unknown" {
+                        return parsed;
+                    }
+                    return "installed".to_string();
+                }
+            }
+            if detect_command_based(info) {
+                return "installed".to_string();
             }
             "not installed".to_string()
         }
@@ -689,10 +712,6 @@ pub fn get_versions_batch_with_interpreters(
     interpreters: &[PathBuf],
 ) -> Vec<VersionInfo> {
     let mappings = python_module_mappings();
-    let _mapping_map: HashMap<&str, &str> = mappings
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
 
     if interpreters.is_empty() {
         return component_ids
@@ -812,7 +831,7 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // VAL-PLAT-009: Component registry contains all 17 known components
+    // VAL-PLAT-009: Component registry contains all 19 known components
     // -----------------------------------------------------------------------
 
     #[test]
@@ -832,6 +851,7 @@ mod tests {
             "rocm",
             "pytorch",
             "triton",
+            "megatron",
             "deepspeed",
             "vllm",
             "aiter",
@@ -863,6 +883,7 @@ mod tests {
             "rocm",
             "pytorch",
             "triton",
+            "megatron",
             "deepspeed",
             "vllm",
             "aiter",
@@ -925,7 +946,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // VAL-PLAT-010: Display name mapping is bijective for all 17 components
+    // VAL-PLAT-010: Display name mapping is bijective for all 19 components
     // -----------------------------------------------------------------------
 
     #[test]
