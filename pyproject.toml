@@ -40,11 +40,6 @@ Homepage = "https://github.com/scooter-lacroix/Stan-s-ML-Stack"
 Issues = "https://github.com/scooter-lacroix/Stan-s-ML-Stack/issues"
 Documentation = "https://github.com/scooter-lacroix/Stan-s-ML-Stack/wiki"
 
-[project.scripts]
-ml-stack-install = "archive.scripts.run_rusty_stack:main"
-ml-stack-verify = "archive.scripts.verify_ml_stack:main"
-ml-stack-repair = "archive.scripts.repair_ml_stack:main"
-
 [tool.setuptools]
 
 [tool.setuptools.packages.find]

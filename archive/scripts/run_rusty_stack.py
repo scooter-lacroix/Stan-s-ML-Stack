@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import subprocess
-
-from archive.scripts.rusty_cli_common import ensure_binary
+from pathlib import Path
 
 
 def main() -> None:
-    subprocess.run([ensure_binary("rusty-stack")], check=True)
+    repo_root = Path(__file__).resolve().parents[1]
+    crate_dir = repo_root / "rusty-stack"
+    binary = crate_dir / "target" / "release" / "rusty-stack"
+
+    if not binary.exists():
+        subprocess.run(["cargo", "build", "--release"], cwd=crate_dir, check=True)
+
+    subprocess.run([str(binary)], check=True)
 
 
 if __name__ == "__main__":
