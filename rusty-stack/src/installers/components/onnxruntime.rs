@@ -84,7 +84,7 @@ pub struct OnnxRuntimeConfig {
     pub dry_run: bool,
     /// ROCm version string (e.g., "7.2.0").
     pub rocm_version: Option<String>,
-    /// ROCm release for AMD repo URL (e.g., "7.2.3").
+    /// ROCm release for AMD repo URL (e.g., "7.2.4").
     pub rocm_release: Option<String>,
     /// GPU architecture string (e.g., "gfx1100").
     pub gpu_arch: Option<String>,
@@ -134,7 +134,7 @@ impl OnnxRuntimeConfig {
 
     /// Get the effective ROCm release string (for AMD repo URL).
     pub fn rocm_release(&self) -> &str {
-        self.rocm_release.as_deref().unwrap_or("7.2.3")
+        self.rocm_release.as_deref().unwrap_or("7.2.4")
     }
 }
 
@@ -226,7 +226,7 @@ impl OnnxRuntimeInstaller {
     /// Pattern: `https://repo.radeon.com/rocm/manylinux/rocm-rel-{release}/`
     ///
     /// The URL points to a specific wheel matching the Python version and ROCm release.
-    /// ROCm 7.2.3 ships onnxruntime_migraphx 1.23.2.
+    /// ROCm 7.2.4 ships onnxruntime_migraphx 1.23.2.
     pub fn build_migraphx_wheel_url(&self) -> String {
         let release = self.config.rocm_release();
         let python_bin = &self.config.python_bin;
@@ -917,7 +917,7 @@ mod tests {
     fn test_migraphx_wheel_url_default() {
         let installer = OnnxRuntimeInstaller::with_defaults();
         let url = installer.build_migraphx_wheel_url();
-        assert!(url.contains("repo.radeon.com/rocm/manylinux/rocm-rel-7.2.3/"));
+        assert!(url.contains("repo.radeon.com/rocm/manylinux/rocm-rel-7.2.4/"));
         assert!(url.contains("onnxruntime_migraphx-1.23.2"));
         assert!(url.contains("manylinux_2_27_x86_64"));
     }

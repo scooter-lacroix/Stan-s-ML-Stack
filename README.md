@@ -36,12 +36,15 @@ For a detailed guide to help you get started from the ground up, head over to [B
 - **Shell Parity Migration**: Rust-native installers match legacy shell script behavior for seamless transition
 - **Opt-in Anonymous Telemetry**: 180-second stability benchmark with anonymous HTTPS submission
 - **Windows Cross-Compilation**: Full Windows support with WSL2 bridging, path translation, and service management
+- **Rusty Llama CUDA Isolation**: llama.cpp installs are forced through HIP/ROCm CMake flags with CUDA, Vulkan, and Metal disabled, plus CMake cache and ROCm linkage checks
 
 ### 🦙 Rusty Llama — Optimized Llama.cpp Runtime
 
 > ### 🚀 **2.10× TurboQuant prefill speedup** on MoE models · **153 t/s decode** on RX 7900 XTX
 >
-> Rusty Llama is our optimized llama.cpp runtime featuring TurboQuant compression, RDNA3 WMMA flash attention, and pre-built binary distribution for AMD GPUs. Benchmarked on real hardware — see [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for full results.
+> Rusty Llama is our optimized llama.cpp runtime featuring TurboQuant compression, RDNA3 WMMA flash attention, pre-built binary distribution for AMD GPUs, and Rusty Stack-enforced CUDA isolation. Benchmarked on real hardware — see [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md) for full results.
+
+Rusty Llama installation is only supported through Rusty Stack. The installer explicitly configures `GGML_HIP=ON`, `GGML_CUDA=OFF`, `GGML_VULKAN=OFF`, and `GGML_METAL=OFF`, validates `CMakeCache.txt`, warns when NVIDIA toolkits are present, and rejects binaries that do not show ROCm/HIP linkage.
 
 Docs: https://github.com/scooter-lacroix/rusty-llama-docs
 Install: `rusty install llama-cpp`
@@ -116,10 +119,10 @@ The ML Stack consists of the following core components:
 
 | Component | Description | Version |
 |-----------|-------------|---------|
-| **ROCm** | AMD's open software platform for GPU computing | 7.2.3 |
+| **ROCm** | AMD's open software platform for GPU computing | 7.2.4 |
 | **PyTorch** | Deep learning framework with ROCm support | 2.13.0+rocm7.2 |
 | **ONNX Runtime** | Cross-platform inference accelerator | 1.23.2 |
-| **MIGraphX** | AMD's graph optimization library | 7.2.3 |
+| **MIGraphX** | AMD's graph optimization library | 7.2.4 |
 | **Flash Attention (Triton)** | High-performance Triton-based kernels | 2.8.4 |
 | **Flash Attention CK** | Composable Kernel variant (Pre-release) | Latest |
 | **RCCL** | ROCm Collective Communication Library | Latest |
@@ -208,9 +211,9 @@ cargo build --target x86_64-pc-windows-msvc
 
 Rusty Stack installer now offers three ROCm channels so you can balance stability against cutting-edge features:
 
-1. **Legacy (ROCm 7.0.0)** – production-proven for maximum stability
-2. **Stable (ROCm 7.2.1)** – production-ready for RDNA 3 GPUs
-3. **Latest (ROCm 7.2.3)** – default choice with expanded RDNA 4 support
+1. **Legacy (ROCm 6.4.3)** – conservative compatibility for older RDNA deployments
+2. **Stable (ROCm 7.2.3)** – production-ready for RDNA 3/4 GPUs
+3. **Latest (ROCm 7.2.4)** – default choice, current ROCm production release
 
 You can select the desired channel directly from the interactive installer or pre-seed the choice via the `INSTALL_ROCM_PRESEEDED_CHOICE` environment variable (values: 1-3). See [docs/MULTI_CHANNEL_GUIDE.md](docs/MULTI_CHANNEL_GUIDE.md) for helper scripts covering PyTorch, Triton, Flash Attention, vLLM, ONNX Runtime, MIGraphX, bitsandbytes, and RCCL.
 
@@ -674,10 +677,10 @@ The custom verification script is designed to detect components installed in non
 === ML Stack Verification Summary ===
 
 Core Components:
-✓ ROCm: Successfully installed (version 7.2.3)
+✓ ROCm: Successfully installed (version 7.2.4)
 ✓ PyTorch: Successfully installed (version 2.13.0+rocm7.2)
 ✓ ONNX Runtime: Successfully installed (version 1.23.2)
-✓ MIGraphX: Successfully installed (version 7.2.3)
+✓ MIGraphX: Successfully installed (version 7.2.4)
 ✓ Flash Attention: Successfully installed (version 2.8.4)
 ✓ RCCL: Successfully installed
 ✓ MPI: Successfully installed (version Open MPI 5.0.10)
@@ -749,5 +752,3 @@ Rusty Stack (formerly Stan's ML Stack) is licensed under the MIT License. See th
 - Patreon: https://patreon.com/ScooterLacroix
 
 If this code saved you time, consider supporting the project! ☕
-
-

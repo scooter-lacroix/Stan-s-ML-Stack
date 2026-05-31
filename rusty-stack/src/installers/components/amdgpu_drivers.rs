@@ -162,17 +162,17 @@ impl AmdgpuInstaller {
     /// Construct the apt-specific download and install command for amdgpu-install.
     ///
     /// The original script (Ubuntu-specific):
-    /// 1. `wget https://repo.radeon.com/amdgpu-install/7.0/ubuntu/$CODENAME/amdgpu-install_7.0.0.70000-1_all.deb`
-    /// 2. `sudo apt install -y ./amdgpu-install_7.0.0.70000-1_all.deb`
+    /// 1. `wget https://repo.radeon.com/amdgpu-install/7.2.4/ubuntu/$CODENAME/amdgpu-install_7.2.4.70204-1_all.deb`
+    /// 2. `sudo apt install -y ./amdgpu-install_7.2.4.70204-1_all.deb`
     /// 3. `sudo apt update`
     /// 4. `sudo apt install -y linux-headers-$(uname -r) linux-modules-extra-$(uname -r)`
     /// 5. `sudo apt install -y amdgpu-dkms`
     pub fn build_amdgpu_install_deb_commands(&self, codename: &str) -> Vec<ShellCommand> {
         let deb_url = format!(
-            "https://repo.radeon.com/amdgpu-install/7.0/ubuntu/{}/amdgpu-install_7.0.0.70000-1_all.deb",
+            "https://repo.radeon.com/amdgpu-install/7.2.4/ubuntu/{}/amdgpu-install_7.2.4.70204-1_all.deb",
             codename
         );
-        let deb_file = "amdgpu-install_7.0.0.70000-1_all.deb";
+        let deb_file = "amdgpu-install_7.2.4.70204-1_all.deb";
 
         vec![
             // Download

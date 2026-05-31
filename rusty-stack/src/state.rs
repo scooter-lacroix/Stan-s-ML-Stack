@@ -32,16 +32,15 @@ pub struct Component {
     pub description: String,
     /// Script path relative to scripts_dir, or empty string for native Rust modules.
     ///
-    /// For ported components (24 installers), this field is empty and the installer
+    /// For native Rust components, this field is empty and the installer
     /// dispatches to the corresponding Rust module via
     /// `installers::components::is_native_component()`.
-    /// For verification/performance components, this still holds the `.sh` filename.
     ///
     /// # Validation Assertions
     ///
     /// - **VAL-INSTALL-037**: Component.script no longer holds .sh filenames for ported components
     /// - **VAL-INSTALL-038**: state.rs supports native module routing
-    /// - **VAL-INSTALL-040**: Verification/performance components unchanged (still reference .sh)
+    /// - **VAL-INSTALL-040**: Verification/performance components use native routing
     pub script: String,
     pub category: Category,
     pub required: bool,

@@ -7,7 +7,7 @@
 //!
 //! # Dispatch Architecture (VAL-INSTALL-031, VAL-INSTALL-032, VAL-INSTALL-038)
 //!
-//! `is_native_component(id)` returns `true` for all 24 ported components.
+//! `is_native_component(id)` returns `true` for all 35 native components.
 //! `get_dependencies(id)` returns the declared dependency IDs for a component.
 //! `topological_sort(ids)` returns components in dependency order.
 //!
@@ -45,7 +45,7 @@
 //! - **VAL-INSTALL-031**: installer.rs no bash subprocess for ported components
 //! - **VAL-INSTALL-032**: installer.rs dispatches to correct Rust module per ID
 //! - **VAL-INSTALL-038**: state.rs supports native module routing
-//! - **VAL-INSTALL-039**: All 24 components reference correct Rust modules
+//! - **VAL-INSTALL-039**: All 35 components reference correct Rust modules
 //! - **VAL-INSTALL-040**: Non-installer components unchanged
 //! - **VAL-INSTALL-041**: Megatron declares dependency on PyTorch and MPI4Py
 //! - **VAL-INSTALL-042**: vLLM declares dependency on PyTorch
@@ -117,15 +117,14 @@ pub use wandb::{WandbConfig, WandbInstaller};
 // Installer Dispatch (VAL-INSTALL-031, VAL-INSTALL-032, VAL-INSTALL-039)
 // ===========================================================================
 
-/// The set of all 24 component IDs that have been ported to native Rust.
+/// The set of all 35 component IDs that have been ported to native Rust.
 ///
 /// These are the installer components that should NOT spawn bash subprocesses.
-/// Verification and performance components remain as shell scripts.
+/// Verification and performance components are now routed through native Rust modules.
 ///
-/// Note: 21 of these appear in `state::default_components()`. The remaining 3
-/// (`amdgpu-drivers`, `migraphx-python`, `enhanced-env`) are chain-referenced
-/// or utility scripts that are ported but not shown as top-level selectable
-/// components in the TUI.
+/// Note: most of these appear in `state::default_components()`. A few utility
+/// components (`amdgpu-drivers`, `migraphx-python`, `enhanced-env`) are
+/// chain-referenced instead of shown as top-level selectable TUI components.
 pub const NATIVE_COMPONENT_IDS: &[&str] = &[
     "permanent-env",
     "rocm",
@@ -175,7 +174,7 @@ pub const NATIVE_COMPONENT_IDS: &[&str] = &[
 /// # Validation Assertions
 ///
 /// - **VAL-INSTALL-031**: installer.rs no bash subprocess for ported components
-/// - **VAL-INSTALL-039**: All 24 components reference correct Rust modules
+/// - **VAL-INSTALL-039**: All 35 components reference correct Rust modules
 pub fn is_native_component(component_id: &str) -> bool {
     NATIVE_COMPONENT_IDS.contains(&component_id)
 }

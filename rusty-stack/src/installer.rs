@@ -3966,13 +3966,17 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             let config = OnnxRuntimeConfig {
                 rocm_version: Some(detected_rocm_version.clone()),
                 rocm_release: Some({
-                    // Derive release from version: "7.2.0" -> "7.2.3"
-                    // Use the detected version's major.minor, default patch to .3
+                    // Derive release from version: keep full semver when available.
+                    // If only major.minor is detected, default ROCm 7.2 to current 7.2.4.
                     let parts: Vec<&str> = detected_rocm_version.split('.').collect();
-                    if parts.len() >= 2 {
+                    if parts.len() >= 3 {
+                        detected_rocm_version.clone()
+                    } else if parts.len() >= 2 && parts[0] == "7" && parts[1] == "2" {
+                        "7.2.4".to_string()
+                    } else if parts.len() >= 2 {
                         format!("{}.{}.3", parts[0], parts[1])
                     } else {
-                        "7.2.3".to_string()
+                        "7.2.4".to_string()
                     }
                 }),
                 gpu_arch: Some(detected_gpu_arch),

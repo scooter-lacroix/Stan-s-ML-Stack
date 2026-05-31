@@ -19,11 +19,11 @@ use std::fmt;
 /// ROCm release channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RocmChannel {
-    /// ROCm 7.0.0 — production-proven stability (Legacy).
+    /// ROCm 6.4.3 — conservative compatibility target (Legacy).
     Legacy,
-    /// ROCm 7.2.1 — production-ready for RDNA 3 (Stable).
+    /// ROCm 7.2.3 — prior production target for RDNA 3/4 (Stable).
     Stable,
-    /// ROCm 7.2.3 — expanded RDNA 4 support (Latest, default).
+    /// ROCm 7.2.4 — current production release (Latest, default).
     Latest,
 }
 
@@ -51,34 +51,34 @@ impl RocmChannel {
     /// Get the ROCm version string for this channel.
     pub fn version(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "7.0.0",
-            RocmChannel::Stable => "7.2.1",
-            RocmChannel::Latest => "7.2.3",
+            RocmChannel::Legacy => "6.4.3",
+            RocmChannel::Stable => "7.2.3",
+            RocmChannel::Latest => "7.2.4",
         }
     }
 
     /// Get the ROCm directory path component for this channel.
     pub fn dir_path(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "7.0",
-            RocmChannel::Stable => "7.2.1",
-            RocmChannel::Latest => "7.2.3",
+            RocmChannel::Legacy => "6.4.3",
+            RocmChannel::Stable => "7.2.3",
+            RocmChannel::Latest => "7.2.4",
         }
     }
 
     /// Get the package version string used in installer package names.
     pub fn pkg_version(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "7.0.0.70000-1",
-            RocmChannel::Stable => "7.2.1.70201-1",
-            RocmChannel::Latest => "7.2.3.70203-1",
+            RocmChannel::Legacy => "6.4.60403-1",
+            RocmChannel::Stable => "7.2.3.70203-1",
+            RocmChannel::Latest => "7.2.4.70204-1",
         }
     }
 
     /// Get the major.minor version (e.g., "7.2") for repo URLs.
     pub fn major_minor(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "7.0",
+            RocmChannel::Legacy => "6.4",
             RocmChannel::Stable => "7.2",
             RocmChannel::Latest => "7.2",
         }
@@ -102,13 +102,17 @@ impl RocmChannel {
     /// Constructs a package version string from the manifest version if available.
     pub fn pkg_version_from_manifest(manifest: &crate::core::manifest::Manifest) -> String {
         let version = Self::version_from_manifest(manifest);
-        // Convert "7.2.3" to "7.2.3.MMmmDD-1" format where MMmmDD is derived from version
+        if version == "6.4.3" {
+            return "6.4.60403-1".to_string();
+        }
+
+        // Convert "7.2.4" to "7.2.4.70204-1" format.
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() >= 3 {
             let major: u64 = parts[0].parse().unwrap_or(7);
             let minor: u64 = parts[1].parse().unwrap_or(2);
             let patch: u64 = parts[2].parse().unwrap_or(0);
-            let build = format!("{major:02}{minor:02}{patch:02}");
+            let build = format!("{major}{minor:02}{patch:02}");
             format!("{}.{build}-1", version)
         } else {
             RocmChannel::Latest.pkg_version().to_string()
@@ -283,25 +287,28 @@ impl RocmInstaller {
 
     /// Construct the amdgpu-install package download URL for apt-based distros.
     pub fn amdgpu_install_deb_url(&self) -> String {
+        let release_dir = self.config.channel.dir_path();
         let pkg_ver = self.config.channel.pkg_version();
         format!(
-            "https://repo.radeon.com/amdgpu-install/{pkg_ver}/ubuntu/noble/amdgpu-install_{pkg_ver}_all.deb"
+            "https://repo.radeon.com/amdgpu-install/{release_dir}/ubuntu/noble/amdgpu-install_{pkg_ver}_all.deb"
         )
     }
 
     /// Construct the amdgpu-install RPM download URL.
     pub fn amdgpu_install_rpm_url(&self, rhel_version: &str) -> String {
+        let release_dir = self.config.channel.dir_path();
         let pkg_ver = self.config.channel.pkg_version();
         format!(
-            "https://repo.radeon.com/amdgpu-install/{pkg_ver}/rhel/{rhel_version}/amdgpu-install-{pkg_ver}.el{rhel_version}.noarch.rpm"
+            "https://repo.radeon.com/amdgpu-install/{release_dir}/rhel/{rhel_version}/amdgpu-install-{pkg_ver}.el{rhel_version}.noarch.rpm"
         )
     }
 
     /// Construct the amdgpu-install SLES RPM download URL.
     pub fn amdgpu_install_sles_rpm_url(&self) -> String {
+        let release_dir = self.config.channel.dir_path();
         let pkg_ver = self.config.channel.pkg_version();
         format!(
-            "https://repo.radeon.com/amdgpu-install/{pkg_ver}/sle/15.7/amdgpu-install-{pkg_ver}.noarch.rpm"
+            "https://repo.radeon.com/amdgpu-install/{release_dir}/sle/15.7/amdgpu-install-{pkg_ver}.noarch.rpm"
         )
     }
 
@@ -614,24 +621,24 @@ mod tests {
     #[test]
     fn test_channel_legacy_version() {
         let ch = RocmChannel::Legacy;
-        assert_eq!(ch.version(), "7.0.0");
-        assert_eq!(ch.pkg_version(), "7.0.0.70000-1");
-        assert_eq!(ch.major_minor(), "7.0");
+        assert_eq!(ch.version(), "6.4.3");
+        assert_eq!(ch.pkg_version(), "6.4.60403-1");
+        assert_eq!(ch.major_minor(), "6.4");
     }
 
     #[test]
     fn test_channel_stable_version() {
         let ch = RocmChannel::Stable;
-        assert_eq!(ch.version(), "7.2.1");
-        assert_eq!(ch.pkg_version(), "7.2.1.70201-1");
+        assert_eq!(ch.version(), "7.2.3");
+        assert_eq!(ch.pkg_version(), "7.2.3.70203-1");
         assert_eq!(ch.major_minor(), "7.2");
     }
 
     #[test]
     fn test_channel_latest_version() {
         let ch = RocmChannel::Latest;
-        assert_eq!(ch.version(), "7.2.3");
-        assert_eq!(ch.pkg_version(), "7.2.3.70203-1");
+        assert_eq!(ch.version(), "7.2.4");
+        assert_eq!(ch.pkg_version(), "7.2.4.70204-1");
         assert_eq!(ch.major_minor(), "7.2");
     }
 
@@ -642,6 +649,60 @@ mod tests {
         assert_eq!(RocmChannel::from_choice(3), Some(RocmChannel::Latest));
         assert_eq!(RocmChannel::from_choice(0), None);
         assert_eq!(RocmChannel::from_choice(4), None);
+    }
+
+    #[test]
+    fn test_pkg_version_from_manifest_latest() {
+        let manifest = crate::core::manifest::Manifest {
+            schema_version: 2,
+            sequence: 1,
+            generated_at: "2026-05-31T00:00:00Z".to_string(),
+            expires_at: None,
+            min_runtime_version: String::new(),
+            components: vec![crate::core::manifest::ManifestComponent {
+                id: "rocm".to_string(),
+                version: "7.2.4".to_string(),
+                script: "scripts/install_rocm.sh".to_string(),
+                category: crate::core::Category::Foundation,
+                validation_tier: crate::core::ValidationTier::Validated,
+                min_rocm_version: String::new(),
+                dependencies: vec![],
+                compatible_channels: vec!["latest".to_string()],
+            }],
+            signature: None,
+        };
+
+        assert_eq!(
+            RocmChannel::pkg_version_from_manifest(&manifest),
+            "7.2.4.70204-1"
+        );
+    }
+
+    #[test]
+    fn test_pkg_version_from_manifest_legacy() {
+        let manifest = crate::core::manifest::Manifest {
+            schema_version: 2,
+            sequence: 1,
+            generated_at: "2026-05-31T00:00:00Z".to_string(),
+            expires_at: None,
+            min_runtime_version: String::new(),
+            components: vec![crate::core::manifest::ManifestComponent {
+                id: "rocm".to_string(),
+                version: "6.4.3".to_string(),
+                script: "scripts/install_rocm.sh".to_string(),
+                category: crate::core::Category::Foundation,
+                validation_tier: crate::core::ValidationTier::Validated,
+                min_rocm_version: String::new(),
+                dependencies: vec![],
+                compatible_channels: vec!["legacy".to_string()],
+            }],
+            signature: None,
+        };
+
+        assert_eq!(
+            RocmChannel::pkg_version_from_manifest(&manifest),
+            "6.4.60403-1"
+        );
     }
 
     // --- VAL-INSTALL-001: ROCm installer correct package commands ---
@@ -658,7 +719,8 @@ mod tests {
 
         // wget download
         assert_eq!(cmds[0].program, "wget");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.3.70203-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4/ubuntu/noble")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4.70204-1")));
         assert_eq!(cmds[1].program, "sudo");
         assert!(cmds[1].args.contains(&"dpkg".to_string()));
 
@@ -695,7 +757,8 @@ mod tests {
 
         // dnf install RPM
         assert_eq!(cmds[0].program, "sudo");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.3.70203-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4/rhel/9")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4.70204-1")));
         assert!(cmds[0].args.iter().any(|a| a.contains("el9")));
 
         // rocm-libs metapackage
@@ -742,7 +805,8 @@ mod tests {
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].program, "sudo");
         assert!(cmds[0].args.iter().any(|a| a.contains("zypper")));
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.3.70203-1")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4/sle/15.7")));
+        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4.70204-1")));
     }
 
     // --- Repo URL construction ---
@@ -799,7 +863,8 @@ mod tests {
             ..Default::default()
         });
         let url = installer.amdgpu_install_deb_url();
-        assert!(url.contains("7.2.3.70203-1"));
+        assert!(url.contains("7.2.4/ubuntu/noble"));
+        assert!(url.contains("7.2.4.70204-1"));
         assert!(url.contains("ubuntu/noble"));
         assert!(url.ends_with(".deb"));
     }
@@ -811,7 +876,8 @@ mod tests {
             ..Default::default()
         });
         let url = installer.amdgpu_install_rpm_url("9");
-        assert!(url.contains("7.2.3.70203-1"));
+        assert!(url.contains("7.2.4/rhel/9"));
+        assert!(url.contains("7.2.4.70204-1"));
         assert!(url.contains("rhel/9"));
         assert!(url.ends_with(".noarch.rpm"));
     }

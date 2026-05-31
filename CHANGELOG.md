@@ -4,6 +4,24 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+### Release Track Status
+- Next changes accumulate here after Anagami 0.2.0.
+
+## [0.2.0] - 2026-05-30 — Anagami
+
+### Added
+- **All-Rust installer milestone**: All 35 installer, verification, and benchmark components are routed through native Rust modules; selectable components in `state.rs` no longer reference shell scripts.
+- **Rusty Llama CUDA isolation guards**: llama.cpp installs now force `GGML_HIP=ON`, `GGML_CUDA=OFF`, `GGML_VULKAN=OFF`, and `GGML_METAL=OFF`; source builds validate `CMakeCache.txt`; source and prebuilt installs reject binaries without ROCm/HIP linkage.
+- **Rusty Llama CUDA toolkit warning**: The installer warns when `nvcc`, `nvidia-smi`, or `/usr/local/cuda` are present while continuing with HIP-only builds for mixed-GPU systems.
+- **Windows Alpha Support**: Initial Windows x86_64 builds are available for testing with WSL2 path bridging and service management.
+- **Rusty Llama first-class component**: TurboQuant llama.cpp integration ships with prebuilt/source strategy selection, SHA-256 verification, telemetry, RDNA channel gating, and benchmark runner support.
+
+### Changed
+- **ROCm channel targets**: Legacy now targets ROCm 6.4.3, Stable targets ROCm 7.2.3, and Latest targets ROCm 7.2.4 after the 2026-05-29 ROCm release.
+- **ROCm package URLs**: Native ROCm installer now uses AMD's release directory path (`/amdgpu-install/<release>/...`) instead of package-version directory paths, matching the real repo layout.
+- `VERSION` and Rust crate version bumped to `0.2.0`.
+- Installer status documentation now reflects the native Rust backend instead of the deprecated shell-script backend.
+
 ### Mission: Rusty Llama Integration (2026-04 — 2026-05)
 
 #### Added

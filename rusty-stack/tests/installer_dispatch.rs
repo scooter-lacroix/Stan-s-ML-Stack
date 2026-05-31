@@ -9,7 +9,7 @@
 //! - VAL-INSTALL-036: Error message format matches original scripts
 //! - VAL-INSTALL-037: Component.script no longer holds .sh filenames
 //! - VAL-INSTALL-038: state.rs supports native module routing
-//! - VAL-INSTALL-039: All 24 components reference correct Rust modules
+//! - VAL-INSTALL-039: All 35 components reference correct Rust modules
 //! - VAL-INSTALL-040: Non-installer components unchanged
 //! - VAL-INSTALL-041-047: Dependency declarations
 //! - VAL-INSTALL-048: Dependency graph is acyclic
@@ -22,11 +22,11 @@ use rusty_stack::installers::components::{
 use rusty_stack::state::{default_components, Category, Component};
 
 // ===========================================================================
-// VAL-INSTALL-031 + VAL-INSTALL-039: All 24 ported components are native
+// VAL-INSTALL-031 + VAL-INSTALL-039: All 35 ported components are native
 // ===========================================================================
 
 #[test]
-fn test_all_24_native_components_recognized() {
+fn test_all_35_native_components_recognized() {
     // 24 installer + 9 benchmark + 1 fastvideo + 1 llama-cpp = 35
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),

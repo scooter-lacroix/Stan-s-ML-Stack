@@ -1,6 +1,6 @@
 [package]
 name = "rusty-stack"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A comprehensive ML environment installer and platform toolkit optimized for AMD GPUs with ROCm support"
 repository = "https://github.com/scooter-lacroix/Stan-s-ML-Stack"

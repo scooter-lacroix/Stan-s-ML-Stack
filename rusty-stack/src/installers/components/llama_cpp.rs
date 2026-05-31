@@ -38,7 +38,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tempfile::NamedTempFile;
 
@@ -458,6 +458,10 @@ impl LlamaCppInstaller {
         let mut flags = vec![
             "-DGGML_HIP=ON".to_string(),
             format!("-DGPU_TARGETS={}", gpu_targets),
+            // VAL-GUARD-001: force ROCm/HIP-only backend selection.
+            "-DGGML_CUDA=OFF".to_string(),
+            "-DGGML_VULKAN=OFF".to_string(),
+            "-DGGML_METAL=OFF".to_string(),
         ];
 
         // RDNA3 probes and WMMA flash attention are enabled for stable/latest only
@@ -467,6 +471,12 @@ impl LlamaCppInstaller {
         }
 
         flags
+    }
+
+    fn expected_gpu_targets(&self) -> String {
+        let hip_archs = HipArchs::from_gpu_arch(&self.config.gpu_arch);
+        let channel = RocmChannel::from_str(&self.config.channel);
+        hip_archs.gpu_targets_for_channel(channel.label())
     }
 
     // -------------------------------------------------------------------
@@ -582,6 +592,10 @@ impl LlamaCppInstaller {
         if !status.success() {
             return Err("failed to extract prebuilt archive".to_string());
         }
+
+        // VAL-GUARD-004: Post-build linkage verification rejects CUDA-linked binaries
+        // VAL-GUARD-005: prebuilt binaries must prove ROCm linkage before success.
+        verify_binary_linkage(&plan.binary_path)?;
 
         temp.close().map_err(|e| e.to_string())?;
         Ok(())
@@ -762,12 +776,28 @@ impl LlamaCppInstaller {
     }
 
     pub fn run_source_install(&self, home: &str) -> Result<(), String> {
+        // VAL-GUARD-002: CUDA toolkit presence is warning-only; build stays HIP-only.
+        let cuda_artifacts = detect_cuda_toolkit_presence();
+        if !cuda_artifacts.is_empty() {
+            log_warn(&format!(
+                "NVIDIA CUDA toolkit detected on this system ({}). Rusty Llama builds exclusively with ROCm/HIP; CUDA will not be used.",
+                cuda_artifacts.join(", ")
+            ));
+        }
+
         let commands = self.build_commands(home);
         if commands.is_empty() {
             return Err("no source install commands available".to_string());
         }
 
         for command in commands {
+            let is_cmake_configure = command.program == "cmake"
+                && command.args.iter().any(|arg| arg == "-B")
+                && command.args.iter().any(|arg| arg == "-S");
+            let is_cmake_install = command.program == "cmake"
+                && command.args.iter().any(|arg| arg == "--install");
+            let command_working_dir = command.working_dir.clone();
+
             let mut process = std::process::Command::new(&command.program);
             process.args(&command.args);
             for (key, value) in &command.env {
@@ -806,6 +836,22 @@ impl LlamaCppInstaller {
                         command.program, details
                     )
                 });
+            }
+
+            if is_cmake_configure {
+                let cache_path = command_working_dir
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("build")
+                    .join("CMakeCache.txt");
+                validate_cmake_cache(&cache_path, &self.expected_gpu_targets())?;
+            }
+
+            if is_cmake_install {
+                // VAL-GUARD-004: Post-build linkage verification rejects CUDA-linked binaries
+                // VAL-GUARD-005: source builds must prove ROCm linkage before success.
+                let bin_path = resolve_install_bin_dir(home).join(DETECTION_BINARY);
+                verify_binary_linkage(&bin_path)?;
             }
         }
 
@@ -1054,27 +1100,147 @@ pub fn has_partial_artifacts(home: &str) -> bool {
 
 /// Check if the installed llama-cli binary has ROCm/HIP linkage.
 ///
-/// Uses `ldd` to verify the binary links against HIP libraries (amdhip64 or hipblas).
-/// Returns `true` if ROCm linkage is confirmed, `false` otherwise.
-pub fn has_rocm_linkage(home: &str) -> bool {
-    let bin_path = resolve_install_bin_dir(home).join(DETECTION_BINARY);
-    if !bin_path.exists() {
-        return false;
+/// Verify that the installed binary has ROCm/HIP linkage and NOT CUDA linkage.
+///
+/// Uses `ldd` to check for:
+/// - REQUIRED: `amdhip64` or `hipblas` or `libhip` (ROCm present)
+/// - FORBIDDEN: `libcuda` or `libnvidia` or `libcudart` (CUDA contamination)
+///
+/// # Validation
+///
+/// - **VAL-GUARD-004**: Post-build linkage verification rejects CUDA-linked binaries
+/// - **VAL-GUARD-005**: Post-build linkage verification requires ROCm linkage
+fn verify_binary_linkage(binary_path: &Path) -> Result<(), String> {
+    if !binary_path.exists() {
+        return Err(format!(
+            "Binary not found at {} — install may have failed",
+            binary_path.display()
+        ));
     }
 
-    let Ok(output) = std::process::Command::new("ldd").arg(&bin_path).output() else {
-        return false;
-    };
+    let output = std::process::Command::new("ldd")
+        .arg(binary_path)
+        .output()
+        .map_err(|e| format!("Failed to run ldd on {}: {}", binary_path.display(), e))?;
 
     if !output.status.success() {
-        return false;
+        return Err(format!(
+            "ldd failed on {}: {}",
+            binary_path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let ldd_output = String::from_utf8_lossy(&output.stdout);
-    // Check for HIP linkage markers
-    ldd_output.contains("amdhip64")
+
+    // Check for CUDA contamination
+    let cuda_markers = ["libcuda.so", "libnvidia", "libcudart"];
+    for marker in &cuda_markers {
+        if ldd_output.contains(marker) {
+            return Err(format!(
+                "CUDA contamination detected: {} links against '{}'. \
+                 The binary was built with CUDA instead of ROCm/HIP. \
+                 This should not happen — check CMake configuration.",
+                binary_path.display(),
+                marker
+            ));
+        }
+    }
+
+    // Check for ROCm linkage
+    let has_rocm = ldd_output.contains("amdhip64")
         || ldd_output.contains("hipblas")
-        || ldd_output.contains("libhip")
+        || ldd_output.contains("libhip");
+
+    if !has_rocm {
+        return Err(format!(
+            "ROCm/HIP linkage not found in {}. The binary may be a CPU-only build \
+             or was built without GPU acceleration. Expected linkage to amdhip64 or hipblas.",
+            binary_path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Check if NVIDIA CUDA toolkit artifacts are present on the system.
+///
+/// VAL-GUARD-002: detection is informational and never blocks HIP builds.
+fn detect_cuda_toolkit_presence() -> Vec<String> {
+    let mut found = Vec::new();
+    let cuda_indicators = [
+        ("nvcc", "NVIDIA CUDA compiler"),
+        ("nvidia-smi", "NVIDIA system management interface"),
+    ];
+
+    for (binary, description) in cuda_indicators {
+        if std::process::Command::new("which")
+            .arg(binary)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            found.push(format!("{} ({})", binary, description));
+        }
+    }
+
+    if Path::new("/usr/local/cuda").exists() {
+        found.push("/usr/local/cuda directory".to_string());
+    }
+
+    found
+}
+
+/// Validate generated CMake cache after configure.
+///
+/// VAL-GUARD-003: cache must confirm HIP ON, CUDA OFF, expected GPU targets.
+fn validate_cmake_cache(cache_path: &Path, expected_gpu_targets: &str) -> Result<(), String> {
+    let contents = fs::read_to_string(cache_path).map_err(|err| {
+        format!(
+            "failed to read CMake cache at {}: {}",
+            cache_path.display(),
+            err
+        )
+    })?;
+
+    let mut hip_on = false;
+    let mut cuda_off = false;
+    let mut gpu_targets_seen = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            continue;
+        }
+
+        if trimmed == "GGML_HIP:BOOL=ON" {
+            hip_on = true;
+        } else if trimmed == "GGML_CUDA:BOOL=OFF" {
+            cuda_off = true;
+        } else if let Some(value) = trimmed.strip_prefix("GPU_TARGETS:STRING=") {
+            gpu_targets_seen = true;
+            if value != expected_gpu_targets {
+                return Err(format!(
+                    "GPU_TARGETS mismatch in CMakeCache.txt: expected '{}', found '{}'",
+                    expected_gpu_targets, value
+                ));
+            }
+        }
+    }
+
+    if !hip_on {
+        return Err("GGML_HIP is not ON in CMakeCache.txt; build is not using ROCm".to_string());
+    }
+    if !cuda_off {
+        return Err(
+            "GGML_CUDA is not OFF in CMakeCache.txt; CUDA contamination risk".to_string(),
+        );
+    }
+    if !gpu_targets_seen {
+        return Err("GPU_TARGETS is missing from CMakeCache.txt".to_string());
+    }
+
+    Ok(())
 }
 
 // ===========================================================================
@@ -1400,6 +1566,33 @@ mod tests {
     }
 
     #[test]
+    fn test_cmake_flags_always_disable_non_rocm_backends() {
+        // VAL-GUARD-001: every channel must explicitly disable non-ROCm backends.
+        for channel in ["legacy", "stable", "latest"] {
+            let config = LlamaCppConfig {
+                gpu_arch: "gfx1100".to_string(),
+                channel: channel.to_string(),
+                ..Default::default()
+            };
+            let installer = LlamaCppInstaller::new(config);
+            let flags = installer.cmake_flags();
+
+            assert!(
+                flags.contains(&"-DGGML_CUDA=OFF".to_string()),
+                "channel {channel} must set GGML_CUDA=OFF"
+            );
+            assert!(
+                flags.contains(&"-DGGML_VULKAN=OFF".to_string()),
+                "channel {channel} must set GGML_VULKAN=OFF"
+            );
+            assert!(
+                flags.contains(&"-DGGML_METAL=OFF".to_string()),
+                "channel {channel} must set GGML_METAL=OFF"
+            );
+        }
+    }
+
+    #[test]
     fn test_cmake_flags_stable() {
         let config = LlamaCppConfig {
             gpu_arch: "gfx1100".to_string(),
@@ -1474,6 +1667,54 @@ mod tests {
 
         // Unknown GPU should degrade to conservative gfx1030
         assert!(flags.contains(&"-DGPU_TARGETS=gfx1030".to_string()));
+    }
+
+    #[test]
+    fn test_detect_cuda_toolkit_presence_no_panic() {
+        // VAL-GUARD-002: detection must be safe whether CUDA exists or not.
+        let result = detect_cuda_toolkit_presence();
+        assert!(result.len() <= 3);
+    }
+
+    #[test]
+    fn test_validate_cmake_cache_accepts_rocm_only_config() {
+        // VAL-GUARD-003: valid cache confirms HIP ON, CUDA OFF, expected GPU targets.
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            temp.path(),
+            "GGML_HIP:BOOL=ON\nGGML_CUDA:BOOL=OFF\nGPU_TARGETS:STRING=gfx1030;gfx1100;gfx1101\n",
+        )
+        .unwrap();
+
+        assert!(validate_cmake_cache(temp.path(), "gfx1030;gfx1100;gfx1101").is_ok());
+    }
+
+    #[test]
+    fn test_validate_cmake_cache_rejects_cuda_on() {
+        // VAL-GUARD-003: CUDA ON is contamination risk.
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            temp.path(),
+            "GGML_HIP:BOOL=ON\nGGML_CUDA:BOOL=ON\nGPU_TARGETS:STRING=gfx1030\n",
+        )
+        .unwrap();
+
+        let err = validate_cmake_cache(temp.path(), "gfx1030").unwrap_err();
+        assert!(err.contains("GGML_CUDA is not OFF"));
+    }
+
+    #[test]
+    fn test_validate_cmake_cache_rejects_gpu_target_mismatch() {
+        // VAL-GUARD-003: GPU_TARGETS must match channel policy exactly.
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            temp.path(),
+            "GGML_HIP:BOOL=ON\nGGML_CUDA:BOOL=OFF\nGPU_TARGETS:STRING=gfx1030\n",
+        )
+        .unwrap();
+
+        let err = validate_cmake_cache(temp.path(), "gfx1030;gfx1100;gfx1101").unwrap_err();
+        assert!(err.contains("GPU_TARGETS mismatch"));
     }
 
     #[test]
@@ -1814,5 +2055,22 @@ mod tests {
         assert_eq!(parse_bench_tps("not a bench line"), None);
         assert_eq!(parse_bench_tps(""), None);
         assert_eq!(parse_bench_tps("| col1 | col2 |"), None);
+    }
+
+    #[test]
+    fn test_verify_binary_linkage_missing_binary() {
+        // VAL-GUARD-004, VAL-GUARD-005
+        let result = verify_binary_linkage(std::path::Path::new("/nonexistent/binary"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_verify_binary_linkage_no_panic() {
+        // Test with a known binary (bash) — should fail on ROCm linkage check
+        // but should NOT panic
+        let result = verify_binary_linkage(std::path::Path::new("/usr/bin/bash"));
+        // bash won't have ROCm linkage, so this should be an Err
+        assert!(result.is_err());
     }
 }

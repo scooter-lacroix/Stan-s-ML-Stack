@@ -5,7 +5,7 @@
   "components": [
     {
       "id": "rocm",
-      "version": "7.2.3",
+      "version": "7.2.4",
       "script": "scripts/install_rocm.sh",
       "category": "Foundation",
       "validation_tier": "Validated"
