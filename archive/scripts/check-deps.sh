@@ -101,18 +101,18 @@ deps=()
 while IFS= read -r line; do
   line="${line%%#*}"
   # Simple form: name = "version"
-  if echo "$line" | grep -qP '^\s*[a-zA-Z0-9_-]+\s*=\s*"[^"]+"'; then
-    dep_name=$(echo "$line" | grep -oP '^\s*\K[a-zA-Z0-9_-]+')
-    dep_ver=$(echo "$line" | grep -oP '"\K[^"]+')
+  if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*"[^"]+"'; then
+    dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
+    dep_ver=$(echo "$line" | sed -E 's/[^"]*"([^"]+)".*/\1/')
     [[ -z "$dep_ver" ]] && continue
     deps+=("$dep_name")
     continue
   fi
 
   # Inline table: name = { version = "x.y.z", ... }
-  if echo "$line" | grep -qP '^\s*[a-zA-Z0-9_-]+\s*=\s*\{[^}]*\bversion\s*=\s*"[^"]+"'; then
-    dep_name=$(echo "$line" | grep -oP '^\s*\K[a-zA-Z0-9_-]+')
-    dep_ver=$(echo "$line" | grep -oP '\bversion\s*=\s*"\K[^"]+')
+  if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"[^"]+"'; then
+    dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
+    dep_ver=$(echo "$line" | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
     [[ -z "$dep_ver" ]] && continue
     deps+=("$dep_name")
   fi
@@ -135,7 +135,7 @@ for dep in "${deps[@]}"; do
   # Get current locked version
   locked_ver="0.0.0"
   if [[ -f "$CARGO_LOCK" ]]; then
-    locked_ver=$(grep -A2 "name = \"$dep\"" "$CARGO_LOCK" 2>/dev/null | grep "version" | head -1 | grep -oP '"\K[^"]+' || echo "0.0.0")
+    locked_ver=$(grep -A2 "name = \"$dep\"" "$CARGO_LOCK" 2>/dev/null | grep "version" | head -1 | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/' || echo "0.0.0")
   fi
 
   # Query crates.io

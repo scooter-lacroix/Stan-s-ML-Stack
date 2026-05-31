@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(legacy.version(), "6.4.3");
 
         let stable = RocmChannel::Stable;
-        assert_eq!(stable.version(), "7.1");
+        assert_eq!(stable.version(), "7.2.3");
     }
 }
 ```
@@ -821,7 +821,7 @@ If you encounter issues with the new system:
 │  rusty-stack-upgrade                      rusty upgrade       │
 │  rusty-stack-bench                        rusty bench         │
 │  ./scripts/verify_installation.sh         rusty verify --full │
-│  ./scripts/enhanced_verify_installation   rusty verify --enh  │
+│  ./scripts/enhanced_verify_installation   rusty verify --enhanced │
 │  ./scripts/verify_and_build.sh            rusty verify --build│
 │  ./scripts/run_all_benchmarks_suite.sh    rusty bench all     │
 │  ./scripts/install_ml_stack_curses.py     rusty (TUI)         │

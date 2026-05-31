@@ -44,8 +44,8 @@ body:
       label: ROCm Version
       options:
         - 6.4.3 (Legacy)
-        - 7.1 (Stable)
-        - 7.2.1 (Latest)
+        - 7.2.3 (Stable)
+        - 7.2.4 (Latest)
         - Unknown / Not installed
     validations:
       required: true
