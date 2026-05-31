@@ -586,7 +586,7 @@ mod update_impl {
     fn countdown_confirm(count: usize) -> bool {
         use std::io::stdin;
         use std::thread;
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         println!("\n  ┌───────────────────────────────────────────────────┐");
         println!(
@@ -617,26 +617,32 @@ mod update_impl {
                     eprint!("\r  ⏳ Applying in {:2}s... ", remaining);
                     let _ = std::io::stderr().flush();
 
-                    // Check for user input
-                    thread::sleep(Duration::from_millis(100));
-                    let mut buf = [0u8; 1];
-                    if let Ok(1) = stdin().read(&mut buf) {
-                        match buf[0] {
-                            b'\n' | b'\r' => {
-                                confirmed = true;
-                                break;
+                    // Poll stdin for one full second so the countdown is truly 10 seconds.
+                    let tick_start = Instant::now();
+                    while tick_start.elapsed() < Duration::from_secs(1) {
+                        thread::sleep(Duration::from_millis(100));
+                        let mut buf = [0u8; 1];
+                        if let Ok(1) = stdin().read(&mut buf) {
+                            match buf[0] {
+                                b'\n' | b'\r' => {
+                                    confirmed = true;
+                                    break;
+                                }
+                                b'n' | b'N' | b'q' | b'Q' => {
+                                    cancelled = true;
+                                    break;
+                                }
+                                3 => {
+                                    // Ctrl+C
+                                    cancelled = true;
+                                    break;
+                                }
+                                _ => {}
                             }
-                            b'n' | b'N' | b'q' | b'Q' => {
-                                cancelled = true;
-                                break;
-                            }
-                            3 => {
-                                // Ctrl+C
-                                cancelled = true;
-                                break;
-                            }
-                            _ => {}
                         }
+                    }
+                    if confirmed || cancelled {
+                        break;
                     }
                 }
 
@@ -1111,13 +1117,90 @@ mod upgrade_impl {
 
     // Real implementations for CLI usage
 
+    const RELEASES_API_URL: &str =
+        "https://api.github.com/repos/scooter-lacroix/Stan-s-ML-Stack/releases/latest";
+    const UPGRADE_USER_AGENT: &str = "rusty-stack-upgrade";
+
     /// Real release provider that fetches from GitHub releases API.
     struct RealReleaseProvider;
 
     impl ReleaseProvider for RealReleaseProvider {
         fn fetch_latest_release(&self) -> std::result::Result<ReleaseInfo, UpgradeError> {
-            Err(UpgradeError::DownloadFailed {
-                reason: "no remote release endpoint configured yet".to_string(),
+            let release: serde_json::Value = ureq::Agent::new_with_defaults()
+                .get(RELEASES_API_URL)
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", UPGRADE_USER_AGENT)
+                .call()
+                .map_err(|e| UpgradeError::DownloadFailed {
+                    reason: format!("failed to fetch latest release: {e}"),
+                })?
+                .into_body()
+                .read_json()
+                .map_err(|e| UpgradeError::DownloadFailed {
+                    reason: format!("failed to parse latest release JSON: {e}"),
+                })?;
+
+            let tag = release
+                .get("tag_name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| UpgradeError::DownloadFailed {
+                    reason: "latest release is missing tag_name".to_string(),
+                })?;
+            let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
+
+            let assets = release
+                .get("assets")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| UpgradeError::DownloadFailed {
+                    reason: "latest release is missing assets".to_string(),
+                })?;
+
+            let wanted_suffix = target_release_asset_suffix();
+            let selected_asset = assets
+                .iter()
+                .find(|asset| {
+                    asset
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|name| name.ends_with(wanted_suffix))
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| UpgradeError::DownloadFailed {
+                    reason: format!(
+                        "no release asset found for this platform (expected suffix: {wanted_suffix})"
+                    ),
+                })?;
+
+            let asset_name = selected_asset
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| UpgradeError::DownloadFailed {
+                    reason: "selected asset is missing name".to_string(),
+                })?;
+            let download_url = selected_asset
+                .get("browser_download_url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| UpgradeError::DownloadFailed {
+                    reason: "selected asset is missing browser_download_url".to_string(),
+                })?
+                .to_string();
+
+            let checksum = selected_asset
+                .get("digest")
+                .and_then(|v| v.as_str())
+                .and_then(|digest| digest.strip_prefix("sha256:"))
+                .map(|s| s.to_string())
+                .or_else(|| checksum_from_sums_asset(assets, asset_name))
+                .ok_or_else(|| UpgradeError::DownloadFailed {
+                    reason: format!("no SHA256 checksum found for release asset '{asset_name}'"),
+                })?;
+
+            Ok(ReleaseInfo {
+                version,
+                download_url,
+                checksum,
+                min_runtime_version: "0.0.0".to_string(),
+                schema_version: rusty_stack::core::manifest::CURRENT_SCHEMA_VERSION,
             })
         }
     }
@@ -1127,10 +1210,212 @@ mod upgrade_impl {
 
     impl BinaryDownloader for RealDownloader {
         fn download(&self, url: &str) -> std::result::Result<Vec<u8>, UpgradeError> {
-            Err(UpgradeError::DownloadFailed {
-                reason: format!("download not yet implemented for URL: {url}"),
-            })
+            let archive_bytes = ureq::Agent::new_with_defaults()
+                .get(url)
+                .header("User-Agent", UPGRADE_USER_AGENT)
+                .call()
+                .map_err(|e| UpgradeError::DownloadFailed {
+                    reason: format!("failed to download release asset: {e}"),
+                })?
+                .into_body()
+                .read_to_vec()
+                .map_err(|e| UpgradeError::DownloadFailed {
+                    reason: format!("failed to read downloaded asset bytes: {e}"),
+                })?;
+
+            if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
+                return extract_binary_from_tar_gz(&archive_bytes);
+            }
+
+            if url.ends_with(".zip") {
+                return extract_binary_from_zip(&archive_bytes);
+            }
+
+            Ok(archive_bytes)
         }
+    }
+
+    fn target_release_asset_suffix() -> &'static str {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            "linux-x86_64.tar.gz"
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            "windows-x86_64.zip"
+        }
+        #[cfg(not(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "x86_64")
+        )))]
+        {
+            "unsupported-platform"
+        }
+    }
+
+    fn expected_binary_name() -> &'static str {
+        #[cfg(target_os = "windows")]
+        {
+            "rusty.exe"
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "rusty"
+        }
+    }
+
+    fn checksum_from_sums_asset(
+        assets: &[serde_json::Value],
+        target_asset_name: &str,
+    ) -> Option<String> {
+        let sums_url = assets.iter().find_map(|asset| {
+            let name = asset.get("name")?.as_str()?;
+            if name == "SHA256SUMS" {
+                asset
+                    .get("browser_download_url")?
+                    .as_str()
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })?;
+
+        let sums_text = ureq::Agent::new_with_defaults()
+            .get(&sums_url)
+            .header("User-Agent", UPGRADE_USER_AGENT)
+            .call()
+            .ok()?
+            .into_body()
+            .read_to_string()
+            .ok()?;
+
+        for line in sums_text.lines() {
+            let mut parts = line.split_whitespace();
+            let checksum = parts.next()?;
+            let filename = parts.next()?.trim_start_matches('*');
+            if filename == target_asset_name {
+                return Some(checksum.to_string());
+            }
+        }
+        None
+    }
+
+    fn find_file_recursively(root: &Path, filename: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(root).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find_file_recursively(&path, filename) {
+                    return Some(found);
+                }
+                continue;
+            }
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == filename)
+                .unwrap_or(false)
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn extract_binary_from_tar_gz(data: &[u8]) -> std::result::Result<Vec<u8>, UpgradeError> {
+        let temp_dir = tempfile::tempdir().map_err(|e| UpgradeError::DownloadFailed {
+            reason: format!("failed to create temp dir for archive extraction: {e}"),
+        })?;
+        let archive_path = temp_dir.path().join("release.tar.gz");
+        std::fs::write(&archive_path, data).map_err(|e| UpgradeError::DownloadFailed {
+            reason: format!("failed to write temporary archive: {e}"),
+        })?;
+
+        let status = std::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(temp_dir.path())
+            .status()
+            .map_err(|e| UpgradeError::DownloadFailed {
+                reason: format!("failed to execute tar for archive extraction: {e}"),
+            })?;
+
+        if !status.success() {
+            return Err(UpgradeError::DownloadFailed {
+                reason: format!(
+                    "archive extraction failed with exit code {:?}",
+                    status.code()
+                ),
+            });
+        }
+
+        let binary_path = find_file_recursively(temp_dir.path(), expected_binary_name())
+            .ok_or_else(|| UpgradeError::DownloadFailed {
+                reason: format!(
+                    "archive did not contain expected binary '{}'",
+                    expected_binary_name()
+                ),
+            })?;
+
+        std::fs::read(&binary_path).map_err(|e| UpgradeError::DownloadFailed {
+            reason: format!(
+                "failed to read extracted binary from {}: {e}",
+                binary_path.display()
+            ),
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn extract_binary_from_zip(data: &[u8]) -> std::result::Result<Vec<u8>, UpgradeError> {
+        let temp_dir = tempfile::tempdir().map_err(|e| UpgradeError::DownloadFailed {
+            reason: format!("failed to create temp dir for zip extraction: {e}"),
+        })?;
+        let archive_path = temp_dir.path().join("release.zip");
+        std::fs::write(&archive_path, data).map_err(|e| UpgradeError::DownloadFailed {
+            reason: format!("failed to write temporary zip archive: {e}"),
+        })?;
+
+        let script = format!(
+            "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+            archive_path.display(),
+            temp_dir.path().display()
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoLogo", "-NoProfile", "-Command", &script])
+            .status()
+            .map_err(|e| UpgradeError::DownloadFailed {
+                reason: format!("failed to execute PowerShell zip extraction: {e}"),
+            })?;
+
+        if !status.success() {
+            return Err(UpgradeError::DownloadFailed {
+                reason: format!("zip extraction failed with exit code {:?}", status.code()),
+            });
+        }
+
+        let binary_path = find_file_recursively(temp_dir.path(), expected_binary_name())
+            .ok_or_else(|| UpgradeError::DownloadFailed {
+                reason: format!(
+                    "zip archive did not contain expected binary '{}'",
+                    expected_binary_name()
+                ),
+            })?;
+
+        std::fs::read(&binary_path).map_err(|e| UpgradeError::DownloadFailed {
+            reason: format!(
+                "failed to read extracted binary from {}: {e}",
+                binary_path.display()
+            ),
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn extract_binary_from_zip(_data: &[u8]) -> std::result::Result<Vec<u8>, UpgradeError> {
+        Err(UpgradeError::DownloadFailed {
+            reason: "zip upgrades are not supported on this platform".to_string(),
+        })
     }
 
     /// Real smoke tester that runs the binary with --version.
