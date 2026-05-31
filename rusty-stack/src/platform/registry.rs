@@ -796,9 +796,13 @@ pub fn detect_all_installed_with_home(home: &Path) -> Vec<String> {
         installed.push("rocm".to_string());
     }
 
-    // Command-based: rocm-smi
-    if is_component_installed("rocm-smi") {
-        installed.push("rocm-smi".to_string());
+    // Command-based components
+    for info in known_components() {
+        if info.detection_method == DetectionMethod::CommandBased
+            && is_component_installed(&info.id)
+        {
+            installed.push(info.id.clone());
+        }
     }
 
     // Python modules: batch detection

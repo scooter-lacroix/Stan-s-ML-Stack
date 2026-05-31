@@ -313,27 +313,35 @@ impl UpdatePlanner {
             items.push(self.build_planner_item(component, classification, context));
         }
 
-        // Apply --all-safe: only keep safe items (and experimental if explicitly included)
+        let target_set: HashSet<&str> = options
+            .target_components
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+
+        // Apply --all-safe: keep safe items (and experimental if explicitly included),
+        // but never discard explicitly targeted components.
         if options.all_safe {
             if options.include_experimental {
                 items.retain(|i| {
+                    if target_set.contains(i.plan_item.component_id.as_str()) {
+                        return true;
+                    }
                     matches!(
                         i.classification,
                         UpdateClassification::Safe | UpdateClassification::Experimental
                     )
                 });
             } else {
-                items.retain(|i| i.classification == UpdateClassification::Safe);
+                items.retain(|i| {
+                    target_set.contains(i.plan_item.component_id.as_str())
+                        || i.classification == UpdateClassification::Safe
+                });
             }
         }
 
         // Explicit targets should be selected even when classification defaults are non-safe.
-        if !options.target_components.is_empty() {
-            let target_set: HashSet<&str> = options
-                .target_components
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
+        if !target_set.is_empty() {
             for item in &mut items {
                 if target_set.contains(item.plan_item.component_id.as_str()) {
                     item.selected = true;
@@ -541,6 +549,7 @@ impl UpdatePlanner {
                 | "aiter"
                 | "deepspeed"
                 | "bitsandbytes"
+                | "llama-cpp"
         )
     }
 
@@ -1393,6 +1402,38 @@ mod tests {
         let items = planner().build_plan(&manifest, &context, &options).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].classification, UpdateClassification::Candidate);
+        assert!(items[0].selected);
+        assert!(items[0].plan_item.selected);
+    }
+
+    #[test]
+    fn test_all_safe_keeps_explicit_targeted_non_safe_component() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("pytorch".to_string(), "2.4.0".to_string());
+        context.installed_components.insert("pytorch".to_string());
+        context
+            .installed_versions
+            .insert("triton".to_string(), "3.0.0".to_string());
+        context.installed_components.insert("triton".to_string());
+
+        let manifest = make_manifest(vec![
+            make_component("pytorch", "2.4.1", ValidationTier::Validated), // safe
+            make_component("triton", "3.1.0", ValidationTier::Validated),  // guarded
+        ]);
+
+        let options = PlannerOptions {
+            all_safe: true,
+            target_components: vec!["triton".to_string()],
+            ..Default::default()
+        };
+
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+
+        assert_eq!(items.len(), 1, "Only targeted component is in scope");
+        assert_eq!(items[0].plan_item.component_id, "triton");
+        assert_eq!(items[0].classification, UpdateClassification::Guarded);
         assert!(items[0].selected);
         assert!(items[0].plan_item.selected);
     }
