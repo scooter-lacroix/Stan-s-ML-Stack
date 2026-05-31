@@ -25,25 +25,21 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "numpy",
-    "torch>=2.6.0",
-    "onnxruntime",
-    "psutil",
-    "tqdm",
-    "requests",
-    "pyyaml",
-]
 
 [project.urls]
 Homepage = "https://github.com/scooter-lacroix/Stan-s-ML-Stack"
 Issues = "https://github.com/scooter-lacroix/Stan-s-ML-Stack/issues"
 Documentation = "https://github.com/scooter-lacroix/Stan-s-ML-Stack/wiki"
 
+[project.scripts]
+ml-stack-install = "rusty_stack_wrapper.cli:install_main"
+ml-stack-verify = "rusty_stack_wrapper.cli:verify_main"
+ml-stack-repair = "rusty_stack_wrapper.cli:repair_main"
+
 [tool.setuptools]
 
 [tool.setuptools.packages.find]
-namespaces = true
+include = ["rusty_stack_wrapper*"]
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}
