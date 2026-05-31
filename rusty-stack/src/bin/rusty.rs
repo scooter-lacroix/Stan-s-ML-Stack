@@ -419,11 +419,7 @@ mod update_impl {
             use rusty_stack::platform::linux::detect_gpu;
 
             let gpu_info = detect_gpu();
-            let rocm_version = if gpu_info.rocm_version.is_empty() {
-                "not installed".to_string()
-            } else {
-                gpu_info.rocm_version.clone()
-            };
+            let rocm_version = gpu_info.rocm_version.clone();
 
             let gpu_architecture = if gpu_info.architecture.is_empty() {
                 "unknown".to_string()
@@ -432,20 +428,24 @@ mod update_impl {
             };
 
             // Determine channel from version
-            let rocm_channel = if rocm_version.starts_with("7.0") {
+            let rocm_channel = if rocm_version.is_empty() {
+                String::new()
+            } else if rocm_version.starts_with("6.4") {
                 "legacy".to_string()
-            } else if rocm_version.starts_with("7.1") || rocm_version.starts_with("7.2") {
-                // 7.1.x or early 7.2.x → stable; newer 7.2.x → latest
+            } else if rocm_version.starts_with("7.2") {
+                // 7.2.0-7.2.3 -> stable; 7.2.4+ -> latest
                 let patch: u32 = rocm_version
                     .split('.')
                     .nth(2)
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(0);
-                if rocm_version.starts_with("7.1") || patch <= 1 {
+                if patch <= 3 {
                     "stable".to_string()
                 } else {
                     "latest".to_string()
                 }
+            } else if rocm_version.starts_with("7.1") {
+                "stable".to_string()
             } else {
                 "latest".to_string()
             };
@@ -455,11 +455,7 @@ mod update_impl {
 
         #[cfg(not(unix))]
         {
-            (
-                "not installed".to_string(),
-                "unknown".to_string(),
-                "latest".to_string(),
-            )
+            (String::new(), "unknown".to_string(), String::new())
         }
     }
 

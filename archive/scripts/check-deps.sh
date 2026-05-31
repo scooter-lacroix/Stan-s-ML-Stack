@@ -12,10 +12,43 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CRATE_DIR="$PROJECT_DIR/rusty-stack"
 LAG_DAYS=7
 VERBOSE=0
+
+for required_cmd in curl jq grep sed sort date; do
+  if ! command -v "$required_cmd" >/dev/null 2>&1; then
+    echo "❌ Missing required command: $required_cmd"
+    exit 2
+  fi
+done
+
+parse_iso_epoch() {
+  local value="$1"
+  if date -d "$value" +%s >/dev/null 2>&1; then
+    date -d "$value" +%s
+    return 0
+  fi
+  if date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s >/dev/null 2>&1; then
+    date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$value" +%s
+    return 0
+  fi
+  return 1
+}
+
+days_ago_epoch() {
+  local days="$1"
+  if date -d "$days days ago" +%s >/dev/null 2>&1; then
+    date -d "$days days ago" +%s
+    return 0
+  fi
+  if date -v-"${days}"d +%s >/dev/null 2>&1; then
+    date -v-"${days}"d +%s
+    return 0
+  fi
+  return 1
+}
 
 # ── Parse arguments ──
 while [[ $# -gt 0 ]]; do
@@ -66,10 +99,20 @@ echo ""
 # ── Extract direct dependencies from [dependencies] section ──
 deps=()
 while IFS= read -r line; do
+  line="${line%%#*}"
   # Simple form: name = "version"
   if echo "$line" | grep -qP '^\s*[a-zA-Z0-9_-]+\s*=\s*"[^"]+"'; then
     dep_name=$(echo "$line" | grep -oP '^\s*\K[a-zA-Z0-9_-]+')
     dep_ver=$(echo "$line" | grep -oP '"\K[^"]+')
+    [[ -z "$dep_ver" ]] && continue
+    deps+=("$dep_name")
+    continue
+  fi
+
+  # Inline table: name = { version = "x.y.z", ... }
+  if echo "$line" | grep -qP '^\s*[a-zA-Z0-9_-]+\s*=\s*\{[^}]*\bversion\s*=\s*"[^"]+"'; then
+    dep_name=$(echo "$line" | grep -oP '^\s*\K[a-zA-Z0-9_-]+')
+    dep_ver=$(echo "$line" | grep -oP '\bversion\s*=\s*"\K[^"]+')
     [[ -z "$dep_ver" ]] && continue
     deps+=("$dep_name")
   fi
@@ -128,12 +171,16 @@ for dep in "${deps[@]}"; do
 
   # There is an update available — check lag period
   if [[ -n "$publish_date" && "$publish_date" != "null" ]]; then
-    publish_epoch=$(date -d "$publish_date" +%s 2>/dev/null) || {
+    publish_epoch=$(parse_iso_epoch "$publish_date") || {
       echo "  📦 $dep — $locked_ver → $latest_ver (could not parse publish date)"
       ((updates_available++)) || true
       continue
     }
-    lag_cutoff=$(date -d "$LAG_DAYS days ago" +%s)
+    lag_cutoff=$(days_ago_epoch "$LAG_DAYS") || {
+      echo "  📦 $dep — $locked_ver → $latest_ver (could not compute lag cutoff)"
+      ((updates_available++)) || true
+      continue
+    }
 
     if [[ "$publish_epoch" -lt "$lag_cutoff" ]]; then
       days_since=$(( ( $(date +%s) - publish_epoch ) / 86400 ))
