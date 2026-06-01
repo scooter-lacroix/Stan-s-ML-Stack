@@ -719,7 +719,10 @@ mod tests {
 
         // wget download
         assert_eq!(cmds[0].program, "wget");
-        assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4/ubuntu/noble")));
+        assert!(cmds[0]
+            .args
+            .iter()
+            .any(|a| a.contains("7.2.4/ubuntu/noble")));
         assert!(cmds[0].args.iter().any(|a| a.contains("7.2.4.70204-1")));
         assert_eq!(cmds[1].program, "sudo");
         assert!(cmds[1].args.contains(&"dpkg".to_string()));

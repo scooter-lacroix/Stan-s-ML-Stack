@@ -805,8 +805,8 @@ impl LlamaCppInstaller {
             let is_cmake_configure = command.program == "cmake"
                 && command.args.iter().any(|arg| arg == "-B")
                 && command.args.iter().any(|arg| arg == "-S");
-            let is_cmake_install = command.program == "cmake"
-                && command.args.iter().any(|arg| arg == "--install");
+            let is_cmake_install =
+                command.program == "cmake" && command.args.iter().any(|arg| arg == "--install");
             let command_working_dir = command.working_dir.clone();
 
             let mut process = std::process::Command::new(&command.program);
@@ -1243,9 +1243,7 @@ fn validate_cmake_cache(cache_path: &Path, expected_gpu_targets: &str) -> Result
         return Err("GGML_HIP is not ON in CMakeCache.txt; build is not using ROCm".to_string());
     }
     if !cuda_off {
-        return Err(
-            "GGML_CUDA is not OFF in CMakeCache.txt; CUDA contamination risk".to_string(),
-        );
+        return Err("GGML_CUDA is not OFF in CMakeCache.txt; CUDA contamination risk".to_string());
     }
     if !gpu_targets_seen {
         return Err("GPU_TARGETS is missing from CMakeCache.txt".to_string());
