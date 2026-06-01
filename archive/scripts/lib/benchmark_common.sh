@@ -2054,12 +2054,6 @@ benchmark_resolve_bench_binary() {
     local log_file="$2"
     local target_dir
 
-    # Prefer rusty on PATH (e.g. installed system-wide)
-    if command -v rusty >/dev/null 2>&1; then
-        printf '%s\n' "$(command -v rusty)"
-        return 0
-    fi
-
     target_dir="$(benchmark_discover_target_dir "$manifest_path" "$log_file")"
 
     # Check debug build
@@ -2077,6 +2071,12 @@ benchmark_resolve_bench_binary() {
     # Check common install location
     if [ -x "${HOME}/.cargo/bin/rusty" ]; then
         printf '%s\n' "${HOME}/.cargo/bin/rusty"
+        return 0
+    fi
+
+    # Fallback to rusty on PATH (e.g. installed system-wide)
+    if command -v rusty >/dev/null 2>&1; then
+        printf '%s\n' "$(command -v rusty)"
         return 0
     fi
 

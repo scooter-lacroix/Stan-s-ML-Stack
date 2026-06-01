@@ -111,6 +111,10 @@ while IFS= read -r line; do
 
   # Inline table: name = { version = "x.y.z", ... }
   if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"[^"]+"'; then
+    # Skip local/path/git dependencies that are not crates.io-resolved.
+    if echo "$line" | grep -Eq 'path[[:space:]]*=|git[[:space:]]*='; then
+      continue
+    fi
     dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
     dep_ver=$(echo "$line" | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
     [[ -z "$dep_ver" ]] && continue
