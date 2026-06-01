@@ -263,7 +263,16 @@ mod update_impl {
                                 error: None,
                             },
                         };
-                        println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                        match serde_json::to_string(&output) {
+                            Ok(payload) => println!("{payload}"),
+                            Err(err) => {
+                                eprintln!(
+                                    "{{\"status\":\"error\",\"error\":\"failed to serialize update output: {}\"}}",
+                                    err.to_string().replace('"', "\\\"")
+                                );
+                                process::exit(1);
+                            }
+                        }
                     } else {
                         // Apply the plan
                         let apply_result = apply_plan(&plan);
@@ -282,7 +291,16 @@ mod update_impl {
                                 error: None,
                             },
                         };
-                        println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                        match serde_json::to_string(&output) {
+                            Ok(payload) => println!("{payload}"),
+                            Err(err) => {
+                                eprintln!(
+                                    "{{\"status\":\"error\",\"error\":\"failed to serialize update output: {}\"}}",
+                                    err.to_string().replace('"', "\\\"")
+                                );
+                                process::exit(1);
+                            }
+                        }
                         if apply_result.has_failures() {
                             process::exit(1);
                         }
@@ -299,7 +317,15 @@ mod update_impl {
                             error: Some(error.to_string()),
                         },
                     };
-                    println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                    match serde_json::to_string(&output) {
+                        Ok(payload) => println!("{payload}"),
+                        Err(err) => {
+                            eprintln!(
+                                "{{\"status\":\"error\",\"error\":\"failed to serialize update error output: {}\"}}",
+                                err.to_string().replace('"', "\\\"")
+                            );
+                        }
+                    }
                     process::exit(1);
                 }
             }
