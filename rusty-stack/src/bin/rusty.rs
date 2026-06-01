@@ -244,14 +244,21 @@ mod update_impl {
             // JSON output mode
             match build_plan(&scan, &options) {
                 Ok(plan) => {
-                    if scan_only || plan.summary.selected == 0 {
+                    let can_apply_non_interactive = yes || all_safe;
+                    if scan_only || plan.summary.selected == 0 || !can_apply_non_interactive {
+                        let status = if scan_only {
+                            "scan_only"
+                        } else if plan.summary.selected == 0 {
+                            "no_updates"
+                        } else {
+                            "confirmation_required"
+                        };
                         let output = JsonOutput {
                             scan,
                             plan: Some(plan),
                             apply: None,
                             summary: JsonSummary {
-                                status: if scan_only { "scan_only" } else { "no_updates" }
-                                    .to_string(),
+                                status: status.to_string(),
                                 scan_only,
                                 error: None,
                             },

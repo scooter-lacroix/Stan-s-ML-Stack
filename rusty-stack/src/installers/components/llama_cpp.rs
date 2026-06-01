@@ -488,6 +488,17 @@ impl LlamaCppInstaller {
         self.build_commands_with_auth(home, None)
     }
 
+    /// Build source install commands, passing installer token auth when available.
+    fn build_source_commands_from_env(&self, home: &str) -> Vec<ShellCommand> {
+        let mut token = SealedToken::from_env();
+        if token.as_str().is_empty() {
+            token.purge();
+            self.build_commands_with_auth(home, None)
+        } else {
+            self.build_commands_with_auth(home, Some(token))
+        }
+    }
+
     /// Resolve the install strategy for the detected GPU and latest release manifest.
     pub fn resolve_install_strategy(
         &self,
@@ -523,7 +534,7 @@ impl LlamaCppInstaller {
 
         InstallStrategy::Source(SourceInstallPlan {
             reason,
-            build_commands: self.build_commands_with_auth(home, None),
+            build_commands: self.build_source_commands_from_env(home),
             install_prefix,
             binary_path,
         })
@@ -785,7 +796,7 @@ impl LlamaCppInstaller {
             ));
         }
 
-        let commands = self.build_commands(home);
+        let commands = self.build_source_commands_from_env(home);
         if commands.is_empty() {
             return Err("no source install commands available".to_string());
         }
