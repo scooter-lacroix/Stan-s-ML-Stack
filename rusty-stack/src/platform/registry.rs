@@ -290,7 +290,7 @@ pub fn is_component_installed_with_home(id: &str, home: &Path) -> bool {
 
     match info.detection_method {
         DetectionMethod::PathBased => detect_path_based(info, home),
-        DetectionMethod::CommandBased => detect_command_based(info),
+        DetectionMethod::CommandBased => detect_command_based(info, home),
         DetectionMethod::PythonModule => detect_python_module_single(info),
         DetectionMethod::GitBased => detect_git_based(info, home),
     }
@@ -332,18 +332,24 @@ fn detect_path_based(info: &ComponentInfo, home: &Path) -> bool {
 // -----------------------------------------------------------------------
 
 /// Command-based detection for tools like rocm-smi.
-fn detect_command_based(info: &ComponentInfo) -> bool {
+fn detect_command_based(info: &ComponentInfo, home: &Path) -> bool {
     match info.id.as_str() {
         "rocm-smi" => Command::new("rocm-smi")
             .arg("--version")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false),
-        "llama-cpp" => Command::new("llama-cli")
-            .arg("--help")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
+        "llama-cpp" => {
+            // Prefer installer contract: binary under ~/.mlstack/components/llama-cpp/bin
+            // must be functional. Fall back to PATH lookup for manual/system installs.
+            let home_str = home.to_string_lossy();
+            crate::installers::components::llama_cpp::is_llama_cli_functional(&home_str)
+                || Command::new("llama-cli")
+                    .arg("--help")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -417,7 +423,7 @@ pub fn get_version_with_home(id: &str, home: &Path) -> String {
 
     match info.detection_method {
         DetectionMethod::PathBased => get_version_path_based(info, home),
-        DetectionMethod::CommandBased => get_version_command_based(info),
+        DetectionMethod::CommandBased => get_version_command_based(info, home),
         DetectionMethod::PythonModule => get_version_python_single(info),
         DetectionMethod::GitBased => get_version_git(info, home),
     }
@@ -456,7 +462,7 @@ fn get_version_path_based(info: &ComponentInfo, home: &Path) -> String {
 }
 
 /// Get version for command-based components.
-fn get_version_command_based(info: &ComponentInfo) -> String {
+fn get_version_command_based(info: &ComponentInfo, home: &Path) -> String {
     match info.id.as_str() {
         "rocm-smi" => {
             if let Ok(output) = Command::new("rocm-smi").arg("--version").output() {
@@ -482,7 +488,7 @@ fn get_version_command_based(info: &ComponentInfo) -> String {
                     return "installed".to_string();
                 }
             }
-            if detect_command_based(info) {
+            if detect_command_based(info, home) {
                 return "installed".to_string();
             }
             "not installed".to_string()
