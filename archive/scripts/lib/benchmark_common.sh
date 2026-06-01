@@ -2074,12 +2074,6 @@ benchmark_resolve_bench_binary() {
         return 0
     fi
 
-    # Fallback to rusty on PATH (e.g. installed system-wide)
-    if command -v rusty >/dev/null 2>&1; then
-        printf '%s\n' "$(command -v rusty)"
-        return 0
-    fi
-
     # Fallback: return expected debug path (will trigger build if missing)
     printf '%s/debug/rusty\n' "$target_dir"
 }
@@ -2118,12 +2112,6 @@ benchmark_build_rusty_stack_bench() {
     local log_file="$2"
     local fallback_dir
     local bench_bin
-
-    # If rusty is already on PATH, no build needed
-    if command -v rusty >/dev/null 2>&1; then
-        benchmark_info "rusty binary already available on PATH"
-        return 0
-    fi
 
     # Check if a locally built binary already exists
     bench_bin="$(benchmark_resolve_bench_binary "$manifest_path" "$log_file")"

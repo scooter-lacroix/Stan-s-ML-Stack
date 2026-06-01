@@ -1053,7 +1053,8 @@ mod update_impl {
 mod upgrade_impl {
     use super::*;
     use rusty_stack::orchestrator::upgrade::{
-        self, BinaryDownloader, ReleaseInfo, ReleaseProvider, SmokeTester, UpgradeError,
+        self, BinaryDownloader, DownloadResult, ReleaseInfo, ReleaseProvider, SmokeTester,
+        UpgradeError,
         UpgradeOptions, UpgradeResult, UpgradeStatus, UserInteractor, VersionInfo,
     };
 
@@ -1216,7 +1217,8 @@ mod upgrade_impl {
     struct RealDownloader;
 
     impl BinaryDownloader for RealDownloader {
-        fn download(&self, url: &str) -> std::result::Result<Vec<u8>, UpgradeError> {
+        fn download(&self, release: &ReleaseInfo) -> std::result::Result<DownloadResult, UpgradeError> {
+            let url = release.download_url.as_str();
             let archive_bytes = ureq::Agent::new_with_defaults()
                 .get(url)
                 .header("User-Agent", UPGRADE_USER_AGENT)
@@ -1231,14 +1233,25 @@ mod upgrade_impl {
                 })?;
 
             if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-                return extract_binary_from_tar_gz(&archive_bytes);
+                upgrade::verify_integrity(&archive_bytes, &release.checksum)?;
+                return Ok(DownloadResult {
+                    binary_data: extract_binary_from_tar_gz(&archive_bytes)?,
+                    integrity_verified: true,
+                });
             }
 
             if url.ends_with(".zip") {
-                return extract_binary_from_zip(&archive_bytes);
+                upgrade::verify_integrity(&archive_bytes, &release.checksum)?;
+                return Ok(DownloadResult {
+                    binary_data: extract_binary_from_zip(&archive_bytes)?,
+                    integrity_verified: true,
+                });
             }
 
-            Ok(archive_bytes)
+            Ok(DownloadResult {
+                binary_data: archive_bytes,
+                integrity_verified: false,
+            })
         }
     }
 

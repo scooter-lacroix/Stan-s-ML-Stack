@@ -338,7 +338,7 @@ PY
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish draft release
-        if: needs.github-release.result == 'success'
+        if: needs.github-release.result == 'success' && needs.crates-io.result == 'success' && needs.pypi.result == 'success'
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
           gh release edit "v${VERSION}" --draft=false

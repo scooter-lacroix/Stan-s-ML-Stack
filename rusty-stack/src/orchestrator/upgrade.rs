@@ -42,6 +42,18 @@ pub struct ReleaseInfo {
     pub schema_version: u32,
 }
 
+/// Download result for an upgrade artifact.
+///
+/// `binary_data` must always contain executable bytes ready to be swapped in.
+/// If `integrity_verified` is `true`, the downloader already verified artifact
+/// integrity against the release checksum (for example archive checksum before
+/// extraction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadResult {
+    pub binary_data: Vec<u8>,
+    pub integrity_verified: bool,
+}
+
 /// Result of a successful upgrade operation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpgradeResult {
@@ -159,8 +171,8 @@ pub trait ReleaseProvider {
 /// Trait for binary download. Implementations provide the actual download
 /// or test fixture data.
 pub trait BinaryDownloader {
-    /// Download the binary from the given URL and return its bytes.
-    fn download(&self, url: &str) -> std::result::Result<Vec<u8>, UpgradeError>;
+    /// Download the upgrade artifact and return executable bytes.
+    fn download(&self, release: &ReleaseInfo) -> std::result::Result<DownloadResult, UpgradeError>;
 }
 
 /// Trait for smoke-testing a binary. Implementations run the new binary
@@ -456,10 +468,13 @@ pub fn run_upgrade(
     }
 
     // Step 5: Download new binary
-    let new_binary_data = downloader.download(&release.download_url)?;
+    let download = downloader.download(&release)?;
 
     // Step 6: Verify integrity
-    verify_integrity(&new_binary_data, &release.checksum)?;
+    if !download.integrity_verified {
+        verify_integrity(&download.binary_data, &release.checksum)?;
+    }
+    let new_binary_data = download.binary_data;
 
     // Step 7: Preserve cached manifest
     let cached_manifest_path = options
@@ -748,11 +763,11 @@ mod tests {
 
     /// A mock binary downloader for testing.
     struct MockDownloader {
-        data: std::result::Result<Vec<u8>, UpgradeError>,
+        data: std::result::Result<DownloadResult, UpgradeError>,
     }
 
     impl BinaryDownloader for MockDownloader {
-        fn download(&self, _url: &str) -> std::result::Result<Vec<u8>, UpgradeError> {
+        fn download(&self, _release: &ReleaseInfo) -> std::result::Result<DownloadResult, UpgradeError> {
             self.data.clone()
         }
     }
@@ -839,7 +854,10 @@ mod tests {
                 release: Ok(release),
             },
             &MockDownloader {
-                data: Ok(new_binary.to_vec()),
+                data: Ok(DownloadResult {
+                    binary_data: new_binary.to_vec(),
+                    integrity_verified: false,
+                }),
             },
             &MockSmokeTester { result: Ok(()) },
             &MockInteractor { confirmed: true },
@@ -891,7 +909,10 @@ mod tests {
                 release: Ok(release),
             },
             &MockDownloader {
-                data: Ok(new_binary.to_vec()),
+                data: Ok(DownloadResult {
+                    binary_data: new_binary.to_vec(),
+                    integrity_verified: false,
+                }),
             },
             &MockSmokeTester {
                 result: Err(UpgradeError::SmokeTestFailed {
@@ -936,7 +957,12 @@ mod tests {
             &MockReleaseProvider {
                 release: Ok(release),
             },
-            &MockDownloader { data: Ok(vec![]) },
+            &MockDownloader {
+                data: Ok(DownloadResult {
+                    binary_data: vec![],
+                    integrity_verified: false,
+                }),
+            },
             &MockSmokeTester { result: Ok(()) },
             &MockInteractor { confirmed: true },
         );
@@ -974,7 +1000,12 @@ mod tests {
             &MockReleaseProvider {
                 release: Ok(release),
             },
-            &MockDownloader { data: Ok(vec![]) },
+            &MockDownloader {
+                data: Ok(DownloadResult {
+                    binary_data: vec![],
+                    integrity_verified: false,
+                }),
+            },
             &MockSmokeTester { result: Ok(()) },
             &MockInteractor { confirmed: true },
         );
@@ -1020,7 +1051,10 @@ mod tests {
                 release: Ok(release),
             },
             &MockDownloader {
-                data: Ok(new_binary.to_vec()),
+                data: Ok(DownloadResult {
+                    binary_data: new_binary.to_vec(),
+                    integrity_verified: false,
+                }),
             },
             &MockSmokeTester { result: Ok(()) },
             &MockInteractor { confirmed: false }, // User declines
@@ -1064,7 +1098,10 @@ mod tests {
                 release: Ok(release),
             },
             &MockDownloader {
-                data: Ok(new_binary.to_vec()),
+                data: Ok(DownloadResult {
+                    binary_data: new_binary.to_vec(),
+                    integrity_verified: false,
+                }),
             },
             &MockSmokeTester { result: Ok(()) },
             &MockInteractor { confirmed: true },
