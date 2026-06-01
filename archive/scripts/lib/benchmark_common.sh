@@ -2116,8 +2116,7 @@ benchmark_build_rusty_stack_bench() {
     # Check if a locally built binary already exists
     bench_bin="$(benchmark_resolve_bench_binary "$manifest_path" "$log_file")"
     if [ -x "$bench_bin" ]; then
-        benchmark_info "rusty binary already built at $bench_bin"
-        return 0
+        benchmark_info "rusty binary already present at $bench_bin; running cargo build to ensure it is up to date"
     fi
 
     if benchmark_is_dry_run; then

@@ -1081,15 +1081,45 @@ mod upgrade_impl {
 
         // Dry run mode
         if dry_run {
-            if yes {
-                println!(
-                    r#"{{"current_version": "{}", "schema_version": {}}}"#,
-                    VERSION, schema_version
-                );
-            } else {
-                println!("Current version: v{VERSION}");
-                println!("Schema version: {schema_version}");
-                println!("Checking for upgrades...");
+            match RealReleaseProvider.fetch_latest_release() {
+                Ok(release) => {
+                    let upgrade_available = is_release_newer(VERSION, &release.version);
+                    if yes {
+                        let output = serde_json::json!({
+                            "current_version": VERSION,
+                            "schema_version": schema_version,
+                            "latest_version": release.version,
+                            "latest_schema_version": release.schema_version,
+                            "upgrade_available": upgrade_available,
+                            "download_url": release.download_url,
+                        });
+                        println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                    } else {
+                        println!("Current version: v{VERSION}");
+                        println!("Schema version: {schema_version}");
+                        println!("Latest release: v{}", release.version);
+                        println!(
+                            "Upgrade available: {}",
+                            if upgrade_available { "yes" } else { "no" }
+                        );
+                    }
+                }
+                Err(error) => {
+                    if yes {
+                        let output = serde_json::json!({
+                            "current_version": VERSION,
+                            "schema_version": schema_version,
+                            "upgrade_available": false,
+                            "error": error.to_string(),
+                        });
+                        eprintln!("{}", serde_json::to_string(&output).unwrap_or_default());
+                    } else {
+                        println!("Current version: v{VERSION}");
+                        println!("Schema version: {schema_version}");
+                        eprintln!("Unable to check latest release: {error}");
+                    }
+                    process::exit(1);
+                }
             }
             return;
         }
@@ -1120,6 +1150,18 @@ mod upgrade_impl {
                 }
                 process::exit(1);
             }
+        }
+    }
+
+    fn is_release_newer(current: &str, latest: &str) -> bool {
+        let current = current.trim().trim_start_matches('v');
+        let latest = latest.trim().trim_start_matches('v');
+        match (
+            semver::Version::parse(current),
+            semver::Version::parse(latest),
+        ) {
+            (Ok(cur), Ok(lat)) => lat > cur,
+            _ => latest != current,
         }
     }
 

@@ -9,6 +9,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::Value;
 
 /// The unified binary name.
 const BIN: &str = "rusty";
@@ -42,23 +43,54 @@ fn test_upgrade_version() {
 
 #[test]
 fn test_upgrade_dry_run_interactive() {
-    Command::cargo_bin(BIN)
+    let assert = Command::cargo_bin(BIN)
         .unwrap()
         .args(["upgrade", "--dry-run"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Current version:"))
-        .stdout(predicate::str::contains("Schema version:"));
+        .assert();
+    let output = assert.get_output();
+
+    // Dry-run always reports local runtime info.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Current version:"));
+    assert!(stdout.contains("Schema version:"));
+
+    // Remote lookup may succeed (upgrade metadata) or fail (error details),
+    // depending on platform asset availability and network state.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() {
+        assert!(stdout.contains("Latest release:"));
+        assert!(stdout.contains("Upgrade available:"));
+    } else {
+        assert!(stderr.contains("Unable to check latest release:"));
+    }
 }
 
 #[test]
 fn test_upgrade_dry_run_non_interactive() {
-    Command::cargo_bin(BIN)
+    let assert = Command::cargo_bin(BIN)
         .unwrap()
         .args(["upgrade", "--dry-run", "--yes"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("current_version"));
+        .assert();
+    let output = assert.get_output();
+
+    // In --yes mode, dry-run emits JSON payload on either success (stdout)
+    // or failure (stderr).
+    let payload = if output.status.success() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
+    let payload = String::from_utf8_lossy(payload);
+    let parsed: Value = serde_json::from_str(&payload).expect("dry-run JSON payload");
+    assert!(parsed.get("current_version").is_some());
+    assert!(parsed.get("schema_version").is_some());
+    assert!(parsed.get("upgrade_available").is_some());
+
+    if output.status.success() {
+        assert!(parsed.get("latest_version").is_some());
+    } else {
+        assert!(parsed.get("error").is_some());
+    }
 }
 
 // ---- Non-interactive mode error produces JSON ----
