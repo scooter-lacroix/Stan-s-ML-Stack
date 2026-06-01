@@ -256,7 +256,7 @@ jobs:
       # ── Step 7: Bump version ──
       - name: Bump patch version
         id: bump_version
-        if: github.event.inputs.dry_run != 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.apply_updates.outputs.applied != ''
         run: |
           set -euo pipefail
 
@@ -291,7 +291,7 @@ jobs:
 
       # ── Step 8: Commit and create PR ──
       - name: Create Pull Request
-        if: github.event.inputs.dry_run != 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.apply_updates.outputs.applied != ''
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

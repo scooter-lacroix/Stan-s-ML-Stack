@@ -51,6 +51,10 @@ def _install_from_crates_io() -> None:
         result = subprocess.run(cmd)
         if result.returncode == 0:
             return
+        raise RuntimeError(
+            f"failed to install {CRATE_NAME}=={version} from crates.io. "
+            "Exact-version install is required to keep wrapper and Rust binary versions in sync."
+        )
 
     fallback_cmd = [cargo, "install", "--locked", CRATE_NAME]
     fallback = subprocess.run(fallback_cmd)
@@ -98,4 +102,3 @@ def verify_main() -> None:
 
 def repair_main() -> None:
     sys.exit(_exec([_ensure_rusty(), "update", "--all-safe", "--yes"]))
-
