@@ -196,7 +196,7 @@ Follow the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/nami
 Rusty Stack includes **Rusty Llama**, our optimized llama.cpp runtime with TurboQuant compression, RDNA3 WMMA flash attention, and pre-built binary distribution for AMD GPUs. Install it through Rusty Stack:
 
 ```bash
-rusty install llama-cpp
+rusty update llama-cpp
 ```
 
 Docs: [https://github.com/scooter-lacroix/rusty-llama-docs](https://github.com/scooter-lacroix/rusty-llama-docs)

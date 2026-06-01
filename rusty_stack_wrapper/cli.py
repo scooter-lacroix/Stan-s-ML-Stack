@@ -62,9 +62,29 @@ def _install_from_crates_io() -> None:
         raise RuntimeError("failed to install rusty-stack from crates.io via cargo install")
 
 
+def _bin_version_matches(path: str) -> bool:
+    expected = _wrapper_version()
+    if not expected:
+        return True
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+
+    if result.returncode != 0:
+        return False
+    output = f"{result.stdout} {result.stderr}"
+    return expected in output
+
+
 def _ensure_rusty() -> str:
     rusty = _resolve_bin(RUSTY_BIN)
-    if rusty:
+    if rusty and _bin_version_matches(rusty):
         return rusty
 
     _install_from_crates_io()
@@ -77,7 +97,7 @@ def _ensure_rusty() -> str:
 
 def _ensure_installer() -> str:
     installer = _resolve_bin(INSTALLER_BIN)
-    if installer:
+    if installer and _bin_version_matches(installer):
         return installer
 
     _install_from_crates_io()

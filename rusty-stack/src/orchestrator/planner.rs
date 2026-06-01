@@ -395,7 +395,7 @@ impl UpdatePlanner {
             return UpdateClassification::Candidate;
         }
 
-        // Same version → Safe (reinstall)
+        // Same version remains safe classification, but is treated as already current.
         if current_version == component.version {
             return UpdateClassification::Safe;
         }
@@ -432,7 +432,7 @@ impl UpdatePlanner {
             .to_string();
 
         let visible = classification.is_visible();
-        let selected = classification.is_preselected();
+        let selected = classification.is_preselected() && current_version != component.version;
         let isolation_safe = matches!(classification, UpdateClassification::Safe);
 
         let classification_reason = self.classification_reason(component, classification, context);
@@ -611,7 +611,7 @@ impl UpdatePlanner {
         match classification {
             UpdateClassification::Safe => {
                 if current == component.version {
-                    format!("reinstall v{} (validated)", component.version)
+                    format!("already up to date (v{})", component.version)
                 } else {
                     format!(
                         "patch update {} → {} (validated, no new deps)",
@@ -650,6 +650,7 @@ impl UpdatePlanner {
             "flash-attn" => vec!["pytorch".to_string()],
             "deepspeed" => vec!["pytorch".to_string()],
             "vllm" => vec!["pytorch".to_string()],
+            "megatron" => vec!["pytorch".to_string(), "mpi4py".to_string()],
             "onnx" => vec!["rocm".to_string()],
             "migraphx" => vec!["rocm".to_string()],
             "bitsandbytes" => vec!["pytorch".to_string()],

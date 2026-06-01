@@ -47,7 +47,7 @@ For a detailed guide to help you get started from the ground up, head over to [B
 Rusty Llama installation is only supported through Rusty Stack. The installer explicitly configures `GGML_HIP=ON`, `GGML_CUDA=OFF`, `GGML_VULKAN=OFF`, and `GGML_METAL=OFF`, validates `CMakeCache.txt`, warns when NVIDIA toolkits are present, and rejects binaries that do not show ROCm/HIP linkage.
 
 Docs: https://github.com/scooter-lacroix/rusty-llama-docs
-Install: `rusty install llama-cpp`
+Install: `rusty update llama-cpp`
 
 ## Windows Support (ALPHA)
 

@@ -111,6 +111,8 @@ pub enum UpgradeError {
     DownloadFailed { reason: String },
     /// User declined the upgrade in interactive mode.
     Declined,
+    /// Latest release is not newer than the current runtime.
+    NoUpgradeAvailable { current: String, latest: String },
     /// I/O error during file operations.
     IoError { path: String, reason: String },
 }
@@ -147,6 +149,12 @@ impl std::fmt::Display for UpgradeError {
             }
             UpgradeError::Declined => {
                 write!(f, "upgrade declined by user")
+            }
+            UpgradeError::NoUpgradeAvailable { current, latest } => {
+                write!(
+                    f,
+                    "no upgrade available: current version {current} is already >= latest {latest}"
+                )
             }
             UpgradeError::IoError { path, reason } => {
                 write!(f, "I/O error at {path}: {reason}")
@@ -453,6 +461,14 @@ pub fn run_upgrade(
     // Step 1: Fetch latest release info
     let release = release_provider.fetch_latest_release()?;
 
+    // Step 1.1: Skip when the fetched release is not newer than current
+    if !is_release_newer(&current_version.version, &release.version) {
+        return Err(UpgradeError::NoUpgradeAvailable {
+            current: current_version.version.clone(),
+            latest: release.version.clone(),
+        });
+    }
+
     // Step 2: Check manifest version compatibility
     check_schema_compatibility(current_version.schema_version, release.schema_version)?;
 
@@ -537,6 +553,12 @@ pub fn run_upgrade(
             })
         }
     }
+}
+
+fn is_release_newer(current: &str, latest: &str) -> bool {
+    let cur = parse_version_parts(current).unwrap_or((0, 0, 0));
+    let lat = parse_version_parts(latest).unwrap_or((0, 0, 0));
+    lat > cur
 }
 
 // ===========================================================================

@@ -1093,7 +1093,16 @@ mod upgrade_impl {
                             "upgrade_available": upgrade_available,
                             "download_url": release.download_url,
                         });
-                        println!("{}", serde_json::to_string(&output).unwrap_or_default());
+                        match serde_json::to_string(&output) {
+                            Ok(payload) => println!("{payload}"),
+                            Err(err) => {
+                                eprintln!(
+                                    "{{\"status\":\"error\",\"error\":\"failed to serialize dry-run output: {}\"}}",
+                                    err.to_string().replace('"', "\\\"")
+                                );
+                                process::exit(1);
+                            }
+                        }
                     } else {
                         println!("Current version: v{VERSION}");
                         println!("Schema version: {schema_version}");
@@ -1112,7 +1121,15 @@ mod upgrade_impl {
                             "upgrade_available": false,
                             "error": error.to_string(),
                         });
-                        eprintln!("{}", serde_json::to_string(&output).unwrap_or_default());
+                        match serde_json::to_string(&output) {
+                            Ok(payload) => eprintln!("{payload}"),
+                            Err(err) => {
+                                eprintln!(
+                                    "{{\"status\":\"error\",\"error\":\"failed to serialize dry-run error output: {}\"}}",
+                                    err.to_string().replace('"', "\\\"")
+                                );
+                            }
+                        }
                     } else {
                         println!("Current version: v{VERSION}");
                         println!("Schema version: {schema_version}");
@@ -1143,6 +1160,14 @@ mod upgrade_impl {
                 process::exit(0);
             }
             Err(error) => {
+                if matches!(error, UpgradeError::NoUpgradeAvailable { .. }) {
+                    if yes {
+                        eprintln!("{}", format_error_json(&error));
+                    } else {
+                        print_interactive_error(&error);
+                    }
+                    process::exit(0);
+                }
                 if yes {
                     eprintln!("{}", format_error_json(&error));
                 } else {
@@ -1528,6 +1553,7 @@ mod upgrade_impl {
     fn format_error_json(error: &UpgradeError) -> String {
         let status = match error {
             UpgradeError::Declined => "declined",
+            UpgradeError::NoUpgradeAvailable { .. } => "no_upgrade",
             UpgradeError::IncompatibleRuntime { .. } => "refused",
             UpgradeError::RuntimeTooOld { .. } => "refused",
             _ => "error",
@@ -1594,6 +1620,9 @@ mod upgrade_impl {
             }
             UpgradeError::Declined => {
                 println!("Upgrade cancelled.");
+            }
+            UpgradeError::NoUpgradeAvailable { current, latest } => {
+                println!("Already up to date (current: v{current}, latest: v{latest}).");
             }
             UpgradeError::IoError { path, reason } => {
                 eprintln!("✗ I/O error at {path}: {reason}");

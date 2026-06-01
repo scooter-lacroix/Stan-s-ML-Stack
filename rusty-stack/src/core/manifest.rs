@@ -355,12 +355,14 @@ pub fn resolve_manifest(fetcher: &dyn ManifestFetcher) -> ResolvedManifest {
         }
     }
 
-    // Tier 2: Cached remote
+    // Tier 2: Cached remote (must also pass trust checks)
     if let Some(cached) = fetcher.load_cached() {
-        return ResolvedManifest {
-            manifest: cached,
-            source: ManifestSource::CachedRemote,
-        };
+        if cached.verify_trust().is_ok() {
+            return ResolvedManifest {
+                manifest: cached,
+                source: ManifestSource::CachedRemote,
+            };
+        }
     }
 
     // Tier 3: Bundled baseline (always succeeds)
