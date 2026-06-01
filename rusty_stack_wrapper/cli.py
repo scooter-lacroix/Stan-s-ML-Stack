@@ -37,6 +37,17 @@ def _resolve_bin(name: str) -> str | None:
     return None
 
 
+def _resolve_cargo_bin(name: str) -> str | None:
+    cargo_home = os.environ.get("CARGO_HOME")
+    if cargo_home:
+        candidate = os.path.join(cargo_home, "bin", name)
+    else:
+        candidate = os.path.expanduser(os.path.join("~", ".cargo", "bin", name))
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
 def _install_from_crates_io() -> None:
     cargo = shutil.which("cargo")
     if not cargo:
@@ -89,8 +100,8 @@ def _ensure_rusty() -> str:
 
     _install_from_crates_io()
 
-    rusty = _resolve_bin(RUSTY_BIN)
-    if not rusty:
+    rusty = _resolve_cargo_bin(RUSTY_BIN) or _resolve_bin(RUSTY_BIN)
+    if not rusty or not _bin_version_matches(rusty):
         raise RuntimeError("rusty binary not found after installation")
     return rusty
 
@@ -102,8 +113,8 @@ def _ensure_installer() -> str:
 
     _install_from_crates_io()
 
-    installer = _resolve_bin(INSTALLER_BIN)
-    if not installer:
+    installer = _resolve_cargo_bin(INSTALLER_BIN) or _resolve_bin(INSTALLER_BIN)
+    if not installer or not _bin_version_matches(installer):
         raise RuntimeError("rusty-stack binary not found after installation")
     return installer
 

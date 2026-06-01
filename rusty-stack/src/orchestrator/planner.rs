@@ -276,12 +276,21 @@ impl UpdatePlanner {
             }
         }
 
+        let target_set: HashSet<&str> = options
+            .target_components
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let required_deps = self.collect_required_dependencies(&target_set);
+
         let mut items = Vec::new();
 
         for component in &manifest.components {
-            // If specific targets were given, only include those
+            // If specific targets were given, include targets and their dependency closure.
             if !options.target_components.is_empty() {
-                if !options.target_components.contains(&component.id) {
+                if !target_set.contains(component.id.as_str())
+                    && !required_deps.contains(component.id.as_str())
+                {
                     continue;
                 }
             }
@@ -291,8 +300,10 @@ impl UpdatePlanner {
 
             // If blocked, handle differently
             if classification == UpdateClassification::Blocked {
-                // If explicitly targeted, return error
-                if options.target_components.contains(&component.id) {
+                // If explicitly targeted (or required by a target), return error
+                if target_set.contains(component.id.as_str())
+                    || required_deps.contains(component.id.as_str())
+                {
                     let reason = self.block_reason(component, context);
                     return Err(PlannerError::ComponentBlocked {
                         component_id: component.id.clone(),
@@ -312,12 +323,6 @@ impl UpdatePlanner {
 
             items.push(self.build_planner_item(component, classification, context));
         }
-
-        let target_set: HashSet<&str> = options
-            .target_components
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
 
         // Apply --all-safe: keep safe items (and experimental if explicitly included),
         // but never discard explicitly targeted components.
@@ -666,6 +671,25 @@ impl UpdatePlanner {
             "permanent-env" => vec![],
             _ => vec![],
         }
+    }
+
+    fn collect_required_dependencies<'a>(&self, targets: &HashSet<&'a str>) -> HashSet<String> {
+        let mut required = HashSet::new();
+        let mut stack: Vec<String> = targets.iter().map(|s| (*s).to_string()).collect();
+
+        while let Some(component) = stack.pop() {
+            for dep in self.derive_dependencies(&component) {
+                if required.insert(dep.clone()) {
+                    stack.push(dep);
+                }
+            }
+        }
+
+        for target in targets {
+            required.remove(*target);
+        }
+
+        required
     }
 
     /// Derive known dependencies for a component.
@@ -1432,11 +1456,22 @@ mod tests {
 
         let items = planner().build_plan(&manifest, &context, &options).unwrap();
 
-        assert_eq!(items.len(), 1, "Only targeted component is in scope");
-        assert_eq!(items[0].plan_item.component_id, "triton");
-        assert_eq!(items[0].classification, UpdateClassification::Guarded);
-        assert!(items[0].selected);
-        assert!(items[0].plan_item.selected);
+        assert_eq!(items.len(), 2, "Targeted component and dependencies are in scope");
+
+        let triton = items
+            .iter()
+            .find(|i| i.plan_item.component_id == "triton")
+            .unwrap();
+        assert_eq!(triton.classification, UpdateClassification::Guarded);
+        assert!(triton.selected);
+        assert!(triton.plan_item.selected);
+
+        let pytorch = items
+            .iter()
+            .find(|i| i.plan_item.component_id == "pytorch")
+            .unwrap();
+        assert_eq!(pytorch.classification, UpdateClassification::Safe);
+        assert!(pytorch.selected);
     }
 
     // -----------------------------------------------------------------------
