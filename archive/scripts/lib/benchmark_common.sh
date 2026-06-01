@@ -2056,16 +2056,18 @@ benchmark_resolve_bench_binary() {
 
     target_dir="$(benchmark_discover_target_dir "$manifest_path" "$log_file")"
 
-    # Check debug build
-    if [ -x "${target_dir}/debug/rusty" ]; then
-        printf '%s/debug/rusty\n' "$target_dir"
-        return 0
-    fi
+    if [ -n "$target_dir" ]; then
+        # Check debug build
+        if [ -x "${target_dir}/debug/rusty" ]; then
+            printf '%s/debug/rusty\n' "$target_dir"
+            return 0
+        fi
 
-    # Check release build
-    if [ -x "${target_dir}/release/rusty" ]; then
-        printf '%s/release/rusty\n' "$target_dir"
-        return 0
+        # Check release build
+        if [ -x "${target_dir}/release/rusty" ]; then
+            printf '%s/release/rusty\n' "$target_dir"
+            return 0
+        fi
     fi
 
     # Check common install location
@@ -2075,7 +2077,7 @@ benchmark_resolve_bench_binary() {
     fi
 
     # Fallback: return expected debug path (will trigger build if missing)
-    printf '%s/debug/rusty\n' "$target_dir"
+    printf '%s/debug/rusty\n' "${target_dir:-.}"
 }
 
 benchmark_ensure_writable_dir() {

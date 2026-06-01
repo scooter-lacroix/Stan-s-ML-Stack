@@ -50,6 +50,121 @@ days_ago_epoch() {
   return 1
 }
 
+SORT_HAS_VERSION=0
+if printf '1.0.0\n1.0.0\n' | sort -V -C >/dev/null 2>&1; then
+  SORT_HAS_VERSION=1
+fi
+
+normalize_version_core() {
+  local value="${1#v}"
+  # Ignore prerelease/build metadata for portable numeric fallback comparison.
+  printf '%s\n' "${value%%[-+]*}"
+}
+
+version_ge_fallback() {
+  local left right
+  local -a left_parts right_parts
+  local i max lp rp
+
+  left="$(normalize_version_core "$1")"
+  right="$(normalize_version_core "$2")"
+
+  IFS='.' read -r -a left_parts <<< "$left"
+  IFS='.' read -r -a right_parts <<< "$right"
+
+  max=${#left_parts[@]}
+  if (( ${#right_parts[@]} > max )); then
+    max=${#right_parts[@]}
+  fi
+
+  for ((i=0; i<max; i++)); do
+    lp="${left_parts[i]:-0}"
+    rp="${right_parts[i]:-0}"
+    lp="${lp%%[^0-9]*}"
+    rp="${rp%%[^0-9]*}"
+    [[ -z "$lp" ]] && lp=0
+    [[ -z "$rp" ]] && rp=0
+
+    if (( lp > rp )); then
+      return 0
+    fi
+    if (( lp < rp )); then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+version_ge() {
+  local locked="$1"
+  local latest="$2"
+  if [[ "$locked" == "$latest" ]]; then
+    return 0
+  fi
+
+  if [[ "$SORT_HAS_VERSION" == "1" ]]; then
+    if printf '%s\n%s\n' "$latest" "$locked" | sort -V -C >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+
+  version_ge_fallback "$locked" "$latest"
+}
+
+collect_deps_from_metadata() {
+  local manifest_path="$1"
+  local metadata root_id
+
+  metadata="$(cargo metadata --manifest-path "$manifest_path" --format-version 1 --no-deps 2>/dev/null)" || return 1
+  root_id="$(printf '%s' "$metadata" | jq -r '.resolve.root // empty' 2>/dev/null)" || return 1
+  [[ -z "$root_id" || "$root_id" == "null" ]] && return 1
+
+  printf '%s' "$metadata" | jq -r --arg root "$root_id" '
+    .packages[]
+    | select(.id == $root)
+    | .dependencies[]
+    | select((.source // "") | startswith("registry+"))
+    | .name
+  ' 2>/dev/null | LC_ALL=C sort -u
+}
+
+collect_deps_from_manifest_legacy() {
+  local manifest_path="$1"
+  local line dep_name dep_ver
+
+  # [dependencies] section
+  while IFS= read -r line; do
+    line="${line%%#*}"
+
+    if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*"[^"]+"'; then
+      dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
+      dep_ver=$(echo "$line" | sed -E 's/[^"]*"([^"]+)".*/\1/')
+      [[ -n "$dep_ver" ]] && printf '%s\n' "$dep_name"
+      continue
+    fi
+
+    if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"[^"]+"'; then
+      if echo "$line" | grep -Eq 'path[[:space:]]*=|git[[:space:]]*='; then
+        continue
+      fi
+      dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
+      dep_ver=$(echo "$line" | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+      [[ -n "$dep_ver" ]] && printf '%s\n' "$dep_name"
+    fi
+  done < <(sed -n '/^\[dependencies\]/,/^\[/{ /^\[dependencies\]/d; /^\[/d; p }' "$manifest_path")
+
+  # [workspace.dependencies] section (workspace/root manifests)
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*='; then
+      dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
+      [[ -n "$dep_name" ]] && printf '%s\n' "$dep_name"
+    fi
+  done < <(sed -n '/^\[workspace\.dependencies\]/,/^\[/{ /^\[workspace\.dependencies\]/d; /^\[/d; p }' "$manifest_path")
+}
+
 # ── Parse arguments ──
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -96,31 +211,19 @@ echo "  Lag:       $LAG_DAYS days"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
-# ── Extract direct dependencies from [dependencies] section ──
+# ── Extract direct dependencies (prefer cargo metadata for workspace support) ──
 deps=()
-while IFS= read -r line; do
-  line="${line%%#*}"
-  # Simple form: name = "version"
-  if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*"[^"]+"'; then
-    dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
-    dep_ver=$(echo "$line" | sed -E 's/[^"]*"([^"]+)".*/\1/')
-    [[ -z "$dep_ver" ]] && continue
-    deps+=("$dep_name")
-    continue
-  fi
+if command -v cargo >/dev/null 2>&1; then
+  while IFS= read -r dep; do
+    [[ -n "$dep" ]] && deps+=("$dep")
+  done < <(collect_deps_from_metadata "$CARGO_TOML" || true)
+fi
 
-  # Inline table: name = { version = "x.y.z", ... }
-  if echo "$line" | grep -Eq '^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"[^"]+"'; then
-    # Skip local/path/git dependencies that are not crates.io-resolved.
-    if echo "$line" | grep -Eq 'path[[:space:]]*=|git[[:space:]]*='; then
-      continue
-    fi
-    dep_name=$(echo "$line" | sed -E 's/^[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*=.*/\1/')
-    dep_ver=$(echo "$line" | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
-    [[ -z "$dep_ver" ]] && continue
-    deps+=("$dep_name")
-  fi
-done < <(sed -n '/^\[dependencies\]/,/^\[/{ /^\[dependencies\]/d; /^\[/d; p }' "$CARGO_TOML")
+if [[ ${#deps[@]} -eq 0 ]]; then
+  while IFS= read -r dep; do
+    [[ -n "$dep" ]] && deps+=("$dep")
+  done < <(collect_deps_from_manifest_legacy "$CARGO_TOML" | LC_ALL=C sort -u)
+fi
 
 if [[ ${#deps[@]} -eq 0 ]]; then
   echo "No dependencies found in Cargo.toml"
@@ -166,8 +269,8 @@ for dep in "${deps[@]}"; do
     continue
   fi
 
-  # Use sort -V to compare
-  if echo -e "$latest_ver\n$locked_ver" | sort -V -C 2>/dev/null; then
+  # Version comparison (GNU sort -V when available, portable fallback otherwise)
+  if version_ge "$locked_ver" "$latest_ver"; then
     echo "  ✅ $dep — $locked_ver (up to date)"
     ((up_to_date++)) || true
     continue
