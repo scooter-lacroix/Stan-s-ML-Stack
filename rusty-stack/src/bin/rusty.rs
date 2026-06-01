@@ -500,23 +500,49 @@ mod update_impl {
         rusty_stack::orchestrator::planner::PlanOutput,
         rusty_stack::orchestrator::planner::PlannerError,
     > {
-        use rusty_stack::core::manifest::Manifest;
+        use rusty_stack::core::manifest::{self, Manifest, ManifestFetcher};
         use rusty_stack::core::types::ExecutorKind;
         use rusty_stack::orchestrator::planner::{
             CompatibilityContext, PlanOutput, PlanSummary, PlannerItemOutput, UpdatePlanner,
         };
         use std::collections::HashSet;
 
-        // Load manifest (baseline for now)
-        let manifest = Manifest::load_baseline().unwrap_or_else(|_| Manifest {
-            schema_version: 2,
-            sequence: 0,
-            generated_at: String::new(),
-            expires_at: None,
-            min_runtime_version: String::new(),
-            components: Vec::new(),
-            signature: None,
-        });
+        struct UpdateManifestFetcher;
+        impl UpdateManifestFetcher {
+            fn cached_manifest_path() -> std::path::PathBuf {
+                std::env::var("HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join(".mlstack")
+                    .join("cache")
+                    .join("remote_manifest.json")
+            }
+        }
+        impl ManifestFetcher for UpdateManifestFetcher {
+            fn fetch_remote(&self) -> Option<Manifest> {
+                let url = std::env::var("MLSTACK_REMOTE_MANIFEST_URL").ok()?;
+                let body = ureq::Agent::new_with_defaults()
+                    .get(&url)
+                    .header("Accept", "application/json")
+                    .header("User-Agent", "rusty-stack-update")
+                    .call()
+                    .ok()?
+                    .into_body()
+                    .read_to_string()
+                    .ok()?;
+                serde_json::from_str::<Manifest>(&body).ok()
+            }
+
+            fn load_cached(&self) -> Option<Manifest> {
+                let path = Self::cached_manifest_path();
+                let json = std::fs::read_to_string(path).ok()?;
+                serde_json::from_str::<Manifest>(&json).ok()
+            }
+        }
+
+        // Resolve update manifest with trust-checked fallback chain:
+        // fresh remote (when configured) -> cached -> bundled baseline.
+        let manifest = manifest::resolve_manifest(&UpdateManifestFetcher).manifest;
 
         // Build compatibility context from scan results
         let mut context = CompatibilityContext::new();
