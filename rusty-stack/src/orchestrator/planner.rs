@@ -308,7 +308,8 @@ impl UpdatePlanner {
                 if target_set.contains(component.id.as_str())
                     || required_deps.contains(component.id.as_str())
                 {
-                    let reason = self.block_reason(component, context);
+                    let reason =
+                        self.block_reason(component, context, rocm_available_or_planned);
                     return Err(PlannerError::ComponentBlocked {
                         component_id: component.id.clone(),
                         reason,
@@ -574,6 +575,7 @@ impl UpdatePlanner {
         &self,
         component: &ManifestComponent,
         context: &CompatibilityContext,
+        rocm_available_or_planned: bool,
     ) -> String {
         if component.validation_tier == ValidationTier::Blocked {
             return "component is marked as blocked in manifest".to_string();
@@ -591,7 +593,7 @@ impl UpdatePlanner {
             return "no available executor for this platform".to_string();
         }
 
-        if !self.is_rocm_compatible(component, context, !context.rocm_version.is_empty()) {
+        if !self.is_rocm_compatible(component, context, rocm_available_or_planned) {
             if context.rocm_version.is_empty() {
                 return "requires ROCm but ROCm is not installed".to_string();
             }
@@ -636,7 +638,11 @@ impl UpdatePlanner {
                     current, component.version
                 )
             }
-            UpdateClassification::Blocked => self.block_reason(component, context),
+            UpdateClassification::Blocked => self.block_reason(
+                component,
+                context,
+                !context.rocm_version.is_empty(),
+            ),
             UpdateClassification::Candidate => {
                 if current.is_empty() {
                     format!("new install v{}", component.version)
@@ -2309,7 +2315,7 @@ mod tests {
             dependencies: vec![],
         };
 
-        let reason = planner().block_reason(&component, &context);
+        let reason = planner().block_reason(&component, &context, !context.rocm_version.is_empty());
         assert!(reason.contains("99.0.0"));
         assert!(reason.contains("7.2.1"));
     }
@@ -2330,7 +2336,7 @@ mod tests {
             dependencies: vec![],
         };
 
-        let reason = planner().block_reason(&component, &context);
+        let reason = planner().block_reason(&component, &context, !context.rocm_version.is_empty());
         assert!(reason.contains("legacy"));
     }
 }

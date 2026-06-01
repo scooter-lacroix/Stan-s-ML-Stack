@@ -770,6 +770,17 @@ mod update_impl {
             }
         }
 
+        /// Returns true when sudo can run non-interactively for the current user
+        /// (cached credential or NOPASSWD policy).
+        fn can_sudo_non_interactive() -> bool {
+            std::process::Command::new("sudo")
+                .arg("-n")
+                .arg("true")
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+
         /// Direct installer executor - calls Rust installer functions in-process.
         struct DirectInstallerExecutor {
             cancelled: Arc<AtomicBool>,
@@ -810,9 +821,16 @@ mod update_impl {
 
                 // Resolve sudo password for components that need it
                 let sudo_password = if component.needs_sudo {
-                    // Try to get a sudo password from the user
+                    // Resolve privilege path in order:
+                    // 1) already root, 2) non-interactive sudo available, 3) prompt for password.
                     if unsafe { libc::geteuid() } == 0 {
                         // Running as root — no sudo needed
+                        None
+                    } else if can_sudo_non_interactive() {
+                        tracing::info!(
+                            component = component_id,
+                            "Using non-interactive sudo path (-n)"
+                        );
                         None
                     } else {
                         // Prompt for sudo password
