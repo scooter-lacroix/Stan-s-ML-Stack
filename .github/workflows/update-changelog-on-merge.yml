@@ -1,0 +1,59 @@
+name: Update Changelog on Merge
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate appended changelog entry
+        id: changelog
+        run: |
+          set -euo pipefail
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          AUTHOR="${{ github.event.pull_request.user.login }}"
+          DATE=$(date +%Y-%m-%d)
+
+          ENTRY="$DATE - [$PR_TITLE]($PR_URL) (@$AUTHOR)"
+
+          if ! grep -qF "$PR_URL" CHANGELOG.md; then
+            if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+              tmp=$(mktemp)
+              awk -v entry="$ENTRY" '
+                /^## \[Unreleased\]/ { print; print ""; print entry; next }
+                { print }
+              ' CHANGELOG.md > "$tmp" && mv "$tmp" CHANGELOG.md
+            else
+              printf '\n## [Unreleased]\n\n%s\n' "$ENTRY" >> CHANGELOG.md
+            fi
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+            echo "entry=$ENTRY" >> "$GITHUB_OUTPUT"
+          else
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit changelog update
+        if: steps.changelog.outputs.updated == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore(release): append changelog for PR #${{ github.event.pull_request.number }}"
+          git push origin HEAD:main

@@ -1,5 +1,5 @@
 [package]
-name = "rusty-stack"
+name = "rusty"
 version = "0.2.0"
 edition = "2021"
 description = "A comprehensive ML environment installer and platform toolkit optimized for AMD GPUs with ROCm support"
@@ -10,12 +10,24 @@ readme = "../README.md"
 keywords = ["rocm", "amd", "gpu", "ml", "installer"]
 categories = ["command-line-utilities", "hardware-support", "science"]
 homepage = "https://github.com/scooter-lacroix/Stan-s-ML-Stack"
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/build.rs",
+    "/README.md",
+    "/src/**",
+    "/tests/**",
+]
 
 [features]
 default = ["tui", "telemetry-submit", "unix-deps"]
 tui = ["crossterm", "ratatui"]
 telemetry-submit = ["reqwest", "tokio"]
 unix-deps = ["libc"]
+
+[lib]
+name = "rusty_stack"
+path = "src/lib.rs"
 
 [[bin]]
 name = "rusty-stack"
@@ -26,10 +38,6 @@ required-features = ["tui", "unix-deps"]
 name = "rusty"
 path = "src/bin/rusty.rs"
 required-features = ["unix-deps"]
-
-[[bin]]
-name = "debug_sort"
-path = "debug_sort.rs"
 
 [dependencies]
 anyhow = "1.0"

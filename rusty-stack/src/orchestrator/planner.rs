@@ -288,7 +288,9 @@ impl UpdatePlanner {
         let planned_rocm_version = manifest
             .components
             .iter()
-            .find(|c| c.id == "rocm" && (target_set.contains("rocm") || required_deps.contains("rocm")))
+            .find(|c| {
+                c.id == "rocm" && (target_set.contains("rocm") || required_deps.contains("rocm"))
+            })
             .map(|c| c.version.as_str());
 
         let mut items = Vec::new();
@@ -304,13 +306,12 @@ impl UpdatePlanner {
             }
 
             // Classify the update
-            let classification =
-                self.classify_update(
-                    component,
-                    context,
-                    rocm_available_or_planned,
-                    planned_rocm_version,
-                );
+            let classification = self.classify_update(
+                component,
+                context,
+                rocm_available_or_planned,
+                planned_rocm_version,
+            );
 
             // If blocked, handle differently
             if classification == UpdateClassification::Blocked {
@@ -318,13 +319,12 @@ impl UpdatePlanner {
                 if target_set.contains(component.id.as_str())
                     || required_deps.contains(component.id.as_str())
                 {
-                        let reason =
-                        self.block_reason(
-                            component,
-                            context,
-                            rocm_available_or_planned,
-                            planned_rocm_version,
-                        );
+                    let reason = self.block_reason(
+                        component,
+                        context,
+                        rocm_available_or_planned,
+                        planned_rocm_version,
+                    );
                     return Err(PlannerError::ComponentBlocked {
                         component_id: component.id.clone(),
                         reason,
@@ -478,7 +478,9 @@ impl UpdatePlanner {
             .to_string();
 
         let visible = classification.is_visible();
-        let selected = classification.is_preselected() && current_version != component.version;
+        let selected = classification.is_preselected()
+            && (matches!(classification, UpdateClassification::Safe)
+                || current_version != component.version);
         let isolation_safe = matches!(classification, UpdateClassification::Safe);
 
         let classification_reason = self.classification_reason(
@@ -1566,7 +1568,11 @@ mod tests {
 
         let items = planner().build_plan(&manifest, &context, &options).unwrap();
 
-        assert_eq!(items.len(), 2, "Targeted component and dependencies are in scope");
+        assert_eq!(
+            items.len(),
+            2,
+            "Targeted component and dependencies are in scope"
+        );
 
         let triton = items
             .iter()
@@ -1619,7 +1625,10 @@ mod tests {
         };
 
         let items = planner().build_plan(&manifest, &context, &options).unwrap();
-        let ids: HashSet<_> = items.iter().map(|i| i.plan_item.component_id.as_str()).collect();
+        let ids: HashSet<_> = items
+            .iter()
+            .map(|i| i.plan_item.component_id.as_str())
+            .collect();
         assert!(ids.contains("rocm"));
         assert!(ids.contains("pytorch"));
     }
@@ -1642,7 +1651,10 @@ mod tests {
         };
 
         let items = planner().build_plan(&manifest, &context, &options).unwrap();
-        let ids: HashSet<_> = items.iter().map(|i| i.plan_item.component_id.as_str()).collect();
+        let ids: HashSet<_> = items
+            .iter()
+            .map(|i| i.plan_item.component_id.as_str())
+            .collect();
         assert!(ids.contains("custom-runtime"));
         assert!(ids.contains("rocm"));
         assert!(ids.contains("mpi4py"));
@@ -1665,7 +1677,10 @@ mod tests {
         };
 
         let items = planner().build_plan(&manifest, &context, &options).unwrap();
-        let ids: HashSet<_> = items.iter().map(|i| i.plan_item.component_id.as_str()).collect();
+        let ids: HashSet<_> = items
+            .iter()
+            .map(|i| i.plan_item.component_id.as_str())
+            .collect();
         assert!(ids.contains("rocm"));
         assert!(ids.contains("llama-cpp"));
     }

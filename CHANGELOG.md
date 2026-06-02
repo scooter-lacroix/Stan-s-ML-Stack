@@ -10,6 +10,7 @@ All notable changes to Stan's ML Stack will be documented in this file.
 ## [0.2.0] - 2026-05-30 — Anagami
 
 ### Added
+- **crates.io first release path**: Rusty Stack now publishes as the `rusty` crate so users can install the CLI/TUI with `cargo install rusty --locked`; GitHub release notes and PyPI wrapper flow point to that crate as the canonical binary source.
 - **All-Rust installer milestone**: All 35 installer, verification, and benchmark components are routed through native Rust modules; selectable components in `state.rs` no longer reference shell scripts.
 - **Rusty Llama CUDA isolation guards**: llama.cpp installs now force `GGML_HIP=ON`, `GGML_CUDA=OFF`, `GGML_VULKAN=OFF`, and `GGML_METAL=OFF`; source builds validate `CMakeCache.txt`; source and prebuilt installs reject binaries without ROCm/HIP linkage.
 - **Rusty Llama CUDA toolkit warning**: The installer warns when `nvcc`, `nvidia-smi`, or `/usr/local/cuda` are present while continuing with HIP-only builds for mixed-GPU systems.

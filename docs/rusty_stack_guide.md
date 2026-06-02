@@ -45,35 +45,29 @@ Three ROCm channels are available, selectable via the TUI or `INSTALL_ROCM_PRESE
 | Channel | ROCm Version | Use Case |
 |---------|-------------|----------|
 | **Legacy** | 6.4.3 | Production-proven stability |
-| **Stable** | 7.1 | Production-ready for RDNA 3 |
-| **Latest** | 7.2.1 | Default, expanded RDNA 4 support |
+| **Stable** | 7.2.3 | Production-ready for RDNA 3/4 |
+| **Latest** | 7.2.4 | Default, current ROCm production release |
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
-cd Stan-s-ML-Stack
-
-# Build the Rust CLI
-cd rusty-stack && cargo build --release
-
-# Launch the interactive TUI installer
-./target/release/rusty
+cargo install rusty --locked
+rusty
 
 # Or use CLI subcommands directly
-./target/release/rusty update --scan-only   # Check for updates
-./target/release/rusty verify --full        # Verify installation
-./target/release/rusty bench --all          # Run benchmarks
-./target/release/rusty deps                 # Check Rust dependency updates
+rusty update --scan-only   # Check for updates
+rusty verify --full        # Verify installation
+rusty bench --all          # Run benchmarks
+rusty deps                 # Check Rust dependency updates
 ```
 
 ### One-Line Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
+cargo install rusty --locked
+rusty
 ```
 
 ---
