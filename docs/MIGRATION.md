@@ -11,7 +11,7 @@ Rusty Stack (formerly "Stan's ML Stack") is the same AMD GPU-focused machine lea
 | Aspect | Before | After |
 |--------|--------|-------|
 | Project Name | Stan's ML Stack | Rusty Stack |
-| Primary Installer | Python curses UI | `cargo install rusty-stack` + Rusty Stack TUI/CLI |
+| Primary Installer | Python curses UI | `cargo install rusty-stack --locked` + Rusty Stack TUI/CLI |
 | Repository | `scooter-lacroix/Stan-s-ML-Stack` | **Unchanged** (same repository) |
 | Python Package | `stans-ml-stack` | `Rusty-Stack` compatibility wrapper |
 | Rust Package | N/A | `rusty-stack` on crates.io |

@@ -20,15 +20,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: main
+          persist-credentials: true
 
       - name: Generate appended changelog entry
         id: changelog
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          PR_URL="${{ github.event.pull_request.html_url }}"
-          AUTHOR="${{ github.event.pull_request.user.login }}"
           DATE=$(date +%Y-%m-%d)
 
           ENTRY="$DATE - [$PR_TITLE]($PR_URL) (@$AUTHOR)"
@@ -56,4 +59,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
           git commit -m "chore(release): append changelog for PR #${{ github.event.pull_request.number }}"
-          git push origin HEAD:main
+
+      - name: Push with retry
+        if: steps.changelog.outputs.updated == 'true'
+        run: |
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && break
+            echo "Push failed, retrying in $((i * 5))s..."
+            sleep $((i * 5))
+          done

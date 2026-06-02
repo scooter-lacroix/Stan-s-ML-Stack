@@ -478,9 +478,7 @@ impl UpdatePlanner {
             .to_string();
 
         let visible = classification.is_visible();
-        let selected = classification.is_preselected()
-            && (matches!(classification, UpdateClassification::Safe)
-                || current_version != component.version);
+        let selected = classification.is_preselected() && current_version != component.version;
         let isolation_safe = matches!(classification, UpdateClassification::Safe);
 
         let classification_reason = self.classification_reason(

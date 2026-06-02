@@ -174,6 +174,7 @@ fn test_rusty_upgrade_dry_run_reports_current_version() {
         .unwrap()
         .args(["upgrade", "--dry-run"])
         .assert()
+        .success()
         .get_output()
         .clone();
 

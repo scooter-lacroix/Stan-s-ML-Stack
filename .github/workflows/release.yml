@@ -278,7 +278,8 @@ PY
         run: |
           VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           # Skip if this version already exists on crates.io (idempotent for retries)
-          if cargo search rusty-stack 2>/dev/null | grep -q "^rusty-stack = \"${VERSION}\""; then
+          PUBLISHED=$(curl -sSf "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('crate',{}).get('max_stable_version',''))" 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$VERSION" ]; then
             echo "Version ${VERSION} already published to crates.io — skipping"
           else
             cargo publish --locked
