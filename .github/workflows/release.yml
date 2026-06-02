@@ -272,7 +272,7 @@ PY
   # ── Publish PyPI package (thin wrapper) ──────────────────────────────
   pypi:
     name: Publish PyPI
-    needs: [detect, github-release]
+    needs: [detect, github-release, crates-io]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
