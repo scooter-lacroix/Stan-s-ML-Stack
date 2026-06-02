@@ -53,21 +53,21 @@ Three ROCm channels are available, selectable via the TUI or `INSTALL_ROCM_PRESE
 ## Quick Start
 
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 
 # Or use CLI subcommands directly
-rusty update --scan-only   # Check for updates
-rusty verify --full        # Verify installation
-rusty bench --all          # Run benchmarks
-rusty deps                 # Check Rust dependency updates
+rusty-stack update --scan-only   # Check for updates
+rusty-stack verify --full        # Verify installation
+rusty-stack bench --all          # Run benchmarks
+rusty-stack deps                 # Check Rust dependency updates
 ```
 
 ### One-Line Install
 
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 ---

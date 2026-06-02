@@ -8,7 +8,7 @@ import subprocess
 import sys
 from importlib import metadata
 
-CRATE_NAME = "rusty"
+CRATE_NAME = "rusty-stack"
 RUSTY_BIN = "rusty"
 INSTALLER_BIN = "rusty-stack"
 

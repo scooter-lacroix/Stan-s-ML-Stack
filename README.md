@@ -8,7 +8,7 @@
 
 **Rusty Stack** is a comprehensive machine learning environment optimized for AMD GPUs. It provides a complete set of tools and libraries for training and deploying machine learning models, with a focus on large language models (LLMs) and deep learning.
 
-Formerly known as "Stan's ML Stack", this project has been fully migrated to Rusty Stack — a native Rust CLI and TUI installer that replaces the original shell scripts and Python UIs. The primary package is published on crates.io as `rusty`, enabling `cargo install rusty`. The Python package (`Rusty-Stack`) remains available on PyPI as a compatibility wrapper. See [MIGRATION.md](MIGRATION.md) for the complete migration guide.
+Formerly known as "Stan's ML Stack", this project has been fully migrated to Rusty Stack — a native Rust CLI and TUI installer that replaces the original shell scripts and Python UIs. The primary package is published on crates.io as `rusty-stack`, enabling `cargo install rusty-stack`. The Python package (`Rusty-Stack`) remains available on PyPI as a compatibility wrapper. See [MIGRATION.md](MIGRATION.md) for the complete migration guide.
 
 This stack is designed to work with AMD's ROCm platform, providing CUDA compatibility through HIP, allowing you to run most CUDA-based machine learning code on AMD GPUs with minimal modifications.
 
@@ -47,7 +47,7 @@ For a detailed guide to help you get started from the ground up, head over to [B
 Rusty Llama installation is only supported through Rusty Stack. The installer explicitly configures `GGML_HIP=ON`, `GGML_CUDA=OFF`, `GGML_VULKAN=OFF`, and `GGML_METAL=OFF`, validates `CMakeCache.txt`, warns when NVIDIA toolkits are present, and rejects binaries that do not show ROCm/HIP linkage.
 
 Docs: https://github.com/scooter-lacroix/rusty-llama-docs
-Install Rusty Stack first with `cargo install rusty --locked`, then install Rusty Llama with `rusty update llama-cpp`.
+Install Rusty Stack first with `cargo install rusty-stack --locked`, then install Rusty Llama with `rusty update llama-cpp`.
 
 ## Windows Support (ALPHA)
 
@@ -227,26 +227,23 @@ The ML Stack provides several installation options to suit your needs.
 ### Quick Install (Recommended)
 
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 ### Rusty-Stack TUI (Primary Installer)
 
-The recommended way to install Rusty Stack is using the unified `rusty` CLI:
+The recommended way to install Rusty Stack is using the crates.io package:
 
 ```bash
 # Install from crates.io
-cargo install rusty --locked
+cargo install rusty-stack --locked
 
-# Launch the interactive installer
-rusty
-```
-
-Or use the backward-compatible alias:
-
-```bash
+# Launch the interactive TUI installer
 rusty-stack
+
+# Or use the CLI-only binary
+rusty update --scan-only
 ```
 
 This will:
@@ -279,14 +276,14 @@ This export is designed for performance validation, regression comparison, and s
 
 ### PyPI Installation
 
-Install via PyPI only when you need the backward-compatible Python entrypoints. The PyPI package installs the matching crates.io `rusty` binary through Cargo:
+Install via PyPI only when you need the backward-compatible Python entrypoints. The PyPI package installs the matching crates.io `rusty-stack` binary through Cargo:
 
 ```bash
 pip install Rusty-Stack
 ml-stack-install
 ```
 
-For direct use, prefer `cargo install rusty --locked`.
+For direct use, prefer `cargo install rusty-stack --locked`.
 
 ### Legacy Installers (Deprecated)
 

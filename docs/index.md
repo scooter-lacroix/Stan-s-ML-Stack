@@ -136,17 +136,17 @@ The ML Stack provides several installation options to suit your needs.
 ### Quick Install (Recommended)
 
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 ### Rusty-Stack TUI (Primary Installer)
 
-The recommended way to install Rusty Stack is using the crates.io `rusty` package:
+The recommended way to install Rusty Stack is using the crates.io `rusty-stack` package:
 
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 This script will:

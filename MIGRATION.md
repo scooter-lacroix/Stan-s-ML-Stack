@@ -348,17 +348,17 @@ python3 scripts/install_ml_stack_ui.py
 
 ```bash
 # Install from crates.io
-cargo install rusty --locked
+cargo install rusty-stack --locked
 
 # Run the TUI installer
-rusty
+rusty-stack
 
 # Or use individual subcommands
-rusty update --scan-only     # Check for updates
-rusty update --all-safe      # Apply safe updates
-rusty verify --full          # Verify installation
-rusty bench --list           # List benchmarks
-rusty bench --all            # Run all benchmarks
+rusty-stack update --scan-only     # Check for updates
+rusty-stack update --all-safe      # Apply safe updates
+rusty-stack verify --full          # Verify installation
+rusty-stack bench --list           # List benchmarks
+rusty-stack bench --all            # Run all benchmarks
 ```
 
 ### Source Build
@@ -377,7 +377,7 @@ cargo build --release
 | Requirement | Before | After |
 |---|---|---|
 | Python | 3.10-3.13 | 3.10-3.13 (unchanged) |
-| Rust | Not required | Current stable Rust, via rustup, for `cargo install rusty` or source builds |
+| Rust | Not required | Current stable Rust, via rustup, for `cargo install rusty-stack` or source builds |
 | Shell | bash | bash (for remaining active scripts) |
 | Package manager | apt/dnf/pacman | apt/dnf/pacman (unchanged) |
 

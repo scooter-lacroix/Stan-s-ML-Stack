@@ -11,15 +11,15 @@ Rusty Stack (formerly "Stan's ML Stack") is the same AMD GPU-focused machine lea
 | Aspect | Before | After |
 |--------|--------|-------|
 | Project Name | Stan's ML Stack | Rusty Stack |
-| Primary Installer | Python curses UI | `cargo install rusty` + Rusty Stack TUI/CLI |
+| Primary Installer | Python curses UI | `cargo install rusty-stack` + Rusty Stack TUI/CLI |
 | Repository | `scooter-lacroix/Stan-s-ML-Stack` | **Unchanged** (same repository) |
 | Python Package | `stans-ml-stack` | `Rusty-Stack` compatibility wrapper |
-| Rust Package | N/A | `rusty` on crates.io |
+| Rust Package | N/A | `rusty-stack` on crates.io |
 
 ### What's Staying the Same?
 
 - **Repository URL**: `https://github.com/scooter-lacroix/Stan-s-ML-Stack`
-- **Primary Install**: `cargo install rusty --locked`
+- **Primary Install**: `cargo install rusty-stack --locked`
 - **PyPI Package**: `pip install Rusty-Stack` remains as a compatibility wrapper
 - **Backend Scripts**: archived and no longer part of the active install path
 - **Components**: ROCm, PyTorch, vLLM, etc. - same components
@@ -38,8 +38,8 @@ The Python curses installer (`install_ml_stack_curses.py`) is now deprecated.
 
 **New way:**
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 **Good news:** Existing installations remain compatible; new installs should use the Rust CLI/TUI.
@@ -60,8 +60,8 @@ The Go installer (`mlstack-installer/`) is deprecated and no longer maintained.
 
 **Migration:** Switch to Rusty-Stack TUI:
 ```bash
-cargo install rusty --locked
-rusty
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 ## Component Installation
