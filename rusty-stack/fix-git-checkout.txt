@@ -1,0 +1,140 @@
+# Fix Report: Category C + D4-D5 — git tag/branch checkout failures and component path issues
+
+## Summary
+
+Four fixes applied to `src/installer.rs` in the per-component dispatch section
+(`run_native_installer`). All fixes target the reinstall/update path — first-time
+install behavior is unchanged.
+
+Build: `cargo build --release` — 0 errors, 0 warnings
+Tests: `cargo test --release` — ALL PASS
+
+---
+
+## Fix 1: ONNX Runtime — git tag fetch before checkout
+
+**Root cause:** `git checkout v1.20.1` fails because the tag is not present in the
+local clone. After `git_clone_or_pull` does a `pull --ff-only` or `fetch --all`,
+remote tags may not be fetched. The working_dir was already correctly set via
+`from_shell_cmd_with_dir`.
+
+**Fix:** Added a `git -C <dir> fetch origin --tags` step before the checkout
+(Step 2 in the onnx dispatch). This is non-fatal — if fetch fails, the checkout
+still proceeds (tags may already be present from the initial clone).
+
+**File:** `src/installer.rs` — onnx dispatch block (around line 3218)
+
+**Change:**
+```rust
+// Step 2: git fetch tags (ensure remote tags are available for checkout)
+let fetch_tags_cmd = NativeCommand::from_shell_cmd_with_dir(
+    "git",
+    &["fetch".to_string(), "origin".to_string(), "--tags".to_string()],
+    &[],
+    Some(onnx_target.clone()),
+);
+let _ = execute_native_command(&fetch_tags_cmd, sudo_pw, sender, &component.name);
+```
+
+---
+
+## Fix 2: Triton — git branch fetch before checkout
+
+**Root cause:** `git checkout release/internal/3.6.x` fails because the remote
+branch ref is not present in the shallow/fetched clone. The checkout command
+already uses `-C <target_dir>` correctly.
+
+**Fix:** Added a `git -C <dir> fetch origin <branch>` step before the checkout
+(Step 2 in the triton dispatch). This fetches the specific branch ref from origin
+so it can be checked out. The fetch is non-fatal.
+
+**File:** `src/installer.rs` — triton dispatch block (around line 2673)
+
+**Change:**
+```rust
+// Step 2: git fetch the target branch (ensure remote branch refs are available)
+let branch = inst.select_branch().to_string();
+let fetch_branch_cmd = NativeCommand::from_shell_cmd(
+    "git",
+    &[
+        "-C".to_string(),
+        target_dir.clone(),
+        "fetch".to_string(),
+        "origin".to_string(),
+        branch.clone(),
+    ],
+    &[],
+);
+let _ = execute_native_command(&fetch_branch_cmd, sudo_pw, sender, &component.name);
+```
+
+---
+
+## Fix 3: text-generation-webui — requirements.txt path resolution
+
+**Root cause:** The requirements.txt path was hardcoded as
+`{ctx.user_home}/text-generation-webui/requirements.txt` instead of using
+`target_dir` from the clone command. This breaks when:
+1. `HOME` differs from the actual clone directory
+2. The repo structure changes (requirements.txt moved to requirements/ subdirectory)
+3. After a pull, the file might not exist at the expected path
+
+**Fix:** Changed to use `target_dir` from the clone command and added existence
+checks with fallback paths:
+- First checks `{target_dir}/requirements.txt` (root)
+- Falls back to `{target_dir}/requirements/requirements.txt` (subdirectory)
+- AMD requirements install is now non-fatal (skipped if file doesn't exist)
+
+**File:** `src/installer.rs` — textgen dispatch block (around line 3171)
+
+**Changes:**
+1. Requirements path uses `target_dir` instead of hardcoded `ctx.user_home` path
+2. Checks both root and subdirectory locations for requirements.txt
+3. AMD requirements install is now conditional on file existence (non-fatal skip)
+
+Also fixed comfyui which had the same hardcoded path issue for requirements.txt.
+
+---
+
+## Fix 4: vLLM Studio — npm build from frontend/ subdirectory
+
+**Root cause:** `npm run build` was running from the repo root directory, but the
+package.json with the "build" script is in the `frontend/` subdirectory. The
+command needs to run with `working_dir` set to `{target_dir}/frontend`.
+
+**Fix:** Changed the frontend build command to use `from_shell_cmd_with_dir`
+with `working_dir` set to `{target_dir}/frontend`. This ensures `npm run build`
+finds the correct package.json.
+
+**File:** `src/installer.rs` — vllm-studio dispatch block (around line 3115)
+
+**Change:**
+```rust
+// Step 3: Build frontend (non-fatal — build script may not exist yet)
+// Run from the frontend/ subdirectory where package.json with "build" script lives.
+let frontend_dir = PathBuf::from(&target_dir).join("frontend");
+let cmd = inst.build_frontend_build_command(pkg_mgr);
+let build_result = execute_native_command(
+    &NativeCommand::from_shell_cmd_with_dir(
+        &cmd.program, &cmd.args, &cmd.env,
+        Some(frontend_dir),
+    ),
+    None,
+    sender,
+    &component.name,
+);
+```
+
+---
+
+## Files Modified
+
+1. `src/installer.rs` — All four fixes in the `run_native_installer` dispatch
+
+## Validation
+
+- `cargo build --release` — 0 errors, 0 warnings
+- `cargo test --release` — ALL tests pass (including existing test assertions)
+- No changes to component module files (onnxruntime.rs, triton.rs, textgen.rs, vllm_studio.rs)
+- No changes to first-time install behavior
+- All fixes are minimal and targeted

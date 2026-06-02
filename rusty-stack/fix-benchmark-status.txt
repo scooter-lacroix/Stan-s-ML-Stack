@@ -1,0 +1,55 @@
+Benchmark UI Status Fix - Completed
+=====================================
+
+## Summary
+Fixed the benchmark UI status in the rusty-stack TUI so that Performance category 
+components show "Running" during execution instead of "Installing", and display 
+proper status labels throughout the lifecycle.
+
+## Changes Made
+
+### 1. src/app.rs - ComponentStart handler (line ~2181)
+**Before:** Always showed "Installing {name}" regardless of component category.
+**After:** Checks if the component is Category::Performance:
+  - Performance → "Running {name}"
+  - All others → "Installing {name}"
+Also handles the edge case where the component isn't found in self.components.
+
+### 2. src/app.rs - Performance category status display (line ~944)
+**Before:** Only showed "Benchmarked" (installed) or "Pending benchmark" (not installed).
+**After:** Three-state display:
+  - installed=true → "Benchmarked" (green ✓)
+  - installed=false, progress > 0 → "Failed" (red ✗) — was attempted but failed
+  - installed=false, progress == 0 → "Pending benchmark" (yellow ○)
+
+### 3. src/app.rs - Checklist rendering (line ~2323)
+**Before:** Always showed "Install" as the task label for non-Verification components.
+**After:** Shows "Benchmark" for Performance category components, "Install" for others.
+This means the checklist now shows "✓ Benchmark (done)" instead of "✓ Install (done)" 
+for benchmark components.
+
+### 4. src/installer.rs - Completion message (line ~300)
+**Before:** Always used "X completed" or "X completed with verification errors".
+**After:** For Performance category:
+  - Success → "{name} benchmarks completed"
+  - Verification errors → "{name} benchmarks completed with errors"
+For other categories, the original messages are preserved.
+
+### 5. src/installer.rs - Error log messages (two locations)
+**Before:** Always logged "[ERROR] {name} installation failed: {chain}".
+**After:** Uses "benchmarks" instead of "installation" for Performance category:
+  - Performance → "[ERROR] {name} benchmarks failed: {chain}"
+  - Others → "[ERROR] {name} installation failed: {chain}"
+
+### 6. src/installer.rs - Verification progress message
+**Before:** Always showed "Verifying {name}" during the verification phase.
+**After:** For Performance category shows "Validating {name}" (since benchmarks 
+are validated rather than verified in the traditional sense).
+
+## Validation
+- `cargo build --release` — zero errors, zero warnings ✓
+- `cargo test --release` — all 1438+ tests pass ✓
+
+## Files Modified
+- src/app.rs (3 changes)
+- src/installer.rs (4 changes)

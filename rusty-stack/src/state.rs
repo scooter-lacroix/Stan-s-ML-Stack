@@ -30,6 +30,17 @@ pub struct Component {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Script path relative to scripts_dir, or empty string for native Rust modules.
+    ///
+    /// For native Rust components, this field is empty and the installer
+    /// dispatches to the corresponding Rust module via
+    /// `installers::components::is_native_component()`.
+    ///
+    /// # Validation Assertions
+    ///
+    /// - **VAL-INSTALL-037**: Component.script no longer holds .sh filenames for ported components
+    /// - **VAL-INSTALL-038**: state.rs supports native module routing
+    /// - **VAL-INSTALL-040**: Verification/performance components use native routing
     pub script: String,
     pub category: Category,
     pub required: bool,
@@ -39,6 +50,18 @@ pub struct Component {
     pub estimate: String,
     /// Whether this component requires sudo to install
     pub needs_sudo: bool,
+}
+
+impl Component {
+    /// Returns `true` if this component uses a native Rust installer
+    /// (no shell script involved).
+    ///
+    /// # Validation Assertions
+    ///
+    /// - **VAL-INSTALL-038**: state.rs supports native module routing
+    pub fn is_native(&self) -> bool {
+        crate::installers::components::is_native_component(&self.id)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -134,7 +157,7 @@ pub fn default_components() -> Vec<Component> {
             id: "permanent-env".into(),
             name: "Permanent ROCm Env".into(),
             description: "Unified permanent environment for Python 3.12".into(),
-            script: "setup_permanent_rocm_env.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Environment,
             required: false,
             selected: true,
@@ -148,7 +171,7 @@ pub fn default_components() -> Vec<Component> {
             id: "rocm".into(),
             name: "ROCm Platform".into(),
             description: "AMD ROCm GPU computing platform".into(),
-            script: "install_rocm.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Foundation,
             required: true,
             selected: true,
@@ -161,7 +184,7 @@ pub fn default_components() -> Vec<Component> {
             id: "pytorch".into(),
             name: "PyTorch with ROCm".into(),
             description: "PyTorch optimized for AMD GPUs".into(),
-            script: "install_pytorch_rocm.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Foundation,
             required: true,
             selected: true,
@@ -174,7 +197,7 @@ pub fn default_components() -> Vec<Component> {
             id: "triton".into(),
             name: "Triton".into(),
             description: "Compiler for parallel programming".into(),
-            script: "install_triton_multi.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Foundation,
             required: true,
             selected: true,
@@ -187,7 +210,7 @@ pub fn default_components() -> Vec<Component> {
             id: "mpi4py".into(),
             name: "MPI4Py".into(),
             description: "MPI bindings for Python".into(),
-            script: "install_mpi4py.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Foundation,
             required: true,
             selected: true,
@@ -200,7 +223,7 @@ pub fn default_components() -> Vec<Component> {
             id: "deepspeed".into(),
             name: "DeepSpeed".into(),
             description: "Deep learning optimization library".into(),
-            script: "install_deepspeed.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Foundation,
             required: true,
             selected: true,
@@ -214,7 +237,7 @@ pub fn default_components() -> Vec<Component> {
             id: "ml-stack-core".into(),
             name: "ML Stack Core".into(),
             description: "Core ML Stack components".into(),
-            script: "install_ml_stack.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Core,
             required: false,
             selected: false,
@@ -227,7 +250,7 @@ pub fn default_components() -> Vec<Component> {
             id: "flash-attn".into(),
             name: "Flash Attention".into(),
             description: "Efficient attention computation".into(),
-            script: "install_flash_attention_ck.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Core,
             required: false,
             selected: true,
@@ -240,7 +263,7 @@ pub fn default_components() -> Vec<Component> {
             id: "repair-stack".into(),
             name: "Repair ML Stack".into(),
             description: "Repair ML Stack installation".into(),
-            script: "repair_ml_stack.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Core,
             required: false,
             selected: false,
@@ -254,7 +277,7 @@ pub fn default_components() -> Vec<Component> {
             id: "megatron".into(),
             name: "Megatron-LM".into(),
             description: "Large-scale training framework".into(),
-            script: "install_megatron.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -267,7 +290,7 @@ pub fn default_components() -> Vec<Component> {
             id: "vllm".into(),
             name: "vLLM".into(),
             description: "High-throughput inference engine".into(),
-            script: "install_vllm_multi.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -280,7 +303,7 @@ pub fn default_components() -> Vec<Component> {
             id: "aiter".into(),
             name: "AITER".into(),
             description: "AMD AITER optimization tooling".into(),
-            script: "install_aiter.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -293,7 +316,7 @@ pub fn default_components() -> Vec<Component> {
             id: "vllm-studio".into(),
             name: "vLLM Studio".into(),
             description: "Model lifecycle manager for vLLM/SGLang".into(),
-            script: "install_vllm_studio.sh".into(),
+            script: String::new(), // Native Rust installer
             category: UiUx,
             required: false,
             selected: false,
@@ -306,7 +329,7 @@ pub fn default_components() -> Vec<Component> {
             id: "comfyui".into(),
             name: "ComfyUI".into(),
             description: "Node-based AI image generation UI with ROCm support".into(),
-            script: "install_comfyui.sh".into(),
+            script: String::new(), // Native Rust installer
             category: UiUx,
             required: false,
             selected: false,
@@ -319,7 +342,7 @@ pub fn default_components() -> Vec<Component> {
             id: "textgen".into(),
             name: "text-generation-webui".into(),
             description: "LLM chat/inference web UI with ROCm support (oobabooga)".into(),
-            script: "install_textgen.sh".into(),
+            script: String::new(), // Native Rust installer
             category: UiUx,
             required: false,
             selected: false,
@@ -332,20 +355,20 @@ pub fn default_components() -> Vec<Component> {
             id: "onnx".into(),
             name: "ONNX Runtime".into(),
             description: "Cross-platform inference accelerator".into(),
-            script: "build_onnxruntime_multi.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
             installed: false,
             progress: 0.0,
-            estimate: "45-90 min".into(),
-            needs_sudo: true,
+            estimate: "2-5 min".into(),
+            needs_sudo: false,
         },
         Component {
             id: "bitsandbytes".into(),
             name: "BITSANDBYTES".into(),
             description: "Efficient quantization for deep learning".into(),
-            script: "install_bitsandbytes_multi.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -358,7 +381,7 @@ pub fn default_components() -> Vec<Component> {
             id: "rocm-smi".into(),
             name: "ROCm SMI".into(),
             description: "System monitoring for AMD GPUs".into(),
-            script: "install_rocm_smi.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: true,
@@ -371,7 +394,7 @@ pub fn default_components() -> Vec<Component> {
             id: "migraphx".into(),
             name: "MIGraphX".into(),
             description: "AMD graph inference engine".into(),
-            script: "install_migraphx_multi.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -384,7 +407,7 @@ pub fn default_components() -> Vec<Component> {
             id: "pytorch-profiler".into(),
             name: "PyTorch Profiler".into(),
             description: "Performance analysis for PyTorch".into(),
-            script: "install_pytorch_profiler.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -397,7 +420,7 @@ pub fn default_components() -> Vec<Component> {
             id: "wandb".into(),
             name: "Weights & Biases".into(),
             description: "Experiment tracking and visualization".into(),
-            script: "install_wandb.sh".into(),
+            script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
             selected: false,
@@ -406,12 +429,38 @@ pub fn default_components() -> Vec<Component> {
             estimate: "5-8 min".into(),
             needs_sudo: true,
         },
-        // Verification components
+        Component {
+            id: "llama-cpp".into(),
+            name: "llama.cpp (HIP/ROCm)".into(),
+            description: "llama.cpp with HIP/ROCm GPU acceleration".into(),
+            script: String::new(), // Native Rust installer
+            category: Extension,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-15 min".into(),
+            needs_sudo: true,
+        },
+        Component {
+            id: "fastvideo".into(),
+            name: "FastVideo".into(),
+            description: "Video generation framework with ROCm gfx11 optimizations".into(),
+            script: String::new(), // Native Rust installer
+            category: Extension,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-20 min".into(),
+            needs_sudo: false,
+        },
+        // Verification components (native Rust via verification module)
         Component {
             id: "verify-basic".into(),
             name: "Verify Installation".into(),
             description: "Basic verification".into(),
-            script: "verify_installation.sh".into(),
+            script: String::new(), // Native Rust verification
             category: Verification,
             required: false,
             selected: false,
@@ -424,7 +473,7 @@ pub fn default_components() -> Vec<Component> {
             id: "verify-enhanced".into(),
             name: "Enhanced Verify Installation".into(),
             description: "Advanced verification".into(),
-            script: "enhanced_verify_installation.sh".into(),
+            script: String::new(), // Native Rust verification
             category: Verification,
             required: false,
             selected: false,
@@ -437,7 +486,7 @@ pub fn default_components() -> Vec<Component> {
             id: "verify-build".into(),
             name: "Verify and Build".into(),
             description: "Verify + build components".into(),
-            script: "verify_and_build.sh".into(),
+            script: String::new(), // Native Rust verification
             category: Verification,
             required: false,
             selected: false,
@@ -446,12 +495,12 @@ pub fn default_components() -> Vec<Component> {
             estimate: "10-15 min".into(),
             needs_sudo: true,
         },
-        // Performance components
+        // Performance components (native Rust via benchmark_runners module)
         Component {
             id: "mlperf-inference".into(),
             name: "MLPerf Inference".into(),
             description: "MLPerf benchmark suite for inference performance".into(),
-            script: "run_mlperf_inference.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -464,7 +513,7 @@ pub fn default_components() -> Vec<Component> {
             id: "rocm-benchmarks".into(),
             name: "ROCm Benchmarks".into(),
             description: "ROCm-specific performance benchmarks".into(),
-            script: "run_rocm_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -477,7 +526,7 @@ pub fn default_components() -> Vec<Component> {
             id: "gpu-memory-bandwidth".into(),
             name: "GPU Memory Bandwidth".into(),
             description: "Memory bandwidth performance testing".into(),
-            script: "test_gpu_memory_bandwidth.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -490,7 +539,7 @@ pub fn default_components() -> Vec<Component> {
             id: "rocm-smi-bench".into(),
             name: "ROCm SMI Benchmarks".into(),
             description: "ROCm SMI performance monitoring".into(),
-            script: "run_rocm_smi_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -503,7 +552,7 @@ pub fn default_components() -> Vec<Component> {
             id: "vllm-performance".into(),
             name: "vLLM Performance".into(),
             description: "High-throughput vLLM inference benchmark".into(),
-            script: "run_vllm_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -516,7 +565,7 @@ pub fn default_components() -> Vec<Component> {
             id: "deepspeed-performance".into(),
             name: "DeepSpeed Performance".into(),
             description: "DeepSpeed ZeRO optimization throughput benchmark".into(),
-            script: "run_deepspeed_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -529,7 +578,7 @@ pub fn default_components() -> Vec<Component> {
             id: "megatron-performance".into(),
             name: "Megatron-LM Performance".into(),
             description: "Megatron-LM import and throughput benchmark".into(),
-            script: "run_megatron_benchmarks.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,
@@ -542,7 +591,7 @@ pub fn default_components() -> Vec<Component> {
             id: "all-benchmarks".into(),
             name: "Full Suite Benchmark".into(),
             description: "Run all post-installation performance tests".into(),
-            script: "run_all_benchmarks_suite.sh".into(),
+            script: String::new(), // Native Rust benchmark
             category: Performance,
             required: false,
             selected: false,

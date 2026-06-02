@@ -28,10 +28,12 @@ pub struct BenchmarkResults {
     pub memory_bandwidth: Option<MemoryBandwidthData>,
     pub tensor_core: Option<TensorCoreData>,
     pub pytorch: Option<PyTorchData>,
+    pub llama_cpp: Option<LlamaCppData>,
     pub flash_attention: Option<FlashAttentionData>,
     pub vllm: Option<VllmData>,
     pub deepspeed: Option<DeepspeedData>,
     pub megatron: Option<MegatronData>,
+    pub onnx: Option<OnnxData>,
     pub errors: Vec<String>,
     pub baseline: Option<Box<BenchmarkResults>>,
 }
@@ -51,6 +53,22 @@ pub struct MegatronData {
     pub avg_latency_ms: f64,
     pub backend: String,
     pub samples: Vec<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OnnxData {
+    pub ort_version: String,
+    pub provider: String,
+    pub providers_available: Vec<String>,
+    pub graph_opt_level: String,
+    pub session_create_ms: f64,
+    pub inference_latency_p50_ms: f64,
+    pub inference_latency_p95_ms: f64,
+    pub inference_latency_p99_ms: f64,
+    pub throughput_inf_per_sec: f64,
+    pub peak_rss_mb: f64,
+    pub quantized_supported: bool,
+    pub inference_samples: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +113,31 @@ pub struct PyTorchData {
 }
 
 #[derive(Debug, Clone)]
+pub struct LlamaCppData {
+    pub gpus: Vec<LlamaCppGpu>,
+    pub prefill: Vec<LlamaCppPerfPoint>,
+    pub decode: Vec<LlamaCppPerfPoint>,
+    pub model: String,
+    pub rocm_version: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlamaCppGpu {
+    pub name: String,
+    pub arch: String,
+    pub vram_gb: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LlamaCppPerfPoint {
+    pub gpu: usize,
+    pub context: Option<u32>,
+    pub n_gen: Option<u32>,
+    pub avg_tps: f64,
+    pub stddev: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct FlashAttentionData {
     pub standard_attention_speed: f64,
     pub flash_attention_speed: f64,
@@ -129,10 +172,13 @@ pub fn load_benchmark_results() -> BenchmarkResults {
         "rocm_benchmarks",
         "gpu_memory_bandwidth",
         "pytorch_performance",
+        "llama_cpp_benchmarks",
+        "llama-cpp",
         "mlperf_inference",
         "vllm_benchmarks",
         "deepspeed_benchmarks",
         "megatron_benchmarks",
+        "onnx_benchmarks",
         "full_benchmarks",
     ] {
         if let Some(log_path) = find_latest_log_in_dirs(&log_dirs, pattern) {
@@ -204,6 +250,7 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
         "vllm_benchmarks",
         "deepspeed_benchmarks",
         "megatron_benchmarks",
+        "onnx_benchmarks",
         "full_benchmarks",
     ];
     let mut log_files = collect_matching_logs(log_dirs, &baseline_patterns);
@@ -228,10 +275,12 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
                     memory_bandwidth: None,
                     tensor_core: None,
                     pytorch: None,
+                    llama_cpp: None,
                     flash_attention: None,
                     vllm: None,
                     deepspeed: None,
                     megatron: None,
+                    onnx: None,
                     errors: Vec::new(),
                     baseline: None,
                 };
@@ -244,6 +293,7 @@ fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
                     || baseline_results.vllm.is_some()
                     || baseline_results.deepspeed.is_some()
                     || baseline_results.megatron.is_some()
+                    || baseline_results.onnx.is_some()
                 {
                     return Some(Box::new(baseline_results));
                 }
@@ -259,7 +309,11 @@ fn push_error_unique(results: &mut BenchmarkResults, message: impl Into<String>)
     if trimmed.is_empty() {
         return;
     }
-    if results.errors.iter().any(|existing| existing.trim() == trimmed) {
+    if results
+        .errors
+        .iter()
+        .any(|existing| existing.trim() == trimmed)
+    {
         return;
     }
     results.errors.push(trimmed.to_string());
@@ -357,6 +411,8 @@ fn apply_metrics(val: &serde_json::Value, results: &mut BenchmarkResults, includ
             || obj.contains_key("throughput_tokens_per_sec")
             || obj.contains_key("throughput_samples_per_sec")
             || obj.contains_key("megatron_throughput_samples_per_sec")
+            || obj.contains_key("ort_version")
+            || obj.keys().any(|k| k.contains("_tps_gpu"))
         {
             apply_metrics_internal(val, results, include_errors);
         } else {
@@ -368,7 +424,11 @@ fn apply_metrics(val: &serde_json::Value, results: &mut BenchmarkResults, includ
     }
 }
 
-fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResults, include_errors: bool) {
+fn apply_metrics_internal(
+    val: &serde_json::Value,
+    results: &mut BenchmarkResults,
+    include_errors: bool,
+) {
     if include_errors {
         if let Some(root_obj) = val.as_object() {
             if let Some(errors) = root_obj
@@ -394,15 +454,11 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
 
     if let Some(obj) = metrics.as_object() {
         if include_errors {
-            if let Some(errors) = obj
-                .get("errors")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|e| e.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                })
-            {
+            if let Some(errors) = obj.get("errors").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            }) {
                 for err in errors {
                     push_error_unique(results, err);
                 }
@@ -472,7 +528,9 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
                             .unwrap_or(false),
                         temperature_c: obj.get("temperature_c").and_then(|v| v.as_f64()),
                         power_watts: obj.get("power_watts").and_then(|v| v.as_f64()),
-                        utilization_percent: obj.get("utilization_percent").and_then(|v| v.as_f64()),
+                        utilization_percent: obj
+                            .get("utilization_percent")
+                            .and_then(|v| v.as_f64()),
                         memory_percent: obj.get("memory_percent").and_then(|v| v.as_f64()),
                         sclk_mhz: obj
                             .get("sclk_mhz")
@@ -675,6 +733,151 @@ fn apply_metrics_internal(val: &serde_json::Value, results: &mut BenchmarkResult
                     .unwrap_or_default(),
             });
         }
+
+        if obj.contains_key("ort_version") {
+            results.onnx = Some(OnnxData {
+                ort_version: obj
+                    .get("ort_version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                provider: obj
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("CPU")
+                    .to_string(),
+                providers_available: obj
+                    .get("providers_available")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                graph_opt_level: obj
+                    .get("graph_opt_level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ORI_DISABLE_ALL")
+                    .to_string(),
+                session_create_ms: obj
+                    .get("session_create_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                inference_latency_p50_ms: obj
+                    .get("inference_latency_p50_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                inference_latency_p95_ms: obj
+                    .get("inference_latency_p95_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                inference_latency_p99_ms: obj
+                    .get("inference_latency_p99_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                throughput_inf_per_sec: obj
+                    .get("throughput_inf_per_sec")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                peak_rss_mb: obj
+                    .get("peak_rss_mb")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                quantized_supported: obj
+                    .get("quantized_supported")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                inference_samples: obj
+                    .get("inference_samples")
+                    .map(to_f64_vec)
+                    .unwrap_or_default(),
+            });
+        }
+
+        // llama-cpp benchmark: keys like prefill_512_tps_gpu0, decode_128_tps_gpu0
+        if obj.keys().any(|k| k.contains("_tps_gpu")) {
+            let mut gpus = Vec::new();
+            let mut prefill = Vec::new();
+            let mut decode = Vec::new();
+
+            // Collect unique GPU indices from metric keys
+            let mut gpu_indices: Vec<usize> = obj
+                .keys()
+                .filter_map(|k| {
+                    k.rsplit("_gpu")
+                        .next()
+                        .and_then(|s| s.parse::<usize>().ok())
+                })
+                .collect();
+            gpu_indices.sort();
+            gpu_indices.dedup();
+
+            for gpu_idx in &gpu_indices {
+                gpus.push(LlamaCppGpu {
+                    name: format!("GPU {}", gpu_idx),
+                    arch: String::new(),
+                    vram_gb: 0.0,
+                });
+            }
+
+            for (key, value) in obj.iter() {
+                let tps = value.as_f64().unwrap_or(0.0);
+                let gpu_idx = key
+                    .rsplit("_gpu")
+                    .next()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0);
+
+                if key.starts_with("prefill_") && !key.contains("stddev") {
+                    // prefill_{context}_tps_gpu{idx}
+                    let context = key
+                        .trim_start_matches("prefill_")
+                        .trim_end_matches(&format!("_tps_gpu{}", gpu_idx))
+                        .parse::<u32>()
+                        .ok();
+                    prefill.push(LlamaCppPerfPoint {
+                        gpu: gpu_idx,
+                        context,
+                        n_gen: None,
+                        avg_tps: tps,
+                        stddev: obj
+                            .get(&key.replace("_tps_", "_stddev_tps_"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0),
+                    });
+                } else if key.starts_with("decode_") && !key.contains("stddev") {
+                    // decode_{n_gen}_tps_gpu{idx}
+                    let n_gen = key
+                        .trim_start_matches("decode_")
+                        .trim_end_matches(&format!("_tps_gpu{}", gpu_idx))
+                        .parse::<u32>()
+                        .ok();
+                    decode.push(LlamaCppPerfPoint {
+                        gpu: gpu_idx,
+                        context: None,
+                        n_gen,
+                        avg_tps: tps,
+                        stddev: obj
+                            .get(&key.replace("_tps_", "_stddev_tps_"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0),
+                    });
+                }
+            }
+
+            // Sort by GPU index then context/n_gen
+            prefill.sort_by(|a, b| a.gpu.cmp(&b.gpu).then(a.context.cmp(&b.context)));
+            decode.sort_by(|a, b| a.gpu.cmp(&b.gpu).then(a.n_gen.cmp(&b.n_gen)));
+
+            results.llama_cpp = Some(LlamaCppData {
+                gpus,
+                prefill,
+                decode,
+                model: String::new(),
+                rocm_version: String::new(),
+            });
+        }
     }
 }
 
@@ -689,10 +892,12 @@ impl BenchmarkResults {
             memory_bandwidth: None,
             tensor_core: None,
             pytorch: None,
+            llama_cpp: None,
             flash_attention: None,
             vllm: None,
             deepspeed: None,
             megatron: None,
+            onnx: None,
             errors: Vec::new(),
             baseline: None,
         }
@@ -715,6 +920,8 @@ pub fn render_benchmark_page(
         Line::from("vLLM"),
         Line::from("DeepSpeed"),
         Line::from("Megatron"),
+        Line::from("ONNX"),
+        Line::from("LLaMA"),
     ])
     .select(tab_index)
     .style(Style::default().fg(Color::Cyan))
@@ -740,6 +947,8 @@ pub fn render_benchmark_page(
         5 => render_vllm_tab(frame, chunks[1], results),
         6 => render_deepspeed_tab(frame, chunks[1], results),
         7 => render_megatron_tab(frame, chunks[1], results),
+        8 => render_onnx_tab(frame, chunks[1], results),
+        9 => render_llama_cpp_tab(frame, chunks[1], results),
         _ => render_gpu_tab(frame, chunks[1], results),
     }
 }
@@ -808,6 +1017,14 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
             ));
             has_perf = true;
         }
+        if let Some(llama) = &results.llama_cpp {
+            content.push_str(&format!(
+                "  • LLaMA.cpp: {} on {} GPU(s)\n",
+                llama.model,
+                llama.gpus.len()
+            ));
+            has_perf = true;
+        }
         if let Some(fa) = &results.flash_attention {
             content.push_str(&format!(
                 "  • Flash Attention: {:.1} tok/s ({:.2}x speedup)\n",
@@ -844,11 +1061,20 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                 has_perf = true;
             }
         }
+        if let Some(onnx) = &results.onnx {
+            if onnx.throughput_inf_per_sec > 0.0 {
+                content.push_str(&format!(
+                    "  • ONNX Runtime: {:.1} inf/s ({}, {})\n",
+                    onnx.throughput_inf_per_sec, onnx.provider, onnx.ort_version
+                ));
+                has_perf = true;
+            }
+        }
 
         if !has_perf {
             content.push_str("  (No performance benchmarks run yet)\n");
         }
-        content.push_str("\n");
+        content.push('\n');
     }
 
     if !results.errors.is_empty() {
@@ -934,7 +1160,12 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) 
                         .title("Buffer Size (MB)")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec!["64".into(), "128".into(), "256".into(), "512".into()]),
+                        .labels(vec![
+                            Line::from("64"),
+                            Line::from("128"),
+                            Line::from("256"),
+                            Line::from("512"),
+                        ]),
                 )
                 .y_axis(
                     Axis::default()
@@ -942,9 +1173,9 @@ fn render_memory_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) 
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -999,7 +1230,11 @@ fn render_tensor_core_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResu
                         .title("Matrix Size (N x N)")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec!["512".into(), "1024".into(), "2048".into()]),
+                        .labels(vec![
+                            Line::from("512"),
+                            Line::from("1024"),
+                            Line::from("2048"),
+                        ]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1007,9 +1242,9 @@ fn render_tensor_core_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResu
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1074,7 +1309,11 @@ fn render_pytorch_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults)
                         .title("Benchmark Trial")
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
-                        .labels(vec!["Trial 1".into(), "Trial 2".into(), "Trial 3".into()]),
+                        .labels(vec![
+                            Line::from("Trial 1"),
+                            Line::from("Trial 2"),
+                            Line::from("Trial 3"),
+                        ]),
                 )
                 .y_axis(
                     Axis::default()
@@ -1082,9 +1321,9 @@ fn render_pytorch_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults)
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1150,10 +1389,10 @@ fn render_flash_attention_tab(frame: &mut Frame, area: Rect, results: &Benchmark
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "128".into(),
-                            "256".into(),
-                            "512".into(),
-                            "1024".into(),
+                            Line::from("128"),
+                            Line::from("256"),
+                            Line::from("512"),
+                            Line::from("1024"),
                         ]),
                 )
                 .y_axis(
@@ -1162,9 +1401,9 @@ fn render_flash_attention_tab(frame: &mut Frame, area: Rect, results: &Benchmark
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1176,6 +1415,110 @@ fn render_flash_attention_tab(frame: &mut Frame, area: Rect, results: &Benchmark
                 .block(
                     Block::default()
                         .title("Flash Attention vs Standard")
+                        .borders(Borders::ALL),
+                ),
+            area,
+        );
+    }
+}
+
+fn render_llama_cpp_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
+    if let Some(llama) = &results.llama_cpp {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Length(8),
+                Constraint::Min(8),
+            ])
+            .split(area);
+
+        let summary = format!(
+            "Model: {} | ROCm: {} | GPUs: {}",
+            llama.model,
+            llama.rocm_version,
+            llama.gpus.len()
+        );
+        frame.render_widget(
+            Paragraph::new(summary).block(Block::default().borders(Borders::ALL).title("Summary")),
+            chunks[0],
+        );
+
+        let gpu_lines = llama
+            .gpus
+            .iter()
+            .enumerate()
+            .map(|(idx, gpu)| {
+                Line::from(format!(
+                    "GPU {}: {} | {} | {:.1} GB",
+                    idx, gpu.name, gpu.arch, gpu.vram_gb
+                ))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(Text::from(gpu_lines))
+                .block(Block::default().borders(Borders::ALL).title("GPU Info")),
+            chunks[1],
+        );
+
+        let mut body = String::from("Prefill Throughput (tokens/sec)\n");
+        for gpu in &llama.gpus {
+            body.push_str(&format!("GPU: {} ({})\n", gpu.name, gpu.arch));
+            for context in [512_u32, 2048_u32, 8192_u32] {
+                let value = llama
+                    .prefill
+                    .iter()
+                    .find(|p| {
+                        p.gpu
+                            == llama
+                                .gpus
+                                .iter()
+                                .position(|g| g.name == gpu.name)
+                                .unwrap_or(0)
+                            && p.context == Some(context)
+                    })
+                    .map(|p| p.avg_tps)
+                    .unwrap_or(0.0);
+                body.push_str(&format!("  {}: {:.2}\n", context, value));
+            }
+            body.push('\n');
+        }
+        body.push_str("Decode Throughput (tokens/sec)\n");
+        for gpu in &llama.gpus {
+            body.push_str(&format!("GPU: {} ({})\n", gpu.name, gpu.arch));
+            for n_gen in [128_u32] {
+                let value = llama
+                    .decode
+                    .iter()
+                    .find(|p| {
+                        p.gpu
+                            == llama
+                                .gpus
+                                .iter()
+                                .position(|g| g.name == gpu.name)
+                                .unwrap_or(0)
+                            && p.n_gen == Some(n_gen)
+                    })
+                    .map(|p| p.avg_tps)
+                    .unwrap_or(0.0);
+                body.push_str(&format!("  {}: {:.2}\n", n_gen, value));
+            }
+        }
+        frame.render_widget(
+            Paragraph::new(body).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Throughput Tables"),
+            ),
+            chunks[2],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("No LLaMA.cpp data available\n\nRun llama-cpp benchmark")
+                .alignment(Alignment::Left)
+                .block(
+                    Block::default()
+                        .title("LLaMA.cpp Performance")
                         .borders(Borders::ALL),
                 ),
             area,
@@ -1266,9 +1609,9 @@ fn render_vllm_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "T1".into(),
-                            format!("T{}", v.throughput_samples.len() / 2 + 1).into(),
-                            format!("T{}", v.throughput_samples.len()).into(),
+                            Line::from("T1"),
+                            Line::from(format!("T{}", v.throughput_samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", v.throughput_samples.len())),
                         ]),
                 )
                 .y_axis(
@@ -1277,9 +1620,9 @@ fn render_vllm_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1354,9 +1697,9 @@ fn render_deepspeed_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResult
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "T1".into(),
-                            format!("T{}", ds.samples.len() / 2 + 1).into(),
-                            format!("T{}", ds.samples.len()).into(),
+                            Line::from("T1"),
+                            Line::from(format!("T{}", ds.samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", ds.samples.len())),
                         ]),
                 )
                 .y_axis(
@@ -1365,9 +1708,9 @@ fn render_deepspeed_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResult
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1401,7 +1744,8 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
         if let Some(baseline) = &results.baseline {
             if let Some(b_meg) = &baseline.megatron {
                 if b_meg.throughput_samples_per_sec > 0.0 {
-                    let diff = ((meg.throughput_samples_per_sec - b_meg.throughput_samples_per_sec)
+                    let diff = ((meg.throughput_samples_per_sec
+                        - b_meg.throughput_samples_per_sec)
                         / b_meg.throughput_samples_per_sec)
                         * 100.0;
                     summary.push_str(&format!(
@@ -1442,9 +1786,9 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
                         .style(Style::default().fg(Color::Gray))
                         .bounds(x_bounds)
                         .labels(vec![
-                            "T1".into(),
-                            format!("T{}", meg.samples.len() / 2 + 1).into(),
-                            format!("T{}", meg.samples.len()).into(),
+                            Line::from("T1"),
+                            Line::from(format!("T{}", meg.samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", meg.samples.len())),
                         ]),
                 )
                 .y_axis(
@@ -1453,9 +1797,9 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
                         .style(Style::default().fg(Color::Gray))
                         .bounds([y0, y1])
                         .labels(vec![
-                            format!("{:.0}", y0).into(),
-                            format!("{:.0}", (y0 + y1) / 2.0).into(),
-                            format!("{:.0}", y1).into(),
+                            Line::from(format!("{:.0}", y0)),
+                            Line::from(format!("{:.0}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.0}", y1)),
                         ]),
                 ),
             chunks[1],
@@ -1467,6 +1811,115 @@ fn render_megatron_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults
                 .block(
                     Block::default()
                         .title("Megatron-LM Performance")
+                        .borders(Borders::ALL),
+                ),
+            area,
+        );
+    }
+}
+
+fn render_onnx_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
+    if let Some(onnx) = &results.onnx {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(6), Constraint::Min(7)])
+            .split(area);
+
+        let mut summary = format!(
+            "ORT {} | Provider: {} | Opt: {}\nThroughput: {:.1} inf/s | Latency p50: {:.2} ms p95: {:.2} ms p99: {:.2} ms",
+            onnx.ort_version,
+            onnx.provider,
+            onnx.graph_opt_level,
+            onnx.throughput_inf_per_sec,
+            onnx.inference_latency_p50_ms,
+            onnx.inference_latency_p95_ms,
+            onnx.inference_latency_p99_ms,
+        );
+
+        if onnx.quantized_supported {
+            summary.push_str(" | Quantized: supported");
+        }
+
+        if onnx.peak_rss_mb > 0.0 {
+            summary.push_str(&format!(" | Peak RSS: {:.0} MB", onnx.peak_rss_mb));
+        }
+
+        if let Some(baseline) = &results.baseline {
+            if let Some(b_onnx) = &baseline.onnx {
+                if b_onnx.throughput_inf_per_sec > 0.0 {
+                    let diff = ((onnx.throughput_inf_per_sec - b_onnx.throughput_inf_per_sec)
+                        / b_onnx.throughput_inf_per_sec)
+                        * 100.0;
+                    summary.push_str(&format!(
+                        "\nBaseline: {:.1} inf/s ({:+.1}%) | Session create: {:.1} ms",
+                        b_onnx.throughput_inf_per_sec, diff, onnx.session_create_ms,
+                    ));
+                }
+            }
+        }
+
+        if !onnx.providers_available.is_empty() {
+            summary.push_str(&format!(
+                "\nAvailable providers: {}",
+                onnx.providers_available.join(", ")
+            ));
+        }
+
+        frame.render_widget(
+            Paragraph::new(summary).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("ONNX Runtime Summary"),
+            ),
+            chunks[0],
+        );
+
+        let series = prepare_data(&onnx.inference_samples);
+        let mut datasets = Vec::new();
+        if !series.is_empty() {
+            datasets.push(series_dataset("ONNX Inference", &series, Color::LightGreen));
+        }
+        let (y0, y1) = y_bounds(&onnx.inference_samples);
+        let x_bounds = [0.0, (onnx.inference_samples.len().max(1) - 1) as f64];
+
+        frame.render_widget(
+            Chart::new(datasets)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("ONNX Inference Latency per Trial"),
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Benchmark Trial")
+                        .style(Style::default().fg(Color::Gray))
+                        .bounds(x_bounds)
+                        .labels(vec![
+                            Line::from("T1"),
+                            Line::from(format!("T{}", onnx.inference_samples.len() / 2 + 1)),
+                            Line::from(format!("T{}", onnx.inference_samples.len())),
+                        ]),
+                )
+                .y_axis(
+                    Axis::default()
+                        .title("ms")
+                        .style(Style::default().fg(Color::Gray))
+                        .bounds([y0, y1])
+                        .labels(vec![
+                            Line::from(format!("{:.2}", y0)),
+                            Line::from(format!("{:.2}", (y0 + y1) / 2.0)),
+                            Line::from(format!("{:.2}", y1)),
+                        ]),
+                ),
+            chunks[1],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("No ONNX Runtime data available\n\nRun ONNX Performance benchmark")
+                .alignment(Alignment::Left)
+                .block(
+                    Block::default()
+                        .title("ONNX Runtime Performance")
                         .borders(Borders::ALL),
                 ),
             area,
@@ -1506,8 +1959,13 @@ pub fn export_benchmark_report_html(
 ) -> Result<PathBuf, String> {
     let report_path = resolve_report_path(output_path)?;
     if let Some(parent) = report_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create report directory {}: {}", parent.display(), e))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "failed to create report directory {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
     }
 
     let generated_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1534,24 +1992,31 @@ pub fn export_benchmark_report_html(
             "tensor_fp16": results.tensor_core.as_ref().map(|t| t.fp16_samples.clone()).unwrap_or_default(),
             "pytorch_gemm": results.pytorch.as_ref().map(|p| p.gemm_samples.clone()).unwrap_or_default(),
             "pytorch_conv": results.pytorch.as_ref().map(|p| p.conv_samples.clone()).unwrap_or_default(),
+            "llama_cpp": results.llama_cpp.as_ref().map(|l| l.prefill.iter().map(|p| p.avg_tps).collect::<Vec<_>>()).unwrap_or_default(),
             "flash_standard": results.flash_attention.as_ref().map(|f| f.standard_samples.clone()).unwrap_or_default(),
             "flash_optimized": results.flash_attention.as_ref().map(|f| f.flash_samples.clone()).unwrap_or_default(),
             "vllm": results.vllm.as_ref().map(|v| v.throughput_samples.clone()).unwrap_or_default(),
             "deepspeed": results.deepspeed.as_ref().map(|d| d.samples.clone()).unwrap_or_default(),
-            "megatron": results.megatron.as_ref().map(|m| m.samples.clone()).unwrap_or_default()
+            "megatron": results.megatron.as_ref().map(|m| m.samples.clone()).unwrap_or_default(),
+            "onnx": results.onnx.as_ref().map(|o| o.inference_samples.clone()).unwrap_or_default()
         },
         "key_metrics": {
             "memory_hbm_peak": results.memory_bandwidth.as_ref().map(|m| m.hbm_peak_gb_s).unwrap_or(0.0),
             "tensor_fp16_tflops": results.tensor_core.as_ref().map(|t| t.fp16_tflops).unwrap_or(0.0),
             "pytorch_gemm_gflops": results.pytorch.as_ref().map(|p| p.gemm_gflops).unwrap_or(0.0),
+            "llama_cpp_model": results.llama_cpp.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
             "flash_speedup": results.flash_attention.as_ref().map(|f| f.speedup).unwrap_or(0.0),
             "vllm_tps": results.vllm.as_ref().map(|v| v.throughput_tokens_per_sec).unwrap_or(0.0),
             "deepspeed_sps": results.deepspeed.as_ref().map(|d| d.throughput_samples_per_sec).unwrap_or(0.0),
-            "megatron_sps": results.megatron.as_ref().map(|m| m.throughput_samples_per_sec).unwrap_or(0.0)
+            "megatron_sps": results.megatron.as_ref().map(|m| m.throughput_samples_per_sec).unwrap_or(0.0),
+            "onnx_inf_s": results.onnx.as_ref().map(|o| o.throughput_inf_per_sec).unwrap_or(0.0),
+            "onnx_p50_ms": results.onnx.as_ref().map(|o| o.inference_latency_p50_ms).unwrap_or(0.0),
+            "onnx_provider": results.onnx.as_ref().map(|o| o.provider.clone()).unwrap_or_default(),
+            "onnx_ort_version": results.onnx.as_ref().map(|o| o.ort_version.clone()).unwrap_or_default()
         }
     });
-    let report_json =
-        serde_json::to_string_pretty(&report_data).map_err(|e| format!("json serialization failed: {}", e))?;
+    let report_json = serde_json::to_string_pretty(&report_data)
+        .map_err(|e| format!("json serialization failed: {}", e))?;
 
     let html = format!(
         r###"<!doctype html>
@@ -1763,10 +2228,12 @@ pub fn export_benchmark_report_html(
         <div class="plot"><h3>Memory Bandwidth</h3><canvas id="chartMemory"></canvas></div>
         <div class="plot"><h3>Tensor Core FP16</h3><canvas id="chartTensor"></canvas></div>
         <div class="plot"><h3>PyTorch (GEMM/Conv)</h3><canvas id="chartPytorch"></canvas></div>
+        <div class="plot"><h3>LLaMA.cpp Prefill</h3><canvas id="chartLlamaCpp"></canvas></div>
         <div class="plot"><h3>Flash Attention</h3><canvas id="chartFlash"></canvas></div>
         <div class="plot"><h3>vLLM Throughput</h3><canvas id="chartVllm"></canvas></div>
         <div class="plot"><h3>DeepSpeed Throughput</h3><canvas id="chartDeepspeed"></canvas></div>
         <div class="plot"><h3>Megatron Throughput</h3><canvas id="chartMegatron"></canvas></div>
+        <div class="plot"><h3>ONNX Inference Latency</h3><canvas id="chartOnnx"></canvas></div>
       </div>
     </div>
 
@@ -1784,10 +2251,12 @@ pub fn export_benchmark_report_html(
       ["HBM Peak (GB/s)", reportData.key_metrics.memory_hbm_peak],
       ["FP16 TFLOPS", reportData.key_metrics.tensor_fp16_tflops],
       ["PyTorch GEMM (GFLOPS)", reportData.key_metrics.pytorch_gemm_gflops],
+      ["LLaMA.cpp Model", reportData.key_metrics.llama_cpp_model],
       ["Flash Speedup (x)", reportData.key_metrics.flash_speedup],
       ["vLLM tok/s", reportData.key_metrics.vllm_tps],
       ["DeepSpeed samp/s", reportData.key_metrics.deepspeed_sps],
-      ["Megatron samp/s", reportData.key_metrics.megatron_sps]
+      ["Megatron samp/s", reportData.key_metrics.megatron_sps],
+      ["ONNX inf/s", reportData.key_metrics.onnx_inf_s]
     ];
     const metricCards = document.getElementById("metricCards");
     cards.forEach((entry, idx) => {{
@@ -1954,6 +2423,9 @@ pub fn export_benchmark_report_html(
       {{name: "GEMM", color: "#3ddc84", values: reportData.charts.pytorch_gemm}},
       {{name: "Conv", color: "#ffa24d", values: reportData.charts.pytorch_conv}}
     ]);
+    drawMultiLine("chartLlamaCpp", [
+      {{name: "LLaMA.cpp", color: "#74a7ff", values: reportData.charts.llama_cpp}}
+    ]);
     drawMultiLine("chartFlash", [
       {{name: "Standard", color: "#8a99b6", values: reportData.charts.flash_standard}},
       {{name: "Optimized", color: "#27d7c6", values: reportData.charts.flash_optimized}}
@@ -1961,6 +2433,7 @@ pub fn export_benchmark_report_html(
     drawMultiLine("chartVllm", [{{name: "vLLM", color: "#74a7ff", values: reportData.charts.vllm}}]);
     drawMultiLine("chartDeepspeed", [{{name: "DeepSpeed", color: "#ffd166", values: reportData.charts.deepspeed}}]);
     drawMultiLine("chartMegatron", [{{name: "Megatron", color: "#ff8fab", values: reportData.charts.megatron}}]);
+    drawMultiLine("chartOnnx", [{{name: "ONNX Inference", color: "#90ee90", values: reportData.charts.onnx}}]);
   </script>
 </body>
 </html>"###
@@ -2025,6 +2498,14 @@ fn build_summary_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
             "detail": format!("Conv {:.2} GFLOPS, autograd overhead {:.2}%", p.convolution_gflops, p.autograd_overhead_percent)
         }));
     }
+    if let Some(l) = &results.llama_cpp {
+        rows.push(serde_json::json!({
+            "component": "LLaMA.cpp",
+            "status": "ok",
+            "metric": format!("{} GPUs", l.gpus.len()),
+            "detail": format!("Model {} | ROCm {}", l.model, l.rocm_version)
+        }));
+    }
     if let Some(f) = &results.flash_attention {
         rows.push(serde_json::json!({
             "component": "Flash Attention",
@@ -2057,6 +2538,14 @@ fn build_summary_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
             "detail": format!("backend {}, latency {:.2} ms", m.backend, m.avg_latency_ms)
         }));
     }
+    if let Some(o) = &results.onnx {
+        rows.push(serde_json::json!({
+            "component": "ONNX Runtime",
+            "status": if o.throughput_inf_per_sec > 0.0 { "ok" } else { "degraded" },
+            "metric": format!("{:.2} inf/s", o.throughput_inf_per_sec),
+            "detail": format!("{} v{}, provider {}, latency p50 {:.2} ms p95 {:.2} ms p99 {:.2} ms", o.ort_version, "", o.provider, o.inference_latency_p50_ms, o.inference_latency_p95_ms, o.inference_latency_p99_ms)
+        }));
+    }
 
     rows
 }
@@ -2079,6 +2568,10 @@ fn build_metric_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
         rows.push(serde_json::json!({"component":"PyTorch","metric":"Convolution","value":p.convolution_gflops,"unit":"GFLOPS"}));
         rows.push(serde_json::json!({"component":"PyTorch","metric":"Autograd Overhead","value":p.autograd_overhead_percent,"unit":"%"}));
     }
+    if let Some(l) = &results.llama_cpp {
+        rows.push(serde_json::json!({"component":"LLaMA.cpp","metric":"Prefill Tokens/s","value":l.prefill.iter().map(|p| p.avg_tps).sum::<f64>(),"unit":"t/s"}));
+        rows.push(serde_json::json!({"component":"LLaMA.cpp","metric":"Decode Tokens/s","value":l.decode.iter().map(|p| p.avg_tps).sum::<f64>(),"unit":"t/s"}));
+    }
     if let Some(f) = &results.flash_attention {
         rows.push(serde_json::json!({"component":"Flash Attention","metric":"Standard","value":f.standard_attention_speed,"unit":"tok/s"}));
         rows.push(serde_json::json!({"component":"Flash Attention","metric":"Flash","value":f.flash_attention_speed,"unit":"tok/s"}));
@@ -2096,6 +2589,14 @@ fn build_metric_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
         rows.push(serde_json::json!({"component":"Megatron","metric":"Throughput","value":m.throughput_samples_per_sec,"unit":"samples/s"}));
         rows.push(serde_json::json!({"component":"Megatron","metric":"Latency","value":m.avg_latency_ms,"unit":"ms"}));
     }
+    if let Some(o) = &results.onnx {
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Throughput","value":o.throughput_inf_per_sec,"unit":"inf/s"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Latency p50","value":o.inference_latency_p50_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Latency p95","value":o.inference_latency_p95_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Latency p99","value":o.inference_latency_p99_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Session Create","value":o.session_create_ms,"unit":"ms"}));
+        rows.push(serde_json::json!({"component":"ONNX","metric":"Peak RSS","value":o.peak_rss_mb,"unit":"MB"}));
+    }
 
     rows
 }
@@ -2104,7 +2605,9 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     let mut rows = Vec::new();
 
     if let Some(m) = &results.memory_bandwidth {
-        rows.push(serde_json::json!({"benchmark":"Memory","series":"HBM GB/s","samples":m.hbm_samples}));
+        rows.push(
+            serde_json::json!({"benchmark":"Memory","series":"HBM GB/s","samples":m.hbm_samples}),
+        );
         rows.push(serde_json::json!({"benchmark":"Memory","series":"System GB/s","samples":m.system_samples}));
     }
     if let Some(t) = &results.tensor_core {
@@ -2113,6 +2616,10 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     if let Some(p) = &results.pytorch {
         rows.push(serde_json::json!({"benchmark":"PyTorch","series":"GEMM GFLOPS","samples":p.gemm_samples}));
         rows.push(serde_json::json!({"benchmark":"PyTorch","series":"Conv GFLOPS","samples":p.conv_samples}));
+    }
+    if let Some(l) = &results.llama_cpp {
+        rows.push(serde_json::json!({"benchmark":"LLaMA.cpp","series":"Prefill t/s","samples":l.prefill.iter().map(|p| p.avg_tps).collect::<Vec<_>>()}));
+        rows.push(serde_json::json!({"benchmark":"LLaMA.cpp","series":"Decode t/s","samples":l.decode.iter().map(|p| p.avg_tps).collect::<Vec<_>>()}));
     }
     if let Some(f) = &results.flash_attention {
         rows.push(serde_json::json!({"benchmark":"Flash Attention","series":"Standard tok/s","samples":f.standard_samples}));
@@ -2126,6 +2633,9 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     }
     if let Some(m) = &results.megatron {
         rows.push(serde_json::json!({"benchmark":"Megatron","series":"Throughput samples/s","samples":m.samples}));
+    }
+    if let Some(o) = &results.onnx {
+        rows.push(serde_json::json!({"benchmark":"ONNX","series":"Inference latency ms","samples":o.inference_samples}));
     }
 
     rows

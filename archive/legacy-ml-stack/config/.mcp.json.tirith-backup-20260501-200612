@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "tirith": {
+      "args": [
+        "mcp-server"
+      ],
+      "command": "tirith"
+    }
+  }
+}

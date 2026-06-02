@@ -2,8 +2,13 @@ use crate::component_status::{is_component_installed, python_interpreters};
 use crate::config::InstallerConfig;
 use crate::hardware::{detect_hardware, run_preflight_checks};
 use crate::installer::{run_installation, InstallerEvent};
+use crate::installers::components::llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
 use crate::state::{
     default_components, Category, Component, HardwareState, InstallStatus, PreflightResult, Stage,
+};
+use crate::telemetry::opt_in::{
+    OptInGate, TELEMETRY_DESCRIPTION, TELEMETRY_DISABLE_LABEL, TELEMETRY_ENABLE_LABEL,
+    TELEMETRY_PRIVACY_NOTE, TELEMETRY_STATUS_DISABLED, TELEMETRY_STATUS_ENABLED,
 };
 use crate::widgets::benchmarks_page::{
     export_benchmark_report_html, load_benchmark_results, render_benchmark_page,
@@ -114,6 +119,9 @@ pub struct App {
     pub summary_scroll: u16,
     pub benchmark_tab_index: usize,
     benchmark_notice: Option<UiNotice>,
+    telemetry_gate: Option<OptInGate>,
+    telemetry_prompt_pending: bool,
+    telemetry_prompt_active: bool,
     install_log_popup: bool,
     install_log_scroll: usize,
     install_log_file_path: Option<String>,
@@ -162,6 +170,9 @@ impl App {
             summary_scroll: 0,
             benchmark_tab_index: 0,
             benchmark_notice: None,
+            telemetry_gate: OptInGate::new().ok(),
+            telemetry_prompt_pending: false,
+            telemetry_prompt_active: false,
             install_log_popup: false,
             install_log_scroll: 0,
             install_log_file_path: None,
@@ -205,24 +216,20 @@ impl App {
                     self.stage = Stage::Recovery;
                     self.errors.push("User quit".into());
                 }
-                KeyCode::Char(c) => {
-                    if self.entering_password {
-                        if c == '\n' || c == '\r' {
-                            return;
-                        }
-                        self.password_input.push(c);
+                KeyCode::Char(c) if self.entering_password => {
+                    if c == '\n' || c == '\r' {
+                        return;
                     }
+                    self.password_input.push(c);
                 }
-                KeyCode::Backspace => {
-                    if self.entering_password {
-                        self.password_input.pop();
-                    }
+                KeyCode::Char(_) => {}
+                KeyCode::Backspace if self.entering_password => {
+                    self.password_input.pop();
                 }
-                KeyCode::Tab => {
-                    if self.entering_password {
-                        self.sudo_password = Some(self.password_input.clone());
-                        self.entering_password = false;
-                    }
+                KeyCode::Backspace => {}
+                KeyCode::Tab if self.entering_password => {
+                    self.sudo_password = Some(self.password_input.clone());
+                    self.entering_password = false;
                 }
                 _ => {}
             },
@@ -324,22 +331,90 @@ impl App {
                         InputMode::Raw => InputMode::Line,
                     };
                 }
-                KeyCode::Backspace => {
-                    if !self.install_log_popup {
-                        self.install_input_buffer.pop();
-                    }
+                KeyCode::Backspace if !self.install_log_popup => {
+                    self.install_input_buffer.pop();
                 }
-                KeyCode::Enter => {
-                    if !self.install_log_popup {
-                        self.flush_install_input();
-                    }
-                }
-                KeyCode::Char(c) => {
-                    if !self.install_log_popup && !key.modifiers.contains(KeyModifiers::CONTROL) {
-                        self.install_input_buffer.push(c);
-                        if self.install_input_mode == InputMode::Raw {
-                            self.send_install_input(c.to_string());
+                KeyCode::Backspace => {}
+                KeyCode::Enter if !self.install_log_popup => {
+                    if self.telemetry_prompt_active {
+                        if let Some(gate) = self.telemetry_gate.as_ref() {
+                            if gate.is_enabled() {
+                                let gpu = self.hardware.gpu.clone();
+                                let report = crate::installers::common::BuildReport::from_hardware(
+                                    &gpu,
+                                    std::env::consts::OS.to_string(),
+                                    std::env::var("ID").unwrap_or_else(|_| "unknown".to_string()),
+                                    std::time::Duration::from_secs(
+                                        self.install_status.progress as u64,
+                                    ),
+                                    "unknown",
+                                    self.config.install_path.clone(),
+                                    vec![],
+                                    self.config.install_path.clone(),
+                                    "unknown",
+                                    false,
+                                );
+                                crate::installers::common::submit_build_report(report);
+                            }
                         }
+                        self.telemetry_prompt_pending = false;
+                        self.telemetry_prompt_active = false;
+                        self.stage = Stage::Benchmarks;
+                        return;
+                    }
+                    self.flush_install_input();
+                }
+                KeyCode::Enter => {}
+                KeyCode::Char(c)
+                    if !self.install_log_popup
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if self.telemetry_prompt_active {
+                        match c {
+                            'y' | 'Y' => {
+                                if let Some(gate) = self.telemetry_gate.as_ref() {
+                                    if gate.is_enabled() {
+                                        let gpu = self.hardware.gpu.clone();
+                                        let report =
+                                            crate::installers::common::BuildReport::from_hardware(
+                                                &gpu,
+                                                std::env::consts::OS.to_string(),
+                                                std::env::var("ID")
+                                                    .unwrap_or_else(|_| "unknown".to_string()),
+                                                std::time::Duration::from_secs(
+                                                    self.install_status.progress as u64,
+                                                ),
+                                                "unknown",
+                                                self.config.install_path.clone(),
+                                                vec![],
+                                                self.config.install_path.clone(),
+                                                "unknown",
+                                                false,
+                                            );
+                                        crate::installers::common::submit_build_report(report);
+                                    }
+                                }
+                                self.telemetry_prompt_pending = false;
+                                self.telemetry_prompt_active = false;
+                                self.stage = Stage::Benchmarks;
+                            }
+                            'n' | 'N' => {
+                                self.telemetry_prompt_pending = false;
+                                self.telemetry_prompt_active = false;
+                                self.stage = Stage::Benchmarks;
+                            }
+                            _ => {
+                                self.install_input_buffer.push(c);
+                                if self.install_input_mode == InputMode::Raw {
+                                    self.send_install_input(c.to_string());
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    self.install_input_buffer.push(c);
+                    if self.install_input_mode == InputMode::Raw {
+                        self.send_install_input(c.to_string());
                     }
                 }
                 _ => {}
@@ -365,16 +440,14 @@ impl App {
                 _ => {}
             },
             Stage::Benchmarks => match key.code {
-                KeyCode::Left => {
-                    if self.benchmark_tab_index > 0 {
-                        self.benchmark_tab_index -= 1;
-                    }
+                KeyCode::Left if self.benchmark_tab_index > 0 => {
+                    self.benchmark_tab_index -= 1;
                 }
-                KeyCode::Right => {
-                    if self.benchmark_tab_index < 7 {
-                        self.benchmark_tab_index += 1;
-                    }
+                KeyCode::Left => {}
+                KeyCode::Right if self.benchmark_tab_index < 9 => {
+                    self.benchmark_tab_index += 1;
                 }
+                KeyCode::Right => {}
                 KeyCode::Char('e') | KeyCode::Char('E') => self.export_benchmark_report(),
                 KeyCode::Esc | KeyCode::Char('q') => self.stage = Stage::Complete,
                 _ => {}
@@ -400,7 +473,7 @@ impl App {
                 ]
                 .as_ref(),
             )
-            .split(frame.size());
+            .split(frame.area());
 
         let spinner = self.spinner();
         let title_lines = vec![
@@ -907,12 +980,10 @@ impl App {
                         .fg(Color::Cyan)
                         .bg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD)
+                } else if comp.installed {
+                    Style::default().fg(Color::Green)
                 } else {
-                    if comp.installed {
-                        Style::default().fg(Color::Green)
-                    } else {
-                        Style::default()
-                    }
+                    Style::default()
                 };
                 ListItem::new(Line::from(Span::styled(line, style)))
             })
@@ -977,6 +1048,9 @@ impl App {
                 Category::Performance => {
                     if comp.installed {
                         ("Benchmarked", Color::Green, "✓")
+                    } else if comp.progress > 0.0 {
+                        // Was attempted but failed
+                        ("Failed", Color::Red, "✗")
                     } else {
                         ("Pending benchmark", Color::Yellow, "○")
                     }
@@ -1214,7 +1288,16 @@ impl App {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(5)].as_ref())
+            .constraints(
+                [
+                    Constraint::Length(3), // [0] progress gauge
+                    Constraint::Length(2), // [1] install path
+                    Constraint::Length(6), // [2] install details
+                    Constraint::Min(5),    // [3] stage title / telemetry prompt
+                    Constraint::Min(10),   // [4] body (log + sidebar)
+                ]
+                .as_ref(),
+            )
             .split(area);
 
         let clean_msg = self.install_status.message.trim_start_matches(|c: char| {
@@ -1252,10 +1335,68 @@ impl App {
             .label(label);
         frame.render_widget(gauge, chunks[0]);
 
+        let install_path_text = Paragraph::new(Line::from(format!(
+            "Install Path: {}",
+            self.config.install_path
+        )))
+        .block(Block::default().borders(Borders::ALL).title("Target"));
+        frame.render_widget(install_path_text, chunks[1]);
+
+        let install_details = vec![
+            Line::from(format!(
+                "Target binary: {}/bin/llama-cli",
+                self.config.install_path
+            )),
+            Line::from(format!("Install prefix: {}", self.config.install_path)),
+        ];
+        let install_details_panel = Paragraph::new(Text::from(install_details)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Install Location"),
+        );
+        frame.render_widget(install_details_panel, chunks[2]);
+
+        let stage_title = self.install_stage_title();
+        let stage_title_area = if self.telemetry_prompt_pending {
+            let prompt = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(2)].as_ref())
+                .split(chunks[3]);
+            let stage_panel = Paragraph::new(stage_title)
+                .block(Block::default().borders(Borders::ALL).title("llama.cpp"));
+            frame.render_widget(stage_panel, prompt[1]);
+            Some(prompt[0])
+        } else {
+            let stage_panel = Paragraph::new(stage_title)
+                .block(Block::default().borders(Borders::ALL).title("llama.cpp"));
+            frame.render_widget(stage_panel, chunks[3]);
+            None
+        };
+
+        if let Some(prompt_area) = stage_title_area {
+            let prompt_text = Paragraph::new(Text::from(vec![
+                Line::from(Span::styled(
+                    "Share anonymized build data to help validate future releases? [Y/n]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from("Y/y/Enter submits build data • n/N skips silently"),
+                Line::from("This prompt is part of the install flow."),
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Telemetry Opt-In"),
+            )
+            .wrap(Wrap { trim: true });
+            frame.render_widget(prompt_text, prompt_area);
+        }
+
         let body = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
-            .split(chunks[1]);
+            .split(chunks[4]);
 
         let log_height = body[0].height.saturating_sub(2) as usize;
         let log_items: Vec<ListItem> = if self.logs.is_empty() {
@@ -1546,6 +1687,19 @@ impl App {
         let (env, verification) = self.partition_categories();
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
+            "llama.cpp Turbo Quant",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from("Experimental tier • o"));
+        if let Some(summary) = self.llama_completion_summary() {
+            for line in summary {
+                lines.push(line);
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
             "Environment:",
             Style::default()
                 .fg(Color::Blue)
@@ -1689,6 +1843,39 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
+    fn llama_completion_summary(&self) -> Option<Vec<Line<'_>>> {
+        let comp = self.components.iter().find(|c| c.id == "llama-cpp")?;
+        if !comp.installed {
+            return None;
+        }
+        Some(vec![
+            Line::from(format!("Version: {}", self.llama_version_label())),
+            Line::from(format!("Path: {}", self.config.install_path)),
+            Line::from(format!("GPU Arch: {}", self.hardware.gpu.architecture)),
+            Line::from(format!("Install Type: {}", self.llama_install_type_label())),
+        ])
+    }
+
+    fn llama_version_label(&self) -> String {
+        self.verification_reports
+            .get("llama-cpp")
+            .and_then(|lines| lines.iter().find(|line| line.contains("version")))
+            .cloned()
+            .unwrap_or_else(|| "installed".into())
+    }
+
+    fn llama_install_type_label(&self) -> &'static str {
+        if self
+            .logs
+            .iter()
+            .any(|line| line.contains("prebuilt") || line.contains("download"))
+        {
+            "pre-built"
+        } else {
+            "source"
+        }
+    }
+
     fn draw_benchmarks(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let results = load_benchmark_results();
         render_benchmark_page(frame, area, &results, self.benchmark_tab_index);
@@ -1699,8 +1886,7 @@ impl App {
         match export_benchmark_report_html(&results, None) {
             Ok(path) => {
                 let msg = format!("Benchmark HTML report exported: {}", path.display());
-                self.logs
-                    .push(msg.clone());
+                self.logs.push(msg.clone());
                 self.benchmark_notice = Some(UiNotice {
                     message: msg,
                     color: Color::Green,
@@ -1709,8 +1895,7 @@ impl App {
             }
             Err(err) => {
                 let msg = format!("Failed to export benchmark HTML report: {}", err);
-                self.errors
-                    .push(msg.clone());
+                self.errors.push(msg.clone());
                 self.benchmark_notice = Some(UiNotice {
                     message: msg,
                     color: Color::Red,
@@ -1725,7 +1910,7 @@ impl App {
             return;
         };
 
-        let width = area.width.saturating_sub(4).min(110).max(20);
+        let width = area.width.saturating_sub(4).clamp(20, 110);
         let height = 5u16;
         let x = area.x + area.width.saturating_sub(width) / 2;
         let y = area.y + 1;
@@ -1927,7 +2112,10 @@ impl App {
                 Line::from("Persist current settings to config.json."),
                 Line::from("Dirty=yes means there are unsaved changes."),
             ],
-            _ => vec![Line::from("Select a setting for details.")],
+            _ => vec![
+                Line::from("Select a setting for details."),
+                Line::from(TELEMETRY_PRIVACY_NOTE),
+            ],
         }
     }
 
@@ -2182,10 +2370,16 @@ impl App {
                     self.push_log_ext(message, true);
                 }
                 InstallerEvent::ComponentStart { component_id, name } => {
-                    self.install_status.message = format!("Installing {}", name);
                     if let Some(comp) = self.components.iter_mut().find(|c| c.id == component_id) {
+                        self.install_status.message = if comp.category == Category::Performance {
+                            format!("Running {}", name)
+                        } else {
+                            format!("Installing {}", name)
+                        };
                         comp.progress = 0.05;
                         comp.installed = false;
+                    } else {
+                        self.install_status.message = format!("Installing {}", name);
                     }
                     self.recalculate_overall_progress();
                     self.push_log(self.install_status.message.clone());
@@ -2221,7 +2415,15 @@ impl App {
                     self.install_input_buffer.clear();
                     self.recalculate_overall_progress();
                     self.install_status.progress = 1.0;
-                    self.stage = Stage::Benchmarks;
+                    if success {
+                        // Stay in Installing to present the telemetry opt-in prompt.
+                        // The prompt is rendered by draw_installing() and resolved in
+                        // handle_key() (Y/n/Enter) which transitions to Benchmarks.
+                        self.telemetry_prompt_pending = true;
+                        self.telemetry_prompt_active = true;
+                    } else {
+                        self.stage = Stage::Complete;
+                    }
                 }
             }
         }
@@ -2324,7 +2526,12 @@ impl App {
             }
 
             if comp.category != Category::Verification {
-                lines.push(self.task_line("Install", self.install_task_status(comp)));
+                let task_label = if comp.category == Category::Performance {
+                    "Benchmark"
+                } else {
+                    "Install"
+                };
+                lines.push(self.task_line(task_label, self.install_task_status(comp)));
                 remaining = remaining.saturating_sub(1);
             }
 
@@ -2342,6 +2549,62 @@ impl App {
         }
 
         lines
+    }
+
+    fn install_stage_title(&self) -> Text<'_> {
+        let lines = match self.install_status.message.as_str() {
+            m if m.contains("download") => vec![
+                Line::from("Pre-built download in progress"),
+                Line::from("Progress is tied to download completion."),
+            ],
+            m if m.contains("configure") => vec![
+                Line::from("Source build stage: configure"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+            m if m.contains("compile") => vec![
+                Line::from("Source build stage: compile"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+            m if m.contains("link") => vec![
+                Line::from("Source build stage: link"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+            _ => vec![
+                Line::from("Installing llama.cpp Turbo Quant"),
+                Line::from(self.llama_build_flags_line()),
+            ],
+        };
+        let mut lines = lines;
+        lines.push(Line::from(""));
+        lines.push(Line::from(self.telemetry_inline_prompt()));
+        Text::from(lines)
+    }
+
+    fn llama_build_flags_line(&self) -> String {
+        let config = LlamaCppConfig {
+            gpu_arch: self.hardware.gpu.architecture.clone(),
+            ..Default::default()
+        };
+        let flags = LlamaCppInstaller::new(config).cmake_flags().join(" ");
+        format!("Build flags: {}", flags)
+    }
+
+    fn telemetry_inline_prompt(&self) -> String {
+        let status = self
+            .telemetry_gate
+            .as_ref()
+            .map(|gate| {
+                if gate.is_enabled() {
+                    TELEMETRY_STATUS_ENABLED
+                } else {
+                    TELEMETRY_STATUS_DISABLED
+                }
+            })
+            .unwrap_or(TELEMETRY_STATUS_DISABLED);
+        format!(
+            "{} | {} / {} | {}",
+            TELEMETRY_DESCRIPTION, TELEMETRY_ENABLE_LABEL, TELEMETRY_DISABLE_LABEL, status
+        )
     }
 
     fn task_line(&self, label: &str, status: TaskStatus) -> Line<'_> {
@@ -2409,12 +2672,16 @@ impl App {
 
     fn refresh_component_statuses(&mut self) {
         let python_candidates = python_interpreters();
+        let force_reinstall = self.config.force_reinstall;
         for component in &mut self.components {
             if component.category == Category::Verification {
                 continue;
             }
             component.installed = is_component_installed(component, &python_candidates);
-            if component.installed {
+            if component.installed && !force_reinstall {
+                // Only auto-deselect when force reinstall is OFF.
+                // When force reinstall is ON, keep installed components selected
+                // so the installer will properly purge and reinstall them.
                 component.selected = false;
             }
         }
@@ -2556,13 +2823,26 @@ impl App {
 
         if let Ok(contents) = std::fs::read_to_string(&path) {
             for line in contents.lines() {
-                if let Some(rest) = line.strip_prefix("export ") {
-                    let mut parts = rest.splitn(2, '=');
-                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                        entries.push((
-                            key.trim().to_string(),
-                            value.trim().trim_matches('"').to_string(),
-                        ));
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                // Handle both direct exports and if-guarded exports
+                if let Some(export_idx) = trimmed.rfind("export ") {
+                    let rest = &trimmed[export_idx + 7..]; // skip "export "
+                    if let Some((key, value)) = rest.split_once('=') {
+                        let key = key.trim();
+                        if key.is_empty() || key.contains(' ') || key.contains('$') {
+                            continue;
+                        }
+                        let value = value.trim();
+                        // Strip shell suffixes (; fi, &&, etc.) from value
+                        let value = Self::strip_shell_value(value);
+                        let value = value
+                            .strip_prefix('"')
+                            .and_then(|v| v.strip_suffix('"'))
+                            .unwrap_or(&value);
+                        entries.push((key.to_string(), value.to_string()));
                     }
                 }
             }
@@ -2589,6 +2869,26 @@ impl App {
             }
         }
         filtered
+    }
+
+    /// Strip shell command suffixes from an env file value.
+    ///
+    /// The `.mlstack_env` file generated by `env_setup.rs` uses if-guard patterns:
+    /// `if [ -z "${VAR:-}" ]; then export VAR=value; fi`
+    ///
+    /// When parsing the `export VAR=value` part from inside the if-guard,
+    /// the value may contain the trailing `; fi`. This function strips it.
+    fn strip_shell_value(value: &str) -> String {
+        let mut v = value.to_string();
+        // Strip trailing "; fi" (from if-guard lines)
+        if let Some(idx) = v.find("; fi") {
+            v.truncate(idx);
+        }
+        // Strip trailing "&& ..." (from chained commands)
+        if let Some(idx) = v.find("&& ") {
+            v.truncate(idx);
+        }
+        v.trim().to_string()
     }
 
     fn verification_report_lines(&self) -> Vec<Line<'_>> {

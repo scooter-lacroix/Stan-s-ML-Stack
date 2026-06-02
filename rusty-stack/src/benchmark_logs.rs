@@ -63,7 +63,7 @@ pub fn collect_matching_logs(log_dirs: &[PathBuf], patterns: &[&str]) -> Vec<Pat
         }
     }
 
-    matches.sort_by(|a, b| file_modified(a).cmp(&file_modified(b)));
+    matches.sort_by_key(file_modified);
     matches
 }
 
@@ -117,8 +117,7 @@ pub fn extract_benchmark_json_value(contents: &str) -> Option<serde_json::Value>
 
 /// Extract benchmark JSON as a normalized string.
 pub fn extract_benchmark_json_string(contents: &str) -> Option<String> {
-    extract_benchmark_json_value(contents)
-        .and_then(|value| serde_json::to_string(&value).ok())
+    extract_benchmark_json_value(contents).and_then(|value| serde_json::to_string(&value).ok())
 }
 
 fn marker_is_line_start(contents: &str, marker_idx: usize) -> bool {

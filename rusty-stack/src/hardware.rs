@@ -27,7 +27,11 @@ pub fn detect_hardware() -> Result<HardwareState> {
             state.system.distribution = dist;
         }
     }
-    state.system.cpu_model = sys.global_cpu_info().brand().to_string();
+    state.system.cpu_model = sys
+        .cpus()
+        .first()
+        .map(|c| c.brand().to_string())
+        .unwrap_or_default();
     if state.system.cpu_model.trim().is_empty() {
         if let Some(model) = read_cpu_model_name() {
             state.system.cpu_model = model;
@@ -115,7 +119,10 @@ pub fn run_preflight_checks(
 }
 
 fn check_root_privileges(sudo_password: Option<&str>) -> PreflightCheck {
+    #[cfg(feature = "unix-deps")]
     let is_root = unsafe { libc::geteuid() == 0 };
+    #[cfg(not(feature = "unix-deps"))]
+    let is_root = false;
 
     if is_root {
         return PreflightCheck {
@@ -961,8 +968,7 @@ fn detect_gpu() -> GPUInfo {
                     if let Some(name_value) = trimmed.strip_prefix("Name:") {
                         let name_value = name_value.trim();
                         // Only accept pure gfx architectures (e.g., "gfx1100", "gfx1030")
-                        if name_value.starts_with("gfx") {
-                            let after_gfx = &name_value[3..];
+                        if let Some(after_gfx) = name_value.strip_prefix("gfx") {
                             let gfx_num: String = after_gfx
                                 .chars()
                                 .take_while(|c| c.is_ascii_digit())

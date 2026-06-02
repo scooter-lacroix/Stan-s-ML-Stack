@@ -131,15 +131,47 @@ target/
 # For example: config.local.json
 
 # Explicitly track these directories even if they match ignore patterns
-!assets/
 !docs/
 !scripts/
-!core/
-!extensions/
-!benchmarks/
-!tutorials/
-!troubleshooting/
-!reference/
+
+# Legacy venvs (root-owned, cannot move)
+wandb_venv/
 
 # Maestro developer files (local only, not pushed to remote)
 maestro/
+.nexus/
+
+# Temp directories
+.tmp/
+.tmp-*/
+__pycache__/
+
+# Archived docs (kept locally, removed from remote)
+docs/Architectural_Decisions_and_Technical_Debt.md
+docs/BENCHMARK_INFRASTRUCTURE_PLAN.md
+docs/BENCHMARK_TASKS.md
+docs/ENTERPRISE_DEPLOYMENT_GUIDE.md
+docs/INSTALLER_STATUS.md
+docs/PR_ROCM_STABILIZATION_2026-02.md
+docs/RUST_PORT_GUIDE.md
+docs/UI_Architectural_Analysis_Report.md
+docs/UI_Migration_Documentation.md
+docs/UI_Rebuild_Final_Recommendations.md
+docs/phase-tzar-review.md
+docs/phase-tzar-review-final.md
+docs/phase-tzar-review-final.md.bak
+docs/ml_stack_master_guide.md
+docs/ml_stack_master_guide_outline.md
+docs/ml_stack_master_guide_part1.md
+docs/ml_stack_master_guide_part2.md
+docs/ml_stack_master_guide_part3.md
+docs/ml_stack_master_guide_part4.md
+docs/ml_stack_master_guide_part5.md
+docs/ml_stack_master_guide_part6.md
+docs/ml_stack_master_guide_part7.md
+docs/ml_stack_master_guide_part8.md
+
+# Archived scripts (kept locally, removed from remote)
+setup.py
+scripts/build_fastvideo_rocm.sh
+scripts/check-deps.sh

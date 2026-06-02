@@ -1,0 +1,89 @@
+ROCm Force Reinstall Fix — Implementation Summary
+==================================================
+
+## Problem
+ROCm force reinstall on Arch was broken because:
+1. `yay -S --needed --noconfirm` skips already-installed packages — `--needed` contradicts `force_reinstall`
+2. No uninstall step existed before reinstalling ROCm packages
+3. No reboot mechanism for kernel module changes (amdgpu, kfd)
+4. Non-ROCm components used `Config::default()` with `force_reinstall: false` — env var never read
+5. CLI only set `MLSTACK_FORCE_REINSTALL` (missing `FORCE` and `PYTORCH_REINSTALL`)
+
+## Changes Made
+
+### Fix 1: Added `is_force_reinstall()` helper function (src/installer.rs, line ~2464)
+- Centralized env var reading into a single helper function
+- Reads `MLSTACK_FORCE_REINSTALL` first, falls back to `FORCE`
+- Recognizes: 1, true, yes, on (case-insensitive)
+- Replaced ALL 3 inline `std::env::var("MLSTACK_FORCE_REINSTALL")` blocks with this helper
+- No remaining inline env var reads in the file
+
+### Fix 2: Removed `--needed` when force_reinstall is true (ROCm Arch dispatch, line ~2640)
+- Normal installs: `yay -S --needed --noconfirm` (skips installed packages)
+- Force reinstalls: `yay -S --noconfirm` (reinstalls everything)
+
+### Fix 3: Added uninstall step before ROCm reinstall (line ~2616)
+- When force_reinstall is true, runs `sudo pacman -Rns --noconfirm <packages>` before installing
+- Non-fatal: some packages may not be installed, errors are ignored
+- Logs the action for visibility
+
+### Fix 4: Added reboot-required marker file
+- After ROCm force-reinstall: writes `/tmp/mlstack-reboot-required` marker file
+- In `run_installation()` after component loop: checks for marker and emits warning
+- Marker file is cleaned up after warning is shown
+- No actual reboot logic — just marker + warning
+
+### Fix 5: Propagated force_reinstall to native component configs
+Updated these components to read from `is_force_reinstall()` instead of using `::default()`:
+1. **pytorch**: `PyTorchConfig { force_reinstall: force, ..PyTorchConfig::default() }`
+2. **deepspeed**: `DeepSpeedConfig { force_reinstall: force, ..DeepSpeedConfig::default() }`
+3. **flash-attn**: `FlashAttentionConfig { force_reinstall: force, ..FlashAttentionConfig::default() }`
+4. **megatron**: `MegatronConfig { force_reinstall: force, ..MegatronConfig::default() }`
+5. **mpi4py**: `Mpi4PyConfig { force_reinstall: force, ..Mpi4PyConfig::default() }`
+6. **rocm**: `RocmConfig { force_reinstall: rocm_force, ..RocmConfig::default() }`
+
+### Fix 6: CLI path now sets all 3 env vars (src/bin/rusty.rs, line ~742)
+Before: only `MLSTACK_FORCE_REINSTALL=1`
+After: sets all three, matching TUI behavior:
+- `MLSTACK_FORCE_REINSTALL=1`
+- `FORCE=true`
+- `PYTORCH_REINSTALL=true`
+
+### Fix 7: Added pip uninstall steps for all pip-based components
+Each component now has a non-fatal `pip uninstall -y <package>` step before install when force_reinstall is active:
+1. **pytorch**: uninstalls torch, torchvision, torchaudio
+2. **triton**: uninstalls triton
+3. **mpi4py**: uninstalls mpi4py
+4. **deepspeed**: uninstalls deepspeed
+5. **flash-attn**: uninstalls flash_attn
+6. **megatron**: uninstalls megatron-core
+7. **vllm**: uninstalls vllm
+8. **bitsandbytes**: uses existing `build_uninstall_command()` method
+9. **aiter**: uninstalls aiter
+
+All uninstall steps:
+- Only run when `is_force_reinstall()` returns true
+- Are non-fatal (errors ignored with `let _ =`)
+- Log the action: `"[native] <component> — force reinstall: removing previous installation"`
+- Use `uv` if available, fall back to `pip3`
+
+### Fix 8: Force clean rebuild for git+cmake components
+When force_reinstall is true and component has cmake build:
+- **flash-attn**: removes `build/` subdirectory before cmake step
+- **onnx**: removes `build/` subdirectory before cmake step
+- Ensures clean rebuild instead of incremental
+
+## Files Modified
+1. `src/installer.rs` — All 8 fixes (helper function, ROCm dispatch, component configs, pip uninstalls, build dir cleanup, reboot marker)
+2. `src/bin/rusty.rs` — Fix 6 (CLI env var propagation)
+
+## Validation
+- `cargo build --release` — 0 errors, 0 warnings ✅
+- `cargo test --release` — 1438 tests passed, 0 failed, 8 ignored ✅
+- All existing test assertions preserved ✅
+- `is_force_reinstall()` used consistently (no remaining inline env var reads) ✅
+
+## Hard Constraints Met
+- No actual reboot/auto-reboot logic — just marker file and warning ✅
+- NativeCommand enum unchanged ✅
+- All existing test assertions preserved ✅

@@ -5,11 +5,68 @@ All notable changes to Stan's ML Stack will be documented in this file.
 ## [Unreleased]
 
 ### Release Track Status
+- Next changes accumulate here after Anagami 0.2.0.
+
+## [0.2.0] - 2026-05-30 — Anagami
+
+### Added
+- **All-Rust installer milestone**: All 35 installer, verification, and benchmark components are routed through native Rust modules; selectable components in `state.rs` no longer reference shell scripts.
+- **Rusty Llama CUDA isolation guards**: llama.cpp installs now force `GGML_HIP=ON`, `GGML_CUDA=OFF`, `GGML_VULKAN=OFF`, and `GGML_METAL=OFF`; source builds validate `CMakeCache.txt`; source and prebuilt installs reject binaries without ROCm/HIP linkage.
+- **Rusty Llama CUDA toolkit warning**: The installer warns when `nvcc`, `nvidia-smi`, or `/usr/local/cuda` are present while continuing with HIP-only builds for mixed-GPU systems.
+- **Windows Alpha Support**: Initial Windows x86_64 builds are available for testing with WSL2 path bridging and service management.
+- **Rusty Llama first-class component**: TurboQuant llama.cpp integration ships with prebuilt/source strategy selection, SHA-256 verification, telemetry, RDNA channel gating, and benchmark runner support.
+- **ComfyUI**: Node-based AI image generation UI with full ROCm GPU acceleration support.
+- **UI/UX Category**: New component category in Rusty-Stack installer for user-facing applications.
+- **Smart Sudo Detection**: Components that install to user home directory (ComfyUI, vLLM Studio) no longer require sudo password.
+
+### Changed
+- **ROCm channel targets**: Legacy now targets ROCm 6.4.3, Stable targets ROCm 7.2.3, and Latest targets ROCm 7.2.4 after the 2026-05-29 ROCm release.
+- **ROCm package URLs**: Native ROCm installer now uses AMD's release directory path (`/amdgpu-install/<release>/...`) instead of package-version directory paths, matching the real repo layout.
+- `VERSION` and Rust crate version bumped to `0.2.0`.
+- Installer status documentation now reflects the native Rust backend instead of the deprecated shell-script backend.
+
+### Mission: Rusty Llama Integration (2026-04 — 2026-05)
+
+#### Added
+- **SealedToken**: Zero-exposure GitHub PAT wrapper with redacted debug output, no `Display` impl, zeroized purge after git operations, and compile-time injection so the token never surfaces in logs, help text, or errors.
+- **repo-purge**: `purge_source_artifacts()` added to `LlamaCppInstaller` to wipe `.git` directories, credential store entries, and the build tree after source builds.
+- **release-manifest**: GitHub release manifest lookup with SealedToken-authenticated GET, schema parsing for per-arch URLs and SHA-256 checksums, and source fallback on 404/API failures.
+- **install-strategy**: Strategy resolver that routes between verified prebuilt downloads and source compile fallbacks, including SHA mismatch handling and unknown-arch fallback messaging.
+- **prebuilt-download-execution**: Prebuilt `.tar.gz` download path with SHA-256 verification, extraction, install cleanup, and source fallback on download failure.
+- **fix-source-install-execution**: Source install path now executes the actual build commands instead of returning a false success.
+- **fix-strategy-routing-call-site**: Installer dispatch now calls `resolve_install_strategy()` and routes to either prebuilt download or source build execution.
+- **fix-sha256-hex-format**: SHA-256 verification now compares hex strings and reports architecture, expected hash, and computed hash on mismatch.
+- **telemetry**: `BuildReport` telemetry with GPU info, build duration, install path, cmake flags, verification results, and SealedToken-authenticated `repository_dispatch` POSTs that fail non-fatally.
+- **fix-telemetry-call-site**: `submit_build_report()` now runs after install completion with real GPU metadata, duration, install path, and prebuilt/source provenance.
+- **fix-telemetry-inline-prompt**: Inline Y/n telemetry opt-in prompt added in the TUI after Turbo Quant install progress.
+- **tui-integration**: Turbo Quant Llama.cpp added to the Experimental tier with progress UI for prebuilt download and source compile, install-path visibility, build-stage labels, and final summary details.
+- **fix-tui-install-path-in-progress**: Active download/compile screens now display the install path below the progress gauge.
+- **rdna3-channel-gating**: ROCm-channel-aware CMake flag gating for RDNA3 probing and ROCWMMA features, with legacy-channel gfx1030-only targets and unit-test coverage.
+- **rdna3-hardware-validation**: `rdna3_validation` exercised on both 7900 XTX (`gfx1100`) and 7800 XT (`gfx1101`) to verify WMMA capability, shared-memory probes, fallback paths, and benchmark evidence generation.
+- **fix-rdna3-validation-rocm-visible-devices**: RDNA3 validation now respects `ROCM_VISIBLE_DEVICES` remapping.
+- **github-actions**: Added `release-builder.yml` workflow for dispatch/manual/scheduled matrix builds, per-arch packaging, SHA-256 generation, release manifest emission, and GitHub Release upload.
+- **fix-release-asset-visibility**: `ReleaseAsset` made public to remove private-interface warnings.
+- **fork-benchmark-gpus**: Collected `llama-bench` results on both RDNA3 GPUs with Qwen3-0.6B-F16 across multiple prefill and decode sizes with standard deviations.
+- **fork-docs-rewrite**: Rewrote fork documentation for the Rusty Llama identity, including README branding, GPU support tables, benchmark data, install guidance, and supporting docs updates.
+- **fix-benchmark-data-json**: Corrected benchmark JSON schema, GPU keys, VRAM values, and throughput data to match ground truth.
+- **fix-benchmark-and-rdna3-docs**: Expanded benchmark coverage and rewrote `rdna3-optimization.md` to match the RDNA2 guide’s depth and structure.
+- **fix-decode-data-structure**: Restructured benchmark JSON to separate context-dependent prefill from context-independent decode data and documented the methodology.
+- **llama-cpp benchmark runner**: `rusty bench llama-cpp` runs llama-bench on available ROCm GPUs, reports prefill/decode throughput per GPU. Integrated into TUI benchmarks tab and HTML export.
+
+#### Changed
+- Added release-manifest-driven binary distribution flow with explicit source fallback behavior when release data or downloads are unavailable.
+- Added source-build cleanup and post-install telemetry so source and prebuilt paths share a consistent install lifecycle.
+- Expanded TUI install status, stage labeling, and completion summaries so users can track build provenance, GPU architecture, and final install path.
+- Tightened RDNA3 gating and validation so channel-specific flags, hardware probes, and device remapping behave consistently across supported GPUs.
+- Aligned GitHub release packaging, benchmark data, and fork documentation with the Rusty Llama distribution and validation workflow.
+
+### Release Track Status
 - **Transition Track**: This `Unreleased` section represents the current stabilization phase from **Sotapanna (0.1.4)** toward **Anagami**.
 - **No New Release Tag in This PR**: These changes are intentionally tracked as unreleased stabilization work.
 - **Planned Anagami Release Gate**: Anagami release cut remains reserved for the milestone where installer/backend scripts are fully migrated to Rust and packaged as a single crates.io deliverable.
 
 ### Added
+- **Windows Alpha Support**: Initial Windows x86_64 builds available. Windows support is in ALPHA testing — we are openly accepting testers! Open issues following the issue template when problems are encountered.
 - **ComfyUI**: Node-based AI image generation UI with full ROCm GPU acceleration support
 - **UI/UX Category**: New component category in Rusty-Stack installer for user-facing applications
 - **Smart Sudo Detection**: Components that install to user home directory (ComfyUI, vLLM Studio) no longer require sudo password

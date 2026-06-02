@@ -3,7 +3,7 @@ requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "stans-ml-stack"
+name = "Rusty-Stack"
 dynamic = ["version"]
 description = "A comprehensive machine learning environment optimized for AMD GPUs"
 readme = "README.md"
@@ -25,15 +25,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.10"
-dependencies = [
-    "numpy",
-    "torch>=2.6.0",
-    "onnxruntime",
-    "psutil",
-    "tqdm",
-    "requests",
-    "pyyaml",
-]
 
 [project.urls]
 Homepage = "https://github.com/scooter-lacroix/Stan-s-ML-Stack"
@@ -41,14 +32,14 @@ Issues = "https://github.com/scooter-lacroix/Stan-s-ML-Stack/issues"
 Documentation = "https://github.com/scooter-lacroix/Stan-s-ML-Stack/wiki"
 
 [project.scripts]
-ml-stack-install = "stans_ml_stack.cli.install:main"
-ml-stack-verify = "stans_ml_stack.cli.verify:main"
-ml-stack-repair = "stans_ml_stack.cli.repair:main"
+ml-stack-install = "rusty_stack_wrapper.cli:install_main"
+ml-stack-verify = "rusty_stack_wrapper.cli:verify_main"
+ml-stack-repair = "rusty_stack_wrapper.cli:repair_main"
 
 [tool.setuptools]
 
 [tool.setuptools.packages.find]
-namespaces = true
+include = ["rusty_stack_wrapper*"]
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}

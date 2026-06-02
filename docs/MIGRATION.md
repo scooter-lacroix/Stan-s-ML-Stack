@@ -13,12 +13,12 @@ Rusty Stack (formerly "Stan's ML Stack") is the same AMD GPU-focused machine lea
 | Project Name | Stan's ML Stack | Rusty Stack |
 | Primary Installer | Python curses UI | Rusty-Stack TUI (Rust + Ratatui) |
 | Repository | `scooter-lacroix/Stan-s-ML-Stack` | **Unchanged** (same repository) |
-| Python Package | `stans-ml-stack` | **Unchanged** (maintained for compatibility) |
+| Python Package | `stans-ml-stack` | `Rusty-Stack` (renamed on PyPI) |
 
 ### What's Staying the Same?
 
 - **Repository URL**: `https://github.com/scooter-lacroix/Stan-s-ML-Stack`
-- **PyPI Package**: `pip install stans-ml-stack` still works
+- **PyPI Package**: `pip install Rusty-Stack` (renamed from `stans-ml-stack`)
 - **Backend Scripts**: All `scripts/install_*.sh` scripts remain unchanged
 - **Components**: ROCm, PyTorch, vLLM, etc. - same components
 - **Functionality**: Your ML stack works exactly the same
@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/mai
 The PyPI package is maintained for backward compatibility.
 
 ```bash
-pip install stans-ml-stack  # Still works!
+pip install Rusty-Stack  # Renamed from stans-ml-stack
 ```
 
 The package now points to Rusty-Stack TUI as the recommended installer.
@@ -92,7 +92,7 @@ Documentation has been updated to reflect the new branding:
 - Old: `Stan's ML Stack Documentation`
 - New: `Rusty Stack Documentation`
 
-The `stans-ml-stack` Python package is still referenced for backward compatibility.
+The `Rusty-Stack` Python package (formerly `stans-ml-stack`) provides backward-compatible CLI tools.
 
 ## Timeline
 
@@ -106,9 +106,9 @@ The `stans-ml-stack` Python package is still referenced for backward compatibili
 
 **No.** Your existing Rusty Stack (Stan's ML Stack) installation continues to work. The rebranding is primarily about the project name and the recommended installer.
 
-### Will the stans-ml-stack PyPI package continue to work?
+### Will the Rusty-Stack PyPI package work?
 
-**Yes.** The `stans-ml-stack` package will continue to be published and maintained for backward compatibility.
+**Yes.** The package has been renamed from `stans-ml-stack` to `Rusty-Stack` on PyPI. Install with `pip install Rusty-Stack`.
 
 ### Should I switch to Rusty-Stack TUI?
 
@@ -137,7 +137,7 @@ If you encounter any issues during the transition:
 | Do I need to reinstall? | No |
 | Is my installation broken? | No |
 | Should I use Rusty-Stack TUI? | Yes, it's the recommended installer |
-| Will stans-ml-stack package still work? | Yes, maintained for compatibility |
+| Will Rusty-Stack PyPI package work? | Yes, renamed from stans-ml-stack |
 | Is the repository URL changing? | No |
 
 **Bottom line:** This is a branding change with minimal impact on existing installations. The Rusty-Stack TUI provides an improved installation experience while maintaining full compatibility with the existing codebase.

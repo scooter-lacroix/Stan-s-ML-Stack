@@ -1,0 +1,89 @@
+Fix Permissions & Verification-Override Status Report
+=======================================================
+Date: 2026-05-05
+All 4 fixes applied, cargo build --release (0 errors, 0 warnings),
+cargo test --release (1619 passed, 0 failed).
+
+================================================================
+Fix 1: Megatron-LM — egg-info directory permissions (Category B3)
+================================================================
+FILE: src/installer.rs — megatron dispatch block (~line 2920)
+PROBLEM: `pip install -e .` fails with "Cannot update time stamp of
+directory 'megatron_core.egg-info'" when the directory was created by
+a prior sudo install and is owned by root.
+FIX: Added a pre-install step (new Step 3) that scans the cloned repo
+directory for any `*.egg-info` directories. For each one found:
+  1. Tries `std::fs::remove_dir_all()` (fast path — works if user owns it)
+  2. On failure, runs `chmod -R u+rw <egg-info-dir>` via NativeCommand
+     (handles root-owned dirs when sudo is available)
+  3. Retries `remove_dir_all()` after chmod
+This runs before the pip install -e . step (now Step 4).
+FIRST-TIME IMPACT: Zero — on first install no egg-info exists, scan is a no-op.
+
+================================================================
+Fix 2: AITER — jit cache permissions (Category G1)
+================================================================
+FILE: src/installer.rs — aiter dispatch block (~line 2955)
+PROBLEM: `PermissionError: [Errno 13] Permission denied: '/home/scooter/.aiter/jit'`
+The JIT cache at `~/.aiter/jit/` is owned by root from a prior install.
+The existing fix was conditional on `component_needs_sudo`, but the JIT
+cache can be root-owned even when the current install doesn't use sudo
+(e.g., if pip's build subprocess created it).
+FIX: Made the chown step unconditional (removed the `if component_needs_sudo`
+guard). Added a write-permission probe: writes a `.permission_check` file
+to detect if the directory is writable, and only runs chown when needed.
+Covers both `~/.aiter/` and `~/.mlstack/aiter/`.
+FIRST-TIME IMPACT: Zero — on first install, dirs either don't exist or are
+user-owned; the probe writes and cleans up a temp file.
+
+================================================================
+Fix 3: git_clone_or_pull consistency (Category H2-H3)
+================================================================
+FILE: src/installer.rs — git_clone_or_pull() function (~line 2291)
+ANALYSIS: All git-based component dispatchers (megatron, aiter, comfyui,
+textgen, vllm-studio, onnx, etc.) already call git_clone_or_pull()
+instead of raw `git clone`. The function correctly:
+  a) Checks is_existing_git_repo() first
+  b) If repo exists, runs git -C pull --ff-only
+  c) If pull fails, runs fetch --all + reset --hard origin/HEAD
+  d) If not existing, runs git clone
+ADDITIONAL FIX: Added handling for the edge case where a directory exists
+but is NOT a git repo (no .git subdirectory). Previously, `git clone`
+would fail with "fatal: destination path already exists". Now:
+  - Detects non-git directories before cloning
+  - Renames the stale directory to `<dir>.bak`
+  - Falls back to `rm -rf` if rename fails (cross-mount-point)
+  - Then proceeds with the clone
+FIRST-TIME IMPACT: Zero — on first install the directory doesn't exist.
+
+================================================================
+Fix 4: Verification-override-status (Category H3)
+================================================================
+FILE: src/installer.rs — component status logic (line ~263)
+PROBLEM: Components showed "verification passed but installer script
+failed; keeping component status as failed". The logic was:
+  `let final_success = install_success && verification_outcome.success;`
+This means that even when verification passes (component is functionally
+installed), a non-zero exit from the install script keeps the component
+marked as failed.
+FIX: Changed to:
+  `let final_success = verification_outcome.success;`
+Verification passing means the component is functionally installed.
+The install script may report non-zero for non-fatal reasons (warnings,
+partial steps that were already done, etc.). When verification passes,
+the component should be marked as successful.
+Updated the log message from:
+  "keeping component status as failed"
+to:
+  "marking as installed"
+FIRST-TIME IMPACT: This only changes behavior when install fails but
+verification passes. On first-time installs, if install succeeds,
+verification runs and the result is the same.
+
+================================================================
+Build & Test Verification
+================================================================
+$ cargo build --release
+  → 0 errors, 0 warnings
+$ cargo test --release
+  → 1619 tests passed, 0 failed, 8 ignored

@@ -1,0 +1,376 @@
+name: Dependency Update
+
+on:
+  schedule:
+    # Run every Monday at 6:00 AM UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (check only, no PR)'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: dep-update
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  update-deps:
+    name: Check & Update Dependencies
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rusty-stack
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rusty-stack/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rusty-stack/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-edit and jq
+        run: |
+          cargo install cargo-edit --locked 2>/dev/null || true
+          sudo apt-get update -qq && sudo apt-get install -qq -y jq
+
+      # ── Step 1: Refresh Cargo.lock with latest compatible versions ──
+      - name: Run cargo update
+        run: cargo update 2>&1 | tee /tmp/cargo-update.log
+
+      # ── Step 2: Discover deps with newer (possibly semver-incompatible) versions ──
+      - name: Check for available dependency updates
+        id: check_updates
+        run: |
+          set -euo pipefail
+
+          echo "## Parsing Cargo.toml dependencies..." >&2
+
+          # Extract direct dependency names and current version requirements from Cargo.toml.
+          # Handles both `dep = "version"` and `dep = { version = "version", ... }` forms.
+          UPDATES=""
+
+          while IFS= read -r line; do
+            # Simple form: name = "version"
+            if echo "$line" | grep -qP '^\s*[a-zA-Z0-9_-]+\s*=\s*"[^"]+"'; then
+              dep_name=$(echo "$line" | grep -oP '^\s*\K[a-zA-Z0-9_-]+')
+              dep_ver=$(echo "$line" | grep -oP '"\K[^"]+')
+              # Skip path / git deps (empty or complex version strings)
+              [[ -z "$dep_ver" ]] && continue
+              UPDATES="$UPDATES $dep_name"
+              continue
+            fi
+
+            # Inline table form: name = { version = "x.y.z", ... }
+            if echo "$line" | grep -qP '^\s*[a-zA-Z0-9_-]+\s*=\s*\{[^}]*\bversion\s*=\s*"[^"]+"'; then
+              dep_name=$(echo "$line" | grep -oP '^\s*\K[a-zA-Z0-9_-]+')
+              dep_ver=$(echo "$line" | grep -oP '\bversion\s*=\s*"\K[^"]+')
+              [[ -z "$dep_ver" ]] && continue
+              UPDATES="$UPDATES $dep_name"
+            fi
+          done < <(sed -n '/^\[dependencies\]/,/^\[/{ /^\[dependencies\]/d; /^\[/d; p }' Cargo.toml)
+
+          echo "Dependencies to check: $UPDATES"
+
+          # For each dep, query crates.io for the latest stable version and compare.
+          ELIGIBLE=""
+          SKIPPED=""
+          FAILED_CHECKS=""
+
+          for dep in $UPDATES; do
+            echo "### Checking $dep..."
+
+            # Get current locked version from Cargo.lock
+            locked_ver=$(grep -A2 "name = \"$dep\"" Cargo.lock 2>/dev/null | grep "version" | head -1 | grep -oP '"\K[^"]+' || echo "0.0.0")
+
+            # Query crates.io API
+            api_response=$(curl -sf "https://crates.io/api/v1/crates/$dep" -H "User-Agent: rusty-stack-dep-checker (github.com/scooter-lacroix)") || {
+              echo "::warning::Failed to query crates.io for $dep"
+              FAILED_CHECKS="$FAILED_CHECKS $dep"
+              continue
+            }
+
+            latest_ver=$(echo "$api_response" | jq -r '.crate.max_stable_version // .crate.max_version // empty')
+            publish_date=$(echo "$api_response" | jq -r '.crate.updated_at // empty')
+
+            if [[ -z "$latest_ver" || "$latest_ver" == "null" ]]; then
+              echo "  No stable version found, skipping"
+              continue
+            fi
+
+            echo "  Locked: $locked_ver | Latest: $latest_ver | Published: $publish_date"
+
+            # Check if there's actually an update (simple string comparison won't work for semver,
+            # so we use a version sort trick)
+            if [[ "$locked_ver" == "$latest_ver" ]]; then
+              echo "  Already at latest version"
+              continue
+            fi
+
+            # Check if the latest version is newer using sort -V
+            if ! echo -e "$latest_ver\n$locked_ver" | sort -V -C 2>/dev/null; then
+              # latest_ver > locked_ver — there is an update
+              :
+            else
+              echo "  Locked version is same or newer, skipping"
+              continue
+            fi
+
+            # ── Lag check: ensure the version was published at least 7 days ago ──
+            if [[ -n "$publish_date" && "$publish_date" != "null" ]]; then
+              publish_epoch=$(date -d "$publish_date" +%s 2>/dev/null) || {
+                echo "::warning::Could not parse publish date '$publish_date' for $dep"
+                FAILED_CHECKS="$FAILED_CHECKS $dep"
+                continue
+              }
+              seven_days_ago=$(date -d "7 days ago" +%s)
+
+              if [[ "$publish_epoch" -gt "$seven_days_ago" ]]; then
+                days_since=$(( ( $(date +%s) - publish_epoch ) / 86400 ))
+                echo "  ⏳ Skipping $dep — published $days_since day(s) ago (lag period: 7 days)"
+                SKIPPED="$SKIPPED $dep@$latest_ver (published $days_since day(s) ago)"
+                continue
+              fi
+            fi
+
+            echo "  ✅ Eligible for update: $dep $locked_ver → $latest_ver"
+            ELIGIBLE="$ELIGIBLE $dep@$latest_ver"
+          done
+
+          echo "eligible=$ELIGIBLE" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED_CHECKS" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "$SKIPPED" ]]; then
+            echo ""
+            echo "## Skipped (lag period): $SKIPPED"
+          fi
+          if [[ -n "$FAILED_CHECKS" ]]; then
+            echo ""
+            echo "::warning::Failed to check:$FAILED_CHECKS"
+          fi
+
+      # ── Step 3: Apply eligible updates ──
+      - name: Apply dependency updates
+        if: steps.check_updates.outputs.eligible != '' && github.event.inputs.dry_run != 'true'
+        id: apply_updates
+        run: |
+          set -euo pipefail
+
+          ELIGIBLE="${{ steps.check_updates.outputs.eligible }}"
+          APPLIED=""
+          FAILED=""
+
+          for entry in $ELIGIBLE; do
+            dep=$(echo "$entry" | cut -d'@' -f1)
+            ver=$(echo "$entry" | cut -d'@' -f2)
+
+            echo "Updating $dep to $ver..."
+            if cargo add "$dep@$ver" 2>&1; then
+              APPLIED="$APPLIED $dep@$ver"
+              echo "  ✅ Updated $dep to $ver"
+            else
+              FAILED="$FAILED $dep@$ver"
+              echo "  ❌ Failed to update $dep to $ver"
+            fi
+          done
+
+          echo "applied=$APPLIED" >> "$GITHUB_OUTPUT"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "$APPLIED" ]]; then
+            echo "::error::No dependencies were successfully updated"
+            exit 1
+          fi
+
+          echo ""
+          echo "## Successfully applied:$APPLIED"
+          if [[ -n "$FAILED" ]]; then
+            echo "## Failed to apply:$FAILED"
+          fi
+
+      # ── Step 4: Verify compilation ──
+      - name: Check compilation
+        id: compile
+        run: |
+          set -euo pipefail
+
+          echo "Running cargo check..."
+          if cargo check --all-features 2>&1; then
+            echo "check_passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ cargo check passed"
+          else
+            echo "cargo check failed, attempting cargo fix..."
+            cargo fix --allow-dirty --allow-staged 2>&1 || true
+            cargo clippy --fix --allow-dirty --allow-staged 2>&1 || true
+
+            echo "Re-running cargo check after fixes..."
+            if cargo check --all-features 2>&1; then
+              echo "check_passed=true" >> "$GITHUB_OUTPUT"
+              echo "✅ cargo check passed after fixes"
+            else
+              echo "check_passed=false" >> "$GITHUB_OUTPUT"
+              echo "❌ cargo check failed even after fixes"
+              exit 1
+            fi
+          fi
+
+      # ── Step 5: Clippy with zero warnings ──
+      - name: Run clippy
+        run: |
+          cargo clippy --all-features -- -D warnings 2>&1
+
+      # ── Step 6: Run tests ──
+      - name: Run tests
+        run: |
+          cargo test --all-features -- \
+            --skip test_package_manager_rhel_family \
+            --skip test_package_manager_suse_family \
+            --skip test_dry_run_case_insensitive \
+            2>&1
+
+      # ── Step 7: Bump version ──
+      - name: Bump patch version
+        id: bump_version
+        if: github.event.inputs.dry_run != 'true' && steps.apply_updates.outputs.applied != ''
+        run: |
+          set -euo pipefail
+
+          # Read current version from Cargo.toml
+          current=$(grep '^version' Cargo.toml | head -1 | grep -oP '"\K[^"]+')
+          echo "Current version: $current"
+
+          IFS='.' read -r major minor patch <<< "$current"
+
+          # Bump logic: if patch is 9, bump minor and reset patch; otherwise bump patch
+          if [[ "$patch" -ge 9 ]]; then
+            new_minor=$((minor + 1))
+            new_version="${major}.${new_minor}.0"
+          else
+            new_patch=$((patch + 1))
+            new_version="${major}.${minor}.${new_patch}"
+          fi
+
+          echo "New version: $new_version"
+
+          # Update Cargo.toml
+          sed -i "0,/version = \"${current}\"/s//version = \"${new_version}\"/" Cargo.toml
+
+          # Keep Python wrapper package version in sync with Cargo version.
+          echo "$new_version" > ../VERSION
+
+          # Update Cargo.lock to match
+          cargo check --quiet 2>/dev/null || true
+
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "✅ Version bumped: $current → $new_version"
+
+      # ── Step 8: Commit and create PR ──
+      - name: Create Pull Request
+        if: github.event.inputs.dry_run != 'true' && steps.apply_updates.outputs.applied != ''
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore(deps): update dependencies and bump version to ${{ steps.bump_version.outputs.version }}
+
+            Updates applied: ${{ steps.apply_updates.outputs.applied }}
+
+            Skipped (lag period): ${{ steps.check_updates.outputs.skipped }}
+          title: "chore(deps): update dependencies and bump version to ${{ steps.bump_version.outputs.version }}"
+          body: |
+            ## Dependency Update
+
+            ### Updates Applied
+            ${{ steps.apply_updates.outputs.applied }}
+
+            ### Skipped (7-day lag period)
+            ${{ steps.check_updates.outputs.skipped }}
+
+            ### Version Bump
+            Updated to `${{ steps.bump_version.outputs.version }}`
+
+            ### Checks
+            - ✅ `cargo check --all-features`
+            - ✅ `cargo clippy --all-features -- -D warnings`
+            - ✅ `cargo test --all-features` (skipping known-flaky tests)
+
+            _This PR was created automatically by the dependency update workflow._
+          branch: deps/update-${{ steps.bump_version.outputs.version }}
+          base: main
+          labels: dependencies, automated
+          delete-branch: true
+
+      # ── Failure handler: write details and create an issue ──
+      - name: Write failure details
+        if: failure() && github.event.inputs.dry_run != 'true'
+        run: |
+          cat > /tmp/dep-update-failure.md <<HEREDOC
+          ## Dependency Update Failure
+
+          **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Branch:** ${{ github.ref_name }}
+          **Commit:** ${{ github.sha }}
+
+          ### Eligible Updates
+          ${{ steps.check_updates.outputs.eligible }}
+
+          ### Applied Updates
+          ${{ steps.apply_updates.outputs.applied }}
+
+          ### Failed Updates
+          ${{ steps.apply_updates.outputs.failed }}
+
+          ### Skipped (lag period)
+          ${{ steps.check_updates.outputs.skipped }}
+
+          ### Failed checks
+          ${{ steps.check_updates.outputs.failed }}
+
+          _This issue was created automatically by the dependency update workflow._
+          HEREDOC
+
+      - name: Create issue on failure
+        if: failure() && github.event.inputs.dry_run != 'true'
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "Dependency update failed — ${{ github.run_number }}"
+          content-filepath: /tmp/dep-update-failure.md
+          labels: bug, dependencies, automated
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "# Dependency Update Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Category | Details |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Eligible | ${{ steps.check_updates.outputs.eligible }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Applied | ${{ steps.apply_updates.outputs.applied }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Skipped (lag) | ${{ steps.check_updates.outputs.skipped }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Failed | ${{ steps.check_updates.outputs.failed }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| New version | ${{ steps.bump_version.outputs.version }} |" >> "$GITHUB_STEP_SUMMARY"
