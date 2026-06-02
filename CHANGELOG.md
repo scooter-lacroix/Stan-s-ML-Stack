@@ -15,6 +15,9 @@ All notable changes to Stan's ML Stack will be documented in this file.
 - **Rusty Llama CUDA toolkit warning**: The installer warns when `nvcc`, `nvidia-smi`, or `/usr/local/cuda` are present while continuing with HIP-only builds for mixed-GPU systems.
 - **Windows Alpha Support**: Initial Windows x86_64 builds are available for testing with WSL2 path bridging and service management.
 - **Rusty Llama first-class component**: TurboQuant llama.cpp integration ships with prebuilt/source strategy selection, SHA-256 verification, telemetry, RDNA channel gating, and benchmark runner support.
+- **ComfyUI**: Node-based AI image generation UI with full ROCm GPU acceleration support.
+- **UI/UX Category**: New component category in Rusty-Stack installer for user-facing applications.
+- **Smart Sudo Detection**: Components that install to user home directory (ComfyUI, vLLM Studio) no longer require sudo password.
 
 ### Changed
 - **ROCm channel targets**: Legacy now targets ROCm 6.4.3, Stable targets ROCm 7.2.3, and Latest targets ROCm 7.2.4 after the 2026-05-29 ROCm release.
