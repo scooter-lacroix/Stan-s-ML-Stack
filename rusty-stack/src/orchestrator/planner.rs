@@ -281,10 +281,15 @@ impl UpdatePlanner {
             .iter()
             .map(|s| s.as_str())
             .collect();
-        let required_deps = self.collect_required_dependencies(&target_set);
+        let required_deps = self.collect_required_dependencies(manifest, &target_set);
         let rocm_available_or_planned = !context.rocm_version.is_empty()
             || target_set.contains("rocm")
             || required_deps.contains("rocm");
+        let planned_rocm_version = manifest
+            .components
+            .iter()
+            .find(|c| c.id == "rocm" && (target_set.contains("rocm") || required_deps.contains("rocm")))
+            .map(|c| c.version.as_str());
 
         let mut items = Vec::new();
 
@@ -300,7 +305,12 @@ impl UpdatePlanner {
 
             // Classify the update
             let classification =
-                self.classify_update(component, context, rocm_available_or_planned);
+                self.classify_update(
+                    component,
+                    context,
+                    rocm_available_or_planned,
+                    planned_rocm_version,
+                );
 
             // If blocked, handle differently
             if classification == UpdateClassification::Blocked {
@@ -308,15 +318,26 @@ impl UpdatePlanner {
                 if target_set.contains(component.id.as_str())
                     || required_deps.contains(component.id.as_str())
                 {
-                    let reason =
-                        self.block_reason(component, context, rocm_available_or_planned);
+                        let reason =
+                        self.block_reason(
+                            component,
+                            context,
+                            rocm_available_or_planned,
+                            planned_rocm_version,
+                        );
                     return Err(PlannerError::ComponentBlocked {
                         component_id: component.id.clone(),
                         reason,
                     });
                 }
                 // Otherwise, include in plan but mark as blocked
-                items.push(self.build_planner_item(component, classification, context));
+                items.push(self.build_planner_item(
+                    component,
+                    classification,
+                    context,
+                    rocm_available_or_planned,
+                    planned_rocm_version,
+                ));
                 continue;
             }
 
@@ -326,7 +347,13 @@ impl UpdatePlanner {
                 continue;
             }
 
-            items.push(self.build_planner_item(component, classification, context));
+            items.push(self.build_planner_item(
+                component,
+                classification,
+                context,
+                rocm_available_or_planned,
+                planned_rocm_version,
+            ));
         }
 
         // Apply --all-safe: keep safe items (and experimental if explicitly included),
@@ -372,6 +399,7 @@ impl UpdatePlanner {
         component: &ManifestComponent,
         context: &CompatibilityContext,
         rocm_available_or_planned: bool,
+        planned_rocm_version: Option<&str>,
     ) -> UpdateClassification {
         // Experimental tier always classifies as experimental
         if component.validation_tier == ValidationTier::Experimental {
@@ -394,7 +422,12 @@ impl UpdatePlanner {
         }
 
         // Check ROCm version compatibility
-        if !self.is_rocm_compatible(component, context, rocm_available_or_planned) {
+        if !self.is_rocm_compatible(
+            component,
+            context,
+            rocm_available_or_planned,
+            planned_rocm_version,
+        ) {
             return UpdateClassification::Blocked;
         }
 
@@ -436,6 +469,8 @@ impl UpdatePlanner {
         component: &ManifestComponent,
         classification: UpdateClassification,
         context: &CompatibilityContext,
+        rocm_available_or_planned: bool,
+        planned_rocm_version: Option<&str>,
     ) -> PlannerItem {
         let current_version = context
             .installed_version(&component.id)
@@ -446,10 +481,15 @@ impl UpdatePlanner {
         let selected = classification.is_preselected() && current_version != component.version;
         let isolation_safe = matches!(classification, UpdateClassification::Safe);
 
-        let classification_reason = self.classification_reason(component, classification, context);
+        let classification_reason = self.classification_reason(
+            component,
+            classification,
+            context,
+            rocm_available_or_planned,
+            planned_rocm_version,
+        );
 
-        // Dependencies: for now, derive from known patterns
-        let dependencies = self.derive_dependencies(&component.id);
+        let dependencies = self.dependencies_for_component(component);
 
         PlannerItem {
             plan_item: PlanItem::new(
@@ -509,6 +549,7 @@ impl UpdatePlanner {
         component: &ManifestComponent,
         context: &CompatibilityContext,
         rocm_available_or_planned: bool,
+        planned_rocm_version: Option<&str>,
     ) -> bool {
         // Components that don't need ROCm are always compatible
         if !self.requires_rocm(&component.id) {
@@ -526,8 +567,10 @@ impl UpdatePlanner {
         }
 
         // Check min ROCm version if specified in manifest
+        let effective_rocm_version = self.effective_rocm_version(context, planned_rocm_version);
         if !component.min_rocm_version.is_empty()
-            && !version_gte(&context.rocm_version, &component.min_rocm_version)
+            && !effective_rocm_version.is_empty()
+            && !version_gte(&effective_rocm_version, &component.min_rocm_version)
         {
             return false;
         }
@@ -576,6 +619,7 @@ impl UpdatePlanner {
         component: &ManifestComponent,
         context: &CompatibilityContext,
         rocm_available_or_planned: bool,
+        planned_rocm_version: Option<&str>,
     ) -> String {
         if component.validation_tier == ValidationTier::Blocked {
             return "component is marked as blocked in manifest".to_string();
@@ -593,19 +637,31 @@ impl UpdatePlanner {
             return "no available executor for this platform".to_string();
         }
 
-        if !self.is_rocm_compatible(component, context, rocm_available_or_planned) {
-            if context.rocm_version.is_empty() {
+        if !self.is_rocm_compatible(
+            component,
+            context,
+            rocm_available_or_planned,
+            planned_rocm_version,
+        ) {
+            if context.rocm_version.is_empty() && !rocm_available_or_planned {
                 return "requires ROCm but ROCm is not installed".to_string();
             }
+            let effective_rocm_version = self.effective_rocm_version(context, planned_rocm_version);
             if !component.min_rocm_version.is_empty() {
+                if effective_rocm_version.is_empty() {
+                    return format!(
+                        "requires ROCm >= {} and will rely on the planned ROCm install",
+                        component.min_rocm_version
+                    );
+                }
                 return format!(
-                    "requires ROCm >= {} but installed version is {}",
-                    component.min_rocm_version, context.rocm_version
+                    "requires ROCm >= {} but effective plan version is {}",
+                    component.min_rocm_version, effective_rocm_version
                 );
             }
             return format!(
-                "incompatible with installed ROCm version ({})",
-                context.rocm_version
+                "incompatible with effective ROCm version ({})",
+                effective_rocm_version
             );
         }
 
@@ -618,6 +674,8 @@ impl UpdatePlanner {
         component: &ManifestComponent,
         classification: UpdateClassification,
         context: &CompatibilityContext,
+        rocm_available_or_planned: bool,
+        planned_rocm_version: Option<&str>,
     ) -> String {
         let current = context.installed_version(&component.id).unwrap_or("");
 
@@ -641,7 +699,8 @@ impl UpdatePlanner {
             UpdateClassification::Blocked => self.block_reason(
                 component,
                 context,
-                !context.rocm_version.is_empty(),
+                rocm_available_or_planned,
+                planned_rocm_version,
             ),
             UpdateClassification::Candidate => {
                 if current.is_empty() {
@@ -657,6 +716,14 @@ impl UpdatePlanner {
                 format!("experimental component v{}", component.version)
             }
         }
+    }
+
+    /// Derive known dependencies for a component.
+    fn dependencies_for_component(&self, component: &ManifestComponent) -> Vec<String> {
+        if !component.dependencies.is_empty() {
+            return component.dependencies.clone();
+        }
+        self.derive_dependencies(&component.id)
     }
 
     /// Derive known dependencies for a component.
@@ -685,12 +752,22 @@ impl UpdatePlanner {
         }
     }
 
-    fn collect_required_dependencies<'a>(&self, targets: &HashSet<&'a str>) -> HashSet<String> {
+    fn collect_required_dependencies<'a>(
+        &self,
+        manifest: &Manifest,
+        targets: &HashSet<&'a str>,
+    ) -> HashSet<String> {
         let mut required = HashSet::new();
         let mut stack: Vec<String> = targets.iter().map(|s| (*s).to_string()).collect();
 
         while let Some(component) = stack.pop() {
-            for dep in self.derive_dependencies(&component) {
+            let deps = manifest
+                .components
+                .iter()
+                .find(|c| c.id == component)
+                .map(|c| self.dependencies_for_component(c))
+                .unwrap_or_else(|| self.derive_dependencies(&component));
+            for dep in deps {
                 if required.insert(dep.clone()) {
                     stack.push(dep);
                 }
@@ -702,6 +779,18 @@ impl UpdatePlanner {
         }
 
         required
+    }
+
+    fn effective_rocm_version(
+        &self,
+        context: &CompatibilityContext,
+        planned_rocm_version: Option<&str>,
+    ) -> String {
+        match planned_rocm_version {
+            Some(planned) if context.rocm_version.is_empty() => planned.to_string(),
+            Some(planned) if version_gte(planned, &context.rocm_version) => planned.to_string(),
+            _ => context.rocm_version.clone(),
+        }
     }
 
     /// Derive known dependencies for a component.
@@ -1032,11 +1121,8 @@ mod tests {
         context.installed_components.insert("pytorch".to_string());
 
         let component = make_component("pytorch", "2.4.1", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Safe);
     }
 
@@ -1049,11 +1135,8 @@ mod tests {
         context.installed_components.insert("pytorch".to_string());
 
         let component = make_component("pytorch", "2.4.0", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Safe);
     }
 
@@ -1070,11 +1153,8 @@ mod tests {
         context.installed_components.insert("pytorch".to_string());
 
         let component = make_component("pytorch", "2.5.0", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Guarded);
     }
 
@@ -1088,11 +1168,8 @@ mod tests {
 
         // Patch bump but Candidate tier → guarded
         let component = make_component("triton", "3.0.1", ValidationTier::Candidate);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Guarded);
     }
 
@@ -1107,11 +1184,8 @@ mod tests {
         context.rocm_version = "7.2.1".to_string();
 
         let component = make_component("pytorch", "2.4.0", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Blocked);
     }
 
@@ -1119,11 +1193,8 @@ mod tests {
     fn test_blocked_classification_blocked_tier() {
         let context = make_context();
         let component = make_component("bad-pkg", "1.0.0", ValidationTier::Blocked);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Blocked);
     }
 
@@ -1140,11 +1211,8 @@ mod tests {
         context.installed_components.insert("pytorch".to_string());
 
         let component = make_component("pytorch", "3.0.0", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Candidate);
     }
 
@@ -1153,11 +1221,8 @@ mod tests {
         let context = make_context();
         // Not installed → Candidate
         let component = make_component("triton", "3.1.0", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Candidate);
     }
 
@@ -1169,11 +1234,8 @@ mod tests {
     fn test_experimental_classification() {
         let context = make_context();
         let component = make_component("deepspeed", "0.15.0", ValidationTier::Experimental);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Experimental);
     }
 
@@ -1560,6 +1622,52 @@ mod tests {
         let ids: HashSet<_> = items.iter().map(|i| i.plan_item.component_id.as_str()).collect();
         assert!(ids.contains("rocm"));
         assert!(ids.contains("pytorch"));
+    }
+
+    #[test]
+    fn test_targeted_component_uses_manifest_declared_dependencies() {
+        let context = make_context();
+        let mut custom = make_component("custom-runtime", "1.2.0", ValidationTier::Validated);
+        custom.dependencies = vec!["rocm".to_string(), "mpi4py".to_string()];
+
+        let manifest = make_manifest(vec![
+            make_component("rocm", "7.2.4", ValidationTier::Validated),
+            make_component("mpi4py", "4.0.0", ValidationTier::Validated),
+            custom,
+        ]);
+
+        let options = PlannerOptions {
+            target_components: vec!["custom-runtime".to_string()],
+            ..Default::default()
+        };
+
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+        let ids: HashSet<_> = items.iter().map(|i| i.plan_item.component_id.as_str()).collect();
+        assert!(ids.contains("custom-runtime"));
+        assert!(ids.contains("rocm"));
+        assert!(ids.contains("mpi4py"));
+    }
+
+    #[test]
+    fn test_targeted_component_with_planned_rocm_not_blocked_by_min_version_on_fresh_host() {
+        let context = make_context();
+        let manifest = make_manifest(vec![
+            make_component("rocm", "7.2.4", ValidationTier::Validated),
+            ManifestComponent {
+                min_rocm_version: "7.2.4".to_string(),
+                ..make_component("llama-cpp", "0.2.0", ValidationTier::Validated)
+            },
+        ]);
+
+        let options = PlannerOptions {
+            target_components: vec!["llama-cpp".to_string()],
+            ..Default::default()
+        };
+
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+        let ids: HashSet<_> = items.iter().map(|i| i.plan_item.component_id.as_str()).collect();
+        assert!(ids.contains("rocm"));
+        assert!(ids.contains("llama-cpp"));
     }
 
     #[test]
@@ -2072,11 +2180,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Blocked);
     }
 
@@ -2095,11 +2200,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_ne!(classification, UpdateClassification::Blocked);
     }
 
@@ -2123,11 +2225,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Blocked);
     }
 
@@ -2147,11 +2246,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_ne!(classification, UpdateClassification::Blocked);
     }
 
@@ -2239,11 +2335,8 @@ mod tests {
             HashSet::from([ExecutorKind::LegacyScript, ExecutorKind::Rust]);
 
         let component = make_component("pytorch", "3.0.0", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Blocked);
     }
 
@@ -2255,11 +2348,8 @@ mod tests {
             HashSet::from([ExecutorKind::LegacyScript, ExecutorKind::Rust]);
 
         let component = make_component("rocm", "7.2.4", ValidationTier::Validated);
-        let classification = planner().classify_update(
-            &component,
-            &context,
-            !context.rocm_version.is_empty(),
-        );
+        let classification =
+            planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_ne!(classification, UpdateClassification::Blocked);
     }
 
@@ -2315,7 +2405,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let reason = planner().block_reason(&component, &context, !context.rocm_version.is_empty());
+        let reason =
+            planner().block_reason(&component, &context, !context.rocm_version.is_empty(), None);
         assert!(reason.contains("99.0.0"));
         assert!(reason.contains("7.2.1"));
     }
@@ -2336,7 +2427,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let reason = planner().block_reason(&component, &context, !context.rocm_version.is_empty());
+        let reason =
+            planner().block_reason(&component, &context, !context.rocm_version.is_empty(), None);
         assert!(reason.contains("legacy"));
     }
 }

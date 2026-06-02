@@ -826,7 +826,7 @@ If you encounter issues with the new system:
 │  ./scripts/run_all_benchmarks_suite.sh    rusty bench all     │
 │  ./scripts/install_ml_stack_curses.py     rusty (TUI)         │
 │  ./scripts/install_ml_stack_ui.py         rusty (TUI)         │
-│  ./scripts/install.sh                     rusty bootstrap      │
+│  ./scripts/install.sh                     rusty                │
 │  cargo test (4 binaries)                  cargo test (2 bins)  │
 └──────────────────────────────────────────────────────────────┘
 ```

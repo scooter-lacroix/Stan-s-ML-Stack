@@ -176,7 +176,7 @@ jobs:
 
       # ── Step 3: Apply eligible updates ──
       - name: Apply dependency updates
-        if: steps.check_updates.outputs.eligible != ''
+        if: steps.check_updates.outputs.eligible != '' && github.event.inputs.dry_run != 'true'
         id: apply_updates
         run: |
           set -euo pipefail
