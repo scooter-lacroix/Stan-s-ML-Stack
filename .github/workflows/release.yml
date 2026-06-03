@@ -7,7 +7,14 @@ on:
       # Only trigger when version-carrying files change (bumped by bump-version.yml or manual edit)
       - 'rusty-stack/Cargo.toml'
       - 'VERSION'
-
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Skip changed/unchanged check and always run (for manual triggers)'
+        required: false
+        type: boolean
+        default: false
+        
 permissions:
   contents: write
   id-token: write
@@ -32,16 +39,7 @@ jobs:
         run: |
           set -e
           CARGO_VER=$(grep -m1 '^version' rusty-stack/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          PYPI_VER=$(
-            python3 - <<'PY'
-            import tomllib
-            data = tomllib.load(open("pyproject.toml", "rb"))
-            project = data.get("project", {})
-            explicit = project.get("version")
-            if explicit:
-                print(explicit)
-            PY
-          )
+          PYPI_VER=$(python3 -c "import tomllib; data=tomllib.load(open('pyproject.toml','rb')); print(data.get('project',{}).get('version',''))")
           # pyproject.toml uses dynamic version from VERSION file when explicit version is absent.
           if [ -z "$PYPI_VER" ] || [ "$PYPI_VER" = "None" ] || [ "$PYPI_VER" = "MISSING" ]; then
             if [ -f "VERSION" ]; then
@@ -77,6 +75,13 @@ jobs:
         run: |
           VERSION=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Manual dispatch with force=true skips the changed check
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch with force — always running"
+            exit 0
+          fi
 
           # Fetch all tags explicitly (ensures tag list is accurate)
           git fetch --tags
@@ -220,7 +225,7 @@ jobs:
             echo "rusty update llama-cpp"
             echo "\`\`\`"
             echo ""
-            echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**"
+            echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue.**"
             echo ""
 
             if [ -n "$PREV_TAG" ]; then
@@ -335,7 +340,7 @@ jobs:
           PYPI_VERSION=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print(d['project'].get('version',''))" 2>/dev/null || true)
           if [ -z "$PYPI_VERSION" ] || [ "$PYPI_VERSION" = "None" ] || [ "$PYPI_VERSION" = "MISSING" ]; then
             if [ -f "VERSION" ]; then
-            PYPI_VERSION=$(cat VERSION)
+              PYPI_VERSION=$(cat VERSION)
             else
               PYPI_VERSION="MISSING"
             fi
@@ -355,7 +360,7 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-  # ── Final summary ────────────────────────────────────────────────────
+  # ── Final summary ─────────────────────��──────────────────────────────
   summary:
     name: Release Summary
     needs: [detect, github-release, crates-io, pypi]
@@ -405,4 +410,5 @@ jobs:
           echo "- **PyPI**: Thin Python wrapper that installs the \`rusty-stack\` crates.io binary (OIDC trusted publishing)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Windows ALPHA" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue.**" >> "$GITHUB_STEP_SUMMARY"
+
