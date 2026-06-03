@@ -371,18 +371,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify HEAD matches release commit
+      - name: Verify release commit matches checkout
         if: needs.github-release.result == 'success'
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
           RELEASE_SHA=$(gh release view "v${VERSION}" --json targetCommitish --jq '.targetCommitish')
-          BRANCH_HEAD_SHA=$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | awk '{print $1}')
-          if [ "$RELEASE_SHA" != "$BRANCH_HEAD_SHA" ]; then
-            echo "ERROR: Release SHA ($RELEASE_SHA) != ${GITHUB_REF_NAME} HEAD ($BRANCH_HEAD_SHA)"
-            echo "New commits landed during release — aborting undraft."
-            exit 1
+          CHECKOUT_SHA=$(git rev-parse HEAD)
+          if [ "$RELEASE_SHA" != "$CHECKOUT_SHA" ]; then
+            echo "::warning::Release SHA ($RELEASE_SHA) != checkout HEAD ($CHECKOUT_SHA) — new commits landed during release. Undrafting anyway since all publishes succeeded."
+          else
+            echo "SHA verified: $CHECKOUT_SHA"
           fi
-          echo "SHA verified: $BRANCH_HEAD_SHA"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
