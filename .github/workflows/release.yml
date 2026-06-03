@@ -277,17 +277,25 @@ PY
         run: |
           VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           # Skip if this version already exists on crates.io (idempotent for retries)
-          HTTP_STATUS=$(curl -sSf -o /tmp/crates_resp -w "%{http_code}" "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null || echo "000")
+          # Use -s (no progress) without -f so curl always returns the real HTTP status
+          HTTP_STATUS=$(curl -sS -o /tmp/crates_resp -w "%{http_code}" "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null)
+          HTTP_STATUS="${HTTP_STATUS:-000}"
+          echo "crates.io lookup HTTP status: ${HTTP_STATUS}"
           if [ "$HTTP_STATUS" = "200" ]; then
             PUBLISHED=$(python3 -c "import sys,json; d=json.load(open('/tmp/crates_resp')); print(d.get('crate',{}).get('max_stable_version',''))" 2>/dev/null || echo "")
             if [ "$PUBLISHED" = "$VERSION" ]; then
               echo "Version ${VERSION} already published to crates.io — skipping"
             else
+              echo "Version ${VERSION} not yet published (latest: ${PUBLISHED}), publishing"
               cargo publish --locked
             fi
-          else
-            echo "crates.io returned HTTP ${HTTP_STATUS} — crate not found, publishing for the first time"
+          elif [ "$HTTP_STATUS" = "404" ]; then
+            echo "Crate not found on crates.io (404) — first-time publish"
             cargo publish --locked
+          else
+            echo "::error::crates.io returned HTTP ${HTTP_STATUS} — aborting (possible rate limit or outage)"
+            cat /tmp/crates_resp 2>/dev/null || true
+            exit 1
           fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
