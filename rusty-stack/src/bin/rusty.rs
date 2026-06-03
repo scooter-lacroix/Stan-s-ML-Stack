@@ -1124,8 +1124,7 @@ mod upgrade_impl {
     use super::*;
     use rusty_stack::orchestrator::upgrade::{
         self, BinaryDownloader, DownloadResult, ReleaseInfo, ReleaseProvider, SmokeTester,
-        UpgradeError,
-        UpgradeOptions, UpgradeResult, UpgradeStatus, UserInteractor, VersionInfo,
+        UpgradeError, UpgradeOptions, UpgradeResult, UpgradeStatus, UserInteractor, VersionInfo,
     };
 
     pub fn run(
@@ -1204,8 +1203,8 @@ mod upgrade_impl {
                         println!("Current version: v{VERSION}");
                         println!("Schema version: {schema_version}");
                         eprintln!("Unable to check latest release: {error}");
+                        return;
                     }
-                    process::exit(1);
                 }
             }
             return;
@@ -1354,7 +1353,10 @@ mod upgrade_impl {
     struct RealDownloader;
 
     impl BinaryDownloader for RealDownloader {
-        fn download(&self, release: &ReleaseInfo) -> std::result::Result<DownloadResult, UpgradeError> {
+        fn download(
+            &self,
+            release: &ReleaseInfo,
+        ) -> std::result::Result<DownloadResult, UpgradeError> {
             let url = release.download_url.as_str();
             let archive_bytes = ureq::Agent::new_with_defaults()
                 .get(url)

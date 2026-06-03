@@ -350,15 +350,15 @@ python3 scripts/install_ml_stack_ui.py
 # Install from crates.io
 cargo install rusty-stack --locked
 
-# Run the TUI installer
-rusty-stack
+# Launch the interactive TUI installer
+rusty
 
 # Or use individual subcommands
-rusty-stack update --scan-only     # Check for updates
-rusty-stack update --all-safe      # Apply safe updates
-rusty-stack verify --full          # Verify installation
-rusty-stack bench --list           # List benchmarks
-rusty-stack bench --all            # Run all benchmarks
+rusty update --scan-only     # Check for updates
+rusty update --all-safe      # Apply safe updates
+rusty verify --full          # Verify installation
+rusty bench --list           # List benchmarks
+rusty bench --all            # Run all benchmarks
 ```
 
 ### Source Build

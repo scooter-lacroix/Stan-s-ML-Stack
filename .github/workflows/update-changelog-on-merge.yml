@@ -9,15 +9,15 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: changelog-${{ github.ref }}
-  cancel-in-progress: true
+  group: changelog-main
+  cancel-in-progress: false
 
 jobs:
   changelog:
     if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           ref: main
@@ -34,7 +34,8 @@ jobs:
           set -euo pipefail
           DATE=$(date +%Y-%m-%d)
 
-          ENTRY="$DATE - [$PR_TITLE]($PR_URL) (@$AUTHOR)"
+          SANITIZED_TITLE="$(printf '%s' "$PR_TITLE" | tr -d '\n\r[]')"
+          ENTRY="$DATE - $SANITIZED_TITLE (@$AUTHOR) — $PR_URL"
 
           if ! grep -qF "$PR_URL" CHANGELOG.md; then
             if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
@@ -63,8 +64,14 @@ jobs:
       - name: Push with retry
         if: steps.changelog.outputs.updated == 'true'
         run: |
+          set -euo pipefail
+          pushed=false
           for i in 1 2 3; do
-            git pull --rebase origin main && git push origin HEAD:main && break
+            git pull --rebase origin main && git push origin HEAD:main && { pushed=true; break; }
             echo "Push failed, retrying in $((i * 5))s..."
             sleep $((i * 5))
           done
+          if [ "$pushed" = false ]; then
+            echo "::error::Failed to push changelog update after 3 attempts"
+            exit 1
+          fi

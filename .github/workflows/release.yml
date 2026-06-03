@@ -199,7 +199,7 @@ PY
         id: changelog
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
-          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | awk -v current="v${VERSION}" '$0 != current { print; exit }')
 
           {
             echo "## What's Changed"
@@ -210,7 +210,7 @@ PY
             echo ""
             echo "\`\`\`bash"
             echo "cargo install rusty-stack --locked"
-            echo "rusty-stack"
+            echo "rusty"
             echo "\`\`\`"
             echo ""
             echo "The PyPI package is a compatibility wrapper that installs the same crates.io binary."
@@ -218,7 +218,7 @@ PY
             echo "Rusty Llama remains installed only through Rusty Stack:"
             echo ""
             echo "\`\`\`bash"
-            echo "rusty-stack update llama-cpp"
+            echo "rusty update llama-cpp"
             echo "\`\`\`"
             echo ""
             echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**"
