@@ -846,11 +846,9 @@ mod update_impl {
                 };
 
                 // Resolve sudo password for components that need it
+                #[cfg(unix)]
                 let sudo_password = if component.needs_sudo {
-                    // Resolve privilege path in order:
-                    // 1) already root, 2) non-interactive sudo available, 3) prompt for password.
                     if unsafe { libc::geteuid() } == 0 {
-                        // Running as root — no sudo needed
                         None
                     } else if can_sudo_non_interactive() {
                         tracing::info!(
@@ -859,7 +857,6 @@ mod update_impl {
                         );
                         None
                     } else {
-                        // Prompt for sudo password
                         eprint!("    sudo password for {}: ", component.name);
                         let _ = std::io::stderr().flush();
                         let password = read_password_from_tty();
@@ -873,6 +870,8 @@ mod update_impl {
                 } else {
                     None
                 };
+                #[cfg(not(unix))]
+                let sudo_password: Option<String> = None;
 
                 let (tx, rx) = std::sync::mpsc::channel();
                 let (_, input_rx) = std::sync::mpsc::channel();
