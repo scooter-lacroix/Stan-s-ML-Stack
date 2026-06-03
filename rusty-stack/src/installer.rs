@@ -458,14 +458,21 @@ fn fix_libdrm_amdgpu_ids() {
     // Try direct creation (works if user has write access to /opt)
     if let Some(parent) = link.parent() {
         if fs::create_dir_all(parent).is_ok() {
-            let relative = compute_relative_symlink(link, target);
-            if std::os::unix::fs::symlink(&relative, link).is_ok() {
-                tracing::info!(
-                    "Created libdrm symlink: {} -> {}",
-                    link.display(),
-                    relative.display()
-                );
-                return;
+            #[cfg(unix)]
+            {
+                let relative = compute_relative_symlink(link, target);
+                if std::os::unix::fs::symlink(&relative, link).is_ok() {
+                    tracing::info!(
+                        "Created libdrm symlink: {} -> {}",
+                        link.display(),
+                        relative.display()
+                    );
+                    return;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (link, target);
             }
         }
     }

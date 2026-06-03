@@ -10,6 +10,7 @@
 //! - **VAL-INFRA-008**: ROCm version detection returns semantic version
 //! - **VAL-INFRA-019**: No code duplication with platform modules
 
+#[cfg(unix)]
 use crate::platform::linux;
 use std::path::PathBuf;
 
@@ -40,9 +41,19 @@ impl RocmEnv {
     /// This calls `platform::linux::detect_rocm_path()` and
     /// `platform::linux::get_rocm_version()` — no duplicate detection.
     pub fn detect() -> Self {
-        let path = linux::detect_rocm_path();
-        let version = linux::get_rocm_version();
-        Self { path, version }
+        #[cfg(unix)]
+        {
+            let path = linux::detect_rocm_path();
+            let version = linux::get_rocm_version();
+            return Self { path, version };
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                path: None,
+                version: String::new(),
+            }
+        }
     }
 
     /// Create a RocmEnv with known values (useful for testing).

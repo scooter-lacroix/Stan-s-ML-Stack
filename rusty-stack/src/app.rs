@@ -132,7 +132,10 @@ pub struct App {
 
 impl App {
     pub fn new(scripts_dir: String) -> Self {
+        #[cfg(unix)]
         let entering_password = unsafe { libc::geteuid() != 0 };
+        #[cfg(not(unix))]
+        let entering_password = false;
         let mut config = InstallerConfig::load_or_default(&scripts_dir).unwrap_or_else(|_| {
             // Fallback to a non-persisted config if directory is locked
             InstallerConfig::default_with_paths(
@@ -2310,7 +2313,11 @@ impl App {
         }
         // Only require sudo password if at least one selected component needs it
         let any_needs_sudo = selected.iter().any(|c| c.needs_sudo);
-        if unsafe { libc::geteuid() != 0 } && any_needs_sudo && self.sudo_password.is_none() {
+        #[cfg(unix)]
+        let is_non_root = unsafe { libc::geteuid() != 0 };
+        #[cfg(not(unix))]
+        let is_non_root = false;
+        if is_non_root && any_needs_sudo && self.sudo_password.is_none() {
             self.errors
                 .push("Sudo password required for selected components. Press Esc to go back to Welcome screen and enter your sudo password.".into());
             self.stage = Stage::Recovery;
