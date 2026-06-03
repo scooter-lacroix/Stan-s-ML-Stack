@@ -277,10 +277,23 @@ PY
         run: |
           VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           # Skip if this version already exists on crates.io (idempotent for retries)
-          # Use -s (no progress) without -f so curl always returns the real HTTP status
-          HTTP_STATUS=$(curl -sS -o /tmp/crates_resp -w "%{http_code}" "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null)
-          HTTP_STATUS="${HTTP_STATUS:-000}"
-          echo "crates.io lookup HTTP status: ${HTTP_STATUS}"
+          # Retry up to 3 times on transient errors (5xx, timeouts, network/DNS failures)
+          HTTP_STATUS="000"
+          for i in 1 2 3; do
+            HTTP_STATUS=$(curl -sS -o /tmp/crates_resp -w "%{http_code}" "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null) || HTTP_STATUS="000"
+            echo "crates.io lookup attempt ${i}: HTTP ${HTTP_STATUS}"
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "404" ]; then
+              break
+            fi
+            if [ "$HTTP_STATUS" != "000" ] && [ "$HTTP_STATUS" -lt 500 ] 2>/dev/null; then
+              # Non-transient client error (e.g. 403 rate limit) — don't retry
+              break
+            fi
+            if [ "$i" -lt 3 ]; then
+              echo "Transient error, retrying in $((i * 10))s..."
+              sleep $((i * 10))
+            fi
+          done
           if [ "$HTTP_STATUS" = "200" ]; then
             PUBLISHED=$(python3 -c "import sys,json; d=json.load(open('/tmp/crates_resp')); print(d.get('crate',{}).get('max_stable_version',''))" 2>/dev/null || echo "")
             if [ "$PUBLISHED" = "$VERSION" ]; then
@@ -293,7 +306,7 @@ PY
             echo "Crate not found on crates.io (404) — first-time publish"
             cargo publish --locked
           else
-            echo "::error::crates.io returned HTTP ${HTTP_STATUS} — aborting (possible rate limit or outage)"
+            echo "::error::crates.io returned HTTP ${HTTP_STATUS} after 3 attempts — aborting (possible rate limit or outage)"
             cat /tmp/crates_resp 2>/dev/null || true
             exit 1
           fi
