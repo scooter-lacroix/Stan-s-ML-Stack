@@ -173,14 +173,16 @@ fn test_rusty_upgrade_dry_run_reports_current_version() {
     let output = Command::cargo_bin(BIN)
         .unwrap()
         .args(["upgrade", "--dry-run"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
+        .output()
+        .expect("failed to execute rusty upgrade --dry-run");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("Current version:"),
         "expected current-version output in dry run, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Schema version:"),
+        "expected schema-version output in dry run, got: {stdout}"
     );
 }

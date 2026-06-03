@@ -1199,11 +1199,12 @@ mod upgrade_impl {
                                 );
                             }
                         }
+                        process::exit(1);
                     } else {
                         println!("Current version: v{VERSION}");
                         println!("Schema version: {schema_version}");
                         eprintln!("Unable to check latest release: {error}");
-                        return;
+                        process::exit(1);
                     }
                 }
             }
