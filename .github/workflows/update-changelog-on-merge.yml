@@ -1,0 +1,77 @@
+name: Update Changelog on Merge
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: changelog-main
+  cancel-in-progress: false
+
+jobs:
+  changelog:
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          ref: main
+          persist-credentials: true
+
+      - name: Generate appended changelog entry
+        id: changelog
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          DATE=$(date +%Y-%m-%d)
+
+          SANITIZED_TITLE="$(printf '%s' "$PR_TITLE" | tr -d '\n\r[]')"
+          ENTRY="$DATE - $SANITIZED_TITLE (@$AUTHOR) — $PR_URL"
+
+          if ! grep -qF "$PR_URL" CHANGELOG.md; then
+            if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+              tmp=$(mktemp)
+              awk -v entry="$ENTRY" '
+                /^## \[Unreleased\]/ { print; print ""; print entry; next }
+                { print }
+              ' CHANGELOG.md > "$tmp" && mv "$tmp" CHANGELOG.md
+            else
+              printf '\n## [Unreleased]\n\n%s\n' "$ENTRY" >> CHANGELOG.md
+            fi
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+            echo "entry=$ENTRY" >> "$GITHUB_OUTPUT"
+          else
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit changelog update
+        if: steps.changelog.outputs.updated == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore(release): append changelog for PR #${{ github.event.pull_request.number }}"
+
+      - name: Push with retry
+        if: steps.changelog.outputs.updated == 'true'
+        run: |
+          set -euo pipefail
+          pushed=false
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && { pushed=true; break; }
+            echo "Push failed, retrying in $((i * 5))s..."
+            sleep $((i * 5))
+          done
+          if [ "$pushed" = false ]; then
+            echo "::error::Failed to push changelog update after 3 attempts"
+            exit 1
+          fi

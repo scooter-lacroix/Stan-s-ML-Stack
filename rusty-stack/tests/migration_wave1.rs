@@ -341,8 +341,8 @@ fn test_integration_selection_plan_produces_ordered_list_with_defaults() {
     // Plan must have all 5 items
     assert_eq!(plan.len(), 5, "plan must include all 5 components");
 
-    // Same-version reinstalls are Safe → preselected
-    // New install (flash-attn) is Candidate → not preselected
+    // Same-version Reinstalls → Safe, but NOT preselected (nothing to install)
+    // New install (flash-attn) → Candidate, not preselected
     for item in &plan {
         if item.plan_item.component_id == "flash-attn" {
             assert_eq!(
@@ -360,7 +360,10 @@ fn test_integration_selection_plan_produces_ordered_list_with_defaults() {
                 UpdateClassification::Safe,
                 "validated same-version reinstall must be Safe"
             );
-            assert!(item.selected, "safe update must be preselected");
+            assert!(
+                !item.selected,
+                "same-version safe reinstall must not be preselected (nothing to install)"
+            );
         }
     }
 }

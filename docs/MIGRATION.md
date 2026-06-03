@@ -11,15 +11,17 @@ Rusty Stack (formerly "Stan's ML Stack") is the same AMD GPU-focused machine lea
 | Aspect | Before | After |
 |--------|--------|-------|
 | Project Name | Stan's ML Stack | Rusty Stack |
-| Primary Installer | Python curses UI | Rusty-Stack TUI (Rust + Ratatui) |
+| Primary Installer | Python curses UI | `cargo install rusty-stack --locked` + Rusty Stack TUI/CLI |
 | Repository | `scooter-lacroix/Stan-s-ML-Stack` | **Unchanged** (same repository) |
-| Python Package | `stans-ml-stack` | `Rusty-Stack` (renamed on PyPI) |
+| Python Package | `stans-ml-stack` | `Rusty-Stack` compatibility wrapper |
+| Rust Package | N/A | `rusty-stack` on crates.io |
 
 ### What's Staying the Same?
 
 - **Repository URL**: `https://github.com/scooter-lacroix/Stan-s-ML-Stack`
-- **PyPI Package**: `pip install Rusty-Stack` (renamed from `stans-ml-stack`)
-- **Backend Scripts**: All `scripts/install_*.sh` scripts remain unchanged
+- **Primary Install**: `cargo install rusty-stack --locked`
+- **PyPI Package**: `pip install Rusty-Stack` remains as a compatibility wrapper
+- **Backend Scripts**: archived and no longer part of the active install path
 - **Components**: ROCm, PyTorch, vLLM, etc. - same components
 - **Functionality**: Your ML stack works exactly the same
 
@@ -36,14 +38,11 @@ The Python curses installer (`install_ml_stack_curses.py`) is now deprecated.
 
 **New way:**
 ```bash
-# One-line install
-curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
-
-# Or manual build
-./scripts/run_rusty_stack.sh
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
-**Good news:** Both installers use the same backend shell scripts, so your existing installation is compatible.
+**Good news:** Existing installations remain compatible; new installs should use the Rust CLI/TUI.
 
 ### If You Used the PyPI Package
 
@@ -53,7 +52,7 @@ The PyPI package is maintained for backward compatibility.
 pip install Rusty-Stack  # Renamed from stans-ml-stack
 ```
 
-The package now points to Rusty-Stack TUI as the recommended installer.
+The package now installs the matching crates.io `rusty` binary and exposes compatibility entrypoints.
 
 ### If You Used the Go Installer
 
@@ -61,7 +60,8 @@ The Go installer (`mlstack-installer/`) is deprecated and no longer maintained.
 
 **Migration:** Switch to Rusty-Stack TUI:
 ```bash
-./scripts/run_rusty_stack.sh
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 ## Component Installation

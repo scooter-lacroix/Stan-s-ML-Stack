@@ -164,12 +164,25 @@ fn test_rusty_update_scan_only_json() {
     let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
+// ===========================================================================
+// Upgrade subcommand dry-run
+// ===========================================================================
+
 #[test]
-fn test_rusty_upgrade_dry_run() {
-    Command::cargo_bin(BIN)
+fn test_rusty_upgrade_dry_run_reports_current_version() {
+    let output = Command::cargo_bin(BIN)
         .unwrap()
         .args(["upgrade", "--dry-run"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Current version:"));
+        .output()
+        .expect("failed to execute rusty upgrade --dry-run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Current version:"),
+        "expected current-version output in dry run, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Schema version:"),
+        "expected schema-version output in dry run, got: {stdout}"
+    );
 }

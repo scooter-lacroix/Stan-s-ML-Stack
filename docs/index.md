@@ -133,24 +133,20 @@ The ML Stack consists of the following core components:
 
 The ML Stack provides several installation options to suit your needs.
 
-### Quick Install (One-Line)
+### Quick Install (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 ### Rusty-Stack TUI (Primary Installer)
 
-The recommended way to install Rusty Stack is using the Rust-based **Rusty-Stack** TUI:
+The recommended way to install Rusty Stack is using the crates.io `rusty-stack` package:
 
 ```bash
-# Build + run Rusty-Stack
-./scripts/run_rusty_stack.sh
-
-# Or build manually
-cd rusty-stack
-cargo build --release
-./target/release/rusty-stack
+cargo install rusty-stack --locked
+rusty-stack
 ```
 
 This script will:
@@ -164,10 +160,11 @@ The TUI provides a responsive, interactive experience with real-time feedback du
 
 ### PyPI Installation
 
-Install via PyPI (Python package, maintained for backward compatibility):
+Install via PyPI only for backward-compatible Python entrypoints. The wrapper installs the matching crates.io binary:
 
 ```bash
 pip install Rusty-Stack
+ml-stack-install
 ```
 
 ### Legacy Installers (Deprecated)

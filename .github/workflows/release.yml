@@ -199,10 +199,27 @@ PY
         id: changelog
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
-          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname | awk -v current="v${VERSION}" '$0 != current { print; exit }')
 
           {
             echo "## What's Changed"
+            echo ""
+            echo "## Install"
+            echo ""
+            echo "Rusty Stack is now published as the \`rusty-stack\` crates.io package:"
+            echo ""
+            echo "\`\`\`bash"
+            echo "cargo install rusty-stack --locked"
+            echo "rusty"
+            echo "\`\`\`"
+            echo ""
+            echo "The PyPI package is a compatibility wrapper that installs the same crates.io binary."
+            echo ""
+            echo "Rusty Llama remains installed only through Rusty Stack:"
+            echo ""
+            echo "\`\`\`bash"
+            echo "rusty update llama-cpp"
+            echo "\`\`\`"
             echo ""
             echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**"
             echo ""
@@ -261,10 +278,11 @@ PY
         run: |
           VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           # Skip if this version already exists on crates.io (idempotent for retries)
-          if cargo search rusty-stack 2>/dev/null | grep -q "^rusty-stack = \"${VERSION}\""; then
+          PUBLISHED=$(curl -sSf "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('crate',{}).get('max_stable_version',''))" 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$VERSION" ]; then
             echo "Version ${VERSION} already published to crates.io — skipping"
           else
-            cargo publish --allow-dirty
+            cargo publish --locked
           fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -357,8 +375,8 @@ PY
           echo "| PyPI | ${{ needs.pypi.result }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Registry notes" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **crates.io**: Publishes the Rust crate (required)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **PyPI**: Thin Python wrapper that installs via cargo (OIDC trusted publishing)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **crates.io**: Publishes \`rusty-stack\`; users install with \`cargo install rusty-stack --locked\` (required)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **PyPI**: Thin Python wrapper that installs the \`rusty-stack\` crates.io binary (OIDC trusted publishing)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Windows ALPHA" >> "$GITHUB_STEP_SUMMARY"
           echo "**Windows support is in ALPHA testing. We are openly accepting testers! The easiest way to become a tester is to test on your system/hardware, and when issues are encountered, open an issue following the issue template.**" >> "$GITHUB_STEP_SUMMARY"

@@ -70,7 +70,9 @@ def _install_from_crates_io() -> None:
     fallback_cmd = [cargo, "install", "--locked", CRATE_NAME]
     fallback = subprocess.run(fallback_cmd)
     if fallback.returncode != 0:
-        raise RuntimeError("failed to install rusty-stack from crates.io via cargo install")
+        raise RuntimeError(
+            "failed to install rusty-stack from crates.io via cargo install"
+        )
 
 
 def _bin_version_matches(path: str) -> bool:

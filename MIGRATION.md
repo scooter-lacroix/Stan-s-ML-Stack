@@ -347,33 +347,29 @@ python3 scripts/install_ml_stack_ui.py
 ### After: Rusty Stack Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
-cd Stan-s-ML-Stack/rusty-stack
+# Install from crates.io
+cargo install rusty-stack --locked
 
-# Build from source
-cargo build --release
-
-# Run the TUI installer (same as rusty-stack binary)
-./target/release/rusty
+# Launch the interactive TUI installer
+rusty
 
 # Or use individual subcommands
-./target/release/rusty update --scan-only     # Check for updates
-./target/release/rusty update --all-safe      # Apply safe updates
-./target/release/rusty verify --full           # Verify installation
-./target/release/rusty bench --list            # List benchmarks
-./target/release/rusty bench --all             # Run all benchmarks
-
-# Quick install (still available)
-curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
+rusty update --scan-only     # Check for updates
+rusty update --all-safe      # Apply safe updates
+rusty verify --full          # Verify installation
+rusty bench --list           # List benchmarks
+rusty bench --all            # Run all benchmarks
 ```
 
-### One-Line Install
+### Source Build
 
-The curl-based install still works and now builds the Rust binary:
+Build from source only when developing Rusty Stack itself:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/main/scripts/install.sh | bash
+git clone https://github.com/scooter-lacroix/Stan-s-ML-Stack.git
+cd Stan-s-ML-Stack/rusty-stack
+cargo build --release
+./target/release/rusty
 ```
 
 ### Build Requirements
@@ -381,7 +377,7 @@ curl -fsSL https://raw.githubusercontent.com/scooter-lacroix/Stan-s-ML-Stack/mai
 | Requirement | Before | After |
 |---|---|---|
 | Python | 3.10-3.13 | 3.10-3.13 (unchanged) |
-| Rust | Not required | 1.70+ (for building from source) |
+| Rust | Not required | Current stable Rust, via rustup, for `cargo install rusty-stack` or source builds |
 | Shell | bash | bash (for remaining active scripts) |
 | Package manager | apt/dnf/pacman | apt/dnf/pacman (unchanged) |
 
