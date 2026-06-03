@@ -6039,11 +6039,11 @@ fn parse_progress(line: &str) -> Option<f32> {
 }
 
 fn needs_sudo() -> bool {
-    #[cfg(feature = "unix-deps")]
+    #[cfg(unix)]
     {
         unsafe { libc::geteuid() != 0 }
     }
-    #[cfg(not(feature = "unix-deps"))]
+    #[cfg(not(unix))]
     {
         false
     }
