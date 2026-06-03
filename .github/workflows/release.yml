@@ -34,13 +34,13 @@ jobs:
           CARGO_VER=$(grep -m1 '^version' rusty-stack/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           PYPI_VER=$(
             python3 - <<'PY'
-import tomllib
-data = tomllib.load(open("pyproject.toml", "rb"))
-project = data.get("project", {})
-explicit = project.get("version")
-if explicit:
-    print(explicit)
-PY
+            import tomllib
+            data = tomllib.load(open("pyproject.toml", "rb"))
+            project = data.get("project", {})
+            explicit = project.get("version")
+            if explicit:
+                print(explicit)
+            PY
           )
           # pyproject.toml uses dynamic version from VERSION file when explicit version is absent.
           if [ -z "$PYPI_VER" ] || [ "$PYPI_VER" = "None" ] || [ "$PYPI_VER" = "MISSING" ]; then
