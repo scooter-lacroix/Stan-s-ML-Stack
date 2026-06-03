@@ -7,7 +7,14 @@ on:
       # Only trigger when version-carrying files change (bumped by bump-version.yml or manual edit)
       - 'rusty-stack/Cargo.toml'
       - 'VERSION'
-
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Skip changed/unchanged check and always run (for manual triggers)'
+        required: false
+        type: boolean
+        default: false
+        
 permissions:
   contents: write
   id-token: write
@@ -77,6 +84,13 @@ jobs:
         run: |
           VERSION=$(grep '^version =' rusty-stack/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Manual dispatch with force=true skips the changed check
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch with force — always running"
+            exit 0
+          fi
 
           # Fetch all tags explicitly (ensures tag list is accurate)
           git fetch --tags
