@@ -47,7 +47,7 @@ jobs:
             explicit = project.get("version")
             if explicit:
                 print(explicit)
-            PY
+PY
           )
           # pyproject.toml uses dynamic version from VERSION file when explicit version is absent.
           if [ -z "$PYPI_VER" ] || [ "$PYPI_VER" = "None" ] || [ "$PYPI_VER" = "MISSING" ]; then
