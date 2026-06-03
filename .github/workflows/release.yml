@@ -285,7 +285,7 @@ jobs:
           # Retry up to 3 times on transient errors (5xx, timeouts, network/DNS failures)
           HTTP_STATUS="000"
           for i in 1 2 3; do
-            HTTP_STATUS=$(curl -sS -o /tmp/crates_resp -w "%{http_code}" "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null) || HTTP_STATUS="000"
+            HTTP_STATUS=$(curl -sS -o /tmp/crates_resp -w "%{http_code}" -H "User-Agent: rusty-stack-ci (github.com/scooter-lacroix/Stan-s-ML-Stack)" "https://crates.io/api/v1/crates/rusty-stack" 2>/dev/null) || HTTP_STATUS="000"
             echo "crates.io lookup attempt ${i}: HTTP ${HTTP_STATUS}"
             if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "404" ]; then
               break
