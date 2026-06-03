@@ -4,6 +4,8 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+2026-06-03 - feat(release): crates.io first publish flow and merge changelog automation (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/16
+
 ### Release Track Status
 - Next changes accumulate here after Anagami 0.2.0.
 
