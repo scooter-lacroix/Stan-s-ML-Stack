@@ -4,10 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      # Only trigger when version-carrying or publishable files change
+      # Only trigger when version-carrying files change (bumped by bump-version.yml or manual edit)
       - 'rusty-stack/Cargo.toml'
-      - 'rusty-stack/Cargo.lock'
-      - 'rusty-stack/src/**'
+      - 'VERSION'
 
 permissions:
   contents: write
