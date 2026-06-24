@@ -12,6 +12,7 @@ pub mod bootstrap;
 pub mod component_status;
 pub mod config;
 pub mod core;
+pub mod gpu;
 pub mod hardware;
 pub mod installer;
 pub mod installers;
@@ -20,6 +21,7 @@ pub mod orchestrator;
 pub mod platform;
 pub mod state;
 pub mod telemetry;
+pub mod uninstall;
 pub mod verification;
 
 #[cfg(feature = "tui")]

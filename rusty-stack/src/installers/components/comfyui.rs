@@ -9,8 +9,6 @@
 //! - **VAL-INSTALL-025**: App installers correct target directory
 //! - **VAL-INSTALL-047**: ComfyUI declares dependency on PyTorch
 
-use crate::installers::common::command_exists;
-
 // ===========================================================================
 // Types
 // ===========================================================================
@@ -307,15 +305,13 @@ impl ComfyuiInstaller {
         )
     }
 
-    /// Detect GPU devices via rocm-smi.
+    /// Detect GPU devices — the canonical, iGPU-filtered discrete list.
+    ///
+    /// Routes through `crate::installer::detect_gpu_list` (Stage 1) so the
+    /// integrated GPU is never included and no dGPU is missed. Baked into the
+    /// launcher shim + systemd unit as `HIP_VISIBLE_DEVICES`/`CUDA_VISIBLE_DEVICES`.
     pub fn detect_gpu_devices(&self) -> String {
-        if command_exists("rocm-smi") {
-            // In real execution this would parse rocm-smi output
-            // For command construction we return a placeholder
-            "0,1".to_string()
-        } else {
-            "0,1".to_string()
-        }
+        crate::installer::detect_gpu_list()
     }
 
     /// Get the install directory.

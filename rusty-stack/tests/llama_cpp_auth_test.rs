@@ -16,8 +16,7 @@ fn test_validate_repo_access_without_token() {
 
     // This should either fail with an actionable error or succeed if the repo is public
     let result = installer.validate_repo_access();
-    if result.is_err() {
-        let err = result.unwrap_err();
+    if let Err(err) = result {
         eprintln!("Error message: {}", err);
         // If it fails, ensure the error is actionable
         assert!(!err.is_empty());

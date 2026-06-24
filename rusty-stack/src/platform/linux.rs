@@ -401,9 +401,7 @@ fn detect_gpu_from_rocminfo(rocminfo_cmd: &str, info: &mut GPUInfo) -> bool {
                         .collect();
                     if !gfx_num.is_empty() && gfx_num.len() >= 3 {
                         // Only set architecture for dGPUs (not iGPUs, not CPUs)
-                        let is_igpu = current_marketing_name.to_lowercase().contains("ryzen")
-                            || current_marketing_name.to_lowercase().contains("apu")
-                            || current_marketing_name.to_lowercase().contains("integrated");
+                        let is_igpu = crate::gpu::is_integrated_gpu_name(&current_marketing_name);
                         if !is_igpu && current_device_type == "GPU" && info.architecture.is_empty()
                         {
                             info.architecture = get_correct_gfx_from_marketing_name(
@@ -417,7 +415,16 @@ fn detect_gpu_from_rocminfo(rocminfo_cmd: &str, info: &mut GPUInfo) -> bool {
         }
     }
 
-    if gpu_count > 0 {
+    // Stage 1: gpu_count must exclude the iGPU. Reuse the canonical filtered
+    // detector; fall back to the raw count only when it returns nothing.
+    let discrete_count = crate::installer::detect_gpu_list()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .count();
+    if discrete_count > 0 {
+        info.gpu_count = discrete_count;
+        true
+    } else if gpu_count > 0 {
         info.gpu_count = gpu_count;
         true
     } else {

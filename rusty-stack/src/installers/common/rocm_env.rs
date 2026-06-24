@@ -45,7 +45,7 @@ impl RocmEnv {
         {
             let path = linux::detect_rocm_path();
             let version = linux::get_rocm_version();
-            return Self { path, version };
+            Self { path, version }
         }
         #[cfg(not(unix))]
         {

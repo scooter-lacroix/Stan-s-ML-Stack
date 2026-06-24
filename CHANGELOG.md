@@ -4,12 +4,123 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
-2026-06-03 - chore(workflows): remove deprecated workflows and tighten release trigger (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/17
-
-2026-06-03 - feat(release): crates.io first publish flow and merge changelog automation (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/16
-
 ### Release Track Status
-- Next changes accumulate here after Anagami 0.2.0.
+- Next changes accumulate here after 0.3.0.
+
+## [0.3.0] - 2026-06-24
+
+The "tenet remediation" release: a focused pass over the seven project tenets
+that were not being met, surfaced by a 7-agent read-only audit of v0.2.0.
+
+### Added — Tenet 1 & 6: env consolidation + working uninstall/reinstall
+- **Single `~/.mlstack/` root**: `global/` venv, `envs/<name>/`, `logs/`,
+  `cache/`, `triton/`, `installed.json`. Canonical path helpers
+  (`platform::environment::mlstack_*`) replace the scattered home-rooted
+  locations (`~/rocm_venv`, `~/onnxruntime_build`, `~/.rocmrc`).
+- **Deterministic Python resolution**: an explicit `MLSTACK_PYTHON_BIN`/
+  `UV_PYTHON` override wins; otherwise the managed global env
+  (`~/.mlstack/global/bin/python`) is the single source — replacing the
+  non-deterministic interpreter scan. `ensure_global_venv()` creates it.
+- **Installed-component registry** (`core::registry`): persisted
+  `~/.mlstack/installed.json` recording id/version/source/location/seal/pip
+  packages — the substrate for single-source deps, verification, and uninstall.
+- **`rusty uninstall`** (new): removes Python ML packages, ROCm/amdgpu system
+  packages (cross-distro apt/dnf/pacman/zypper), `/opt/rocm`, the env files
+  Rusty wrote, and the legacy `source ~/.mlstack_env` lines from
+  fish/bash/zsh rc files; clears the registry. `--keep-rocm` preserves ROCm;
+  `--purge-dir` also removes `~/.mlstack/`.
+- **`rusty reinstall`** (new): uninstall then relaunch the installer — the
+  flow that was entirely absent in v0.2.0 (force-reinstall was a TUI-only flag
+  that purged pip + Arch-ROCm only).
+
+### Changed — Tenet 3: iGPU filtering (single source, structural, fail-closed)
+- New canonical `gpu` module: `is_integrated_gpu_name` (rich, case-insensitive),
+  `INTEGRATED_PCI_DEVICE_IDS` denylist (Raphael `0x164e`, Phoenix `0x15c8`, …),
+  `INTEGRATED_GFX_ARCHS` (gfx1036/gfx1103), `device_is_integrated`
+  (fail-safe: PCI-id OR gfx-arch OR name OR ambiguous+low-VRAM; never drops a
+  dGPU on unreadable VRAM). The three former divergent classifiers
+  (`installer`, `bootstrap/env_setup`, `hardware`/`platform/linux`) now delegate
+  to it.
+- `detect_gpu_list()` is the single entrypoint for the
+  `HIP_VISIBLE_DEVICES`/`CUDA_VISIBLE_DEVICES` mask; `textgen`/`comfyui` no
+  longer hardcode `"0,1"`, `migraphx_python` no longer trusts inherited
+  `HIP_VISIBLE_DEVICES` (the root cause of the MIGraphX/ONNX-worker failure),
+  the sysfs fallback skips iGPU PCI ids, and `gpu_count` excludes the iGPU.
+
+### Changed — Tenet 4: no-CUDA chokepoint (single enforceable blocklist)
+- New `installers/common/nvidia_blocklist`: one unified blocklist
+  (nvidia-*, cuda*, cudnn/cublas/cufft/curand/cusolver/cusparse/nccl/nvtx/
+  nvjitlink/tensorrt, triton prefix, torch family, CUDA wheel-URL markers).
+  The three former copies (`installer::filter_cuda_requirements`,
+  `megatron::is_safe_package`, `textgen::EXCLUDED_PATTERNS`) delegate to it;
+  **comfyui now filters its requirements** (previously installed raw — the
+  leak). Plus `contaminated_packages()` for verify-time enforcement.
+- Stripped CUDA env leakage from all env emitters (legacy `.mlstack_env`
+  writer, `permanent_env`, bootstrap bash+fish): `TORCH_CUDA_ARCH_LIST` and
+  `OMPI_MCA_opal_cuda_support` are no longer exported on a ROCm stack.
+
+### Changed — Tenet 2 & 5: no-override + functional verification
+- DeepSpeed now installs with `--no-deps` (deps installed explicitly) so it
+  cannot re-resolve and clobber the ROCm torch.
+- PyTorch verification now **fails loud** when torch is not a ROCm build or the
+  HIP runtime is unavailable — the v0.2.0 snippet always `sys.exit(0)` (a
+  CPU/CUDA torch reported VERIFIED). Downstream gating is an orchestrator
+  concern, not a lying exit code.
+
+### Fixed — Tenet 7: logging
+- Log directory (`~/.mlstack/logs/`) is created via the canonical sudo-aware
+  path; the v0.2.0 binary never wrote the JSON logs it claimed to.
+
+### Completed (full closure) — all 7 tenets now MET
+
+**Backbone hardening (Tenets 1 & 2 — closed the structural residuals a source
+review found after the first 0.3.0 cut):**
+- **Bare-`rusty` TUI now anchors to the single global env.** `run_installation`
+  creates + pins `~/.mlstack/global` (via `ensure_global_venv`) when no named env
+  and no explicit interpreter override is set (graceful fallback on failure), and
+  `resolve_python_bin()` now prefers `~/.mlstack/global/bin/python` over
+  discovered interpreters. "Global installs ALL install to a SINGLE default env"
+  now holds for the primary TUI entrypoint, not only `rusty install --global`.
+- **Registry is now a real single-source-of-truth.** `registry_record`
+  populates `pip_packages` (per-component), `location` (named/global env or
+  pinned interpreter), `source_index` (ROCm index for pytorch/triton, /opt/rocm
+  for rocm), and `version` (rocm) — no longer a hollow id+seal stub. Sealed set
+  extended beyond the 3 cores to the install-once components the tenet names
+  (aiter, flash-attn, rccl, migraphx, bitsandbytes) via `should_seal_component`.
+  `all_pip_packages()` is now live and `uninstall` unions it with its curated list.
+
+**Also in this cut:**
+- **Lint to zero.** `cargo clippy --workspace --all-targets` = **0 warnings**
+  (was 28, several previously dismissed as "pre-existing"). Real fixes only, no
+  `#[allow]` silencing: `PlanItem::new`→`PlanItemInput` struct (22 call sites),
+  `BuildReport::from_hardware`→`BuildReportArtifacts` struct (5 call sites), dead
+  `build_report_from_state` removed, `RocmChannel::from_str`→`parse_channel`,
+  dead identical if/else branch removed in onnxruntime, `unwrap_err`-after-`is_err`
+  → `if let Err` in a test, plus the auto-fixable lints (needless borrow,
+  collapsible ifs, `get(0)`→`first`, etc.).
+- **Named-env isolation (`rusty install --env <name>`)** — Tenet 1: creates
+  `~/.mlstack/envs/<name>/`, routes ALL components into it via `MLSTACK_ENV_NAME`,
+  and prints the shell-aware sourcing command + path.
+- **Managed global env created on every install path** (`rusty install --global`
+  AND bare `rusty`); `~/rocm_venv` superseded by `~/.mlstack/global`.
+- **Registry-driven sealed-core no-override** — Tenet 2: the install loop now
+  POPULATES `~/.mlstack/installed.json` (sealing rocm/pytorch/triton) and GATES
+  re-install — a sealed core is REUSED (skipped), and force-reinstall of a sealed
+  core is REFUSED unless `MLSTACK_UNSEAL_CORE=1`.
+- **No-CUDA hard-prime fully enforced** — Tenet 4: AITER/fastvideo/flash-attn
+  (triton backend) now install with `--no-deps`; plus a universal pip chokepoint
+  in `execute_native_command` that REJECTS any `nvidia-*`/`cuda*` runtime package
+  or CUDA wheel URL from ANY component (covers both `Pip` and `python3 -m pip`
+  Shell installs), while still permitting torch/triton from the ROCm index.
+- **iGPU filter residuals closed** — Tenet 3: the lspci path now uses
+  `device_is_integrated` (name + PCI-id + VRAM); the benchmark Python classifier
+  now DERIVES its token list from the Rust `gpu` consts (single source, no drift).
+- **Functional verification for ALL components** — Tenet 5: triton/mpi4py/
+  deepspeed/megatron/aiter/ml-stack-core/migraphx/wandb/fastvideo upgraded from
+  import-only to real functional probes (MPI.Is_initialized, compiled-op import,
+  parse_onnx, submodule load); textgen/comfyui upgraded from file-existence to a
+  real module-load probe.
+- **`rusty install`** CLI subcommand added (Tenet 1 entry point).
 
 ## [0.2.0] - 2026-05-30 — Anagami
 

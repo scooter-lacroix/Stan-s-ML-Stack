@@ -350,12 +350,14 @@ impl App {
                                     std::time::Duration::from_secs(
                                         self.install_status.progress as u64,
                                     ),
-                                    "unknown",
-                                    self.config.install_path.clone(),
-                                    vec![],
-                                    self.config.install_path.clone(),
-                                    "unknown",
-                                    false,
+                                    crate::installers::common::BuildReportArtifacts {
+                                        git_commit: "unknown".into(),
+                                        install_path: self.config.install_path.clone(),
+                                        cmake_flags: vec![],
+                                        verification_path: self.config.install_path.clone(),
+                                        binary_version: "unknown".into(),
+                                        was_prebuilt: false,
+                                    },
                                 );
                                 crate::installers::common::submit_build_report(report);
                             }
@@ -387,12 +389,17 @@ impl App {
                                                 std::time::Duration::from_secs(
                                                     self.install_status.progress as u64,
                                                 ),
-                                                "unknown",
-                                                self.config.install_path.clone(),
-                                                vec![],
-                                                self.config.install_path.clone(),
-                                                "unknown",
-                                                false,
+                                                crate::installers::common::BuildReportArtifacts {
+                                                    git_commit: "unknown".into(),
+                                                    install_path: self.config.install_path.clone(),
+                                                    cmake_flags: vec![],
+                                                    verification_path: self
+                                                        .config
+                                                        .install_path
+                                                        .clone(),
+                                                    binary_version: "unknown".into(),
+                                                    was_prebuilt: false,
+                                                },
                                             );
                                         crate::installers::common::submit_build_report(report);
                                     }

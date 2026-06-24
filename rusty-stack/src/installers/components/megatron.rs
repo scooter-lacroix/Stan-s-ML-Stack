@@ -316,59 +316,11 @@ impl MegatronInstaller {
 
     /// Check if a Python package is safe to install (non-CUDA/non-NVIDIA).
     ///
-    /// The original script filters out packages that would conflict with
-    /// the ROCm environment: nvidia-*, cuda*, torch, torchvision, etc.
+    /// Delegates to the single canonical blocklist
+    /// [`crate::installers::common::nvidia_blocklist::is_cuda_nvidia_package`]
+    /// (Stage 2: one unified rule for the "no nvidia deps ever" tenet).
     pub fn is_safe_package(&self, package_name: &str) -> bool {
-        let lower = package_name.to_lowercase();
-        let lower = lower.split(';').next().unwrap_or(&lower);
-        let lower = lower.split('[').next().unwrap_or(lower);
-        let pkg_name = lower
-            .split(&['<', '>', '=', '~', '!', ' '][..])
-            .next()
-            .unwrap_or(lower)
-            .trim();
-
-        let blocked_prefixes = [
-            "nvidia",
-            "cuda",
-            "cudnn",
-            "cublas",
-            "cufft",
-            "curand",
-            "cusolver",
-            "cusparse",
-            "nccl",
-            "nvtx",
-            "nvjitlink",
-            "tensorrt",
-        ];
-
-        let blocked_exact = [
-            "torch",
-            "torchvision",
-            "torchaudio",
-            "triton",
-            "xformers",
-            "pytorch-cuda",
-            "torch-cuda",
-        ];
-
-        if blocked_exact.contains(&pkg_name) {
-            return false;
-        }
-
-        for prefix in &blocked_prefixes {
-            if pkg_name.starts_with(prefix) {
-                return false;
-            }
-        }
-
-        // Check for patterns like cupy-cuda*
-        if pkg_name.contains("cuda") {
-            return false;
-        }
-
-        true
+        !crate::installers::common::nvidia_blocklist::is_cuda_nvidia_package(package_name)
     }
 
     // -----------------------------------------------------------------------

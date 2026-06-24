@@ -43,7 +43,7 @@ fn test_llama_cpp_detection_functional_binary() {
 
     // Create a dummy binary that will fail the --help check
     let _ = fs::write(&bin_path, b"#!/bin/bash\nexit 1");
-    let _ = Command::new("chmod").args(&["+x", &bin_path]).output();
+    let _ = Command::new("chmod").args(["+x", &bin_path]).output();
 
     assert!(!is_llama_cli_functional(home));
     assert!(!is_component_installed_by_id("llama-cpp", &[]));

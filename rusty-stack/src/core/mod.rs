@@ -5,6 +5,7 @@
 
 pub mod manifest;
 pub mod plan;
+pub mod registry;
 pub mod telemetry_types;
 pub mod types;
 pub mod validation;

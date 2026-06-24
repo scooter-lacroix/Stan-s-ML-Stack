@@ -789,7 +789,10 @@ mod tests {
     }
 
     impl BinaryDownloader for MockDownloader {
-        fn download(&self, _release: &ReleaseInfo) -> std::result::Result<DownloadResult, UpgradeError> {
+        fn download(
+            &self,
+            _release: &ReleaseInfo,
+        ) -> std::result::Result<DownloadResult, UpgradeError> {
             self.data.clone()
         }
     }

@@ -187,10 +187,39 @@ impl MigraphxPythonInstaller {
     }
 
     /// Construct the ROCm environment setup for the install.
+    ///
+    /// Stage 1: never trust inherited `HIP_VISIBLE_DEVICES` verbatim — the
+    /// parent env may carry the iGPU index (the root cause of the LeIndex
+    /// ONNX/MIGraphX worker failure). Re-derive the dGPU list from the
+    /// canonical detector; only honor an inherited value when it is a strict
+    /// subset of the detected dGPUs (preserves intentional narrowing).
     pub fn build_rocm_env(&self) -> Vec<(String, String)> {
+        let detected_raw = crate::installer::detect_gpu_list();
+        let detected: Vec<&str> = detected_raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let detected_set: std::collections::HashSet<&str> = detected.iter().copied().collect();
+
         let gpu_visible = std::env::var("HIP_VISIBLE_DEVICES")
             .or_else(|_| std::env::var("CUDA_VISIBLE_DEVICES"))
-            .unwrap_or_else(|_| "0".to_string());
+            .ok()
+            .and_then(|v| {
+                let inherited: Vec<&str> = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let all_subset = !inherited.is_empty()
+                    && inherited.iter().all(|idx| detected_set.contains(*idx));
+                if all_subset {
+                    Some(inherited.join(","))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| detected.join(","));
 
         vec![
             ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),

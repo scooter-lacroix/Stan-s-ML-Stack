@@ -13,6 +13,30 @@ use std::collections::{HashMap, HashSet};
 // Plan Item
 // ---------------------------------------------------------------------------
 
+/// Input bundle for [`PlanItem::new`].
+///
+/// Groups the eight construction fields so the constructor stays well under
+/// clippy's `too_many_arguments` threshold.
+#[derive(Debug, Clone)]
+pub struct PlanItemInput {
+    /// Component ID.
+    pub component_id: String,
+    /// Currently installed version (empty if not installed).
+    pub current_version: String,
+    /// Proposed version to install.
+    pub proposed_version: String,
+    /// Validation tier of this component.
+    pub validation_tier: ValidationTier,
+    /// Whether this item is selected for apply.
+    pub selected: bool,
+    /// Human-readable rationale for this update.
+    pub rationale: String,
+    /// Component IDs this item depends on.
+    pub dependencies: Vec<String>,
+    /// Whether this component can be installed in isolation.
+    pub isolation_safe: bool,
+}
+
 /// A single item in an update plan.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlanItem {
@@ -39,25 +63,16 @@ pub struct PlanItem {
 
 impl PlanItem {
     /// Create a new plan item.
-    pub fn new(
-        component_id: &str,
-        current_version: &str,
-        proposed_version: &str,
-        validation_tier: ValidationTier,
-        selected: bool,
-        rationale: &str,
-        dependencies: Vec<String>,
-        isolation_safe: bool,
-    ) -> Self {
+    pub fn new(input: PlanItemInput) -> Self {
         Self {
-            component_id: component_id.to_string(),
-            current_version: current_version.to_string(),
-            proposed_version: proposed_version.to_string(),
-            validation_tier,
-            selected,
-            rationale: rationale.to_string(),
-            dependencies,
-            isolation_safe,
+            component_id: input.component_id,
+            current_version: input.current_version,
+            proposed_version: input.proposed_version,
+            validation_tier: input.validation_tier,
+            selected: input.selected,
+            rationale: input.rationale,
+            dependencies: input.dependencies,
+            isolation_safe: input.isolation_safe,
             risk_tier: RiskTier::Medium, // default
         }
     }
@@ -107,7 +122,7 @@ pub fn topological_sort(items: Vec<PlanItem>) -> Vec<PlanItem> {
     // Start with nodes that have no dependencies
     let mut queue: Vec<String> = all_nodes
         .iter()
-        .filter(|id| remaining_deps.get(*id).map_or(true, |d| d.is_empty()))
+        .filter(|id| remaining_deps.get(*id).is_none_or(|d| d.is_empty()))
         .cloned()
         .collect();
 
@@ -222,26 +237,26 @@ mod tests {
     #[test]
     fn test_topological_sort_simple_dependency() {
         let items = vec![
-            PlanItem::new(
-                "pytorch",
-                "2.4.0",
-                "2.5.0",
-                ValidationTier::Validated,
-                true,
-                "update pytorch",
-                vec!["rocm".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "rocm",
-                "7.2.0",
-                "7.3.0",
-                ValidationTier::Validated,
-                true,
-                "update rocm",
-                vec![],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "pytorch".into(),
+                current_version: "2.4.0".into(),
+                proposed_version: "2.5.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update pytorch".into(),
+                dependencies: vec!["rocm".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "rocm".into(),
+                current_version: "7.2.0".into(),
+                proposed_version: "7.3.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update rocm".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
         ];
 
         let sorted = topological_sort(items);
@@ -252,36 +267,36 @@ mod tests {
     #[test]
     fn test_topological_sort_complex_dependency_chain() {
         let items = vec![
-            PlanItem::new(
-                "pytorch",
-                "2.4.0",
-                "2.5.0",
-                ValidationTier::Validated,
-                true,
-                "update pytorch",
-                vec!["rocm".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "triton",
-                "3.0.0",
-                "3.1.0",
-                ValidationTier::Validated,
-                true,
-                "update triton",
-                vec!["pytorch".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "rocm",
-                "7.2.0",
-                "7.3.0",
-                ValidationTier::Validated,
-                true,
-                "update rocm",
-                vec![],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "pytorch".into(),
+                current_version: "2.4.0".into(),
+                proposed_version: "2.5.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update pytorch".into(),
+                dependencies: vec!["rocm".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "triton".into(),
+                current_version: "3.0.0".into(),
+                proposed_version: "3.1.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update triton".into(),
+                dependencies: vec!["pytorch".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "rocm".into(),
+                current_version: "7.2.0".into(),
+                proposed_version: "7.3.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update rocm".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
         ];
 
         let sorted = topological_sort(items);
@@ -293,26 +308,26 @@ mod tests {
     #[test]
     fn test_topological_sort_empty_dependencies() {
         let items = vec![
-            PlanItem::new(
-                "pytorch",
-                "2.4.0",
-                "2.5.0",
-                ValidationTier::Validated,
-                true,
-                "update pytorch",
-                vec![],
-                true,
-            ),
-            PlanItem::new(
-                "rocm",
-                "7.2.0",
-                "7.3.0",
-                ValidationTier::Validated,
-                true,
-                "update rocm",
-                vec![],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "pytorch".into(),
+                current_version: "2.4.0".into(),
+                proposed_version: "2.5.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update pytorch".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "rocm".into(),
+                current_version: "7.2.0".into(),
+                proposed_version: "7.3.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update rocm".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
         ];
 
         let sorted = topological_sort(items);
@@ -330,26 +345,26 @@ mod tests {
     #[should_panic(expected = "Dependency cycle detected")]
     fn test_topological_sort_detects_cycle() {
         let items = vec![
-            PlanItem::new(
-                "pytorch",
-                "2.4.0",
-                "2.5.0",
-                ValidationTier::Validated,
-                true,
-                "update pytorch",
-                vec!["triton".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "triton",
-                "3.0.0",
-                "3.1.0",
-                ValidationTier::Validated,
-                true,
-                "update triton",
-                vec!["pytorch".to_string()],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "pytorch".into(),
+                current_version: "2.4.0".into(),
+                proposed_version: "2.5.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update pytorch".into(),
+                dependencies: vec!["triton".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "triton".into(),
+                current_version: "3.0.0".into(),
+                proposed_version: "3.1.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update triton".into(),
+                dependencies: vec!["pytorch".to_string()],
+                isolation_safe: true,
+            }),
         ];
 
         topological_sort(items);
@@ -362,26 +377,26 @@ mod tests {
     #[test]
     fn test_plan_creation_applies_topological_sort() {
         let items = vec![
-            PlanItem::new(
-                "pytorch",
-                "2.4.0",
-                "2.5.0",
-                ValidationTier::Validated,
-                true,
-                "update pytorch",
-                vec!["rocm".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "rocm",
-                "7.2.0",
-                "7.3.0",
-                ValidationTier::Validated,
-                true,
-                "update rocm",
-                vec![],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "pytorch".into(),
+                current_version: "2.4.0".into(),
+                proposed_version: "2.5.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update pytorch".into(),
+                dependencies: vec!["rocm".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "rocm".into(),
+                current_version: "7.2.0".into(),
+                proposed_version: "7.3.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update rocm".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
         ];
 
         let plan = Plan::new(items);
@@ -471,26 +486,26 @@ mod tests {
     #[test]
     fn test_plan_serde_roundtrip() {
         let items = vec![
-            PlanItem::new(
-                "rocm",
-                "7.2.0",
-                "7.3.0",
-                ValidationTier::Validated,
-                true,
-                "update rocm",
-                vec![],
-                true,
-            ),
-            PlanItem::new(
-                "pytorch",
-                "2.4.0",
-                "2.5.0",
-                ValidationTier::Validated,
-                true,
-                "update pytorch",
-                vec!["rocm".to_string()],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "rocm".into(),
+                current_version: "7.2.0".into(),
+                proposed_version: "7.3.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update rocm".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "pytorch".into(),
+                current_version: "2.4.0".into(),
+                proposed_version: "2.5.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update pytorch".into(),
+                dependencies: vec!["rocm".to_string()],
+                isolation_safe: true,
+            }),
         ];
 
         let plan = Plan::new(items);
@@ -507,26 +522,26 @@ mod tests {
     #[test]
     fn test_topological_sort_with_llama_cpp_dependencies() {
         let items = vec![
-            PlanItem::new(
-                "llama-cpp",
-                "",
-                "latest",
-                ValidationTier::Experimental,
-                true,
-                "install llama-cpp",
-                vec!["rocm".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "rocm",
-                "7.2.0",
-                "7.3.0",
-                ValidationTier::Validated,
-                true,
-                "update rocm",
-                vec![],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "llama-cpp".into(),
+                current_version: "".into(),
+                proposed_version: "latest".into(),
+                validation_tier: ValidationTier::Experimental,
+                selected: true,
+                rationale: "install llama-cpp".into(),
+                dependencies: vec!["rocm".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "rocm".into(),
+                current_version: "7.2.0".into(),
+                proposed_version: "7.3.0".into(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "update rocm".into(),
+                dependencies: vec![],
+                isolation_safe: true,
+            }),
         ];
 
         let sorted = topological_sort(items);

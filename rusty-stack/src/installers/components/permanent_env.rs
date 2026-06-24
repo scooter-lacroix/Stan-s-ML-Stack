@@ -155,7 +155,6 @@ export MIOPEN_FIND_MODE=3
 export MIOPEN_FIND_ENFORCE=3
 
 # PyTorch Optimization
-export TORCH_CUDA_ARCH_LIST="7.0;8.0;9.0"
 export PYTORCH_ALLOC_CONF="max_split_size_mb:512"
 export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"
 
@@ -174,8 +173,7 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_PIP_BREAK_SYSTEM_PACKAGES=1
 export UV_SYSTEM_PYTHON=1
 
-# MPI/UCX Settings (ROCm-aware)
-export OMPI_MCA_opal_cuda_support=true
+# MPI/UCX Settings (ROCm-aware — CUDA opal support disabled on an AMD stack)
 export OMPI_MCA_pml=ucx
 export OMPI_MCA_osc=ucx
 export OMPI_MCA_btl=^openib,uct
@@ -381,7 +379,9 @@ mod tests {
         let installer = PermanentEnvInstaller::with_defaults();
         let content = installer.generate_env_file_content();
 
-        assert!(content.contains("TORCH_CUDA_ARCH_LIST"));
+        // CUDA arch list is intentionally NOT exported on an AMD/ROCm stack
+        // (Stage 2: no CUDA env leakage); ROCm uses PYTORCH_ROCM_ARCH instead.
+        assert!(!content.contains("TORCH_CUDA_ARCH_LIST"));
         assert!(content.contains("PYTORCH_ALLOC_CONF"));
         assert!(content.contains("PYTORCH_HIP_ALLOC_CONF"));
     }

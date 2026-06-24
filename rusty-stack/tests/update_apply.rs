@@ -3,7 +3,7 @@
 //! These tests exercise the full apply → verify pipeline with mock executors,
 //! validating dependency ordering, failure isolation, and summary partitioning.
 
-use rusty_stack::core::plan::PlanItem;
+use rusty_stack::core::plan::{PlanItem, PlanItemInput};
 use rusty_stack::core::types::ValidationTier;
 use rusty_stack::core::verification::{VerificationCheck, VerificationResult};
 use rusty_stack::orchestrator::apply::{ApplyEngine, ApplyExecutor, ApplyOptions, ApplyStatus};
@@ -119,16 +119,16 @@ fn make_planner_item(
     classification: UpdateClassification,
 ) -> PlannerItem {
     PlannerItem {
-        plan_item: PlanItem::new(
-            id,
-            current,
-            proposed,
-            ValidationTier::Validated,
+        plan_item: PlanItem::new(PlanItemInput {
+            component_id: id.to_string(),
+            current_version: current.to_string(),
+            proposed_version: proposed.to_string(),
+            validation_tier: ValidationTier::Validated,
             selected,
-            "test",
-            deps.into_iter().map(|s| s.to_string()).collect(),
-            true,
-        ),
+            rationale: "test".to_string(),
+            dependencies: deps.into_iter().map(|s| s.to_string()).collect(),
+            isolation_safe: true,
+        }),
         classification,
         visible: true,
         selected,

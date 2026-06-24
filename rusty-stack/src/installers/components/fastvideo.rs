@@ -196,7 +196,10 @@ impl FastVideoInstaller {
     /// - `-DFASTVIDEO_KERNEL_BUILD_TK=OFF` (ThunderKittens not supported on ROCm)
     /// - `-DGPU_BACKEND=ROCM`
     ///
-    /// Uses `pip install --no-build-isolation` matching the upstream build.sh.
+    /// Uses `pip install --no-build-isolation --no-deps .` matching the upstream
+    /// build.sh, with `--no-deps` added to enforce the No-CUDA hard-prime tenet
+    /// (prevents pip from resolving/overriding the ROCm torch). Runtime deps are
+    /// installed explicitly and filtered via the unified nvidia_blocklist.
     pub fn pip_install_kernel(&self) -> ShellCommand {
         let use_break =
             std::env::var("VIRTUAL_ENV").is_err() && std::env::var("CONDA_PREFIX").is_err();
@@ -207,6 +210,7 @@ impl FastVideoInstaller {
         args.extend([
             "-v".to_string(),
             "--no-build-isolation".to_string(),
+            "--no-deps".to_string(),
             ".".to_string(),
         ]);
 

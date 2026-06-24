@@ -177,6 +177,12 @@ impl DeepSpeedInstaller {
         if is_global {
             args.push("--break-system-packages".to_string());
         }
+        // --no-deps: DeepSpeed's metadata depends on `torch`; without this pip
+        // resolves/upgrade torch from PyPI (a CUDA build), overriding the ROCm
+        // torch Rusty installed — violating "never override a core component".
+        // Runtime deps are installed explicitly via build_deps_install_command.
+        // (Stage 3: single-source deps / no-override.)
+        args.push("--no-deps".to_string());
         if self.config.force_reinstall {
             args.push("--force-reinstall".to_string());
         }
@@ -211,6 +217,9 @@ impl DeepSpeedInstaller {
     }
 
     /// Construct the force-reinstall retry command.
+    ///
+    /// Uses `--no-deps` so a force-reinstall never pulls/overrides the ROCm
+    /// torch (Stage 3: never override a core component).
     pub fn build_force_reinstall_command(&self) -> PipCommand {
         let mut args = vec![
             "-m".to_string(),
@@ -218,6 +227,7 @@ impl DeepSpeedInstaller {
             "install".to_string(),
             "--break-system-packages".to_string(),
             "--force-reinstall".to_string(),
+            "--no-deps".to_string(),
         ];
         args.push("deepspeed".to_string());
 

@@ -134,7 +134,7 @@ pub enum RocmChannel {
 
 impl RocmChannel {
     /// Parse from a channel string (case-insensitive).
-    pub fn from_str(channel: &str) -> Self {
+    pub fn parse_channel(channel: &str) -> Self {
         match channel.to_lowercase().as_str() {
             "legacy" => RocmChannel::Legacy,
             "stable" => RocmChannel::Stable,
@@ -452,7 +452,7 @@ impl LlamaCppInstaller {
     /// Returns a list of CMake cache variable flags.
     pub fn cmake_flags(&self) -> Vec<String> {
         let hip_archs = HipArchs::from_gpu_arch(&self.config.gpu_arch);
-        let channel = RocmChannel::from_str(&self.config.channel);
+        let channel = RocmChannel::parse_channel(&self.config.channel);
         let gpu_targets = hip_archs.gpu_targets_for_channel(channel.label());
 
         let mut flags = vec![
@@ -475,7 +475,7 @@ impl LlamaCppInstaller {
 
     fn expected_gpu_targets(&self) -> String {
         let hip_archs = HipArchs::from_gpu_arch(&self.config.gpu_arch);
-        let channel = RocmChannel::from_str(&self.config.channel);
+        let channel = RocmChannel::parse_channel(&self.config.channel);
         hip_archs.gpu_targets_for_channel(channel.label())
     }
 
@@ -1358,7 +1358,7 @@ pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerific
     if bench_path.exists() {
         result.stronger_check_attempted = true;
         if let Some(model_path) = find_verification_model(home, fork_dir) {
-            match std::process::Command::new(&bench_path)
+            if let Ok(out) = std::process::Command::new(&bench_path)
                 .arg("-m")
                 .arg(model_path.to_str().unwrap_or(""))
                 .arg("-p")
@@ -1369,26 +1369,23 @@ pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerific
                 .arg("33")
                 .output()
             {
-                Ok(out) => {
-                    if out.status.success() {
-                        result.stronger_check_passed = true;
-                        // Parse prefill and decode t/s from output
-                        let stdout = String::from_utf8_lossy(&out.stdout);
-                        for line in stdout.lines() {
-                            if line.contains("pp128") {
-                                // Extract the t/s value (last numeric column)
-                                if let Some(tps) = parse_bench_tps(line) {
-                                    result.bench_prefill_tps = Some(tps);
-                                }
-                            } else if line.contains("tg32") {
-                                if let Some(tps) = parse_bench_tps(line) {
-                                    result.bench_decode_tps = Some(tps);
-                                }
+                if out.status.success() {
+                    result.stronger_check_passed = true;
+                    // Parse prefill and decode t/s from output
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    for line in stdout.lines() {
+                        if line.contains("pp128") {
+                            // Extract the t/s value (last numeric column)
+                            if let Some(tps) = parse_bench_tps(line) {
+                                result.bench_prefill_tps = Some(tps);
+                            }
+                        } else if line.contains("tg32") {
+                            if let Some(tps) = parse_bench_tps(line) {
+                                result.bench_decode_tps = Some(tps);
                             }
                         }
                     }
                 }
-                Err(_) => {}
             }
         }
     }
@@ -1396,27 +1393,24 @@ pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerific
     // ── Step 3: RDNA3 proof (if available) ─────────────────────────
     if rdna3_path.exists() {
         result.rdna3_check_attempted = true;
-        match std::process::Command::new(&rdna3_path).output() {
-            Ok(out) => {
-                if out.status.success() {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    result.is_rdna3_device = Some(stdout.contains("Is RDNA3: YES"));
-                    result.wmma_supported = Some(stdout.contains("WMMA Supported: YES"));
-                    result.rdna3_is_valid = result.is_rdna3_device;
+        if let Ok(out) = std::process::Command::new(&rdna3_path).output() {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                result.is_rdna3_device = Some(stdout.contains("Is RDNA3: YES"));
+                result.wmma_supported = Some(stdout.contains("WMMA Supported: YES"));
+                result.rdna3_is_valid = result.is_rdna3_device;
 
-                    // Extract WMMA throughput
-                    for line in stdout.lines() {
-                        if line.starts_with("WMMA Throughput:") {
-                            if let Some(val) = line.split_whitespace().nth(2) {
-                                if let Ok(tps) = val.parse::<f64>() {
-                                    result.rdna3_wmma_tps = Some(tps);
-                                }
+                // Extract WMMA throughput
+                for line in stdout.lines() {
+                    if line.starts_with("WMMA Throughput:") {
+                        if let Some(val) = line.split_whitespace().nth(2) {
+                            if let Ok(tps) = val.parse::<f64>() {
+                                result.rdna3_wmma_tps = Some(tps);
                             }
                         }
                     }
                 }
             }
-            Err(_) => {}
         }
     }
 
@@ -1552,9 +1546,9 @@ mod tests {
 
     #[test]
     fn test_rocm_channel_wmma_fa() {
-        assert!(!RocmChannel::from_str("legacy").enable_wmma_fa());
-        assert!(RocmChannel::from_str("stable").enable_wmma_fa());
-        assert!(RocmChannel::from_str("latest").enable_wmma_fa());
+        assert!(!RocmChannel::parse_channel("legacy").enable_wmma_fa());
+        assert!(RocmChannel::parse_channel("stable").enable_wmma_fa());
+        assert!(RocmChannel::parse_channel("latest").enable_wmma_fa());
     }
 
     #[test]
@@ -1807,11 +1801,11 @@ mod tests {
 
     #[test]
     fn test_rocm_channel_from_str() {
-        assert_eq!(RocmChannel::from_str("legacy"), RocmChannel::Legacy);
-        assert_eq!(RocmChannel::from_str("LEGACY"), RocmChannel::Legacy);
-        assert_eq!(RocmChannel::from_str("stable"), RocmChannel::Stable);
-        assert_eq!(RocmChannel::from_str("latest"), RocmChannel::Latest);
-        assert_eq!(RocmChannel::from_str("unknown"), RocmChannel::Latest);
+        assert_eq!(RocmChannel::parse_channel("legacy"), RocmChannel::Legacy);
+        assert_eq!(RocmChannel::parse_channel("LEGACY"), RocmChannel::Legacy);
+        assert_eq!(RocmChannel::parse_channel("stable"), RocmChannel::Stable);
+        assert_eq!(RocmChannel::parse_channel("latest"), RocmChannel::Latest);
+        assert_eq!(RocmChannel::parse_channel("unknown"), RocmChannel::Latest);
     }
 
     #[test]

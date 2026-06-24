@@ -488,7 +488,7 @@ fn dependency_sort(items: Vec<&PlannerItem>) -> Result<Vec<&PlannerItem>, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::plan::PlanItem;
+    use crate::core::plan::{PlanItem, PlanItemInput};
     use crate::core::types::ValidationTier;
     use crate::orchestrator::planner::{PlannerItem, UpdateClassification};
 
@@ -497,16 +497,16 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_plan_item(id: &str, current: &str, proposed: &str, deps: Vec<&str>) -> PlanItem {
-        PlanItem::new(
-            id,
-            current,
-            proposed,
-            ValidationTier::Validated,
-            true,
-            "test",
-            deps.into_iter().map(|s| s.to_string()).collect(),
-            true,
-        )
+        PlanItem::new(PlanItemInput {
+            component_id: id.to_string(),
+            current_version: current.to_string(),
+            proposed_version: proposed.to_string(),
+            validation_tier: ValidationTier::Validated,
+            selected: true,
+            rationale: "test".to_string(),
+            dependencies: deps.into_iter().map(|s| s.to_string()).collect(),
+            isolation_safe: true,
+        })
     }
 
     fn make_planner_item(

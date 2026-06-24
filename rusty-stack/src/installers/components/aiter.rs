@@ -211,9 +211,12 @@ impl AiterInstaller {
 
     /// Construct the pip install command for AITER from source.
     ///
-    /// The proven working approach uses `pip install --no-cache-dir .`
-    /// (NOT `--no-build-isolation --no-deps` which skips build dependencies).
-    /// The `--break-system-packages` flag is added for global installs.
+    /// `pip install --no-cache-dir --no-deps .` — `--no-deps` is MANDATORY for
+    /// the hard-prime No-CUDA tenet: AITER's metadata declares torch/triton-family
+    /// deps, and without `--no-deps` pip would resolve/upgrade torch (a CUDA
+    /// build) from PyPI, overriding the ROCm torch. Runtime/build deps are
+    /// installed explicitly via `build_deps_install_command` (filtered). The
+    /// `--break-system-packages` flag is added for global installs.
     pub fn build_pip_install_command(&self, src_dir: &str) -> ShellCommand {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
@@ -222,7 +225,11 @@ impl AiterInstaller {
         if use_break {
             args.push("--break-system-packages".to_string());
         }
-        args.extend(["--no-cache-dir".to_string(), ".".to_string()]);
+        args.extend([
+            "--no-cache-dir".to_string(),
+            "--no-deps".to_string(),
+            ".".to_string(),
+        ]);
 
         let primary_arch = self.resolve_primary_arch();
         let rocm_path = "/opt/rocm".to_string();

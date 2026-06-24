@@ -23,10 +23,9 @@ use tracing_subscriber::{
     Layer,
 };
 
-/// Log directory under `~/.mlstack/logs/`.
+/// Log directory under `~/.mlstack/logs/` (canonical, sudo-aware path).
 pub fn log_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".mlstack").join("logs")
+    crate::platform::environment::mlstack_logs_dir()
 }
 
 /// Initialize the dual-layer logging system.
