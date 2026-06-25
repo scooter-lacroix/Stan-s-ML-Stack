@@ -113,12 +113,166 @@ pub fn lookup_home_from_passwd(username: &str) -> Option<PathBuf> {
 }
 
 // ===========================================================================
+// ML Stack paths — the SINGLE consolidated root (~/.mlstack/)
+// ===========================================================================
+
+/// The single ML Stack root directory: `~/.mlstack/`.
+///
+/// All Rusty-managed state lives under here (Stage 0 consolidation): the
+/// global venv (`global/`), named envs (`envs/<name>/`), logs, cache, triton,
+/// the installed-component registry (`installed.json`), and config.
+pub fn mlstack_root() -> PathBuf {
+    resolve_user_home().join(".mlstack")
+}
+
+/// The managed **global** default environment: `~/.mlstack/global/`.
+pub fn mlstack_global_dir() -> PathBuf {
+    mlstack_root().join("global")
+}
+
+/// The Python binary of the managed global env: `~/.mlstack/global/bin/python`.
+pub fn mlstack_global_python() -> PathBuf {
+    mlstack_global_dir().join("bin").join("python")
+}
+
+/// The named-envs directory: `~/.mlstack/envs/`.
+pub fn mlstack_envs_dir() -> PathBuf {
+    mlstack_root().join("envs")
+}
+
+/// A specific named env: `~/.mlstack/envs/<name>/`.
+pub fn mlstack_env_dir(name: &str) -> PathBuf {
+    mlstack_envs_dir().join(name)
+}
+
+/// The cache directory: `~/.mlstack/cache/`.
+pub fn mlstack_cache_dir() -> PathBuf {
+    mlstack_root().join("cache")
+}
+
+/// The logs directory: `~/.mlstack/logs/`.
+pub fn mlstack_logs_dir() -> PathBuf {
+    mlstack_root().join("logs")
+}
+
+/// The triton home directory: `~/.mlstack/triton/`.
+pub fn mlstack_triton_dir() -> PathBuf {
+    mlstack_root().join("triton")
+}
+
+/// Ensure the `~/.mlstack/` root and its standard subdirs exist.
+pub fn ensure_mlstack_dirs() -> std::io::Result<()> {
+    for dir in [
+        mlstack_root(),
+        mlstack_global_dir(),
+        mlstack_envs_dir(),
+        mlstack_cache_dir(),
+        mlstack_logs_dir(),
+        mlstack_triton_dir(),
+    ] {
+        std::fs::create_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+/// Create the managed global venv at `~/.mlstack/global/` if it does not yet
+/// exist, using `bootstrap_python` (a discovered system/uv interpreter) as the
+/// base. Returns the path to the global venv's `python`.
+///
+/// Prefers `uv venv` when available (fast, deterministic); falls back to
+/// `python -m venv`. This is the deterministic anchor that replaces the old
+/// non-deterministic interpreter scan for global installs.
+pub fn ensure_global_venv(bootstrap_python: &str) -> anyhow::Result<PathBuf> {
+    let global_python = mlstack_global_python();
+    if global_python.exists() {
+        return Ok(global_python);
+    }
+    ensure_mlstack_dirs()?;
+    let global_dir = mlstack_global_dir();
+    create_venv(&global_dir, bootstrap_python)?;
+    if !global_python.exists() {
+        anyhow::bail!(
+            "global venv creation reported success but {} is missing",
+            global_python.display()
+        );
+    }
+    Ok(global_python)
+}
+
+/// Create the managed NAMED env at `~/.mlstack/envs/<name>/` if absent
+/// (Tenet 1: install-to-env isolation). Returns the path to its `python`.
+///
+/// `name` is validated (non-empty, no path separators / traversal) since it is
+/// interpolated into a filesystem path.
+pub fn ensure_named_venv(name: &str, bootstrap_python: &str) -> anyhow::Result<PathBuf> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("named env name must not be empty");
+    }
+    if name.contains(std::path::MAIN_SEPARATOR)
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+    {
+        anyhow::bail!("invalid env name '{name}'");
+    }
+    ensure_mlstack_dirs()?;
+    let env_dir = mlstack_env_dir(name);
+    let env_python = env_dir.join("bin").join("python");
+    if env_python.exists() {
+        return Ok(env_python);
+    }
+    create_venv(&env_dir, bootstrap_python)?;
+    if !env_python.exists() {
+        anyhow::bail!(
+            "named venv creation reported success but {} is missing",
+            env_python.display()
+        );
+    }
+    Ok(env_python)
+}
+
+/// Create a venv at `dir` using `uv` when available, else `python -m venv`.
+fn create_venv(dir: &Path, bootstrap_python: &str) -> anyhow::Result<()> {
+    if command_on_path("uv") {
+        // Treat a uv SPAWN failure (e.g. uv on PATH but not executable / missing
+        // runtime) the same as a non-successful run: fall through to the
+        // `python -m venv` fallback rather than bailing with a spawn error.
+        let uv_status = std::process::Command::new("uv")
+            .arg("venv")
+            .arg("--python")
+            .arg(bootstrap_python)
+            .arg(dir)
+            .status();
+        if let Ok(status) = uv_status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+    }
+    let status = std::process::Command::new(bootstrap_python)
+        .arg("-m")
+        .arg("venv")
+        .arg(dir)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "failed to create venv at {} via uv/venv (bootstrap={})",
+            dir.display(),
+            bootstrap_python
+        );
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // Python Interpreter Discovery (VAL-PLAT-020)
 // ===========================================================================
 
 /// Discover Python interpreter paths in priority order, deduplicated.
 ///
 /// Returns only paths that exist on the filesystem. The order is:
+/// 0. The managed global env (`~/.mlstack/global/bin/python`) — deterministic anchor
 /// 1. `MLSTACK_PYTHON_BIN` / `UV_PYTHON` env vars
 /// 2. Active virtualenv (`VIRTUAL_ENV`/bin/python)
 /// 3. Conda environment (`CONDA_PREFIX`/bin/python)
@@ -129,19 +283,46 @@ pub fn python_interpreters() -> Vec<PathBuf> {
     python_interpreters_for_home(&home)
 }
 
-/// Resolve the canonical Python binary path.
-///
-/// Returns the highest-priority Python interpreter available on the system.
-/// This is the interpreter that ALL ML components will be installed to.
+/// Resolve the canonical Python binary path — the single interpreter ALL ML
+/// components install into.
 ///
 /// Resolution order:
-/// 1. `MLSTACK_PYTHON_BIN` / `UV_PYTHON` env vars (or from ~/.mlstack_env)
-/// 2. Active virtualenv
-/// 3. uv-managed Python (preferred for ML workloads)
-/// 4. System Python
+/// 1. `MLSTACK_PYTHON_BIN` / `UV_PYTHON` — an **explicit user override** always
+///    wins (respects user intent; e.g. pinning a specific interpreter).
+/// 2. The managed global env (`~/.mlstack/global/bin/python`) if it exists —
+///    the deterministic single source (Stage 0). Installers create it on first
+///    global install via [`ensure_global_venv`].
+/// 3. Active virtualenv
+/// 4. uv-managed Python (preferred for ML workloads)
+/// 5. System Python
 ///
 /// Falls back to `"python3"` if no interpreter is found.
 pub fn resolve_canonical_python_bin() -> String {
+    // 0. Named-env isolation (Tenet 1): MLSTACK_ENV_NAME pins the target env.
+    if let Ok(name) = env::var("MLSTACK_ENV_NAME") {
+        let name = name.trim();
+        if !name.is_empty() {
+            let p = mlstack_env_dir(name).join("bin").join("python");
+            if p.exists() {
+                return p.to_string_lossy().to_string();
+            }
+        }
+    }
+    // 1. Explicit user override wins.
+    for key in ["MLSTACK_PYTHON_BIN", "UV_PYTHON"] {
+        if let Ok(val) = env::var(key) {
+            let val = val.trim();
+            if !val.is_empty() && Path::new(val).exists() {
+                return val.to_string();
+            }
+        }
+    }
+    // 2. Deterministic managed global env (single source).
+    let global = mlstack_global_python();
+    if global.exists() {
+        return global.to_string_lossy().to_string();
+    }
+    // 3. Discovery fallback.
     let interpreters = python_interpreters();
     if let Some(first) = interpreters.first() {
         return first.to_string_lossy().to_string();
@@ -163,7 +344,8 @@ pub fn python_interpreters_for_home(home: &Path) -> Vec<PathBuf> {
         };
     }
 
-    // Priority 1: Environment variable overrides
+    // Priority 1: Environment variable overrides — an explicit override wins
+    // (kept first so discovery is consistent with `resolve_canonical_python_bin`).
     for key in ["MLSTACK_PYTHON_BIN", "UV_PYTHON"] {
         if let Ok(val) = env::var(key) {
             let val = val.trim().to_string();
@@ -172,6 +354,20 @@ pub fn python_interpreters_for_home(home: &Path) -> Vec<PathBuf> {
             }
         }
     }
+
+    // Priority 2: The managed global env (~/.mlstack/global/bin/python) —
+    // the deterministic single source (Stage 0). Derived from `home` so the
+    // override is consistent with `resolve_user_home()`.
+    push_if_exists!(home
+        .join(".mlstack")
+        .join("global")
+        .join("bin")
+        .join("python"));
+    push_if_exists!(home
+        .join(".mlstack")
+        .join("global")
+        .join("bin")
+        .join("python3"));
 
     // Priority 2: Active virtualenv
     if let Ok(venv) = env::var("VIRTUAL_ENV") {
@@ -277,10 +473,8 @@ pub fn python_interpreters_for_home(home: &Path) -> Vec<PathBuf> {
     // This handles cases where uv installs Python to ~/.local/bin but the directory
     // scanning above might have failed or the canonicalize check earlier didn't work.
     let local_python3 = home.join(".local/bin/python3");
-    if local_python3.exists() {
-        if seen.insert(local_python3.clone()) {
-            paths.push(local_python3);
-        }
+    if local_python3.exists() && seen.insert(local_python3.clone()) {
+        paths.push(local_python3);
     }
 
     paths
@@ -519,6 +713,21 @@ pub fn dedup_path_var(path_var: &str) -> String {
     result.join(":")
 }
 
+/// Is `cmd` executable found on `PATH`? (Dependency-free; does not spawn.)
+pub fn command_on_path(cmd: &str) -> bool {
+    let path = match env::var_os("PATH") {
+        Some(p) => p,
+        None => return false,
+    };
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join(cmd);
+        if candidate.is_file() {
+            return true;
+        }
+    }
+    false
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -542,6 +751,7 @@ mod tests {
 
     #[test]
     fn test_resolve_user_home_env_override() {
+        let _env = crate::test_support::lock_env();
         let saved = std::env::var("MLSTACK_USER_HOME").ok();
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -620,8 +830,11 @@ mod tests {
 
     #[test]
     fn test_python_interpreters_env_var_override() {
-        // Save current state
-        let saved = std::env::var("MLSTACK_PYTHON_BIN").ok();
+        let _env = crate::test_support::lock_env();
+        // Save current state (hermetic: pin home so a real ~/.mlstack/global
+        // on the dev machine can't shadow the explicit override).
+        let saved_py = std::env::var("MLSTACK_PYTHON_BIN").ok();
+        let saved_home = std::env::var("MLSTACK_USER_HOME").ok();
 
         // Create a temp file to act as "python"
         let dir = tempfile::tempdir().unwrap();
@@ -629,6 +842,10 @@ mod tests {
         fs::create_dir_all(dir.path().join("bin")).unwrap();
         fs::write(&fake_python, "#!/bin/sh").unwrap();
 
+        std::env::set_var(
+            "MLSTACK_USER_HOME",
+            dir.path().to_string_lossy().to_string(),
+        );
         std::env::set_var(
             "MLSTACK_PYTHON_BIN",
             fake_python.to_string_lossy().to_string(),
@@ -642,9 +859,13 @@ mod tests {
         );
 
         // Restore original state
-        match saved {
+        match saved_py {
             Some(v) => std::env::set_var("MLSTACK_PYTHON_BIN", v),
             None => std::env::remove_var("MLSTACK_PYTHON_BIN"),
+        }
+        match saved_home {
+            Some(v) => std::env::set_var("MLSTACK_USER_HOME", v),
+            None => std::env::remove_var("MLSTACK_USER_HOME"),
         }
     }
 

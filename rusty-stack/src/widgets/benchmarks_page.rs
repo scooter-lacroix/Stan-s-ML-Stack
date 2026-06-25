@@ -1486,7 +1486,8 @@ fn render_llama_cpp_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResult
         body.push_str("Decode Throughput (tokens/sec)\n");
         for gpu in &llama.gpus {
             body.push_str(&format!("GPU: {} ({})\n", gpu.name, gpu.arch));
-            for n_gen in [128_u32] {
+            {
+                let n_gen = 128_u32;
                 let value = llama
                     .decode
                     .iter()

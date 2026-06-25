@@ -394,15 +394,10 @@ fn detect_gpus_from_render_nodes() -> Vec<u32> {
 
 /// Check if a GPU name indicates an integrated GPU.
 ///
-/// Integrated GPUs include: Raphael, Ryzen Graphics, Integrated Graphics, iGPU,
-/// AMD Radeon Graphics (when not a discrete card).
+/// Delegates to the canonical classifier `crate::gpu::is_integrated_gpu_name`
+/// (Stage 1: single source of truth for dGPU/iGPU classification).
 pub fn is_integrated_gpu_name(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower.contains("raphael")
-        || lower.contains("integrated")
-        || lower.contains("igpu")
-        || lower.contains("ryzen") && !lower.contains("rx")
-        || lower == "amd radeon graphics"
+    crate::gpu::is_integrated_gpu_name(name)
 }
 
 // ===========================================================================
@@ -667,8 +662,8 @@ if [ -z "${{MIOPEN_FIND_ENFORCE:-}}" ]; then export MIOPEN_FIND_ENFORCE=3; fi
 
 # PyTorch Settings
 # Only set if not already set
-if [ -z "${{TORCH_CUDA_ARCH_LIST:-}}" ]; then export TORCH_CUDA_ARCH_LIST="7.0;8.0;9.0"; fi
-# Use PYTORCH_ALLOC_CONF instead of deprecated PYTORCH_CUDA_ALLOC_CONF
+# (Stage 2: the CUDA build-arch env var is intentionally NOT exported on a
+# ROCm stack — ROCm uses PYTORCH_ROCM_ARCH. No CUDA env leakage.)
 if [ -z "${{PYTORCH_ALLOC_CONF:-}}" ]; then export PYTORCH_ALLOC_CONF="max_split_size_mb:512"; fi
 if [ -z "${{PYTORCH_HIP_ALLOC_CONF:-}}" ]; then export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"; fi
 if [ -z "${{VLLM_WORKER_MULTIPROC_METHOD:-}}" ]; then export VLLM_WORKER_MULTIPROC_METHOD=spawn; fi
@@ -682,8 +677,8 @@ mkdir -p "$TRITON_CACHE_DIR" "$TRITON_DUMP_DIR" "$TRITON_OVERRIDE_DIR" 2>/dev/nu
 
 # MPI Settings
 # Only set if not already set
-if [ -z "${{OMPI_MCA_opal_cuda_support:-}}" ]; then export OMPI_MCA_opal_cuda_support=true; fi
-if [ -z "${{OMPI_MCA_pml_ucx_opal_cuda_support:-}}" ]; then export OMPI_MCA_pml_ucx_opal_cuda_support=true; fi
+# (Stage 2: the OMPI CUDA-opal support vars are intentionally NOT set — that is
+# the CUDA-built OpenMPI path; a ROCm stack uses the ROCm accelerator path.)
 if [ -z "${{OMPI_MCA_btl_openib_allow_ib:-}}" ]; then export OMPI_MCA_btl_openib_allow_ib=true; fi
 if [ -z "${{OMPI_MCA_btl_openib_warn_no_device_params_found:-}}" ]; then export OMPI_MCA_btl_openib_warn_no_device_params_found=0; fi
 if [ -z "${{OMPI_MCA_coll_hcoll_enable:-}}" ]; then export OMPI_MCA_coll_hcoll_enable=0; fi
@@ -783,7 +778,8 @@ set -q MIOPEN_FIND_MODE; or set -gx MIOPEN_FIND_MODE 3
 set -q MIOPEN_FIND_ENFORCE; or set -gx MIOPEN_FIND_ENFORCE 3
 
 # --- PyTorch Settings ---
-set -q TORCH_CUDA_ARCH_LIST; or set -gx TORCH_CUDA_ARCH_LIST "7.0;8.0;9.0"
+# (Stage 2: the CUDA build-arch env var is intentionally NOT set on a ROCm
+# stack — ROCm uses PYTORCH_ROCM_ARCH. No CUDA env leakage.)
 set -q PYTORCH_ALLOC_CONF; or set -gx PYTORCH_ALLOC_CONF "max_split_size_mb:512"
 set -q PYTORCH_HIP_ALLOC_CONF; or set -gx PYTORCH_HIP_ALLOC_CONF "max_split_size_mb:512"
 set -q VLLM_WORKER_MULTIPROC_METHOD; or set -gx VLLM_WORKER_MULTIPROC_METHOD spawn
@@ -810,8 +806,8 @@ set -gx UV_PYTHON {python_bin}
 set -gx FLASH_ATTENTION_TRITON_AMD_ENABLE TRUE
 
 # --- MPI/UCX Settings ---
-set -q OMPI_MCA_opal_cuda_support; or set -gx OMPI_MCA_opal_cuda_support true
-set -q OMPI_MCA_pml_ucx_opal_cuda_support; or set -gx OMPI_MCA_pml_ucx_opal_cuda_support true
+# (Stage 2: the OMPI CUDA-opal support vars are intentionally NOT set —
+# CUDA-built OpenMPI path; a ROCm stack uses the ROCm accelerator path.)
 set -q OMPI_MCA_btl_openib_allow_ib; or set -gx OMPI_MCA_btl_openib_allow_ib true
 set -q OMPI_MCA_btl_openib_warn_no_device_params_found; or set -gx OMPI_MCA_btl_openib_warn_no_device_params_found 0
 set -q OMPI_MCA_coll_hcoll_enable; or set -gx OMPI_MCA_coll_hcoll_enable 0
@@ -1240,7 +1236,7 @@ mod tests {
             "11.0.0",
             "python3",
         );
-        assert!(content.contains("TORCH_CUDA_ARCH_LIST"));
+        assert!(!content.contains("TORCH_CUDA_ARCH_LIST"));
         assert!(content.contains("PYTORCH_ALLOC_CONF"));
         assert!(content.contains("PYTORCH_HIP_ALLOC_CONF"));
         assert!(content.contains("VLLM_WORKER_MULTIPROC_METHOD"));
@@ -1273,7 +1269,10 @@ mod tests {
             "11.0.0",
             "python3",
         );
-        assert!(content.contains("OMPI_MCA_opal_cuda_support"));
+        assert!(
+            !content.contains("opal_cuda_support"),
+            "must NOT set any OMPI CUDA-opal MCA var (Stage 2: ROCm uses the ROCm accelerator path)"
+        );
         assert!(content.contains("OMPI_MCA_pml"));
         assert!(content.contains("OMPI_MCA_osc"));
         assert!(content.contains("OMPI_MCA_btl"));

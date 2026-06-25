@@ -10,6 +10,20 @@ pub enum BuildReportStatus {
     Failure,
 }
 
+/// Bundled build-output artifacts for [`BuildReport::from_hardware`].
+///
+/// Groups the fields that describe the produced build (commit, paths, flags,
+/// binary metadata) so `from_hardware` stays under clippy's argument threshold.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuildReportArtifacts {
+    pub git_commit: String,
+    pub install_path: String,
+    pub cmake_flags: Vec<String>,
+    pub verification_path: String,
+    pub binary_version: String,
+    pub was_prebuilt: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildReport {
     pub gpu_arch: String,
@@ -39,12 +53,7 @@ impl BuildReport {
         os: impl Into<String>,
         os_distro: impl Into<String>,
         build_duration: Duration,
-        git_commit: impl Into<String>,
-        install_path: impl Into<String>,
-        cmake_flags: Vec<String>,
-        verification_path: impl Into<String>,
-        binary_version: impl Into<String>,
-        was_prebuilt: bool,
+        artifacts: BuildReportArtifacts,
     ) -> Self {
         Self {
             gpu_arch: gpu.architecture.clone(),
@@ -54,18 +63,18 @@ impl BuildReport {
             os: os.into(),
             os_distro: os_distro.into(),
             build_duration_seconds: build_duration.as_secs(),
-            git_commit: git_commit.into(),
+            git_commit: artifacts.git_commit,
             build_status: BuildReportStatus::Success,
-            install_path: install_path.into(),
-            cmake_flags,
-            verification_path: verification_path.into(),
+            install_path: artifacts.install_path,
+            cmake_flags: artifacts.cmake_flags,
+            verification_path: artifacts.verification_path,
             rdna3_validation_passed: false,
             wmma_available: false,
             shared_memory_ok: false,
             tokens_per_second_wmma: None,
             tokens_per_second_fallback: None,
-            binary_version: binary_version.into(),
-            was_prebuilt,
+            binary_version: artifacts.binary_version,
+            was_prebuilt: artifacts.was_prebuilt,
         }
     }
 }
@@ -94,32 +103,6 @@ pub fn submit_build_report(report: BuildReport) {
     }
 
     token.purge();
-}
-
-pub fn build_report_from_state(
-    gpu: &GPUInfo,
-    os: impl Into<String>,
-    os_distro: impl Into<String>,
-    build_duration: Duration,
-    git_commit: impl Into<String>,
-    install_path: impl Into<String>,
-    cmake_flags: Vec<String>,
-    verification_path: impl Into<String>,
-    binary_version: impl Into<String>,
-    was_prebuilt: bool,
-) -> BuildReport {
-    BuildReport::from_hardware(
-        gpu,
-        os,
-        os_distro,
-        build_duration,
-        git_commit,
-        install_path,
-        cmake_flags,
-        verification_path,
-        binary_version,
-        was_prebuilt,
-    )
 }
 
 pub fn build_report_payload(report: &BuildReport) -> serde_json::Value {
@@ -152,12 +135,14 @@ mod tests {
             "linux",
             "ubuntu",
             Duration::from_secs(42),
-            "abc123",
-            "/tmp/install",
-            vec!["-DGGML_HIP=ON".into()],
-            "/tmp/verify",
-            "v0.3.2",
-            true,
+            BuildReportArtifacts {
+                git_commit: "abc123".into(),
+                install_path: "/tmp/install".into(),
+                cmake_flags: vec!["-DGGML_HIP=ON".into()],
+                verification_path: "/tmp/verify".into(),
+                binary_version: "v0.3.2".into(),
+                was_prebuilt: true,
+            },
         );
 
         let json = serde_json::to_value(report).unwrap();
@@ -200,12 +185,14 @@ mod tests {
             "linux",
             "ubuntu",
             Duration::from_secs(12),
-            "commit123",
-            "/opt/mlstack",
-            vec!["-DGGML_HIP=ON".into(), "-DGPU_TARGETS=gfx1100".into()],
-            "/tmp/verify",
-            "v0.3.2",
-            false,
+            BuildReportArtifacts {
+                git_commit: "commit123".into(),
+                install_path: "/opt/mlstack".into(),
+                cmake_flags: vec!["-DGGML_HIP=ON".into(), "-DGPU_TARGETS=gfx1100".into()],
+                verification_path: "/tmp/verify".into(),
+                binary_version: "v0.3.2".into(),
+                was_prebuilt: false,
+            },
         );
 
         let payload = build_report_payload(&report);

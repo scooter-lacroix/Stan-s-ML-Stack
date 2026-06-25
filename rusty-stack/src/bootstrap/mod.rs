@@ -377,8 +377,8 @@ mod tests {
             "/usr/bin/python3",
         );
         assert!(
-            content.contains("TORCH_CUDA_ARCH_LIST"),
-            "must set TORCH_CUDA_ARCH_LIST"
+            !content.contains("TORCH_CUDA_ARCH_LIST"),
+            "must NOT set TORCH_CUDA_ARCH_LIST (Stage 2: no CUDA env leakage)"
         );
         assert!(
             content.contains("PYTORCH_ALLOC_CONF"),
@@ -402,8 +402,8 @@ mod tests {
             "/usr/bin/python3",
         );
         assert!(
-            content.contains("OMPI_MCA_opal_cuda_support"),
-            "must set OMPI MCA CUDA support"
+            !content.contains("opal_cuda_support"),
+            "must NOT set any OMPI CUDA-opal MCA var (Stage 2: CUDA opal path is for CUDA-built MPI; ROCm uses the ROCm accelerator path)"
         );
         assert!(content.contains("OMPI_MCA_pml"), "must set OMPI MCA PML");
     }

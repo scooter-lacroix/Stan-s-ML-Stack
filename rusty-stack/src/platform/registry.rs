@@ -518,8 +518,7 @@ fn get_version_python_single(info: &ComponentInfo) -> String {
                 let version = stdout
                     .lines()
                     .map(|l| l.trim())
-                    .filter(|l| !l.is_empty() && !l.contains("[WARNING]") && !l.contains("[ERROR]"))
-                    .last()
+                    .rfind(|l| !l.is_empty() && !l.contains("[WARNING]") && !l.contains("[ERROR]"))
                     .unwrap_or("")
                     .to_string();
                 if !version.is_empty() {
@@ -694,7 +693,7 @@ pub fn detect_python_modules_with_interpreters(interpreters: &[PathBuf]) -> Vec<
                 let detected: Vec<String> = stdout
                     .lines()
                     .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty() && is_known_component(&l))
+                    .filter(|l| !l.is_empty() && is_known_component(l))
                     .collect();
                 if !detected.is_empty() {
                     return detected;

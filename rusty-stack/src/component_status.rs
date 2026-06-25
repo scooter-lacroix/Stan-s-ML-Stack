@@ -296,28 +296,28 @@ pub fn component_verification_commands(
             "triton",
             &["triton"],
             python_candidates,
-            "import triton; import triton.language as tl; print(f'Triton {triton.__version__} — language OK')",
+            "import triton,sys; import triton.language as tl; import importlib; ok=False\nfor _m in ('triton.runtime.driver','triton.runtime.backends.amd','triton.backends.amd'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nprint(f'Triton {triton.__version__} backend_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
         "mpi4py" => vec![python_command(
             "MPI4Py",
             "mpi4py",
             &["mpi4py"],
             python_candidates,
-            "import importlib.metadata as m; import mpi4py; print(getattr(mpi4py, '__version__', m.version('mpi4py')))",
+            "from mpi4py import MPI; import sys\ntry:\n    rank=MPI.COMM_WORLD.Get_rank(); ok=rank>=0\nexcept Exception:\n    rank=-1; ok=False\nprint(f'MPI4Py rank={rank} ok={ok}'); sys.exit(0 if ok else 1)",
         )],
         "deepspeed" => vec![python_command(
             "DeepSpeed",
             "deepspeed",
             &["deepspeed"],
             python_candidates,
-            "import deepspeed; print(deepspeed.__version__)",
+            "import deepspeed,sys; ok=False\ntry:\n    from deepspeed.ops.adam import DeepSpeedCPUAdam; ok=True\nexcept Exception:\n    pass\nprint(f'DeepSpeed {deepspeed.__version__} ops_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
         "ml-stack-core" => vec![python_command(
             "ML Stack Core",
             "ml-stack-core",
             &["stans_ml_stack"],
             python_candidates,
-            "import stans_ml_stack; print(getattr(stans_ml_stack, '__version__', 'ok'))",
+            "import stans_ml_stack,sys; import importlib; ok=True\nfor _s in ('core','utils','cli','installers'):\n    try:\n        importlib.import_module(f'stans_ml_stack.{_s}')\n    except Exception:\n        ok=False; break\nver=getattr(stans_ml_stack,'__version__','ok')\nprint(f'ML Stack Core {ver} submodule_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
         "flash-attn" => vec![python_command(
             "Flash Attention",
@@ -331,7 +331,7 @@ pub fn component_verification_commands(
             "megatron",
             &["megatron"],
             python_candidates,
-            "import megatron; print('megatron ok')",
+            "import megatron,sys; ok=False\ntry:\n    from megatron.core import tensor_parallel; ok=True\nexcept Exception:\n    pass\nprint(f'Megatron-LM functional={ok}'); sys.exit(0 if ok else 1)",
         )],
         "vllm" => vec![python_command(
             "vLLM",
@@ -345,7 +345,7 @@ pub fn component_verification_commands(
             "aiter",
             &["aiter"],
             python_candidates,
-            "import aiter; mods=[x for x in dir(aiter) if not x.startswith('_')]; print(f'AITER imported — {len(mods)} exports available')",
+            "import aiter,sys; ok=False\ntry:\n    from aiter import op as _op; ok=True\nexcept Exception:\n    pass\nmods=[x for x in dir(aiter) if not x.startswith('_')]\nver=getattr(aiter,'__version__','?')\nprint(f'AITER {ver} op_loaded={ok} exports={len(mods)}'); sys.exit(0 if ok else 1)",
         )],
         "vllm-studio" => vec![shell_command(
             "vLLM Studio",
@@ -378,7 +378,7 @@ pub fn component_verification_commands(
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx; print(getattr(migraphx, '__version__', 'ok'))",
+            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
         )],
         "pytorch-profiler" => vec![python_command(
             "PyTorch Profiler",
@@ -392,14 +392,14 @@ pub fn component_verification_commands(
             "wandb",
             &["wandb"],
             python_candidates,
-            "import wandb; print(wandb.__version__)",
+            "import wandb,sys; ok=False\ntry:\n    _r=wandb.init(mode='disabled'); ok=_r is not None; _r.finish()\nexcept Exception:\n    pass\nprint(f'wandb {wandb.__version__} init_run_ok={ok}'); sys.exit(0 if ok else 1)",
         )],
         "fastvideo" => vec![python_command(
             "FastVideo",
             "fastvideo",
             &["fastvideo"],
             python_candidates,
-            "import fastvideo; print(fastvideo.__version__)",
+            "import fastvideo,sys; import importlib; ok=False\nfor _m in ('fastvideo.inference','fastvideo.engine','fastvideo'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nver=getattr(fastvideo,'__version__','?')\nprint(f'FastVideo {ver} module_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
         "llama-cpp" => vec![shell_command(
             "llama.cpp",
@@ -498,18 +498,48 @@ pub fn component_verification_commands(
             "Suite logs found",
             "No suite logs yet",
         )],
-        "comfyui" => vec![shell_command(
-            "ComfyUI",
-            "comfyui",
-            "bash",
-            &["-c", "test -f \"$HOME/ComfyUI/main.py\" && echo 'ComfyUI installed' || exit 1"],
-        )],
-        "textgen" => vec![shell_command(
-            "text-generation-webui",
-            "textgen",
-            "bash",
-            &["-c", "test -f \"$HOME/text-generation-webui/server.py\" && echo 'text-generation-webui installed' || exit 1"],
-        )],
+        "comfyui" => vec![{
+            // F2: verify against the env's interpreter, not a hardcoded python3.
+            // Resolve the same python the installers pin (MLSTACK_PYTHON_BIN /
+            // UV_PYTHON / first candidate), then import from the install dir.
+            let py = python_candidates
+                .first()
+                .cloned()
+                .or_else(|| env::var("MLSTACK_PYTHON_BIN").ok().filter(|s| !s.is_empty()))
+                .or_else(|| env::var("UV_PYTHON").ok().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| "python3".to_string());
+            shell_command(
+                "ComfyUI",
+                "comfyui",
+                "bash",
+                &[
+                    "-c",
+                    &format!(
+                        "cd \"$HOME/ComfyUI\" 2>/dev/null && {py} -c 'import folder_paths' 2>/dev/null && echo 'comfyui functional' || exit 1"
+                    ),
+                ],
+            )
+        }],
+        "textgen" => vec![{
+            // F2: verify against the env's interpreter, not a hardcoded python3.
+            let py = python_candidates
+                .first()
+                .cloned()
+                .or_else(|| env::var("MLSTACK_PYTHON_BIN").ok().filter(|s| !s.is_empty()))
+                .or_else(|| env::var("UV_PYTHON").ok().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| "python3".to_string());
+            shell_command(
+                "text-generation-webui",
+                "textgen",
+                "bash",
+                &[
+                    "-c",
+                    &format!(
+                        "cd \"$HOME/text-generation-webui\" 2>/dev/null && {py} -c 'import server' 2>/dev/null && echo 'textgen functional' || exit 1"
+                    ),
+                ],
+            )
+        }],
         _ => Vec::new(),
     }
 }
@@ -544,7 +574,7 @@ fn basic_verification_commands(python_candidates: &[String]) -> Vec<Verification
             "mpi4py",
             &["mpi4py"],
             python_candidates,
-            "import importlib.metadata as m; import mpi4py; print(getattr(mpi4py, '__version__', m.version('mpi4py')))",
+            "from mpi4py import MPI; import sys\ntry:\n    rank=MPI.COMM_WORLD.Get_rank(); ok=rank>=0\nexcept Exception:\n    rank=-1; ok=False\nprint(f'MPI4Py rank={rank} ok={ok}'); sys.exit(0 if ok else 1)",
         ),
         python_command(
             "DeepSpeed",
@@ -600,7 +630,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx; print(getattr(migraphx, '__version__', 'ok'))",
+            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
         ),
         python_command(
             "PyTorch Profiler",
@@ -614,14 +644,14 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "wandb",
             &["wandb"],
             python_candidates,
-            "import wandb; print(wandb.__version__)",
+            "import wandb,sys; ok=False\ntry:\n    _r=wandb.init(mode='disabled'); ok=_r is not None; _r.finish()\nexcept Exception:\n    pass\nprint(f'wandb {wandb.__version__} init_run_ok={ok}'); sys.exit(0 if ok else 1)",
         ),
         python_command(
             "FastVideo",
             "fastvideo",
             &["fastvideo"],
             python_candidates,
-            "import fastvideo; print(fastvideo.__version__)",
+            "import fastvideo,sys; import importlib; ok=False\nfor _m in ('fastvideo.inference','fastvideo.engine','fastvideo'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nver=getattr(fastvideo,'__version__','?')\nprint(f'FastVideo {ver} module_loaded={ok}'); sys.exit(0 if ok else 1)",
         ),
         shell_command("vLLM Studio", "vllm-studio", "bun", &["--version"]),
     ]);
@@ -650,7 +680,7 @@ fn build_verification_commands(python_candidates: &[String]) -> Vec<Verification
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx; print(getattr(migraphx, '__version__', 'ok'))",
+            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
         ),
     ]);
     steps
@@ -684,13 +714,12 @@ fn python_command(
 /// 3. Is torch.cuda.is_available()? (runtime HIP check)
 /// 4. Diagnostics for why HIP might not be available
 ///
-/// Unlike the old strict check that failed when `torch.version.hip` was None,
-/// this approach succeeds if torch is importable and provides diagnostic
-/// information about HIP availability. This prevents cascading failures
-/// to downstream components (DeepSpeed, Flash Attention, etc.) when PyTorch
-/// is correctly installed but HIP libraries aren't accessible from the
-/// current Python environment (e.g., system Python vs venv, LD_LIBRARY_PATH
-/// issues, or running without GPU access).
+/// Verification reflects FUNCTIONALITY, not just import: it exits non-zero if
+/// torch is not a ROCm build (`torch.version.hip` is None) OR the HIP runtime
+/// is unavailable (`torch.cuda.is_available()` is False). The diagnostic tiers
+/// print actionable guidance. Whether a pytorch-verify failure should block
+/// sibling components is an orchestrator-layer concern — NOT a reason to lie
+/// about pytorch's status. (Stage 4 tenet: verify functionality, fail loud.)
 fn pytorch_diagnostic_snippet() -> &'static str {
     r#"import torch, sys, os, ctypes.util
 
@@ -754,10 +783,13 @@ if not hip_available:
         print('  3. ROCm drivers not loaded (check with: rocminfo)')
         print('  Fix: source ~/.mlstack_env or set LD_LIBRARY_PATH=/opt/rocm/lib')
 
-# Exit successfully if torch is importable (even without HIP)
-# This prevents cascading failures to downstream components.
-# The diagnostic output above tells the user if HIP is available.
-sys.exit(0)"#
+# Stage 4: exit code reflects FUNCTIONAL HIP availability on this ROCm stack.
+# A CPU-only/CUDA torch build, or a ROCm build whose HIP runtime is
+# unreachable, must FAIL verification — not silently pass. The diagnostics
+# above guide the fix; downstream gating belongs in the orchestrator layer,
+# not a lying exit code.
+ok = (hip_version is not None) and hip_available
+sys.exit(0 if ok else 1)"#
 }
 
 fn vllm_runtime_check_snippet() -> &'static str {
@@ -1188,18 +1220,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pytorch_diagnostic_snippet_exits_zero() {
-        // The diagnostic snippet should always exit 0 (not fail) even when
-        // HIP is not available. This prevents cascading failures to downstream
-        // components like DeepSpeed, Flash Attention, etc.
+    fn test_pytorch_diagnostic_snippet_exits_strict() {
+        // Stage 4: the snippet must FAIL (exit 1) when torch is not a ROCm build
+        // or the HIP runtime is unavailable — it must NOT soft-pass with an
+        // unconditional exit 0. Downstream gating is an orchestrator concern.
         let snippet = pytorch_diagnostic_snippet();
         assert!(
-            snippet.contains("sys.exit(0)"),
-            "PyTorch diagnostic snippet should exit 0 (not block downstream components)"
+            snippet.contains("(hip_version is not None) and hip_available"),
+            "Should gate the exit on functional HIP availability"
         );
         assert!(
-            !snippet.contains("sys.exit(1)"),
-            "PyTorch diagnostic snippet should NOT exit 1 (was the old strict check)"
+            snippet.contains("sys.exit(0 if ok else 1)"),
+            "Should exit non-zero when HIP is unavailable (fail loud)"
+        );
+        assert!(
+            !snippet.contains("\nsys.exit(0)\n"),
+            "Should NOT have an unconditional soft-pass sys.exit(0)"
         );
     }
 
@@ -1263,22 +1299,23 @@ mod tests {
         let cmd = &cmds[0];
         assert_eq!(cmd.label, "PyTorch");
         assert_eq!(cmd.target_id, "pytorch");
-        // The args should contain the diagnostic snippet, not the old strict check
+        // Stage 4: must use the strict FUNCTIONAL check — fail when torch has
+        // no ROCm build or the HIP runtime is unavailable (no soft-pass).
         let empty = String::new();
         let code = cmd.args.get(1).unwrap_or(&empty);
         assert!(
-            !code.contains("sys.exit(0 if getattr(torch.version, 'hip', None) else 1)"),
-            "Should NOT use old strict HIP check that exits 1"
+            code.contains("(hip_version is not None) and hip_available"),
+            "Should gate the exit on functional HIP availability (Stage 4)"
         );
         assert!(
-            code.contains("sys.exit(0)"),
-            "Should use new diagnostic snippet that always exits 0"
+            code.contains("sys.exit(0 if ok else 1)"),
+            "Should exit non-zero when HIP is unavailable (Stage 4: fail loud)"
         );
     }
 
     #[test]
     fn test_pytorch_basic_verification_uses_diagnostic() {
-        // Verify that basic verification also uses the diagnostic snippet
+        // Verify that basic verification also uses the strict functional check
         let candidates = vec!["python3".to_string()];
         let cmds = basic_verification_commands(&candidates);
         let pytorch_cmd = cmds.iter().find(|c| c.target_id == "pytorch");
@@ -1290,12 +1327,12 @@ mod tests {
         let empty = String::new();
         let code = cmd.args.get(1).unwrap_or(&empty);
         assert!(
-            !code.contains("sys.exit(0 if getattr(torch.version, 'hip', None) else 1)"),
-            "Basic verification should NOT use old strict HIP check"
+            code.contains("(hip_version is not None) and hip_available"),
+            "Basic verification should gate exit on functional HIP (Stage 4)"
         );
         assert!(
-            code.contains("sys.exit(0)"),
-            "Basic verification should use new diagnostic snippet"
+            code.contains("sys.exit(0 if ok else 1)"),
+            "Basic verification should fail loud when HIP unavailable (Stage 4)"
         );
     }
 

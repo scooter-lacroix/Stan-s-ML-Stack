@@ -29,7 +29,12 @@ fn helper_dir_candidates() -> Vec<PathBuf> {
 }
 
 fn ensure_helper_script() -> Result<PathBuf, String> {
-    let body = PY_HELPER.trim_start();
+    // Single source (Tenet 3): inject the iGPU token list generated from the
+    // Rust `crate::gpu` consts so the benchmark Python filter cannot drift from
+    // the install-path filter.
+    let body = PY_HELPER
+        .trim_start()
+        .replace("__INTEGRATED_TOKENS__", &integrated_tokens_py());
     let mut last_error = String::new();
 
     for dir in helper_dir_candidates() {
@@ -38,7 +43,7 @@ fn ensure_helper_script() -> Result<PathBuf, String> {
             continue;
         }
         let path = dir.join("rusty_bench.py");
-        match fs::write(&path, body) {
+        match fs::write(&path, &body) {
             Ok(_) => return Ok(path),
             Err(err) => {
                 last_error = format!("failed to write helper script {}: {}", path.display(), err);
@@ -48,6 +53,31 @@ fn ensure_helper_script() -> Result<PathBuf, String> {
     }
 
     Err(last_error)
+}
+
+/// Build the Python iGPU-token list literal from the Rust `crate::gpu` consts
+/// (Tenet 3 single source — the benchmark Python filter derives from the same
+/// list as the install path, so it cannot drift).
+fn integrated_tokens_py() -> String {
+    let mut tokens: Vec<String> = crate::gpu::INTEGRATED_NAME_PATTERNS
+        .iter()
+        .map(|t| t.to_lowercase())
+        .collect();
+    tokens.extend(
+        crate::gpu::INTEGRATED_GFX_ARCHS
+            .iter()
+            .map(|t| t.to_lowercase()),
+    );
+    let mut s = String::from("[");
+    for (i, t) in tokens.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        let escaped = t.replace('\\', "\\\\").replace('"', "\\\"");
+        s.push_str(&format!("\"{escaped}\""));
+    }
+    s.push(']');
+    s
 }
 
 fn resolve_benchmark_python() -> String {
@@ -639,20 +669,17 @@ def _is_integrated_name(name):
     hint = _discrete_hint_from_name(name)
     if hint is not None:
         return not hint
-    lowered = str(name or "").lower()
-    for token in (
-        "raphael",
-        "phoenix",
-        "rembrandt",
-        "cezanne",
-        "barcelo",
-        "yellow carp",
-        "green sardine",
-        "pink sardine",
-        "hawk point",
-    ):
+    n = str(name or "")
+    lowered = n.lower()
+    up = n.upper()
+    # Token set GENERATED from crate::gpu::INTEGRATED_NAME_PATTERNS at write
+    # time (single source — no hand-maintained copy that can drift from Rust).
+    for token in __INTEGRATED_TOKENS__:
         if token in lowered:
             return True
+    # "Ryzen" without "RX" => APU/iGPU (discrete cards never contain "Ryzen").
+    if "RYZEN" in up and "RX" not in up:
+        return True
     return False
 
 

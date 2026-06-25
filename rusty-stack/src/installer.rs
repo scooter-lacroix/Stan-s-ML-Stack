@@ -109,14 +109,59 @@ pub fn run_installation(
         }
     }
 
+    // Tenet 1: anchor bare-`rusty` installs to the SINGLE managed global env
+    // (~/.mlstack/global) when the user did not request a named env and did not
+    // pin an explicit interpreter. Previously the bare TUI fell through to a
+    // *discovered* interpreter, so "global installs ALL install to a SINGLE
+    // default env" only held for `rusty install --global`. Best-effort: if venv
+    // creation fails (no bootstrap python), resolution falls back to discovery.
+    let no_named_env = std::env::var("MLSTACK_ENV_NAME")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    let no_explicit_python = std::env::var("MLSTACK_PYTHON_BIN")
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true);
+    if no_named_env && no_explicit_python {
+        let bootstrap = resolve_python_bin();
+        if let Ok(global_py) = crate::platform::environment::ensure_global_venv(&bootstrap) {
+            std::env::set_var(
+                "MLSTACK_PYTHON_BIN",
+                global_py.to_string_lossy().to_string(),
+            );
+        } else if std::env::var("MLSTACK_PYTHON_BIN").is_err() {
+            // ensure failed and nothing pinned — surface it so the user knows
+            // the install is landing on a discovered interpreter, not global.
+            let _ = sender.send(InstallerEvent::Log(
+                "[native] could not create managed global venv (~/.mlstack/global); \
+                 falling back to a discovered interpreter"
+                    .into(),
+                false,
+            ));
+        }
+    }
+
     let mut overall_success = true;
-    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
     let persistent_python = env_exports
         .get("MLSTACK_PYTHON_BIN")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
+    // Tenet 1: MLSTACK_ENV_NAME (set by `rusty install --env <name>`) isolates
+    // ALL components into ~/.mlstack/envs/<name>/. Falls back to the persisted
+    // target, then discovery.
+    let python_bin = std::env::var("MLSTACK_ENV_NAME")
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .map(|n| {
+            crate::platform::environment::mlstack_env_dir(&n)
+                .join("bin")
+                .join("python")
+                .to_string_lossy()
+                .to_string()
+        })
+        .or(persistent_python)
+        .unwrap_or_else(resolve_python_bin);
     python_candidates.retain(|candidate| candidate != &python_bin);
     python_candidates.insert(0, python_bin.clone());
     let _ = sender.send(InstallerEvent::Log(
@@ -189,24 +234,41 @@ pub fn run_installation(
                 user_home: &user_home,
                 env_exports: &env_exports,
             };
-            if let Err(err) = run_native_installer(&component, &ctx) {
-                install_success = false;
-                let chain = err
-                    .chain()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join(": ");
-                error_msg = format_user_friendly_error(&component.id, &chain);
-                // Log the full error chain for debugging
-                let err_label = if component.category == Category::Performance {
-                    "benchmarks"
-                } else {
-                    "installation"
-                };
-                let _ = sender.send(InstallerEvent::Log(
-                    format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
-                    false,
-                ));
+            // T2: sealed-core no-override gate + registry population.
+            match registry_gate(&component, &sender) {
+                Ok(false) => { /* sealed core already installed — reuse, skip reinstall */ }
+                Ok(true) => {
+                    if let Err(err) = run_native_installer(&component, &ctx) {
+                        install_success = false;
+                        let chain = err
+                            .chain()
+                            .map(|e| e.to_string())
+                            .collect::<Vec<_>>()
+                            .join(": ");
+                        error_msg = format_user_friendly_error(&component.id, &chain);
+                        // Log the full error chain for debugging
+                        let err_label = if component.category == Category::Performance {
+                            "benchmarks"
+                        } else {
+                            "installation"
+                        };
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
+                            false,
+                        ));
+                    } else {
+                        // Success — record in the registry (seals core components).
+                        registry_record(&component);
+                    }
+                }
+                Err(blocked) => {
+                    install_success = false;
+                    error_msg = format_user_friendly_error(&component.id, &blocked.to_string());
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!("[ERROR] {} blocked: {}", component.name, blocked),
+                        false,
+                    ));
+                }
             }
         } else {
             // Legacy path: spawn bash subprocess for non-ported components
@@ -248,6 +310,9 @@ pub fn run_installation(
                     format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                     false,
                 ));
+            } else {
+                // Tenet 2: record legacy-script installs in the registry too.
+                registry_record(&component);
             }
         }
 
@@ -544,7 +609,22 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
         .get("MLSTACK_PYTHON_BIN")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
+    // Tenet 1: MLSTACK_ENV_NAME (set by `rusty install --env <name>`) isolates
+    // ALL components into ~/.mlstack/envs/<name>/. Falls back to the persisted
+    // target, then discovery.
+    let python_bin = std::env::var("MLSTACK_ENV_NAME")
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .map(|n| {
+            crate::platform::environment::mlstack_env_dir(&n)
+                .join("bin")
+                .join("python")
+                .to_string_lossy()
+                .to_string()
+        })
+        .or(persistent_python)
+        .unwrap_or_else(resolve_python_bin);
     if env_path.exists() {
         let contents = fs::read_to_string(&env_path).context("Failed to read .mlstack_env")?;
         let rocm_version = detect_rocm_version();
@@ -623,8 +703,7 @@ export UV_PYTHON={}\n\
 export MLSTACK_INSTALL_METHOD={}\n\
 export INSTALL_METHOD={}\n\
 export PYTHONPATH={}:$PYTHONPATH\n\
-export TORCH_CUDA_ARCH_LIST=\"7.0;8.0;9.0\"\n\
-export PYTORCH_CUDA_ALLOC_CONF=\"max_split_size_mb:512\"\n\
+export PYTORCH_ALLOC_CONF=\"max_split_size_mb:512\"\n\
 export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{}/bin:{}/hip/bin:$PATH\"\n\
 export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{}/lib:{}/hip/lib:{}/opencl/lib:$LD_LIBRARY_PATH\"\n",
         rocm_version,
@@ -678,9 +757,16 @@ fn sanitize_mlstack_env(
         if let Some(key) = extract_env_key(trimmed) {
             seen.insert(key.to_string());
         }
-        let (line, changed_arch) = fix_env_assignment(line, "TORCH_CUDA_ARCH_LIST");
-        let (line, changed_alloc) = fix_env_assignment(&line, "PYTORCH_CUDA_ALLOC_CONF");
-        let (line, changed_hip) = normalize_env_value(&line, "HIP_PATH", "/opt/rocm");
+        // Stage 2: strip CUDA-leak vars from existing env files — never emit
+        // TORCH_CUDA_ARCH_LIST (CUDA arch flags) or PYTORCH_CUDA_ALLOC_CONF
+        // (CUDA-named) on a ROCm stack. Drop the line entirely.
+        if trimmed.starts_with("export TORCH_CUDA_ARCH_LIST=")
+            || trimmed.starts_with("export PYTORCH_CUDA_ALLOC_CONF=")
+        {
+            changed = true;
+            continue;
+        }
+        let (line, changed_hip) = normalize_env_value(line, "HIP_PATH", "/opt/rocm");
         let (line, changed_rocm) = normalize_env_value(&line, "ROCM_PATH", "/opt/rocm");
         let (line, changed_python) = normalize_env_value(&line, "MLSTACK_PYTHON_BIN", python_bin);
         let (line, changed_uv_python) = normalize_env_value(&line, "UV_PYTHON", python_bin);
@@ -731,9 +817,7 @@ fn sanitize_mlstack_env(
             (line, false)
         };
 
-        changed |= changed_arch
-            || changed_alloc
-            || changed_hip
+        changed |= changed_hip
             || changed_rocm
             || changed_python
             || changed_uv_python
@@ -767,6 +851,10 @@ fn extract_env_key(line: &str) -> Option<&str> {
     rest.split('=').next().map(str::trim)
 }
 
+/// Normalize an env-var line's value to a fixed assignment. Currently unused
+/// after Stage 2 (CUDA-leak vars are now stripped rather than fixed in place);
+/// retained as a general env-line utility for future migrations.
+#[allow(dead_code)]
 fn fix_env_assignment(line: &str, key: &str) -> (String, bool) {
     let marker = format!("{}=", key);
     let Some(idx) = line.find(&marker) else {
@@ -1973,6 +2061,58 @@ fn execute_native_command(
         NativeCommand::Package { program, args } => (program.clone(), args.clone(), vec![], None),
     };
 
+    // ── No-CUDA chokepoint (hard-prime tenet) ──────────────────────────
+    // Reject ANY explicit nvidia/cuda runtime package or CUDA wheel URL from
+    // being pip-installed by ANY component, regardless of command type (covers
+    // NativeCommand::Pip AND NativeCommand::Shell `python3 -m pip install …`).
+    // Permits torch/triton (core, ROCm-managed, from the ROCm index) but
+    // rejects nvidia-*/cuda*/cudnn/cublas/.../cupy-cuda* and +cuXXX wheels.
+    // Per-component `--no-deps` + requirements filtering handle the transitive
+    // case; this is the universal, unbypassable explicit-package guard.
+    let invokes_pip = program == "uv"
+        || program.ends_with("pip")
+        || program.ends_with("pip3")
+        || args.iter().any(|a| a == "pip");
+    let is_install = args.iter().any(|a| a == "install");
+    if invokes_pip && is_install {
+        let mut skip_next = false;
+        for a in &args {
+            if skip_next {
+                // The argument following -r/--requirement/-c/--constraint is a
+                // requirements/constraint FILENAME, not a package — never block
+                // it (a file named `cuda.txt` is not a CUDA package).
+                skip_next = false;
+                continue;
+            }
+            if a == "-r" || a == "--requirement" || a == "-c" || a == "--constraint" {
+                skip_next = true;
+                continue;
+            }
+            if a.starts_with('-') || a == "install" || a == "." || a == "-e" || a.is_empty() {
+                continue;
+            }
+            if crate::installers::common::nvidia_blocklist::is_nvidia_cuda_runtime_package(a) {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] BLOCKED nvidia/cuda package in {component_name}: {a}"),
+                    true,
+                ));
+                anyhow::bail!(
+                    "NVIDIA/CUDA contamination blocked: component '{component_name}' attempted \
+                     to pip install '{a}' — violates the No-CUDA hard-prime tenet"
+                );
+            }
+            if a.starts_with("http")
+                && crate::installers::common::nvidia_blocklist::is_cuda_wheel_url(a)
+            {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!("[native] BLOCKED cuda wheel URL in {component_name}: {a}"),
+                    true,
+                ));
+                anyhow::bail!("NVIDIA/CUDA wheel URL blocked in {component_name}: {a}");
+            }
+        }
+    }
+
     // Build the std::process::Command, wrapping with sudo if needed.
     // Package commands may already include "sudo" as the program.
     let already_sudo = program == "sudo";
@@ -2532,97 +2672,15 @@ fn git_clone_or_pull(
 ///
 /// Filter a pip requirements file to exclude CUDA/nvidia packages and wheels.
 ///
-/// This mirrors the original shell script's grep filter:
-/// `grep -v -E '^(nvidia-|cuda|tensorrt|triton([=<>!\[]|$)|xformers|flash-attn|torch([=<>! ]|$)|torchvision|torchaudio)'`
-///
-/// Additionally excludes:
-/// - Any URL containing CUDA markers (`+cu1`, `+cu2`, `cu124`, `cu128`, etc.)
-/// - Any `ik_llama` lines (CUDA-only builds)
-/// - Any `exllamav3` lines with CUDA markers
-/// - Any `flash_attn` wheel URLs with CUDA markers
-fn filter_cuda_requirements(req_path: &str) -> String {
-    let content = match std::fs::read_to_string(req_path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-
-    let mut filtered = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Keep empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Extract the package name part (before any version specifiers or markers)
-        let pkg_name = trimmed
-            .split(['=', '>', '<', '!', ';', '[', ' ', '\t'])
-            .next()
-            .unwrap_or("")
-            .trim();
-
-        // Skip CUDA/nvidia packages (matches original grep filter)
-        let pkg_lower = pkg_name.to_lowercase();
-        if pkg_lower.starts_with("nvidia-")
-            || pkg_lower.starts_with("cuda")
-            || pkg_lower.starts_with("tensorrt")
-            || pkg_lower == "triton"
-            || pkg_lower == "xformers"
-            || pkg_lower == "flash-attn"
-            || pkg_lower == "torch"
-            || pkg_lower == "torchvision"
-            || pkg_lower == "torchaudio"
-        {
-            continue;
-        }
-
-        // Also match triton with version specifiers (e.g. triton-windows==3.5.1)
-        if pkg_lower.starts_with("triton-")
-            || pkg_lower.starts_with("triton==")
-            || pkg_lower.starts_with("triton[")
-        {
-            continue;
-        }
-
-        // Skip URL-based wheels with CUDA markers
-        // These are lines like: https://.../llama_cpp_binaries-0.124.0+cu124-...whl; platform_system == "Linux"
-        let line_lower = trimmed.to_lowercase();
-        if line_lower.contains("http://") || line_lower.contains("https://") {
-            // Skip if URL contains CUDA markers
-            if line_lower.contains("+cu1")
-                || line_lower.contains("+cu2")
-                || line_lower.contains("+cu3")
-                || line_lower.contains("cu124")
-                || line_lower.contains("cu128")
-                || line_lower.contains("cu121")
-                || line_lower.contains("cu118")
-            {
-                continue;
-            }
-            // Skip ik_llama lines (CUDA-only builds)
-            if line_lower.contains("ik_llama") {
-                continue;
-            }
-            // Skip exllamav3 with CUDA markers
-            if line_lower.contains("exllamav3")
-                && (line_lower.contains("+cu") || line_lower.contains("cu1"))
-            {
-                continue;
-            }
-            // Skip flash_attn wheel URLs with CUDA markers
-            if line_lower.contains("flash_attn")
-                && (line_lower.contains("+cu") || line_lower.contains("cu1"))
-            {
-                continue;
-            }
-        }
-
-        filtered.push(line.to_string());
-    }
-
-    filtered.join("\n")
+/// Delegates to the single canonical blocklist
+/// [`crate::installers::common::nvidia_blocklist::filter_requirements_file`]
+/// (Stage 2: one unified blocklist replaces the three former divergent copies
+/// in `installer.rs`, `megatron.rs`, and `textgen.rs`). Excludes `nvidia-*`,
+/// `cuda*`, `cudnn`/`cublas`/`cufft`/`curand`/`cusolver`/`cusparse`/`nccl`/
+/// `nvtx`/`nvjitlink`/`tensorrt`, the torch family (ROCm-managed), and any
+/// URL wheel carrying a CUDA marker (`+cu1`/`cu124`/`cu128`/…).
+fn filter_cuda_requirements(req_path: &str) -> std::io::Result<String> {
+    crate::installers::common::nvidia_blocklist::filter_requirements_file(req_path)
 }
 
 /// Check whether force-reinstall mode is active.
@@ -2733,6 +2791,157 @@ fn purge_flash_attn(sender: &Sender<InstallerEvent>, component_name: &str) {
 /// Purge vLLM and related packages.
 fn purge_vllm(sender: &Sender<InstallerEvent>, component_name: &str) {
     purge_component_packages(&["vllm"], sender, component_name);
+}
+
+/// Has the user explicitly requested to unseal core components (force-reinstall
+/// past the sealed-core no-override gate)? Env: `MLSTACK_UNSEAL_CORE=1`.
+fn unseal_core_requested() -> bool {
+    std::env::var("MLSTACK_UNSEAL_CORE")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Sealed-core no-override gate (Tenet 2). Called before each component install.
+///
+/// Returns:
+/// - `Ok(true)`  — proceed with the install.
+/// - `Ok(false)` — the component is a sealed core that is already installed;
+///   REUSE it (skip reinstall) instead of overriding.
+/// - `Err`       — blocked: a force-reinstall targeted a sealed core without
+///   `MLSTACK_UNSEAL_CORE=1` (refuse to clobber an installed core component).
+fn registry_gate(component: &Component, sender: &Sender<InstallerEvent>) -> Result<bool> {
+    let registry = crate::core::registry::InstalledComponentRegistry::load();
+    if !registry.is_sealed(&component.id) {
+        return Ok(true);
+    }
+    if is_force_reinstall() && !unseal_core_requested() {
+        bail!(
+            "{} is a sealed CORE component — force-reinstall refused to prevent override. \
+             Set MLSTACK_UNSEAL_CORE=1 to intentionally reinstall it.",
+            component.name
+        );
+    }
+    if !is_force_reinstall() {
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} already installed (sealed core) — reusing, NOT reinstalling",
+                component.name
+            ),
+            false,
+        ));
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Record a successful install in the registry (Tenet 2). Seals core AND
+/// install-once components (rocm/pytorch/triton/aiter/flash-attn/…) so later
+/// installs reuse them and never override. Populates source/location/pip-package
+/// metadata so the registry is the real single-source-of-truth (consulted by
+/// dep-reuse and uninstall), not a hollow id+seal stub.
+fn registry_record(component: &Component) {
+    use crate::core::registry::{InstalledComponent, InstalledComponentRegistry};
+    let mut registry = InstalledComponentRegistry::load();
+    let record = InstalledComponent {
+        id: component.id.clone(),
+        version: component_version(&component.id),
+        source_index: component_source_index(&component.id),
+        location: install_target_location(),
+        sealed: crate::core::registry::should_seal_component(&component.id),
+        installed_at: Some(chrono::Utc::now().to_rfc3339()),
+        pip_packages: component_pip_packages(&component.id),
+    };
+    registry.mark_installed(record);
+    if let Err(e) = registry.save() {
+        // Tenet 2: a failed save means the component is NOT recorded, so a
+        // later install could override a sealed core. Surface it loudly rather
+        // than silently dropping the result.
+        eprintln!("[WARN] Failed to save installed component registry: {e}");
+    }
+}
+
+/// The pip package names a component owns (for registry dep-tracking +
+/// uninstall enumeration). Empty for system/repo components (rocm, comfyui,
+/// textgen) which don't install a single owned pip package.
+fn component_pip_packages(id: &str) -> Vec<String> {
+    match id {
+        "pytorch" => vec!["torch", "torchvision", "torchaudio", "pytorch-triton-rocm"],
+        "triton" => vec!["triton", "pytorch-triton-rocm"],
+        "vllm" | "vllm-multi" => vec!["vllm"],
+        "deepspeed" => vec!["deepspeed", "einops"],
+        "megatron" => vec!["megatron-core"],
+        "bitsandbytes" => vec!["bitsandbytes"],
+        "flash-attn" | "flash_attention" => {
+            vec!["flash-attn", "flash_attn", "flash_attention_amd"]
+        }
+        "aiter" => vec!["aiter"],
+        "onnx" | "onnxruntime" => vec!["onnxruntime", "onnxruntime-rocm"],
+        "migraphx" => vec!["migraphx"],
+        "mpi4py" => vec!["mpi4py"],
+        "wandb" => vec!["wandb"],
+        "fastvideo" => vec!["fastvideo"],
+        _ => Vec::new(),
+    }
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+/// Where a component was installed — the named env, the managed global env, or
+/// the pinned interpreter. Recorded so the registry is the single source of
+/// truth for "where the single source lives" (Tenet 2).
+fn install_target_location() -> Option<String> {
+    if let Ok(name) = std::env::var("MLSTACK_ENV_NAME") {
+        let name = name.trim();
+        if !name.is_empty() {
+            return Some(
+                crate::platform::environment::mlstack_env_dir(name)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    let global = crate::platform::environment::mlstack_global_dir();
+    if global.exists() {
+        return Some(global.to_string_lossy().into_owned());
+    }
+    std::env::var("MLSTACK_PYTHON_BIN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The wheel index / source a component was installed from, where statically
+/// known. PyTorch/Triton come from the Radeon ROCm manylinux index; ROCm lives
+/// at /opt/rocm. `None` for components with no fixed index.
+fn component_source_index(id: &str) -> Option<String> {
+    match id {
+        "pytorch" | "triton" => Some("https://repo.radeon.com/rocm/manylinux/".to_string()),
+        "rocm" => Some("/opt/rocm".to_string()),
+        _ => None,
+    }
+}
+
+/// Best-effort installed version, where cheaply detectable. ROCm version from
+/// `/opt/rocm/.info/version`; `None` otherwise (version is not load-bearing for
+/// the seal/no-override gate — pip_packages/location/source_index are).
+fn component_version(id: &str) -> Option<String> {
+    match id {
+        "rocm" => {
+            let v = detect_rocm_version();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// - **VAL-INSTALL-032**: installer.rs dispatches to correct Rust module per ID
@@ -3321,6 +3530,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     "pip".to_string(),
                     "install".to_string(),
                     "--no-build-isolation".to_string(),
+                    "--no-deps".to_string(),
                     "--break-system-packages".to_string(),
                     ".".to_string(),
                 ];
@@ -3575,7 +3785,22 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     .join("requirements_amd.txt"),
             ];
             for req_path in requirements_candidates.iter().filter(|p| p.exists()) {
-                let filtered = filter_cuda_requirements(&req_path.to_string_lossy());
+                let filtered = match filter_cuda_requirements(&req_path.to_string_lossy()) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] WARN: could not read Megatron requirements {}: {e} — skipping requirements install",
+                                req_path.display()
+                            ),
+                            true,
+                        ));
+                        anyhow::bail!(
+                            "failed to read Megatron requirements {}: {e}",
+                            req_path.display()
+                        );
+                    }
+                };
                 if filtered.is_empty() {
                     continue;
                 }
@@ -3825,16 +4050,63 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: pip install
-            // Use target_dir from clone command instead of hardcoded path
+            // Step 3: pip install — filter requirements to exclude CUDA deps.
+            // (Stage 2 tenet: no nvidia deps EVER. ComfyUI previously installed
+            // requirements.txt verbatim, which could pull xformers/flash-attn
+            // CUDA wheels. The ROCm torch is already present, so torch lines are
+            // stripped and reused, not reinstalled from a CUDA index.)
             let req_path = format!("{}/requirements.txt", target_dir);
-            let cmd = inst.build_pip_install_command(&req_path);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                None,
-                sender,
-                &component.name,
-            )?;
+            if std::path::Path::new(&req_path).exists() {
+                let filtered = match filter_cuda_requirements(&req_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] WARN: could not read ComfyUI requirements {req_path}: {e} — skipping requirements install"
+                            ),
+                            true,
+                        ));
+                        anyhow::bail!("failed to read ComfyUI requirements {req_path}: {e}");
+                    }
+                };
+                if !filtered.is_empty() {
+                    let tmp_dir = std::env::temp_dir().join("rusty-stack-comfyui");
+                    let _ = std::fs::create_dir_all(&tmp_dir);
+                    let filtered_path = tmp_dir.join("requirements_filtered.txt");
+                    std::fs::write(&filtered_path, &filtered).with_context(|| {
+                        format!(
+                            "Failed to write filtered requirements to {:?}",
+                            filtered_path
+                        )
+                    })?;
+                    let filtered_path_str = filtered_path.to_string_lossy().to_string();
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] Installing filtered requirements (CUDA deps excluded) from {}",
+                            req_path
+                        ),
+                        false,
+                    ));
+                    let cmd = inst.build_pip_install_command(&filtered_path_str);
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                    let _ = std::fs::remove_file(&filtered_path);
+                } else {
+                    let _ = sender.send(InstallerEvent::Log(
+                        "[native] [WARN] All ComfyUI requirements were filtered out, nothing to install".to_string(),
+                        false,
+                    ));
+                }
+            } else {
+                let _ = sender.send(InstallerEvent::Log(
+                    "[native] [WARN] ComfyUI requirements.txt not found, skipping dependency installation".to_string(),
+                    false,
+                ));
+            }
         }
 
         // ── textgen ───────────────────────────────────────────────────
@@ -3916,7 +4188,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             if !raw_req_path.is_empty() {
                 // Read and filter the requirements file to exclude CUDA deps
-                let filtered = filter_cuda_requirements(&raw_req_path);
+                let filtered = match filter_cuda_requirements(&raw_req_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] WARN: could not read textgen requirements {raw_req_path}: {e} — skipping requirements install"
+                            ),
+                            true,
+                        ));
+                        anyhow::bail!("failed to read textgen requirements {raw_req_path}: {e}");
+                    }
+                };
                 if !filtered.is_empty() {
                     // Write filtered requirements to a temp file
                     let tmp_dir = std::env::temp_dir().join("rusty-stack-textgen");
@@ -4466,7 +4749,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             });
             let home = ctx.user_home;
             let manifest = inst.check_latest_release();
-            let strategy = inst.resolve_install_strategy(&home, manifest.as_ref());
+            let strategy = inst.resolve_install_strategy(home, manifest.as_ref());
             match &strategy {
                 crate::installers::components::llama_cpp::InstallStrategy::Prebuilt(plan) => {
                     let _ = sender.send(InstallerEvent::Log(
@@ -4484,7 +4767,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                             ),
                             false,
                         ));
-                        inst.run_source_install(&home).map_err(|source_err| {
+                        inst.run_source_install(home).map_err(|source_err| {
                             anyhow::anyhow!(
                                 "llama-cpp prebuilt install failed and source fallback failed: {}",
                                 source_err
@@ -4500,7 +4783,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                         ),
                         false,
                     ));
-                    inst.run_source_install(&home).map_err(|err| {
+                    inst.run_source_install(home).map_err(|err| {
                         anyhow::anyhow!("llama-cpp source install failed: {}", err)
                     })?;
                 }
@@ -4512,7 +4795,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 home
             );
             let verification =
-                crate::installers::components::llama_cpp::verify_installed_binary(&home, &fork_dir);
+                crate::installers::components::llama_cpp::verify_installed_binary(home, &fork_dir);
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "llama-cpp post-install verification: {}",
@@ -4571,7 +4854,7 @@ fn run_script(
 ) -> Result<()> {
     let user_home = resolve_mlstack_user_home();
     let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
+    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_ENV_NAME,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
 
     let venv_bin = PathBuf::from(&user_home).join("rocm_venv").join("bin");
     let local_bin = PathBuf::from(&user_home).join(".local").join("bin");
@@ -4606,7 +4889,22 @@ fn run_script(
         .get("MLSTACK_PYTHON_BIN")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let python_bin = persistent_python.unwrap_or_else(resolve_python_bin);
+    // Tenet 1: MLSTACK_ENV_NAME (set by `rusty install --env <name>`) isolates
+    // ALL components into ~/.mlstack/envs/<name>/. Falls back to the persisted
+    // target, then discovery.
+    let python_bin = std::env::var("MLSTACK_ENV_NAME")
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .map(|n| {
+            crate::platform::environment::mlstack_env_dir(&n)
+                .join("bin")
+                .join("python")
+                .to_string_lossy()
+                .to_string()
+        })
+        .or(persistent_python)
+        .unwrap_or_else(resolve_python_bin);
     let force_reinstall = is_force_reinstall();
     let force_env_value = if force_reinstall { "true" } else { "false" };
     let sudo_password_env = sudo_password.clone();
@@ -5218,135 +5516,51 @@ fn detect_gpu_arch() -> String {
     "gfx000".to_string()
 }
 
-/// Pattern list for identifying AMD integrated GPUs (iGPUs) that should be filtered out.
-/// These include APU codenames, marketing patterns, and known integrated GPU models.
-const IGPU_PATTERNS: &[&str] = &[
-    // APU Codenames (internal names)
-    "Cezanne",
-    "Rembrandt",
-    "Phoenix",
-    "Raphael",
-    "Barcelo",
-    "Pink Sardine",
-    "Yellow Carp",
-    "Green Sardine",
-    // Marketing name patterns indicating integrated graphics
-    "Integrated",
-    "iGPU",
-    "APU",
-    // Generic integrated graphics names (when appearing without discrete GPU branding)
-    "AMD Radeon Graphics",
-    "Radeon Graphics",
-    // Model suffixes indicating APUs (G, GE, GTX series)
-    " 5600G",
-    " 5700G",
-    " 5600GE",
-    " 5700GE",
-    " 5700G",
-    " 5600GT",
-    " 5700GT",
-    " 8600G",
-    " 8700G",
-    " 8500G",
-    " 8300G",
-    // X3D variants with integrated graphics (Raphael/Phoenix-based APUs)
-    "7800X3D",
-    "7950X3D",
-    "7900X3D",
-    "7700X3D",
-    "7600X3D",
-    // Specific mobile APU series patterns
-    "Ryzen 7 7735",
-    "Ryzen 7 7840",
-    "Ryzen 7 8840",
-    "Ryzen 5 7535",
-    "Ryzen 5 7640",
-    "Ryzen 5 8640",
-    "Ryzen 9 7945",
-    "Ryzen 9 8945",
-    // Dragon Range/Phoenix/Hawks mobile APUs
-    "Hawk Point",
-    "Dragon Range",
-    "Fire Range",
-    // Stella (Zen 5 mobile)
-    "Stella",
-    // Krackan Point (Ryzen AI 300)
-    "Krackan",
-];
-
-/// Checks if a GPU marketing name indicates an integrated GPU.
-fn is_igpu_name(marketing_name: &str) -> bool {
-    let name_upper = marketing_name.to_uppercase();
-
-    // Check against known iGPU patterns
-    for pattern in IGPU_PATTERNS {
-        if marketing_name.contains(pattern) {
-            return true;
-        }
-    }
-
-    // Ryzen processors with integrated graphics.
-    // The marketing name for the iGPU agent in rocminfo is like:
-    //   "AMD Ryzen 7 7800X3D 8-Core Processor"
-    // Discrete GPUs have names like "Radeon RX 7900 XTX" — they don't contain
-    // "Ryzen" and do contain "RX".
-    //
-    // Heuristic: if the name contains "Ryzen" AND does NOT contain "RX",
-    // it's an APU/iGPU. This correctly handles:
-    //   - "AMD Ryzen 7 7800X3D 8-Core Processor" → iGPU ✅
-    //   - "AMD Ryzen 9 7950X3D 16-Core Processor" → iGPU ✅
-    //   - Discrete cards never have "Ryzen" in their name ✅
-    if name_upper.contains("RYZEN") && !name_upper.contains("RX") {
-        return true;
-    }
-
-    // Check for APU model suffixes (e.g., "Ryzen 5 5600G", "Ryzen 7 8700G")
-    // Pattern: Ryzen followed by model number ending in G/GE/GTX
-    if name_upper.contains("RYZEN") {
-        // Look for patterns like "5600G", "5700GE", "8600G", etc.
-        if let Some(pos) = name_upper.find(" RYZEN ") {
-            let after_ryzen = &name_upper[pos + 7..]; // Skip " RYZEN "
-                                                      // Check if next word/number ends with G
-            let words: Vec<&str> = after_ryzen.split_whitespace().collect();
-            if !words.is_empty() {
-                let first_word = words[0];
-                if first_word.ends_with('G') && first_word.len() >= 5 {
-                    // e.g., "5600G", "8700G" - but not "RX" series
-                    if !first_word.starts_with("RX") && !first_word.starts_with("RADEON") {
-                        // Further verify it's not a discrete model
-                        if !first_word.contains("XT") && !first_word.contains("XTX") {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Check for generic "Radeon Graphics" without specific model (typically iGPU)
-    if name_upper.contains("RADEON GRAPHICS") && !name_upper.contains("RX") {
-        // Additional check: if it doesn't have a specific model number
-        let has_model = marketing_name.chars().any(|c| c.is_ascii_digit());
-        if !has_model || marketing_name.contains("AMD Radeon Graphics") {
-            return true;
-        }
-    }
-
-    false
-}
+// NOTE (v0.3.0): iGPU classification is unified in `crate::gpu`. The former
+// local `IGPU_PATTERNS` + `is_igpu_name` lived here and diverged from the
+// copies in `bootstrap/env_setup`, `hardware`, and `platform/linux`. All call
+// sites now route through `crate::gpu::is_integrated_gpu_name` /
+// `crate::gpu::is_integrated_by_pci_id` / `crate::gpu::device_is_integrated`.
 
 /// Detects the list of discrete AMD GPUs, filtering out integrated GPUs.
 /// Returns a comma-separated string of GPU indices (e.g., "0,1" for first and second GPUs).
-fn detect_gpu_list() -> String {
+///
+/// This is the SINGLE entry point every consumer should use for the
+/// `HIP_VISIBLE_DEVICES` / `CUDA_VISIBLE_DEVICES` device mask (Stage 1).
+/// Detects the list of discrete AMD GPUs, filtering out integrated GPUs.
+/// Returns a comma-separated string of GPU indices (e.g., "0,1" for first and second GPUs).
+///
+/// This is the SINGLE entry point every consumer should use for the
+/// `HIP_VISIBLE_DEVICES` / `CUDA_VISIBLE_DEVICES` device mask (Stage 1).
+///
+/// Returns `"0"` only as the legacy default when NO discrete GPU is detected —
+/// preserving backward-compatible visibility for env-var defaulting. Consumers
+/// that must distinguish "no dGPU" from "device 0" should call
+/// [`detect_discrete_gpus`] instead, which returns an empty `Vec` when none is
+/// found.
+pub(crate) fn detect_gpu_list() -> String {
+    let gpus = detect_discrete_gpus();
+    if gpus.is_empty() {
+        "0".to_string()
+    } else {
+        gpus.join(",")
+    }
+}
+
+/// Detect the discrete AMD GPU indices, **without** the legacy `"0"` fallback.
+///
+/// Returns an empty `Vec` when no discrete GPU is confirmed by any detector
+/// (rocminfo → rocm-smi → lspci → sysfs). This is the canonical "how many real
+/// dGPUs are present" answer — use it for `gpu_count` and for emitting device
+/// masks only when a dGPU is actually proven (never leak a default `"0"` onto an
+/// iGPU-only host). The resolution order mirrors [`detect_gpu_list`].
+pub(crate) fn detect_discrete_gpus() -> Vec<String> {
     let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
     if let Ok(output) = Command::new(&rocminfo_path).output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Parse rocminfo output to identify discrete GPUs
         let discrete_indices = parse_rocminfo_for_discrete_gpus(&stdout);
-
         if !discrete_indices.is_empty() {
-            return discrete_indices.join(",");
+            return discrete_indices;
         }
     }
 
@@ -5357,9 +5571,8 @@ fn detect_gpu_list() -> String {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let discrete_indices = parse_rocm_smi_for_discrete_gpus(&stdout);
-
         if !discrete_indices.is_empty() {
-            return discrete_indices.join(",");
+            return discrete_indices;
         }
     }
 
@@ -5367,23 +5580,20 @@ fn detect_gpu_list() -> String {
     if let Ok(output) = Command::new("lspci").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let discrete_indices = parse_lspci_for_discrete_gpus(&stdout);
-
         if !discrete_indices.is_empty() {
-            return discrete_indices.join(",");
+            return discrete_indices;
         }
     }
 
     // Final fallback to sysfs detection
     if let Some(count) = detect_gpu_count_sysfs() {
         if count > 0 {
-            return (0..count)
-                .map(|idx| idx.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
+            return (0..count).map(|idx| idx.to_string()).collect();
         }
     }
 
-    "0".to_string()
+    // No "0" fallback here — empty means genuinely no confirmed dGPU.
+    Vec::new()
 }
 
 /// Builds a map of ROCm GPU ID -> gfx architecture (e.g., "1" -> "gfx1100").
@@ -5472,62 +5682,79 @@ fn parse_rocminfo_for_discrete_gpus(rocminfo_output: &str) -> Vec<String> {
     let mut discrete_indices: Vec<String> = Vec::new();
     let mut current_gpu_id: Option<usize> = None;
     let mut current_marketing_name = String::new();
+    let mut current_gfx = String::new();
     let mut current_device_type = String::new();
-    let mut is_igpu = false;
+
+    // Commit the just-finished agent. Fields are fully accumulated by the time
+    // the next agent's "GPU ID:" line appears.
+    let commit =
+        |id: Option<usize>, marketing: &str, gfx: &str, dev_type: &str, out: &mut Vec<String>| {
+            let Some(id) = id else {
+                return;
+            };
+            // CPU agents are never GPUs.
+            if dev_type.to_uppercase().contains("CPU") {
+                return;
+            }
+            // Structural iGPU exclusion: marketing name OR gfx-arch (the fallback
+            // when the marketing name is empty). A nameless agent is excluded ONLY
+            // if it has a positive iGPU signal — never silently — so a nameless
+            // dGPU (gfx1100/1101) is always kept (tenet: dGPUs never missed).
+            let integrated =
+                crate::gpu::device_is_integrated(Some(marketing), None, Some(gfx), None);
+            if !integrated {
+                out.push(id.to_string());
+            }
+        };
 
     for line in rocminfo_output.lines() {
         let line = line.trim();
 
-        // Track GPU ID - handle formats like "**  GPU ID:  0 **"
         if line.contains("GPU ID:") {
-            // Save previous GPU if valid
-            if let Some(id) = current_gpu_id {
-                if !is_igpu && !current_marketing_name.is_empty() {
-                    discrete_indices.push(id.to_string());
-                }
-            }
-
-            // Extract numeric ID from the line
-            // rocminfo format: "**  GPU ID:  0 **" or "GPU ID: 0"
+            // Commit previous agent, then start a new one.
+            commit(
+                current_gpu_id.take(),
+                &current_marketing_name,
+                &current_gfx,
+                &current_device_type,
+                &mut discrete_indices,
+            );
             if let Some(id_part) = line.split(':').nth(1) {
-                // Extract first sequence of digits from the string
                 let id_str: String = id_part.chars().filter(|c| c.is_ascii_digit()).collect();
                 current_gpu_id = id_str.parse().ok();
-                current_marketing_name.clear();
-                current_device_type.clear();
-                is_igpu = false;
             }
-        }
-        // Track Marketing Name
-        else if line.contains("Marketing Name:") {
+            current_marketing_name.clear();
+            current_gfx.clear();
+            current_device_type.clear();
+        } else if line.contains("Marketing Name:") {
             if let Some(name) = line.split(':').nth(1) {
-                // Remove trailing asterisks and trim
-                let name = name.trim_end_matches('*').trim();
-                current_marketing_name = name.to_string();
-                // Check if this is an iGPU based on marketing name
-                is_igpu = is_igpu_name(&current_marketing_name);
+                current_marketing_name = name.trim_end_matches('*').trim().to_string();
             }
-        }
-        // Track Device Type (additional verification)
-        else if line.contains("Device Type:") {
+        } else if line.contains("Device Type:") {
             if let Some(dev_type) = line.split(':').nth(1) {
-                // Remove trailing asterisks and trim
-                let dev_type = dev_type.trim_end_matches('*').trim();
-                current_device_type = dev_type.to_string();
-                // If device type explicitly says CPU, it's definitely an iGPU
-                if current_device_type.to_uppercase().contains("CPU") {
-                    is_igpu = true;
+                current_device_type = dev_type.trim_end_matches('*').trim().to_string();
+            }
+        } else if line.contains("Name:") {
+            // Track the gfx architecture — the structural iGPU signal when the
+            // marketing name is empty (rocminfo sometimes reports only
+            // `Name: gfxNNNN` for the iGPU agent).
+            if let Some(name) = line.split(':').nth(1) {
+                let name = name.trim();
+                if name.starts_with("gfx") {
+                    current_gfx = name.to_string();
                 }
             }
         }
     }
 
-    // Don't forget the last GPU
-    if let Some(id) = current_gpu_id {
-        if !is_igpu && !current_marketing_name.is_empty() {
-            discrete_indices.push(id.to_string());
-        }
-    }
+    // Commit the last agent.
+    commit(
+        current_gpu_id,
+        &current_marketing_name,
+        &current_gfx,
+        &current_device_type,
+        &mut discrete_indices,
+    );
 
     discrete_indices
 }
@@ -5614,34 +5841,15 @@ fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
 
         if let Ok(output) = Command::new("lspci").args(["-s", &bus]).output() {
             let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !line.is_empty() {
-                if is_igpu_name(&line) {
-                    return true;
-                }
-                let lower = line.to_ascii_lowercase();
-                if lower.contains("integrated")
-                    || lower.contains("ryzen")
-                    || lower.contains("apu")
-                    || lower.contains("raphael")
-                    || lower.contains("phoenix")
-                    || lower.contains("rembrandt")
-                    || lower.contains("renoir")
-                    || lower.contains("raven")
-                    || lower.contains("picasso")
-                    || lower.contains("cezanne")
-                    || lower.contains("mendocino")
-                    || lower.contains("hawk point")
-                    || lower.contains("strix")
-                {
-                    return true;
-                }
+            if !line.is_empty() && crate::gpu::is_integrated_gpu_name(&line) {
+                return true;
             }
         }
 
         let sysfs_path = format!("/sys/bus/pci/devices/0000:{}/mem_info_vram_total", bus);
         if let Ok(value) = fs::read_to_string(sysfs_path) {
             if let Ok(vram_bytes) = value.trim().parse::<u64>() {
-                return vram_bytes < 4 * 1024 * 1024 * 1024;
+                return vram_bytes < crate::gpu::DISCRETE_MIN_VRAM_BYTES;
             }
         }
         false
@@ -5722,7 +5930,7 @@ fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
         let resolved_descriptor = descriptor_parts.join(" ");
 
         if !resolved_descriptor.trim().is_empty()
-            && !is_igpu_name(&resolved_descriptor)
+            && !crate::gpu::is_integrated_gpu_name(&resolved_descriptor)
             && !bus_looks_integrated(&bus)
         {
             cards.push((index, index.to_string()));
@@ -5736,18 +5944,20 @@ fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
 /// Parses lspci output to find discrete AMD GPUs.
 /// This is a fallback when rocminfo is not available.
 fn parse_lspci_for_discrete_gpus(lspci_output: &str) -> Vec<String> {
-    fn lspci_bus_looks_integrated(bus_id: &str) -> bool {
-        let bus_id = bus_id.trim().trim_start_matches("0000:");
-        if bus_id.len() != "00:00.0".len() {
-            return false;
+    /// Read PCI device id + VRAM (bytes) for an lspci bus id from sysfs.
+    fn sysfs_pci_info(bus_id: &str) -> (Option<String>, Option<u64>) {
+        let bus = bus_id.trim().trim_start_matches("0000:");
+        if bus.len() != "00:00.0".len() {
+            return (None, None);
         }
-        let sysfs_path = format!("/sys/bus/pci/devices/0000:{}/mem_info_vram_total", bus_id);
-        if let Ok(value) = fs::read_to_string(sysfs_path) {
-            if let Ok(vram_bytes) = value.trim().parse::<u64>() {
-                return vram_bytes < 4 * 1024 * 1024 * 1024;
-            }
-        }
-        false
+        let base = format!("/sys/bus/pci/devices/0000:{bus}");
+        let pci_id = fs::read_to_string(format!("{base}/device"))
+            .ok()
+            .map(|s| s.trim().to_string());
+        let vram = fs::read_to_string(format!("{base}/mem_info_vram_total"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        (pci_id, vram)
     }
 
     let mut discrete_indices: Vec<String> = Vec::new();
@@ -5765,8 +5975,14 @@ fn parse_lspci_for_discrete_gpus(lspci_output: &str) -> Vec<String> {
                 || line_lower.contains("3d")
                 || line_lower.contains("display"))
         {
-            // Check if this is an iGPU based on the description
-            if !is_igpu_name(line) && !lspci_bus_looks_integrated(bus_id) {
+            // Structural iGPU exclusion via the canonical device_is_integrated
+            // (Tenet 3): name + PCI device id + VRAM. A nameless iGPU whose PCI
+            // id is in the denylist, or with < 4 GiB VRAM, is excluded; a dGPU
+            // is never missed (unreadable VRAM alone never excludes).
+            let (pci_id, vram) = sysfs_pci_info(bus_id);
+            let integrated =
+                crate::gpu::device_is_integrated(Some(line), pci_id.as_deref(), None, vram);
+            if !integrated {
                 discrete_indices.push(gpu_index.to_string());
             }
             gpu_index += 1;
@@ -5790,9 +6006,18 @@ fn detect_gpu_count_sysfs() -> Option<usize> {
             Ok(value) => value,
             Err(_) => continue,
         };
-        if vendor.trim().eq_ignore_ascii_case("0x1002") {
-            count += 1;
+        if !vendor.trim().eq_ignore_ascii_case("0x1002") {
+            continue;
         }
+        // AMD device — exclude known iGPUs by PCI device id (Stage 1: never
+        // count the integrated GPU, e.g. Raphael 0x164e). This is the
+        // structural gate that keeps the iGPU out of the env-var fallback.
+        if let Ok(dev_id) = fs::read_to_string(entry.path().join("device/device")) {
+            if crate::gpu::is_integrated_by_pci_id(dev_id.trim()) {
+                continue;
+            }
+        }
+        count += 1;
     }
     if count > 0 {
         Some(count)
@@ -5863,6 +6088,15 @@ fn resolve_python_bin() -> String {
         if !value.is_empty() {
             return value.to_string();
         }
+    }
+
+    // Tenet 1: prefer the managed global env (~/.mlstack/global) — the SINGLE
+    // default env — over discovered interpreters, so the bare `rusty` TUI
+    // anchors to it once it has been created (by run_installation / `rusty
+    // install`). Explicit MLSTACK_PYTHON_BIN/UV_PYTHON above still win.
+    let global_py = crate::platform::environment::mlstack_global_python();
+    if global_py.exists() {
+        return global_py.to_string_lossy().to_string();
     }
 
     let home = std::env::var("HOME").unwrap_or_default();
@@ -6205,6 +6439,40 @@ fn run_native_benchmark(component_id: &str, sender: &Sender<InstallerEvent>) -> 
 mod tests {
     use super::*;
 
+    // ── iGPU filtering: parse_rocminfo_for_discrete_gpus (tenet 3) ─────
+    // Target topology: 2 dGPU (gfx1100 RX 7900 XTX, gfx1101 RX 7800 XT) +
+    // 1 iGPU (gfx1036 Raphael). The iGPU must NEVER appear; dGPUs never missed.
+
+    #[test]
+    fn test_parse_rocminfo_excludes_named_igpu() {
+        let rocminfo = "\
+  GPU ID: 0\n  Name: gfx1100\n  Marketing Name: AMD Radeon RX 7900 XTX\n  Device Type: GPU\n\
+  GPU ID: 1\n  Name: gfx1101\n  Marketing Name: AMD Radeon RX 7800 XT\n  Device Type: GPU\n\
+  GPU ID: 2\n  Name: gfx1036\n  Marketing Name: Raphael\n  Device Type: GPU\n";
+        let indices = parse_rocminfo_for_discrete_gpus(rocminfo);
+        assert_eq!(indices, vec!["0".to_string(), "1".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_rocminfo_excludes_nameless_igpu_via_gfx_arch() {
+        // iGPU agent with EMPTY marketing name — excluded by the gfx1036
+        // structural signal, not by an accidental name-empty guard.
+        let rocminfo = "\
+  GPU ID: 0\n  Name: gfx1100\n  Marketing Name: AMD Radeon RX 7900 XTX\n  Device Type: GPU\n\
+  GPU ID: 1\n  Name: gfx1036\n  Device Type: GPU\n";
+        let indices = parse_rocminfo_for_discrete_gpus(rocminfo);
+        assert_eq!(indices, vec!["0".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_rocminfo_never_misses_nameless_dgpu() {
+        // A dGPU with no marketing name must still be emitted (gfx1100).
+        let rocminfo = "\
+  GPU ID: 0\n  Name: gfx1100\n  Device Type: GPU\n";
+        let indices = parse_rocminfo_for_discrete_gpus(rocminfo);
+        assert_eq!(indices, vec!["0".to_string()]);
+    }
+
     // ── Git clone idempotency tests ──────────────────────────────────
 
     #[test]
@@ -6308,57 +6576,71 @@ mod tests {
     #[test]
     fn test_is_igpu_name_raphael() {
         // Raphael iGPU should be detected
-        assert!(is_igpu_name("AMD Radeon Graphics (Raphael)"));
-        assert!(is_igpu_name("Raphael"));
+        assert!(crate::gpu::is_integrated_gpu_name(
+            "AMD Radeon Graphics (Raphael)"
+        ));
+        assert!(crate::gpu::is_integrated_gpu_name("Raphael"));
     }
 
     #[test]
     fn test_is_igpu_name_apu_models() {
         // APU models ending in G should be detected
-        assert!(is_igpu_name("Ryzen 5 5600G"));
-        assert!(is_igpu_name("Ryzen 7 5700G"));
-        assert!(is_igpu_name("Ryzen 7 8700G"));
-        assert!(is_igpu_name("Ryzen 5 5600GE"));
+        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 5 5600G"));
+        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 7 5700G"));
+        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 7 8700G"));
+        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 5 5600GE"));
     }
 
     #[test]
     fn test_is_igpu_name_codenames() {
         // APU codenames should be detected
-        assert!(is_igpu_name(
+        assert!(crate::gpu::is_integrated_gpu_name(
             "AMD Ryzen 9 7945HS with Radeon Graphics (Phoenix)"
         ));
-        assert!(is_igpu_name("Rembrandt"));
-        assert!(is_igpu_name("Cezanne"));
+        assert!(crate::gpu::is_integrated_gpu_name("Rembrandt"));
+        assert!(crate::gpu::is_integrated_gpu_name("Cezanne"));
     }
 
     #[test]
     fn test_is_igpu_name_discrete_gpus() {
         // Discrete GPUs should NOT be detected as iGPUs
-        assert!(!is_igpu_name("Radeon RX 7900 XTX"));
-        assert!(!is_igpu_name("Radeon RX 7800 XT"));
-        assert!(!is_igpu_name("Radeon RX 7700 XT"));
-        assert!(!is_igpu_name("AMD Radeon RX 6800 XT"));
+        assert!(!crate::gpu::is_integrated_gpu_name("Radeon RX 7900 XTX"));
+        assert!(!crate::gpu::is_integrated_gpu_name("Radeon RX 7800 XT"));
+        assert!(!crate::gpu::is_integrated_gpu_name("Radeon RX 7700 XT"));
+        assert!(!crate::gpu::is_integrated_gpu_name("AMD Radeon RX 6800 XT"));
     }
 
     #[test]
     fn test_is_igpu_name_x3d_processors() {
         // X3D processors have integrated graphics via Raphael/Phoenix dies
-        assert!(is_igpu_name("AMD Ryzen 7 7800X3D 8-Core Processor"));
-        assert!(is_igpu_name("AMD Ryzen 9 7950X3D 16-Core Processor"));
-        assert!(is_igpu_name("AMD Ryzen 9 7900X3D 12-Core Processor"));
+        assert!(crate::gpu::is_integrated_gpu_name(
+            "AMD Ryzen 7 7800X3D 8-Core Processor"
+        ));
+        assert!(crate::gpu::is_integrated_gpu_name(
+            "AMD Ryzen 9 7950X3D 16-Core Processor"
+        ));
+        assert!(crate::gpu::is_integrated_gpu_name(
+            "AMD Ryzen 9 7900X3D 12-Core Processor"
+        ));
         // The Ryzen-based heuristic should also catch generic Ryzen without RX
-        assert!(is_igpu_name("AMD Ryzen 5 7600X3D"));
+        assert!(crate::gpu::is_integrated_gpu_name("AMD Ryzen 5 7600X3D"));
     }
 
     #[test]
     fn test_is_igpu_name_ryzen_heuristic() {
         // Any name with "Ryzen" but without "RX" is an iGPU
-        assert!(is_igpu_name("AMD Ryzen 7 7800X3D 8-Core Processor"));
-        assert!(is_igpu_name("AMD Ryzen 5 8600G"));
-        assert!(is_igpu_name("AMD Ryzen 9 7945HS"));
+        assert!(crate::gpu::is_integrated_gpu_name(
+            "AMD Ryzen 7 7800X3D 8-Core Processor"
+        ));
+        assert!(crate::gpu::is_integrated_gpu_name("AMD Ryzen 5 8600G"));
+        assert!(crate::gpu::is_integrated_gpu_name("AMD Ryzen 9 7945HS"));
         // These should NOT match — discrete GPUs
-        assert!(!is_igpu_name("AMD Radeon RX 7900 XTX"));
-        assert!(!is_igpu_name("AMD Radeon RX 7800 XT Radeon RX 7900 XTX"));
+        assert!(!crate::gpu::is_integrated_gpu_name(
+            "AMD Radeon RX 7900 XTX"
+        ));
+        assert!(!crate::gpu::is_integrated_gpu_name(
+            "AMD Radeon RX 7800 XT Radeon RX 7900 XTX"
+        ));
     }
 
     #[test]

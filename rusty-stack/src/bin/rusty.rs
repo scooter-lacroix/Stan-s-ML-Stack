@@ -7,6 +7,8 @@
 //! - `rusty upgrade` — Upgrade the Rusty Stack binary itself
 //! - `rusty bench` — Run benchmarks
 //! - `rusty verify` — Verify ML Stack installation
+//! - `rusty uninstall` — Uninstall the Rusty-managed ML stack (cross-shell + cross-distro)
+//! - `rusty reinstall` — Force reinstall: uninstall then relaunch the installer
 //!
 //! # Usage
 //!
@@ -191,6 +193,54 @@ enum Subcommands {
         /// Output results in JSON format.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Uninstall the Rusty-managed ML stack.
+    ///
+    /// Removes the Python ML packages, ROCm/amdgpu system packages (unless
+    /// --keep-rocm), /opt/rocm (unless --keep-rocm), the env files Rusty wrote,
+    /// the shell sourcing lines, and the installed-component registry.
+    /// Cross-shell (fish/bash/zsh) and cross-distro (apt/dnf/pacman/zypper).
+    Uninstall {
+        /// Keep ROCm/amdgpu system packages and /opt/rocm (only remove Python +
+        /// env/registry).
+        #[arg(long)]
+        keep_rocm: bool,
+
+        /// Also remove ~/.mlstack/ (logs, cache, global venv).
+        #[arg(long)]
+        purge_dir: bool,
+
+        /// Skip the confirmation notice.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Force reinstall: uninstall the stack, then relaunch the TUI installer.
+    Reinstall {
+        /// Keep ROCm/amdgpu system packages during the uninstall phase.
+        #[arg(long)]
+        keep_rocm: bool,
+
+        /// Also remove ~/.mlstack/ during the uninstall phase.
+        #[arg(long)]
+        purge_dir: bool,
+    },
+
+    /// Install the ML stack.
+    ///
+    /// Ensures the install target env exists and launches the installer. Use
+    /// `--env <name>` to isolate ALL components into `~/.mlstack/envs/<name>/`
+    /// (Tenet 1: install-to-env), or `--global` for the single managed global
+    /// env `~/.mlstack/global/`. The sourcing command + path are printed.
+    Install {
+        /// Isolate all components into ~/.mlstack/envs/<name>/ (named env).
+        #[arg(long, value_name = "NAME")]
+        env: Option<String>,
+
+        /// Install into the single managed global env ~/.mlstack/global/ (default).
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -1002,7 +1052,7 @@ mod update_impl {
             .plan
             .iter()
             .map(|item| {
-                use rusty_stack::core::plan::PlanItem;
+                use rusty_stack::core::plan::{PlanItem, PlanItemInput};
                 use rusty_stack::core::types::ValidationTier;
                 use rusty_stack::orchestrator::planner::UpdateClassification;
 
@@ -1024,16 +1074,16 @@ mod update_impl {
                 };
 
                 rusty_stack::orchestrator::planner::PlannerItem {
-                    plan_item: PlanItem::new(
-                        &item.component_id,
-                        &item.current_version,
-                        &item.proposed_version,
-                        tier,
-                        item.selected,
-                        &item.rationale,
-                        item.dependencies.clone(),
-                        true,
-                    ),
+                    plan_item: PlanItem::new(PlanItemInput {
+                        component_id: item.component_id.clone(),
+                        current_version: item.current_version.clone(),
+                        proposed_version: item.proposed_version.clone(),
+                        validation_tier: tier,
+                        selected: item.selected,
+                        rationale: item.rationale.clone(),
+                        dependencies: item.dependencies.clone(),
+                        isolation_safe: matches!(classification, UpdateClassification::Safe),
+                    }),
                     classification,
                     visible: item.visible,
                     selected: item.selected,
@@ -2196,6 +2246,163 @@ mod verify_impl {
 // Main
 // ===========================================================================
 
+// ===========================================================================
+// Uninstall / Reinstall subcommand implementation
+// ===========================================================================
+
+mod uninstall_impl {
+    use super::*;
+
+    pub fn run(keep_rocm: bool, purge_dir: bool, yes: bool) {
+        let _log_guard = rusty_stack::logging::init_logging("uninstall");
+        println!("Rusty Stack — uninstall (keep_rocm={keep_rocm}, purge_dir={purge_dir})");
+        let opts = rusty_stack::uninstall::UninstallOptions {
+            keep_rocm,
+            purge_mlstack_dir: purge_dir,
+            yes,
+        };
+        match rusty_stack::uninstall::uninstall_stack(&opts) {
+            Ok(report) => {
+                println!("\n=== Uninstall report ===");
+                println!(
+                    "pip packages targeted: {}",
+                    if report.pip_uninstall_attempted.is_empty() {
+                        "(none)".into()
+                    } else {
+                        report.pip_uninstall_attempted.join(", ")
+                    }
+                );
+                println!(
+                    "ROCm system packages purged: {}",
+                    report.system_packages_purged
+                );
+                println!("/opt/rocm removed: {}", report.opt_rocm_removed);
+                if !report.env_files_removed.is_empty() {
+                    println!("removed: {}", report.env_files_removed.join(", "));
+                }
+                if !report.sourcing_lines_stripped.is_empty() {
+                    println!(
+                        "shell sourcing stripped from: {}",
+                        report.sourcing_lines_stripped.join(", ")
+                    );
+                }
+                println!("registry cleared: {}", report.registry_cleared);
+                if !report.warnings.is_empty() {
+                    eprintln!("\nWarnings:");
+                    for w in &report.warnings {
+                        eprintln!("  - {w}");
+                    }
+                }
+                println!("\nUninstall complete. Reboot recommended before reinstalling.");
+            }
+            Err(e) => {
+                eprintln!("Uninstall failed: {e:#}");
+                process::exit(1);
+            }
+        }
+    }
+}
+
+mod reinstall_impl {
+    use super::*;
+
+    /// Force-reinstall = uninstall the stack, then relaunch the TUI installer.
+    /// (Stage 6: previously broken — `rusty` had no reinstall path at all.)
+    pub fn run(keep_rocm: bool, purge_dir: bool) {
+        let _log_guard = rusty_stack::logging::init_logging("reinstall");
+        println!("Rusty Stack — reinstall: uninstalling, then relaunching installer…");
+        let opts = rusty_stack::uninstall::UninstallOptions {
+            keep_rocm,
+            purge_mlstack_dir: purge_dir,
+            yes: true,
+        };
+        if let Err(e) = rusty_stack::uninstall::uninstall_stack(&opts) {
+            eprintln!("Uninstall phase failed: {e:#}");
+            process::exit(1);
+        }
+        println!("\nUninstall phase complete. Launching TUI installer…");
+        #[cfg(feature = "tui")]
+        {
+            if let Err(e) = rusty_stack::run_tui() {
+                eprintln!("TUI error: {e}");
+                process::exit(1);
+            }
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            eprintln!("TUI not available in this build; run a TUI-enabled `rusty` to install.");
+        }
+    }
+}
+
+mod install_impl {
+    use super::*;
+
+    /// Install command (Tenet 1): ensures the target env (named or global),
+    /// pins it for the installer, prints the sourcing command + path, then
+    /// launches the installer. `--env <name>` isolates all components into
+    /// `~/.mlstack/envs/<name>/`; `--global` (default) uses `~/.mlstack/global/`.
+    pub fn run(env: Option<String>, global: bool) {
+        let _log_guard = rusty_stack::logging::init_logging("install");
+        use rusty_stack::platform::environment::{
+            ensure_global_venv, ensure_named_venv, resolve_canonical_python_bin,
+        };
+        let bootstrap = resolve_canonical_python_bin();
+
+        match env.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(name) => match ensure_named_venv(name, &bootstrap) {
+                Ok(py) => {
+                    std::env::set_var("MLSTACK_ENV_NAME", name);
+                    println!("[install] Named env '{name}' ready: {}", py.display());
+                    println!("[install] ALL components will install into ~/.mlstack/envs/{name}/");
+                    println!("\n=== Sourcing command (run in your shell to activate the env) ===");
+                    println!("  bash/zsh:  source ~/.mlstack/envs/{name}/bin/activate");
+                    println!("  fish:      source ~/.mlstack/envs/{name}/bin/activate.fish");
+                    println!("  env path:  ~/.mlstack/envs/{name}/");
+                }
+                Err(e) => {
+                    eprintln!("[install] failed to create named env '{name}': {e:#}");
+                    process::exit(1);
+                }
+            },
+            None => {
+                let _ = global;
+                match ensure_global_venv(&bootstrap) {
+                    Ok(py) => {
+                        std::env::set_var("MLSTACK_PYTHON_BIN", py.to_string_lossy().to_string());
+                        println!("[install] Global env ready: {}", py.display());
+                        println!(
+                            "[install] Components will install into the managed global env ~/.mlstack/global/"
+                        );
+                        println!("\n=== Sourcing command ===");
+                        println!("  bash/zsh:  source ~/.mlstack_env");
+                        println!(
+                            "  fish:      ~/.config/fish/conf.d/mlstack_env.fish (auto-loaded)"
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[install] failed to create global env: {e:#}");
+                        process::exit(1);
+                    }
+                }
+            }
+        }
+
+        println!("\nLaunching installer…");
+        #[cfg(feature = "tui")]
+        {
+            if let Err(e) = rusty_stack::run_tui() {
+                eprintln!("TUI error: {e}");
+                process::exit(1);
+            }
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            eprintln!("TUI not available in this build.");
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -2248,6 +2455,22 @@ fn main() {
             json,
         }) => {
             verify_impl::run(full, enhanced, build, json);
+        }
+        Some(Subcommands::Uninstall {
+            keep_rocm,
+            purge_dir,
+            yes,
+        }) => {
+            uninstall_impl::run(keep_rocm, purge_dir, yes);
+        }
+        Some(Subcommands::Reinstall {
+            keep_rocm,
+            purge_dir,
+        }) => {
+            reinstall_impl::run(keep_rocm, purge_dir);
+        }
+        Some(Subcommands::Install { env, global }) => {
+            install_impl::run(env, global);
         }
         None => {
             // No subcommand — launch TUI

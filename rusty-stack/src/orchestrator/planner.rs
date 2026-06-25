@@ -28,7 +28,7 @@
 //! \* Visible only with `--include-experimental` flag.
 
 use crate::core::manifest::{Manifest, ManifestComponent};
-use crate::core::plan::PlanItem;
+use crate::core::plan::{PlanItem, PlanItemInput};
 use crate::core::types::{ExecutorKind, ValidationTier};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -297,12 +297,11 @@ impl UpdatePlanner {
 
         for component in &manifest.components {
             // If specific targets were given, include targets and their dependency closure.
-            if !options.target_components.is_empty() {
-                if !target_set.contains(component.id.as_str())
-                    && !required_deps.contains(component.id.as_str())
-                {
-                    continue;
-                }
+            if !options.target_components.is_empty()
+                && !target_set.contains(component.id.as_str())
+                && !required_deps.contains(component.id.as_str())
+            {
+                continue;
             }
 
             // Classify the update
@@ -492,16 +491,16 @@ impl UpdatePlanner {
         let dependencies = self.dependencies_for_component(component);
 
         PlannerItem {
-            plan_item: PlanItem::new(
-                &component.id,
-                &current_version,
-                &component.version,
-                component.validation_tier,
+            plan_item: PlanItem::new(PlanItemInput {
+                component_id: component.id.clone(),
+                current_version: current_version.clone(),
+                proposed_version: component.version.clone(),
+                validation_tier: component.validation_tier,
                 selected,
-                &classification_reason,
+                rationale: classification_reason.clone(),
                 dependencies,
                 isolation_safe,
-            ),
+            }),
             classification,
             visible,
             selected,
@@ -752,10 +751,10 @@ impl UpdatePlanner {
         }
     }
 
-    fn collect_required_dependencies<'a>(
+    fn collect_required_dependencies(
         &self,
         manifest: &Manifest,
-        targets: &HashSet<&'a str>,
+        targets: &HashSet<&str>,
     ) -> HashSet<String> {
         let mut required = HashSet::new();
         let mut stack: Vec<String> = targets.iter().map(|s| (*s).to_string()).collect();
@@ -815,7 +814,7 @@ impl UpdatePlanner {
                     std::cmp::Ordering::Less => BumpLevel::Unknown,
                     std::cmp::Ordering::Equal => BumpLevel::Patch,
                     std::cmp::Ordering::Greater => {
-                        if pro.get(0).copied().unwrap_or(0) > cur.get(0).copied().unwrap_or(0) {
+                        if pro.first().copied().unwrap_or(0) > cur.first().copied().unwrap_or(0) {
                             BumpLevel::Major
                         } else if pro.get(1).copied().unwrap_or(0)
                             > cur.get(1).copied().unwrap_or(0)

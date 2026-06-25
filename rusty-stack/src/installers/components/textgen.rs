@@ -371,10 +371,13 @@ impl TextgenInstaller {
         )
     }
 
-    /// Detect GPU devices via rocm-smi.
+    /// Detect GPU devices — the canonical, iGPU-filtered discrete list.
+    ///
+    /// Routes through `crate::installer::detect_gpu_list` (Stage 1) so the
+    /// integrated GPU is never included and no dGPU is missed. Baked into the
+    /// launcher shim + systemd unit as `HIP_VISIBLE_DEVICES`/`CUDA_VISIBLE_DEVICES`.
     pub fn detect_gpu_devices(&self) -> String {
-        let _ = command_exists("rocm-smi");
-        "0,1".to_string()
+        crate::installer::detect_gpu_list()
     }
 
     /// Get the install directory.

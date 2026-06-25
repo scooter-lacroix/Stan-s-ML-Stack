@@ -59,20 +59,15 @@ impl HipArchs {
 }
 
 /// ONNX Runtime install method.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum OnnxInstallMethod {
     /// Install onnxruntime-migraphx from AMD manylinux repo (default).
+    #[default]
     MigraphxWheel,
     /// Build from source with ROCm + MIGraphX EP (includes ROCMExecutionProvider).
     SourceBuild,
     /// Install prebuilt onnxruntime-rocm from PyPI (legacy, may be ABI-incompatible).
     PrebuiltWheel,
-}
-
-impl Default for OnnxInstallMethod {
-    fn default() -> Self {
-        OnnxInstallMethod::MigraphxWheel
-    }
 }
 
 /// Configuration for the ONNX Runtime installer.
@@ -280,11 +275,7 @@ impl OnnxRuntimeInstaller {
     /// (DynamicQuantizeLinear, MatMulInteger, etc.) into custom ops that bypass
     /// MIGraphX's broken kernels. The optimized model is saved alongside the original.
     pub fn build_model_optimizer_command(&self, model_path: &str) -> ShellCommand {
-        let optimized_path = if model_path.ends_with(".onnx") {
-            format!("{}.optimized", model_path)
-        } else {
-            format!("{}.optimized", model_path)
-        };
+        let optimized_path = format!("{}.optimized", model_path);
 
         let script = format!(
             "import onnxruntime as ort; \

@@ -19,6 +19,7 @@ pub mod benchmark_common;
 pub mod distro;
 pub mod env_validation;
 pub mod guard;
+pub mod nvidia_blocklist;
 pub mod package_manager;
 pub mod package_mappings;
 pub mod rocm_env;
@@ -39,11 +40,15 @@ pub use guard::{
     log_info, log_warn, InstallerError, LogLevel, ProgressTracker, PythonVersion,
     MAX_ROCM_TORCH_PYTHON, MIN_PYTHON_VERSION,
 };
+pub use nvidia_blocklist::{
+    contaminated_packages, filter_requirements, filter_requirements_file, is_cuda_nvidia_package,
+    is_cuda_wheel_url,
+};
 pub use package_manager::{DryRunResult, PackageManagerFacade, PackageOperation};
 pub use package_mappings::map_package_name;
 pub use rocm_env::RocmEnv;
 pub use sealed_token::SealedToken;
-pub use telemetry::{submit_build_report, BuildReport, BuildReportStatus};
+pub use telemetry::{submit_build_report, BuildReport, BuildReportArtifacts, BuildReportStatus};
 pub use ui_helper::{is_system_path, UiArgError, UiArgs};
 pub use utils::{
     command_exists, fix_pip_cache_ownership, get_colors, Colors, PipCacheFixResult,

@@ -92,16 +92,16 @@ fn make_planner_item(
     tier: ValidationTier,
 ) -> PlannerItem {
     PlannerItem {
-        plan_item: PlanItem::new(
-            id,
-            current,
-            proposed,
-            tier,
+        plan_item: PlanItem::new(PlanItemInput {
+            component_id: id.to_string(),
+            current_version: current.to_string(),
+            proposed_version: proposed.to_string(),
+            validation_tier: tier,
             selected,
-            "test",
-            deps.into_iter().map(|s| s.to_string()).collect(),
-            true,
-        ),
+            rationale: "test".to_string(),
+            dependencies: deps.into_iter().map(|s| s.to_string()).collect(),
+            isolation_safe: true,
+        }),
         classification: UpdateClassification::Safe,
         visible: true,
         selected,
@@ -853,26 +853,26 @@ fn test_integration_circular_deps_detected_at_plan_stage() {
     // The Plan::new constructor should panic when it detects circular dependencies
     let result = std::panic::catch_unwind(|| {
         Plan::new(vec![
-            PlanItem::new(
-                "a",
-                "1.0.0",
-                "1.1.0",
-                ValidationTier::Validated,
-                true,
-                "",
-                vec!["b".to_string()],
-                true,
-            ),
-            PlanItem::new(
-                "b",
-                "1.0.0",
-                "1.1.0",
-                ValidationTier::Validated,
-                true,
-                "",
-                vec!["a".to_string()],
-                true,
-            ),
+            PlanItem::new(PlanItemInput {
+                component_id: "a".to_string(),
+                current_version: "1.0.0".to_string(),
+                proposed_version: "1.1.0".to_string(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "".to_string(),
+                dependencies: vec!["b".to_string()],
+                isolation_safe: true,
+            }),
+            PlanItem::new(PlanItemInput {
+                component_id: "b".to_string(),
+                current_version: "1.0.0".to_string(),
+                proposed_version: "1.1.0".to_string(),
+                validation_tier: ValidationTier::Validated,
+                selected: true,
+                rationale: "".to_string(),
+                dependencies: vec!["a".to_string()],
+                isolation_safe: true,
+            }),
         ])
     });
 
