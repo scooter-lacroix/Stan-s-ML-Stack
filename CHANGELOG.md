@@ -4,6 +4,8 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
+
 ### Release Track Status
 - Next changes accumulate here after 0.3.0.
 
