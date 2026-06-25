@@ -235,14 +235,19 @@ pub fn ensure_named_venv(name: &str, bootstrap_python: &str) -> anyhow::Result<P
 /// Create a venv at `dir` using `uv` when available, else `python -m venv`.
 fn create_venv(dir: &Path, bootstrap_python: &str) -> anyhow::Result<()> {
     if command_on_path("uv") {
-        let status = std::process::Command::new("uv")
+        // Treat a uv SPAWN failure (e.g. uv on PATH but not executable / missing
+        // runtime) the same as a non-successful run: fall through to the
+        // `python -m venv` fallback rather than bailing with a spawn error.
+        let uv_status = std::process::Command::new("uv")
             .arg("venv")
             .arg("--python")
             .arg(bootstrap_python)
             .arg(dir)
-            .status()?;
-        if status.success() {
-            return Ok(());
+            .status();
+        if let Ok(status) = uv_status {
+            if status.success() {
+                return Ok(());
+            }
         }
     }
     let status = std::process::Command::new(bootstrap_python)
@@ -746,6 +751,7 @@ mod tests {
 
     #[test]
     fn test_resolve_user_home_env_override() {
+        let _env = crate::test_support::lock_env();
         let saved = std::env::var("MLSTACK_USER_HOME").ok();
         let dir = tempfile::tempdir().unwrap();
         let dir_path = dir.path().to_path_buf();
@@ -824,6 +830,7 @@ mod tests {
 
     #[test]
     fn test_python_interpreters_env_var_override() {
+        let _env = crate::test_support::lock_env();
         // Save current state (hermetic: pin home so a real ~/.mlstack/global
         // on the dev machine can't shadow the explicit override).
         let saved_py = std::env::var("MLSTACK_PYTHON_BIN").ok();

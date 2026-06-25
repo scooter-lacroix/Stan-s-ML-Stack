@@ -677,9 +677,8 @@ mkdir -p "$TRITON_CACHE_DIR" "$TRITON_DUMP_DIR" "$TRITON_OVERRIDE_DIR" 2>/dev/nu
 
 # MPI Settings
 # Only set if not already set
-# (Stage 2: the OMPI CUDA-opal support var is intentionally NOT set — that is
+# (Stage 2: the OMPI CUDA-opal support vars are intentionally NOT set — that is
 # the CUDA-built OpenMPI path; a ROCm stack uses the ROCm accelerator path.)
-if [ -z "${{OMPI_MCA_pml_ucx_opal_cuda_support:-}}" ]; then export OMPI_MCA_pml_ucx_opal_cuda_support=true; fi
 if [ -z "${{OMPI_MCA_btl_openib_allow_ib:-}}" ]; then export OMPI_MCA_btl_openib_allow_ib=true; fi
 if [ -z "${{OMPI_MCA_btl_openib_warn_no_device_params_found:-}}" ]; then export OMPI_MCA_btl_openib_warn_no_device_params_found=0; fi
 if [ -z "${{OMPI_MCA_coll_hcoll_enable:-}}" ]; then export OMPI_MCA_coll_hcoll_enable=0; fi
@@ -807,9 +806,8 @@ set -gx UV_PYTHON {python_bin}
 set -gx FLASH_ATTENTION_TRITON_AMD_ENABLE TRUE
 
 # --- MPI/UCX Settings ---
-# (Stage 2: the OMPI CUDA-opal support var is intentionally NOT set —
+# (Stage 2: the OMPI CUDA-opal support vars are intentionally NOT set —
 # CUDA-built OpenMPI path; a ROCm stack uses the ROCm accelerator path.)
-set -q OMPI_MCA_pml_ucx_opal_cuda_support; or set -gx OMPI_MCA_pml_ucx_opal_cuda_support true
 set -q OMPI_MCA_btl_openib_allow_ib; or set -gx OMPI_MCA_btl_openib_allow_ib true
 set -q OMPI_MCA_btl_openib_warn_no_device_params_found; or set -gx OMPI_MCA_btl_openib_warn_no_device_params_found 0
 set -q OMPI_MCA_coll_hcoll_enable; or set -gx OMPI_MCA_coll_hcoll_enable 0
@@ -1271,7 +1269,10 @@ mod tests {
             "11.0.0",
             "python3",
         );
-        assert!(!content.contains("OMPI_MCA_opal_cuda_support"));
+        assert!(
+            !content.contains("opal_cuda_support"),
+            "must NOT set any OMPI CUDA-opal MCA var (Stage 2: ROCm uses the ROCm accelerator path)"
+        );
         assert!(content.contains("OMPI_MCA_pml"));
         assert!(content.contains("OMPI_MCA_osc"));
         assert!(content.contains("OMPI_MCA_btl"));

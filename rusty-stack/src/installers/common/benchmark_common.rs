@@ -1135,12 +1135,17 @@ mod tests {
 
     #[test]
     fn test_dry_run_false_by_default() {
+        // Serialize: this mutates (remove_var) AND reads the shared DRY_RUN env,
+        // racing with the other test_dry_run_* setters unless held under the
+        // global env lock.
+        let _guard = crate::test_support::lock_env();
         std::env::remove_var("DRY_RUN");
         assert!(!is_dry_run());
     }
 
     #[test]
     fn test_dry_run_true_when_set() {
+        let _guard = crate::test_support::lock_env();
         std::env::set_var("DRY_RUN", "true");
         assert!(is_dry_run());
         std::env::remove_var("DRY_RUN");
@@ -1148,6 +1153,7 @@ mod tests {
 
     #[test]
     fn test_dry_run_case_insensitive() {
+        let _guard = crate::test_support::lock_env();
         // Ensure clean state
         std::env::remove_var("DRY_RUN");
 
@@ -1162,6 +1168,7 @@ mod tests {
 
     #[test]
     fn test_dry_run_false_when_other_value() {
+        let _guard = crate::test_support::lock_env();
         std::env::set_var("DRY_RUN", "false");
         assert!(!is_dry_run());
         std::env::remove_var("DRY_RUN");

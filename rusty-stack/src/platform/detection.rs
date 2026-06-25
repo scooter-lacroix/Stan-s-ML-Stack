@@ -536,6 +536,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_debian_family() {
+        let _env = crate::test_support::lock_env();
         let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "ubuntu".to_string(),
@@ -547,6 +548,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_arch_family() {
+        let _env = crate::test_support::lock_env();
         let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "arch".to_string(),
@@ -558,6 +560,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_rhel_family() {
+        let _env = crate::test_support::lock_env();
         let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "fedora".to_string(),
@@ -569,6 +572,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_suse_family() {
+        let _env = crate::test_support::lock_env();
         let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "opensuse-leap".to_string(),
@@ -580,6 +584,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_unknown_family() {
+        let _env = crate::test_support::lock_env();
         let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "alpine".to_string(),
@@ -591,6 +596,7 @@ ID_LIKE=arch
 
     #[test]
     fn test_package_manager_env_override() {
+        let _env = crate::test_support::lock_env();
         let _guard = EnvVarGuard::remove("MLSTACK_PKG_MANAGER");
         let info = DistroInfo {
             id: "arch".to_string(),

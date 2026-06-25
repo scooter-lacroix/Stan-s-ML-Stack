@@ -975,8 +975,16 @@ fn detect_gpu() -> GPUInfo {
                                 .collect();
                             if !gfx_num.is_empty() && gfx_num.len() >= 3 {
                                 // Detect iGPU via the canonical classifier (Stage 1).
-                                let is_igpu =
-                                    crate::gpu::is_integrated_gpu_name(&current_marketing_name);
+                                // Use the combined classifier so a nameless agent
+                                // (empty marketing name) with a gfx1036/gfx1103 arch
+                                // is still caught via the gfx-arch signal.
+                                let gfx_arch = format!("gfx{gfx_num}");
+                                let is_igpu = crate::gpu::device_is_integrated(
+                                    Some(&current_marketing_name),
+                                    None,
+                                    Some(&gfx_arch),
+                                    None,
+                                );
                                 // Only set architecture for dGPUs (not iGPUs, not CPUs)
                                 if !is_igpu
                                     && current_device_type == "GPU"
@@ -996,13 +1004,10 @@ fn detect_gpu() -> GPUInfo {
                 }
             }
             // Stage 1: gpu_count must EXCLUDE the iGPU. Reuse the canonical
-            // filtered detector instead of the raw rocminfo agent count (which
-            // counts the integrated GPU). Fall back to the raw count only when
-            // the detector returns nothing.
-            let discrete_count = crate::installer::detect_gpu_list()
-                .split(',')
-                .filter(|s| !s.trim().is_empty())
-                .count();
+            // discrete detector (no "0" fallback) so an iGPU-only / no-dGPU host
+            // reports 0 rather than falsely counting the fallback. Fall back to
+            // the raw rocminfo agent count only when the detector returns nothing.
+            let discrete_count = crate::installer::detect_discrete_gpus().len();
             if discrete_count > 0 {
                 info.gpu_count = discrete_count;
             } else if gpu_count > 0 {

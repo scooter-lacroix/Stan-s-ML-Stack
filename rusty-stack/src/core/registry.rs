@@ -76,14 +76,23 @@ impl InstalledComponentRegistry {
         }
     }
 
-    /// Persist the registry to disk, creating `~/.mlstack/` first.
+    /// Persist the registry to disk atomically, creating `~/.mlstack/` first.
+    ///
+    /// Writes to `installed.json.tmp` in the same directory, then `fs::rename`s
+    /// it into place. `rename` is atomic on the same filesystem, so an
+    /// interrupted write (crash, disk full, power loss) can never leave a
+    /// corrupt `installed.json` that would make `load()` return empty and risk
+    /// clobbering a sealed core component (Tenet 2).
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(&path, json)?;
+        // Temp file in the SAME directory so the rename is atomic (same fs).
+        let temp_path = path.with_extension("json.tmp");
+        fs::write(&temp_path, json)?;
+        fs::rename(&temp_path, &path)?;
         Ok(())
     }
 
@@ -327,6 +336,8 @@ mod tests {
 
     #[test]
     fn load_missing_is_empty() {
+        // Serialize: this test mutates the process-global MLSTACK_USER_HOME.
+        let _guard = crate::test_support::lock_env();
         // Point HOME at a temp dir so ~/.mlstack/installed.json is absent.
         let dir = tempfile::tempdir().unwrap();
         let saved_home = std::env::var("MLSTACK_USER_HOME").ok();
@@ -344,6 +355,8 @@ mod tests {
 
     #[test]
     fn save_then_load_roundtrip() {
+        // Serialize: this test mutates the process-global MLSTACK_USER_HOME.
+        let _guard = crate::test_support::lock_env();
         let dir = tempfile::tempdir().unwrap();
         let saved_home = std::env::var("MLSTACK_USER_HOME").ok();
         std::env::set_var(

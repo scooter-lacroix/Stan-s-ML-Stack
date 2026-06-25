@@ -317,7 +317,7 @@ pub fn component_verification_commands(
             "ml-stack-core",
             &["stans_ml_stack"],
             python_candidates,
-            "import stans_ml_stack,sys; import importlib; ok=False\nfor _s in ('core','utils','cli','installers'):\n    try:\n        importlib.import_module(f'stans_ml_stack.{_s}'); ok=True; break\n    except Exception:\n        pass\nver=getattr(stans_ml_stack,'__version__','ok')\nprint(f'ML Stack Core {ver} submodule_loaded={ok}'); sys.exit(0 if ok else 1)",
+            "import stans_ml_stack,sys; import importlib; ok=True\nfor _s in ('core','utils','cli','installers'):\n    try:\n        importlib.import_module(f'stans_ml_stack.{_s}')\n    except Exception:\n        ok=False; break\nver=getattr(stans_ml_stack,'__version__','ok')\nprint(f'ML Stack Core {ver} submodule_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
         "flash-attn" => vec![python_command(
             "Flash Attention",
@@ -498,24 +498,48 @@ pub fn component_verification_commands(
             "Suite logs found",
             "No suite logs yet",
         )],
-        "comfyui" => vec![shell_command(
-            "ComfyUI",
-            "comfyui",
-            "bash",
-            &[
-                "-c",
-                "cd \"$HOME/ComfyUI\" 2>/dev/null && python3 -c 'import folder_paths' 2>/dev/null && echo 'comfyui functional' || exit 1",
-            ],
-        )],
-        "textgen" => vec![shell_command(
-            "text-generation-webui",
-            "textgen",
-            "bash",
-            &[
-                "-c",
-                "cd \"$HOME/text-generation-webui\" 2>/dev/null && python3 -c 'import server' 2>/dev/null && echo 'textgen functional' || exit 1",
-            ],
-        )],
+        "comfyui" => vec![{
+            // F2: verify against the env's interpreter, not a hardcoded python3.
+            // Resolve the same python the installers pin (MLSTACK_PYTHON_BIN /
+            // UV_PYTHON / first candidate), then import from the install dir.
+            let py = python_candidates
+                .first()
+                .cloned()
+                .or_else(|| env::var("MLSTACK_PYTHON_BIN").ok().filter(|s| !s.is_empty()))
+                .or_else(|| env::var("UV_PYTHON").ok().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| "python3".to_string());
+            shell_command(
+                "ComfyUI",
+                "comfyui",
+                "bash",
+                &[
+                    "-c",
+                    &format!(
+                        "cd \"$HOME/ComfyUI\" 2>/dev/null && {py} -c 'import folder_paths' 2>/dev/null && echo 'comfyui functional' || exit 1"
+                    ),
+                ],
+            )
+        }],
+        "textgen" => vec![{
+            // F2: verify against the env's interpreter, not a hardcoded python3.
+            let py = python_candidates
+                .first()
+                .cloned()
+                .or_else(|| env::var("MLSTACK_PYTHON_BIN").ok().filter(|s| !s.is_empty()))
+                .or_else(|| env::var("UV_PYTHON").ok().filter(|s| !s.is_empty()))
+                .unwrap_or_else(|| "python3".to_string());
+            shell_command(
+                "text-generation-webui",
+                "textgen",
+                "bash",
+                &[
+                    "-c",
+                    &format!(
+                        "cd \"$HOME/text-generation-webui\" 2>/dev/null && {py} -c 'import server' 2>/dev/null && echo 'textgen functional' || exit 1"
+                    ),
+                ],
+            )
+        }],
         _ => Vec::new(),
     }
 }

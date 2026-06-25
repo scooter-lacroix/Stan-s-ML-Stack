@@ -24,6 +24,40 @@ pub mod telemetry;
 pub mod uninstall;
 pub mod verification;
 
+/// Shared test infrastructure.
+///
+/// `env_lock()` is a SINGLE global mutex acquired by every test that mutates a
+/// process-global env var (MLSTACK_USER_HOME, MLSTACK_PYTHON_BIN, ROCM_PATH,
+/// package-manager overrides, DRY_RUN, GITHUB_TOKEN, …). Process env is global
+/// state, so any two env-mutating tests running concurrently on different
+/// threads corrupt each other — serializing ALL of them through this one lock
+/// makes the suite deterministic under `cargo test`'s default thread pool.
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static GLOBAL_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    /// The single global mutex serializing all env-mutating / global-state tests.
+    pub fn env_lock() -> &'static Mutex<()> {
+        GLOBAL_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Acquire at the top of any test that mutates process-global state (env
+    /// vars, the /tmp/llama-cpp-rocm-build dir, …). Returns a guard that serializes
+    /// the test against every other such test.
+    ///
+    /// Recovers from **poison**: if a previous test panicked while holding the
+    /// lock, the mutex is poisoned and a plain `.lock().unwrap()` would cascade
+    /// the panic into every other locked test. We ignore the poison so each test
+    /// fails (or passes) on its own merits, not as collateral damage.
+    pub fn lock_env() -> MutexGuard<'static, ()> {
+        env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+}
+
 #[cfg(feature = "tui")]
 pub mod app;
 

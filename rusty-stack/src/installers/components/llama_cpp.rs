@@ -1770,6 +1770,10 @@ mod tests {
 
     #[test]
     fn test_has_partial_artifacts_no_artifacts() {
+        // Serialize: has_partial_artifacts checks the GLOBAL /tmp/llama-cpp-rocm-build
+        // path; test_purge_source_artifacts_is_idempotent creates it. The global env
+        // lock serializes all such global-state mutations.
+        let _env = crate::test_support::lock_env();
         // With a non-existent home, no artifacts should exist.
         // Use a path starting with /tmp-nonexistent- prefix to avoid
         // races with other tests that may create /tmp/llama-cpp-rocm-build.
@@ -1930,6 +1934,10 @@ mod tests {
 
     #[test]
     fn test_purge_source_artifacts_is_idempotent() {
+        // Serialize: this test creates the GLOBAL /tmp/llama-cpp-rocm-build path
+        // that test_has_partial_artifacts_no_artifacts checks. Global lock +
+        // explicit cleanup make the suite deterministic.
+        let _env = crate::test_support::lock_env();
         let installer = LlamaCppInstaller::with_defaults();
         let temp_home = tempfile::tempdir().unwrap();
         let home = temp_home.path().to_string_lossy().to_string();
@@ -1946,6 +1954,10 @@ mod tests {
 
         assert!(installer.purge_source_artifacts(&home, true).is_ok());
         assert!(installer.purge_source_artifacts(&home, true).is_ok());
+
+        // Determinism: remove the global build dir so no later test sees a
+        // leftover (purge targets home-relative paths, not this global constant).
+        let _ = std::fs::remove_dir_all("/tmp/llama-cpp-rocm-build");
     }
 
     #[test]

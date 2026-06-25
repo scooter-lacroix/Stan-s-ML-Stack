@@ -2075,7 +2075,19 @@ fn execute_native_command(
         || args.iter().any(|a| a == "pip");
     let is_install = args.iter().any(|a| a == "install");
     if invokes_pip && is_install {
+        let mut skip_next = false;
         for a in &args {
+            if skip_next {
+                // The argument following -r/--requirement/-c/--constraint is a
+                // requirements/constraint FILENAME, not a package — never block
+                // it (a file named `cuda.txt` is not a CUDA package).
+                skip_next = false;
+                continue;
+            }
+            if a == "-r" || a == "--requirement" || a == "-c" || a == "--constraint" {
+                skip_next = true;
+                continue;
+            }
             if a.starts_with('-') || a == "install" || a == "." || a == "-e" || a.is_empty() {
                 continue;
             }
@@ -2667,7 +2679,7 @@ fn git_clone_or_pull(
 /// `cuda*`, `cudnn`/`cublas`/`cufft`/`curand`/`cusolver`/`cusparse`/`nccl`/
 /// `nvtx`/`nvjitlink`/`tensorrt`, the torch family (ROCm-managed), and any
 /// URL wheel carrying a CUDA marker (`+cu1`/`cu124`/`cu128`/…).
-fn filter_cuda_requirements(req_path: &str) -> String {
+fn filter_cuda_requirements(req_path: &str) -> std::io::Result<String> {
     crate::installers::common::nvidia_blocklist::filter_requirements_file(req_path)
 }
 
@@ -2845,7 +2857,12 @@ fn registry_record(component: &Component) {
         pip_packages: component_pip_packages(&component.id),
     };
     registry.mark_installed(record);
-    let _ = registry.save();
+    if let Err(e) = registry.save() {
+        // Tenet 2: a failed save means the component is NOT recorded, so a
+        // later install could override a sealed core. Surface it loudly rather
+        // than silently dropping the result.
+        eprintln!("[WARN] Failed to save installed component registry: {e}");
+    }
 }
 
 /// The pip package names a component owns (for registry dep-tracking +
@@ -3768,7 +3785,22 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     .join("requirements_amd.txt"),
             ];
             for req_path in requirements_candidates.iter().filter(|p| p.exists()) {
-                let filtered = filter_cuda_requirements(&req_path.to_string_lossy());
+                let filtered = match filter_cuda_requirements(&req_path.to_string_lossy()) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] WARN: could not read Megatron requirements {}: {e} — skipping requirements install",
+                                req_path.display()
+                            ),
+                            true,
+                        ));
+                        anyhow::bail!(
+                            "failed to read Megatron requirements {}: {e}",
+                            req_path.display()
+                        );
+                    }
+                };
                 if filtered.is_empty() {
                     continue;
                 }
@@ -4025,7 +4057,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // stripped and reused, not reinstalled from a CUDA index.)
             let req_path = format!("{}/requirements.txt", target_dir);
             if std::path::Path::new(&req_path).exists() {
-                let filtered = filter_cuda_requirements(&req_path);
+                let filtered = match filter_cuda_requirements(&req_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] WARN: could not read ComfyUI requirements {req_path}: {e} — skipping requirements install"
+                            ),
+                            true,
+                        ));
+                        anyhow::bail!("failed to read ComfyUI requirements {req_path}: {e}");
+                    }
+                };
                 if !filtered.is_empty() {
                     let tmp_dir = std::env::temp_dir().join("rusty-stack-comfyui");
                     let _ = std::fs::create_dir_all(&tmp_dir);
@@ -4145,7 +4188,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             if !raw_req_path.is_empty() {
                 // Read and filter the requirements file to exclude CUDA deps
-                let filtered = filter_cuda_requirements(&raw_req_path);
+                let filtered = match filter_cuda_requirements(&raw_req_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            format!(
+                                "[native] WARN: could not read textgen requirements {raw_req_path}: {e} — skipping requirements install"
+                            ),
+                            true,
+                        ));
+                        anyhow::bail!("failed to read textgen requirements {raw_req_path}: {e}");
+                    }
+                };
                 if !filtered.is_empty() {
                     // Write filtered requirements to a temp file
                     let tmp_dir = std::env::temp_dir().join("rusty-stack-textgen");
@@ -5473,16 +5527,40 @@ fn detect_gpu_arch() -> String {
 ///
 /// This is the SINGLE entry point every consumer should use for the
 /// `HIP_VISIBLE_DEVICES` / `CUDA_VISIBLE_DEVICES` device mask (Stage 1).
+/// Detects the list of discrete AMD GPUs, filtering out integrated GPUs.
+/// Returns a comma-separated string of GPU indices (e.g., "0,1" for first and second GPUs).
+///
+/// This is the SINGLE entry point every consumer should use for the
+/// `HIP_VISIBLE_DEVICES` / `CUDA_VISIBLE_DEVICES` device mask (Stage 1).
+///
+/// Returns `"0"` only as the legacy default when NO discrete GPU is detected —
+/// preserving backward-compatible visibility for env-var defaulting. Consumers
+/// that must distinguish "no dGPU" from "device 0" should call
+/// [`detect_discrete_gpus`] instead, which returns an empty `Vec` when none is
+/// found.
 pub(crate) fn detect_gpu_list() -> String {
+    let gpus = detect_discrete_gpus();
+    if gpus.is_empty() {
+        "0".to_string()
+    } else {
+        gpus.join(",")
+    }
+}
+
+/// Detect the discrete AMD GPU indices, **without** the legacy `"0"` fallback.
+///
+/// Returns an empty `Vec` when no discrete GPU is confirmed by any detector
+/// (rocminfo → rocm-smi → lspci → sysfs). This is the canonical "how many real
+/// dGPUs are present" answer — use it for `gpu_count` and for emitting device
+/// masks only when a dGPU is actually proven (never leak a default `"0"` onto an
+/// iGPU-only host). The resolution order mirrors [`detect_gpu_list`].
+pub(crate) fn detect_discrete_gpus() -> Vec<String> {
     let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
     if let Ok(output) = Command::new(&rocminfo_path).output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Parse rocminfo output to identify discrete GPUs
         let discrete_indices = parse_rocminfo_for_discrete_gpus(&stdout);
-
         if !discrete_indices.is_empty() {
-            return discrete_indices.join(",");
+            return discrete_indices;
         }
     }
 
@@ -5493,9 +5571,8 @@ pub(crate) fn detect_gpu_list() -> String {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let discrete_indices = parse_rocm_smi_for_discrete_gpus(&stdout);
-
         if !discrete_indices.is_empty() {
-            return discrete_indices.join(",");
+            return discrete_indices;
         }
     }
 
@@ -5503,23 +5580,20 @@ pub(crate) fn detect_gpu_list() -> String {
     if let Ok(output) = Command::new("lspci").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let discrete_indices = parse_lspci_for_discrete_gpus(&stdout);
-
         if !discrete_indices.is_empty() {
-            return discrete_indices.join(",");
+            return discrete_indices;
         }
     }
 
     // Final fallback to sysfs detection
     if let Some(count) = detect_gpu_count_sysfs() {
         if count > 0 {
-            return (0..count)
-                .map(|idx| idx.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
+            return (0..count).map(|idx| idx.to_string()).collect();
         }
     }
 
-    "0".to_string()
+    // No "0" fallback here — empty means genuinely no confirmed dGPU.
+    Vec::new()
 }
 
 /// Builds a map of ROCm GPU ID -> gfx architecture (e.g., "1" -> "gfx1100").

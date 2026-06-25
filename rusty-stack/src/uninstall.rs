@@ -147,7 +147,17 @@ pub fn uninstall_stack(opts: &UninstallOptions) -> anyhow::Result<UninstallRepor
 
     // 2. ROCm/amdgpu system packages (cross-distro) unless --keep-rocm.
     if !opts.keep_rocm {
-        if let Some((pm, purge_args)) = build_system_purge_cmd(ROCM_SYSTEM_PACKAGES) {
+        // Pre-filter to only the installed packages: apt/pacman exit non-zero
+        // if ANY named package in the purge list is absent (e.g. amdgpu-dkms on
+        // a partial stack), which would abort the whole purge and leave valid
+        // packages (e.g. rocm-core) installed. dnf/yum tolerate missing names,
+        // but filtering is harmless there too. Only purge what's present.
+        let installed = filter_installed_system_packages(ROCM_SYSTEM_PACKAGES);
+        if installed.is_empty() {
+            report.note(
+                "no ROCm/amdgpu system packages are installed — skipping system-package purge",
+            );
+        } else if let Some((pm, purge_args)) = build_system_purge_cmd(&installed) {
             println!("[uninstall] Purging ROCm/amdgpu system packages via {pm} …");
             let ran = run_privileged(&pm, &purge_args, &mut report);
             report.system_packages_purged = ran;
@@ -235,15 +245,71 @@ fn build_system_purge_cmd(packages: &[&str]) -> Option<(String, Vec<String>)> {
     Some((pm.to_string(), args))
 }
 
-/// Run a command directly if root, otherwise via `sudo`. Returns `true` if the
-/// command ran successfully. Never stalls on a hidden prompt (skips + warns if
-/// not root and sudo is unavailable).
+/// Filter `candidates` to only those that are actually installed, using the
+/// detected package manager's "is installed" query. This makes the purge
+/// tolerant of partial stacks: apt/pacman exit non-zero if any named package in
+/// a purge list is absent, so we only pass installed names. Returns the
+/// original list verbatim if no manager is detected (let the purge path emit its
+/// own "no manager" note).
+fn filter_installed_system_packages<'a>(candidates: &[&'a str]) -> Vec<&'a str> {
+    // Return the installed candidates with the same lifetime as the input
+    // (ROCM_SYSTEM_PACKAGES is &'static, so the call site gets &'static strs).
+    candidates
+        .iter()
+        .copied()
+        .filter(|pkg| is_system_package_installed(pkg))
+        .collect()
+}
+
+/// Is `pkg` installed according to the detected package manager?
+fn is_system_package_installed(pkg: &str) -> bool {
+    // dpkg-query: exit 0 iff installed. (apt-backed distros.)
+    if command_on_path("dpkg-query") {
+        return Command::new("dpkg-query")
+            .args(["-W", "-f=${Status}", pkg])
+            .output()
+            .map(|o| {
+                o.status.success()
+                    && String::from_utf8_lossy(&o.stdout).contains("install ok installed")
+            })
+            .unwrap_or(false);
+    }
+    // pacman -Q: exit 0 iff installed.
+    if command_on_path("pacman") {
+        return Command::new("pacman")
+            .args(["-Q", pkg])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    }
+    // rpm -q: exit 0 iff installed (dnf/yum/zypper all back onto rpm).
+    if command_on_path("rpm") {
+        return Command::new("rpm")
+            .args(["-q", pkg])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+    }
+    // No detector: assume installed so the purge is attempted (the purge path
+    // will note "no manager" if none exists).
+    true
+}
+
+/// Run a command directly if root, otherwise via `sudo -n`. Returns `true` if
+/// the command ran successfully. Never stalls on a hidden prompt: `sudo -n`
+/// (non-interactive) fails fast instead of prompting for a password when no
+/// TTY / cached credentials are available, so the command degrades to a warning
+/// rather than hanging in CI/CD or SSH-without-TTY contexts.
 fn run_privileged(program: &str, args: &[String], report: &mut UninstallReport) -> bool {
     let is_root = is_root();
     let (cmd_program, cmd_args) = if is_root {
         (program.to_string(), args.to_vec())
     } else if command_on_path("sudo") {
-        let mut a = vec![program.to_string()];
+        // `-n` = non-interactive: fail instead of prompting. `-S` reads the
+        // password from stdin only if one is pending; combined with `-n` this
+        // never blocks. The caller passes no password, so sudo will refuse
+        // rather than stall.
+        let mut a = vec!["-n".to_string(), program.to_string()];
         a.extend_from_slice(args);
         ("sudo".to_string(), a)
     } else {
@@ -259,7 +325,9 @@ fn run_privileged(program: &str, args: &[String], report: &mut UninstallReport) 
             false
         }
         Err(e) => {
-            report.note(format!("could not run `{cmd_program}` ({e})"));
+            report.note(format!(
+                "could not run `{cmd_program}` ({e}) — sudo may require a password (no TTY)"
+            ));
             false
         }
     }
@@ -295,28 +363,51 @@ fn remove_env_files(home: &std::path::Path, report: &mut UninstallReport) {
 }
 
 /// Strip legacy `source ~/.mlstack_env` / `.mlstack_env` lines from shell rc
-/// files (fish/bash/zsh). Idempotent: only rewrites if a line was removed.
+/// files (fish/bash/zsh). Idempotent: only rewrites if a line was actually
+/// removed, and preserves the original trailing newline.
+///
+/// Only drops lines that actually SOURCE the env file — `source .mlstack_env`,
+/// `. ~/.mlstack_env` (POSIX dot), or `bass source ...mlstack_env` (fish). A
+/// bare mention of `.mlstack_env` in a comment/echo/assignment is NOT a source
+/// line and is preserved. (The previous `t.contains(".")` condition was always
+/// true for any `.mlstack_env` line and dropped everything mentioning it.)
 fn strip_shell_sourcing(home: &std::path::Path, report: &mut UninstallReport) {
     let rcs = [
         home.join(".bashrc"),
         home.join(".zshrc"),
         home.join(".config/fish/config.fish"),
     ];
+    let had_trailing_newline = |content: &str| content.ends_with('\n');
     for rc in rcs {
         let Ok(content) = std::fs::read_to_string(&rc) else {
             continue;
         };
-        let filtered: String = content
-            .lines()
-            .filter(|line| {
-                let t = line.trim();
-                // Drop lines that source the rusty env file by any spelling.
-                !(t.contains(".mlstack_env")
-                    && (t.contains("source") || t.contains(".") || t.contains("bass")))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if filtered != content {
+        let mut filtered = String::with_capacity(content.len());
+        let mut changed = false;
+        for line in content.lines() {
+            let t = line.trim();
+            // A source line: it mentions .mlstack_env AND uses a source command
+            // — `source`/`.` (POSIX dot-source at the start of the line)/`bass`
+            // (fish wrapper). NOT a bare `.mlstack_env` mention (the old
+            // `t.contains(".")` matched the dot in the filename itself).
+            let is_source_line = t.contains(".mlstack_env")
+                && (t.contains("source") || t.contains("bass") || t.starts_with(". "));
+            if is_source_line {
+                changed = true;
+            } else {
+                filtered.push_str(line);
+                filtered.push('\n');
+            }
+        }
+        if changed {
+            // Preserve the original trailing-newline state. `content.lines()`
+            // drops a trailing newline; we always re-add '\n' per line above, so
+            // a file that originally ended without one would gain one — trim it
+            // back to match. A file that ended with '\n' keeps it (the last
+            // pushed '\n' stands in for the original terminator).
+            if !had_trailing_newline(&content) && filtered.ends_with('\n') {
+                filtered.pop();
+            }
             let _ = std::fs::write(&rc, filtered);
             report
                 .sourcing_lines_stripped
@@ -368,6 +459,39 @@ mod tests {
             "other lines preserved: {after}"
         );
         assert_eq!(report.sourcing_lines_stripped.len(), 1);
+        // Trailing newline preserved (original ended with '\n').
+        assert!(
+            after.ends_with('\n'),
+            "trailing newline preserved: {after:?}"
+        );
+    }
+
+    #[test]
+    fn strip_sourcing_preserves_non_source_mentions() {
+        // D1 regression: a comment / echo / assignment that merely MENTIONS
+        // .mlstack_env is NOT a source line and must be kept. The old
+        // `t.contains(".")` matched the dot in the filename and dropped these.
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".bashrc");
+        let original = "# see ~/.mlstack_env for env\necho loaded .mlstack_env\nMLSTACK_ENV_FILE=.mlstack_env\n";
+        std::fs::write(&rc, original).unwrap();
+        let mut report = UninstallReport::default();
+        strip_shell_sourcing(dir.path(), &mut report);
+        let after = std::fs::read_to_string(&rc).unwrap();
+        assert_eq!(
+            report.sourcing_lines_stripped.len(),
+            0,
+            "no source lines, no rewrite: {after:?}"
+        );
+        // File untouched (changed == false → no write at all).
+        assert!(
+            after.contains("# see ~/.mlstack_env for env"),
+            "comment preserved: {after}"
+        );
+        assert!(
+            after.contains("MLSTACK_ENV_FILE=.mlstack_env"),
+            "assignment preserved: {after}"
+        );
     }
 
     #[test]

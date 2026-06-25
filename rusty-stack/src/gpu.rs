@@ -125,6 +125,22 @@ pub const INTEGRATED_NAME_PATTERNS: &[&str] = &[
     "Ryzen 9 8945",
 ];
 
+/// Pre-lowercased snapshot of [`INTEGRATED_NAME_PATTERNS`], computed once.
+///
+/// Avoids re-allocating `pattern.to_lowercase()` on every call to
+/// [`is_integrated_gpu_name`] (the patterns are a `const`, so they cannot be
+/// stored pre-lowercased at const-eval time).
+fn integrated_name_patterns_lower() -> &'static [String] {
+    use std::sync::OnceLock;
+    static LOWER: OnceLock<Vec<String>> = OnceLock::new();
+    LOWER.get_or_init(|| {
+        INTEGRATED_NAME_PATTERNS
+            .iter()
+            .map(|p| p.to_lowercase())
+            .collect()
+    })
+}
+
 /// Does a marketing/lspci/rocminfo name indicate an AMD **integrated** GPU?
 ///
 /// This is the canonical name classifier — the single replacement for the
@@ -135,9 +151,10 @@ pub fn is_integrated_gpu_name(marketing_name: &str) -> bool {
     let name_upper = marketing_name.to_uppercase();
 
     // Case-insensitive match — rocminfo/lspci casing varies ("raphael",
-    // "Raphael", "RAPHAEL"). Patterns are compared in lowercase.
-    for pattern in INTEGRATED_NAME_PATTERNS {
-        if name_lower.contains(&pattern.to_lowercase()) {
+    // "Raphael", "RAPHAEL"). Patterns are compared against the lowercased name
+    // via a pre-lowercased snapshot (computed once, not per iteration).
+    for pattern in integrated_name_patterns_lower() {
+        if name_lower.contains(pattern) {
             return true;
         }
     }
@@ -147,21 +164,21 @@ pub fn is_integrated_gpu_name(marketing_name: &str) -> bool {
         return true;
     }
 
-    // APU model suffixes: "Ryzen 5 5600G", "Ryzen 7 8700G" (but not RX/Radeon/XT).
-    if name_upper.contains("RYZEN") {
-        if let Some(pos) = name_upper.find(" RYZEN ") {
-            let after_ryzen = &name_upper[pos + 7..];
-            let words: Vec<&str> = after_ryzen.split_whitespace().collect();
-            if let Some(first_word) = words.first() {
-                if first_word.ends_with('G')
-                    && first_word.len() >= 5
-                    && !first_word.starts_with("RX")
-                    && !first_word.starts_with("RADEON")
-                    && !first_word.contains("XT")
-                    && !first_word.contains("XTX")
-                {
-                    return true;
-                }
+    // APU model suffixes: "Ryzen 5 5600G", "Ryzen 7 8700G", "Ryzen 5 5600GE",
+    // "Ryzen 5 5600GT" (but not RX/Radeon/XT/XTX). Iterate ALL words after
+    // "RYZEN" — standard AMD branding inserts a generation/tier number ("5"/"7")
+    // between "Ryzen" and the model, so the suffix is NOT the first word.
+    if let Some(pos) = name_upper.find("RYZEN") {
+        let after_ryzen = &name_upper[pos + 5..];
+        for word in after_ryzen.split_whitespace() {
+            if (word.ends_with('G') || word.ends_with("GE") || word.ends_with("GT"))
+                && word.len() >= 4
+                && !word.starts_with("RX")
+                && !word.starts_with("RADEON")
+                && !word.contains("XT")
+                && !word.contains("XTX")
+            {
+                return true;
             }
         }
     }
@@ -225,10 +242,20 @@ pub fn device_is_integrated(
         if !name.trim().is_empty() && is_integrated_gpu_name(name) {
             return true;
         }
-        // VRAM confirmation: only when name is ambiguous (not already caught)
-        // and VRAM is concretely readable + low. Never the sole reason.
+        // VRAM confirmation: only when the name is ambiguous (carries NO
+        // positive dGPU signal) AND VRAM is concretely readable + low. Never
+        // the sole reason, and never VRAM-rejects an explicitly-named dGPU
+        // (e.g. a <4 GiB Radeon RX / Radeon Pro / Instinct / FirePro card) —
+        // "dGPUs are never missed."
         if let Some(vram) = vram_bytes {
-            if vram < DISCRETE_MIN_VRAM_BYTES {
+            let upper = name.to_ascii_uppercase();
+            let has_discrete_marker = upper.contains("RADEON RX")
+                || upper.contains(" RX ")
+                || upper.contains("RADEON PRO")
+                || upper.contains("INSTINCT")
+                || upper.contains("FIREPRO")
+                || upper.contains("RADEON");
+            if !name.trim().is_empty() && !has_discrete_marker && vram < DISCRETE_MIN_VRAM_BYTES {
                 return true;
             }
         }
@@ -292,6 +319,49 @@ mod tests {
         ));
         assert!(is_integrated_gpu_name("AMD Ryzen 5 8600G 6-Core Processor"));
         assert!(is_integrated_gpu_name("AMD Ryzen 7 8700G"));
+    }
+
+    #[test]
+    fn ryzen_apu_suffix_without_amd_prefix_is_integrated() {
+        // Regression: the old " RYZEN " search + first-word check never matched
+        // "Ryzen 5 5600G" (no leading space, model number is the 2nd word).
+        assert!(is_integrated_gpu_name("Ryzen 5 5600G"));
+        assert!(is_integrated_gpu_name("Ryzen 7 5700G"));
+        assert!(is_integrated_gpu_name("Ryzen 5 5600GE"));
+        assert!(is_integrated_gpu_name("Ryzen 5 5600GT"));
+        assert!(is_integrated_gpu_name("Ryzen 7 8700G"));
+    }
+
+    #[test]
+    fn low_vram_discrete_cards_are_not_vram_rejected() {
+        // Regression: <4 GiB must NOT drop an explicitly-named dGPU
+        // ("dGPUs are never missed"). Older Radeon RX/Pro cards <4 GB.
+        let low = 2 * 1024 * 1024 * 1024u64;
+        assert!(!device_is_integrated(
+            Some("AMD Radeon RX 550"),
+            None,
+            None,
+            Some(low)
+        ));
+        assert!(!device_is_integrated(
+            Some("AMD Radeon Pro WX 2100"),
+            None,
+            None,
+            Some(low)
+        ));
+        assert!(!device_is_integrated(
+            Some("AMD Instinct MI50"),
+            None,
+            None,
+            Some(low)
+        ));
+        // Ambiguous name + low VRAM is still treated as integrated.
+        assert!(device_is_integrated(
+            Some("AMD Device"),
+            Some("0x9999"),
+            None,
+            Some(512 * 1024 * 1024)
+        ));
     }
 
     #[test]

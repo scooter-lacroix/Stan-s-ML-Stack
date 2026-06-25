@@ -400,8 +400,18 @@ fn detect_gpu_from_rocminfo(rocminfo_cmd: &str, info: &mut GPUInfo) -> bool {
                         .take_while(|c| c.is_ascii_digit())
                         .collect();
                     if !gfx_num.is_empty() && gfx_num.len() >= 3 {
-                        // Only set architecture for dGPUs (not iGPUs, not CPUs)
-                        let is_igpu = crate::gpu::is_integrated_gpu_name(&current_marketing_name);
+                        // Only set architecture for dGPUs (not iGPUs, not CPUs).
+                        // Use the combined classifier so a nameless agent
+                        // (empty marketing name) with gfx1036/gfx1103 is caught
+                        // via the gfx-arch signal rather than slipping into the
+                        // dGPU architecture path.
+                        let gfx_arch = format!("gfx{gfx_num}");
+                        let is_igpu = crate::gpu::device_is_integrated(
+                            Some(&current_marketing_name),
+                            None,
+                            Some(&gfx_arch),
+                            None,
+                        );
                         if !is_igpu && current_device_type == "GPU" && info.architecture.is_empty()
                         {
                             info.architecture = get_correct_gfx_from_marketing_name(
@@ -415,12 +425,11 @@ fn detect_gpu_from_rocminfo(rocminfo_cmd: &str, info: &mut GPUInfo) -> bool {
         }
     }
 
-    // Stage 1: gpu_count must exclude the iGPU. Reuse the canonical filtered
-    // detector; fall back to the raw count only when it returns nothing.
-    let discrete_count = crate::installer::detect_gpu_list()
-        .split(',')
-        .filter(|s| !s.trim().is_empty())
-        .count();
+    // Stage 1: gpu_count must exclude the iGPU. Reuse the canonical discrete
+    // detector (no "0" fallback) so an iGPU-only / no-dGPU host reports 0 rather
+    // than falsely counting the fallback. Fall back to the raw count only when
+    // the detector returns nothing.
+    let discrete_count = crate::installer::detect_discrete_gpus().len();
     if discrete_count > 0 {
         info.gpu_count = discrete_count;
         true
@@ -892,6 +901,7 @@ mod tests {
 
     #[test]
     fn test_detect_rocm_path_env_override() {
+        let _env = crate::test_support::lock_env();
         // Set ROCm_PATH env var — should take priority
         // We test this by setting to a known valid path
         if Path::new("/opt/rocm").is_dir() {

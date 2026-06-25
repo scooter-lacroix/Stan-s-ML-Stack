@@ -120,10 +120,65 @@ pub fn is_cuda_nvidia_package(requirement: &str) -> bool {
 }
 
 /// Does this wheel URL carry a CUDA build marker? (e.g. `...+cu124...whl`)
+///
+/// Also rejects direct wheel URLs whose **filename** embeds a blocked NVIDIA/
+/// CUDA runtime package name (e.g. `.../nvidia_cublas_cu12-...whl` with no
+/// `+cu` marker) so they cannot bypass the blocklist via a bare URL.
 pub fn is_cuda_wheel_url(url: &str) -> bool {
     let lower = url.to_lowercase();
-    CUDA_URL_MARKERS.iter().any(|marker| lower.contains(marker))
+    if CUDA_URL_MARKERS.iter().any(|marker| lower.contains(marker))
         || (lower.contains("+cu") && lower.contains(".whl"))
+    {
+        return true;
+    }
+    // Direct-wheel bypass guard: derive the package name from the URL filename
+    // and reject if it is a blocked NVIDIA/CUDA runtime package. A wheel
+    // filename is `name-version-python-abi-tag.whl`; the package name is the
+    // dash-separated segment(s) before the version, with underscores normalized
+    // to dashes (`nvidia_cublas_cu12` → `nvidia-cublas-cu12`).
+    if lower.contains("http://") || lower.contains("https://") || lower.contains(".whl") {
+        if let Some(pkg) = extract_pkg_name_from_url_filename(&lower) {
+            if is_nvidia_cuda_runtime_package(&pkg) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Derive the package name from the filename portion of a wheel URL.
+///
+/// `https://.../nvidia_cublas_cu12-12.1.3.1-cp310-...whl` →
+/// `nvidia-cublas-cu12`. Returns `None` when no version-like segment can be
+/// found (so a non-wheel or unparseable URL is not falsely matched).
+fn extract_pkg_name_from_url_filename(url_lower: &str) -> Option<String> {
+    // Take the last path segment (the filename).
+    let filename = url_lower.rsplit(['/', '\\']).next()?;
+    let filename = filename.trim();
+    if filename.is_empty() {
+        return None;
+    }
+    // Strip a trailing .whl if present.
+    let stem = filename.strip_suffix(".whl").unwrap_or(filename);
+    // The package name is everything before the first segment that looks like a
+    // version (starts with a digit). Wheel filenames are
+    // `name-version-python-abi-platform`, so splitting on '-' and taking the
+    // leading non-version segments reconstructs the normalized package name.
+    let mut name_parts: Vec<&str> = Vec::new();
+    for seg in stem.split('-') {
+        if seg.is_empty() {
+            continue;
+        }
+        // A version segment starts with a digit (e.g. "12.1.3.1", "2.4.0").
+        if seg.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+            break;
+        }
+        name_parts.push(seg);
+    }
+    if name_parts.is_empty() {
+        return None;
+    }
+    Some(name_parts.join("-"))
 }
 
 /// NVIDIA/CUDA *runtime-library* prefixes (the `nvidia-*`/`cuda*` wheels), for
@@ -192,14 +247,13 @@ fn is_cuda_only_source(line_lower: &str) -> bool {
 /// Filter a requirements FILE, returning the content with all
 /// NVIDIA/CUDA/ROCm-conflicting lines removed.
 ///
-/// Read-safe: returns an empty string if the file is unreadable. Keeps
-/// ordering; drops comments/blank lines. This is the unified replacement for
-/// the former `installer.rs::filter_cuda_requirements`.
-pub fn filter_requirements_file(path: &str) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(c) => filter_requirements(&c),
-        Err(_) => String::new(),
-    }
+/// Propagates read failures as `Err` so callers can warn / treat the component
+/// as fatal rather than silently installing an empty dependency set (which a
+/// missing/unreadable requirements file previously masqueraded as "all
+/// filtered"). Keeps ordering; drops comments/blank lines. This is the unified
+/// replacement for the former `installer.rs::filter_cuda_requirements`.
+pub fn filter_requirements_file(path: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(path).map(|c| filter_requirements(&c))
 }
 
 /// Filter requirements TEXT, returning lines that are safe to install on a
@@ -227,15 +281,19 @@ pub fn filter_requirements(content: &str) -> String {
     kept.join("\n")
 }
 
-/// Scan `pip list` output for any installed NVIDIA/CUDA packages.
+/// Scan `pip list` output for any installed NVIDIA/CUDA **runtime** packages.
 ///
-/// Returns the offending package display lines (for the
+/// Uses the NARROW runtime check ([`is_nvidia_cuda_runtime_package`]) plus the
+/// CUDA-wheel-URL check so valid ROCm-managed `torch`/`torchvision`/`triton`
+/// are NOT flagged as contamination (they are legitimately installed from the
+/// ROCm index). Only `nvidia-*`/`cuda*` runtime libs and CUDA wheels are
+/// reported. Returns the offending package display lines (for the
 /// `InstallerError::NvidiaContamination` payload and verification reports).
 pub fn contaminated_packages(pip_list_output: &str) -> Vec<String> {
     let mut found = Vec::new();
     for line in pip_list_output.lines() {
         let name = line.split_whitespace().next().unwrap_or("");
-        if is_cuda_nvidia_package(name) {
+        if is_nvidia_cuda_runtime_package(name) || is_cuda_wheel_url(line) {
             found.push(line.trim().to_string());
         }
     }
@@ -296,6 +354,29 @@ mod tests {
     }
 
     #[test]
+    fn direct_nvidia_wheel_url_blocked_without_cu_marker() {
+        // B1: a direct wheel URL embedding a blocked nvidia/cuda runtime package
+        // name with NO +cu marker must still be rejected.
+        assert!(is_cuda_wheel_url(
+            "https://download.pytorch.org/whl/cu121/nvidia_cublas_cu12-12.1.3.1-cp310-cp310-linux_x86_64.whl"
+        ));
+        assert!(is_cuda_wheel_url(
+            "https://example.com/nvidia-cudnn-cu12-8.9.2-cp310-none-manylinux1_x86_64.whl"
+        ));
+        assert!(is_cuda_wheel_url(
+            "https://example.com/cuda_runtime-12.1.0-py3-none-any.whl"
+        ));
+        // ROCm torch wheel (underscore form) must NOT be blocked by the filename
+        // check (no nvidia/cuda runtime name).
+        assert!(!is_cuda_wheel_url(
+            "https://download.pytorch.org/whl/rocm6.2/torch-2.4.0-cp310-cp310-linux_x86_64.whl"
+        ));
+        assert!(!is_cuda_wheel_url(
+            "https://example.com/numpy-1.26.4-cp310-none-any.whl"
+        ));
+    }
+
+    #[test]
     fn filter_requirements_strips_banned_lines() {
         let reqs = "\
 # comment
@@ -332,19 +413,25 @@ deepspeed
     }
 
     #[test]
-    fn contamination_scan_finds_nvidia() {
+    fn contamination_scan_finds_nvidia_runtime_only() {
+        // B3: torch/torchvision ROCm packages are NOT contamination — only the
+        // nvidia-* runtime wheels are flagged.
         let pip_list = "\
 Package        Version
 -------------  -------
 deepspeed      0.14.5
 nvidia-cublas-cu12  12.1.3.1
 torch          2.4.0
+torchvision    0.19.0
+triton         3.1.0
 numpy          1.26.4
 ";
         let found = contaminated_packages(pip_list);
-        assert_eq!(found.len(), 2);
+        assert_eq!(found.len(), 1, "only nvidia-cublas flagged: {found:?}");
         assert!(found.iter().any(|l| l.starts_with("nvidia-cublas")));
-        assert!(found.iter().any(|l| l.starts_with("torch")));
+        // ROCm-managed torch family must NOT be flagged.
+        assert!(!found.iter().any(|l| l.contains("torch")));
+        assert!(!found.iter().any(|l| l.contains("triton")));
         assert!(!found.iter().any(|l| l.contains("deepspeed")));
     }
 }

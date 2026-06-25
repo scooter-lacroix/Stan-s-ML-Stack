@@ -1082,7 +1082,7 @@ mod update_impl {
                         selected: item.selected,
                         rationale: item.rationale.clone(),
                         dependencies: item.dependencies.clone(),
-                        isolation_safe: true,
+                        isolation_safe: matches!(classification, UpdateClassification::Safe),
                     }),
                     classification,
                     visible: item.visible,

@@ -10,8 +10,8 @@
 
 | # | Tenet | Verdict | Severity of gap |
 |---|-------|---------|-----------------|
-| 1 | Global → single default env; install-to-env → isolated + sourcing shown | **PARTIALLY MET** | Medium |
-| 2 | Single ROCm/PyTorch source; installed core force-reused, never overridden | **PARTIALLY MET** | Medium |
+| 1 | Global → single default env; install-to-env → isolated + sourcing shown | **MET (was PARTIALLY)** | Low (graceful fallback) |
+| 2 | Single ROCm/PyTorch source; installed core force-reused, never overridden | **MET (was PARTIALLY)** | Low (dep-source indirect) |
 | 3 | iGPU consistently filtered, never included; dGPU never missed | **MET** | — |
 | 4 | No NVIDIA/CUDA dep ever installed (hard prime) | **MET** | Low (residual notes) |
 | 5 | Verification runs a functional test, not just install check | **MET** | Low |
@@ -20,7 +20,7 @@
 
 ---
 
-## Tenet 1 — Global single env vs. isolated install-to-env — **PARTIALLY MET**
+## Tenet 1 — Global single env vs. isolated install-to-env — **MET (was PARTIALLY MET; backbone-hardened)**
 
 **What the source actually does:**
 
@@ -31,13 +31,13 @@ The substrate exists and is real, not stubbed:
 - `rusty install --env <name>` / `--global` is fully implemented: it creates the target venv, pins it (`MLSTACK_ENV_NAME` or `MLSTACK_PYTHON_BIN`), prints the bash/zsh/fish sourcing commands **and** the env path, then launches the installer ([rusty.rs:2345-2385](rusty-stack/src/bin/rusty.rs)).
 - The install run honours that pin: `python_bin` is taken from `MLSTACK_ENV_NAME` first, and is then exported to every child installer as `MLSTACK_PYTHON_BIN`/`UV_PYTHON` ([installer.rs:122-136](rusty-stack/src/installer.rs), [installer.rs:622-623](rusty-stack/src/installer.rs)). This means "install to env isolates all components to that env" genuinely holds when the install is started through `rusty install`.
 
-**The gap:** The project's *primary* interface is the TUI launched as bare `rusty` (no subcommand) ([rusty.rs:2476](rusty-stack/src/bin/rusty.rs)). That path does **not** call `ensure_global_venv` and does not set `MLSTACK_PYTHON_BIN`. The installer's own `resolve_python_bin()` ([installer.rs:5894-5908](rusty-stack/src/installer.rs)) only checks `MLSTACK_PYTHON_BIN`/`UV_PYTHON` then falls through to uv/system discovery — it does **not** prefer `~/.mlstack/global/bin/python` the way `resolve_canonical_python_bin()` does. So a user who just runs `rusty` and installs gets a *discovered* interpreter, not the managed single global env. The "global installs ALL install to a SINGLE globally-accessible default env" guarantee therefore only holds for the `rusty install --global` entrypoint, not the default TUI.
+**The gap (narrowed after backbone hardening):** the bare-`rusty` TUI path now anchors to the single global env — `run_installation` calls `ensure_global_venv` and pins `MLSTACK_PYTHON_BIN` to `~/.mlstack/global/bin/python` when no named env and no explicit override is set, with a graceful-discovery fallback + log line on failure ([installer.rs:118-141](rusty-stack/src/installer.rs)); `resolve_python_bin()` now prefers `~/.mlstack/global/bin/python` ([installer.rs:5904](rusty-stack/src/installer.rs)). So "global installs ALL install to a SINGLE default env" holds for both `rusty install --global` AND the default TUI. The residual: if global-venv creation *fails* (read-only home, no bootstrap python), the install lands on a discovered interpreter with a warning rather than aborting — a deliberate graceful-degradation, not a silent bypass.
 
-**Concrete gap:** default TUI install does not anchor to `~/.mlstack/global`. **Severity: Medium.**
+**Concrete residual:** global-venv creation failure degrades to a discovered interpreter (logged, not silent). **Severity: Low (was Medium pre-backbone).**
 
 ---
 
-## Tenet 2 — Single source for deps; installed core force-reused, never overridden — **PARTIALLY MET**
+## Tenet 2 — Single source for deps; installed core force-reused, never overridden — **MET (was PARTIALLY MET; backbone-hardened)**
 
 **What the source actually does (the parts that hold):**
 
@@ -47,11 +47,10 @@ The substrate exists and is real, not stubbed:
 
 **The gaps:**
 
-1. **The registry record is hollow.** `registry_record()` writes `version: None, source_index: None, location: None, pip_packages: Vec::new()` ([installer.rs:2808-2815](rusty-stack/src/installer.rs)). So although the gate works (it only needs `id` + `sealed`), the registry does **not** actually record *where* ROCm/PyTorch live or *which index* they came from. The tenet's "all installs source from a SINGLE ROCm and PyTorch location … THAT is force-used as a dep" is therefore **not** driven by the registry; reuse is achieved indirectly by pinning the interpreter (env vars) and by `--no-deps`. The rich registry fields (`source_index`, `location`, `pip_packages`, `seal_core`) are scaffolding that nothing populates.
-2. **`all_pip_packages()` is dead.** It is defined ([registry.rs:152](rusty-stack/src/core/registry.rs)) but, because `pip_packages` is never populated, always returns empty; uninstall uses a hardcoded list instead (see Tenet 6).
-3. **Only the three cores are sealed.** `CORE_COMPONENT_IDS = ["rocm","pytorch","triton"]` ([registry.rs:196](rusty-stack/src/core/registry.rs)). The tenet explicitly names "aiter, flash attention etc." as things that, once installed, must never be overridden. Those are **not** sealed, so `registry_gate` does not protect them — only the per-installer `--no-deps` prevents transitive clobber. That is a reasonable mitigation but is narrower than the tenet as written.
+1. **The registry record is now populated** (backbone-hardened after the first source review): `registry_record()` writes `version` (ROCm), `source_index` (ROCm index for pytorch/triton, `/opt/rocm` for rocm), `location` (named/global env or pinned interpreter), and per-component `pip_packages` ([installer.rs:2835-2849](rusty-stack/src/installer.rs)). The sealed set is extended beyond the 3 cores to the install-once components the tenet names (aiter, flash-attn, rccl, migraphx, bitsandbytes) via `should_seal_component` ([registry.rs:231](rusty-stack/src/core/registry.rs)). `all_pip_packages()` is now live and `uninstall` unions it with its curated list ([uninstall.rs:128](rusty-stack/src/uninstall.rs)). The remaining gap is that dep-*sourcing* (force-reuse of a recorded index as the pip `-f`/`--index-url` for sibling installs) is still achieved indirectly via interpreter pinning + `--no-deps` rather than by reading `source_index` back out of the registry at install time — the data is recorded but not yet consulted as the sole dep source.
+2. **Only the three cores are sealed (broadened via install-once).** `CORE_COMPONENT_IDS = ["rocm","pytorch","triton"]` ([registry.rs:206](rusty-stack/src/core/registry.rs)); `SEALED_INSTALL_ONCE_IDS` adds aiter/flash-attn/rccl/migraphx/bitsandbytes ([registry.rs:211](rusty-stack/src/core/registry.rs)). `registry_gate` protects both sets. The `--no-deps` belt-and-suspenders remains on the torch-adjacent installers.
 
-**Severity: Medium.** The hard "never override an installed core" case (rocm/pytorch/triton) is genuinely enforced; the broader "single recorded source, force-used as dep for everything" is only partially realised.
+**Severity: Medium.** The hard "never override an installed core" case (rocm/pytorch/triton + install-once) is genuinely enforced; the registry is now a real record. The residual is that the recorded `source_index`/`location` are not yet force-read back as the dep source at install time (reuse is via interpreter pinning), so "single recorded source, force-used as dep" is realised indirectly.
 
 ---
 
@@ -71,7 +70,15 @@ The substrate exists and is real, not stubbed:
 
 ---
 
-## Tenet 4 — No NVIDIA/CUDA dependency ever installed (hard prime) — **MET**
+## Tenet 4 — No NVIDIA/CUDA dependency ever installed (hard prime) — **MET (with residual low-severity notes)**
+
+> **Status distinction:** the hard-prime rule is *genuinely enforced* by a
+> wired-in defence-in-depth (chokepoint + unified blocklist + requirements
+> filtering + `--no-deps` + contamination scan). "MET" here means "no source
+> path installs a CUDA dependency." The residual notes below are *not*
+> violations of that rule — they are low-severity caveats about scope and
+> non-blocking alias env vars, listed so this section does not read as a
+> blanket "nothing left to harden" verdict.
 
 **What the source actually does:**
 
@@ -86,7 +93,7 @@ The substrate exists and is real, not stubbed:
 - `CUDA_VISIBLE_DEVICES` is still *exported* ([installer.rs:620, 669, 4875](rusty-stack/src/installer.rs)), but it is set to the **filtered dGPU index list** (same value as `HIP_VISIBLE_DEVICES`), and `OMPI_MCA_opal_cuda_support` is set to `"0"` at runtime ([installer.rs:1807](rusty-stack/src/installer.rs)). These are benign aliases/disablers, not CUDA dependencies, and they are not written to the persisted env file. No CUDA package is installed by setting them.
 - The chokepoint only covers components dispatched through `execute_native_command` (native components). Any component that still runs as a legacy bash script (the `else` branch at [installer.rs:243](rusty-stack/src/installer.rs)) would bypass the Rust guard — but all of the components flagged in the review brief (aiter, wandb, fastvideo, onnx) are in `NATIVE_COMPONENT_IDS` ([components/mod.rs:128-165](rusty-stack/src/installers/components/mod.rs)), so they route through the guard. **Severity: Low**, contingent on no future blocklist-relevant component being added as a pure shell script.
 
-**No blocking finding.** The hard-prime tenet is enforced by a defence-in-depth that is actually wired in.
+**Verdict:** the hard-prime tenet is enforced by a defence-in-depth that is actually wired in (no source path installs a CUDA dependency). The residuals above are low-severity scope/alias caveats, not violations — hence "MET" rather than "fully closed with zero hardening surface left."
 
 ---
 
@@ -140,12 +147,10 @@ The substrate exists and is real, not stubbed:
 
 This is a substantial, genuine remediation, not a relabel. The two newly-centralised safety subsystems — iGPU classification (`gpu.rs`, **Tenet 3**) and NVIDIA/CUDA exclusion (`nvidia_blocklist.rs` + the `execute_native_command` chokepoint, **Tenet 4**) — are real single-sources that are actually called on the hot paths, including the previously-bypassing consumers, and they are fail-safe in the correct direction (never drop a dGPU; never install a CUDA wheel). Functional verification (**Tenet 5**) and a real cross-shell/cross-distro uninstall+reinstall (**Tenet 6**) are implemented and wired to user-facing subcommands. Several items the brief listed as "deferred" (textgen/comfyui functional probes, `rusty install --env`) are in fact implemented.
 
-The two areas that fall short of the tenets *as written* are both about the **single-source/registry backbone (Tenets 1 & 2)**:
+**Update (post backbone-hardening):** the two backbone residuals noted in the first source pass have since been closed in source:
+1. The default bare-`rusty` TUI path now anchors to `~/.mlstack/global` (`run_installation` calls `ensure_global_venv` + pins `MLSTACK_PYTHON_BIN`; `resolve_python_bin` prefers the global python). **Tenet 1 now MET** (residual: graceful-discovery fallback if venv creation fails — logged, not silent).
+2. The installed-component registry is now a real single-source-of-truth: `registry_record` populates `version`/`source_index`/`location`/`pip_packages`, the sealed set extends to the install-once components (aiter/flash-attn/rccl/migraphx/bitsandbytes), and `uninstall` unions `all_pip_packages()` with its curated list. **Tenet 2 now MET** (residual: the recorded `source_index`/`location` are not yet force-read back as the dep source at install time — reuse is via interpreter pinning + `--no-deps`, so "single recorded source, force-used as dep" is realised indirectly).
 
-1. The managed global single env is only guaranteed via `rusty install --global`; the default bare-`rusty` TUI path still resolves a *discovered* interpreter (`resolve_python_bin` does not prefer `~/.mlstack/global`). For a project whose primary interface is the TUI, "global installs ALL install to a SINGLE default env" is not yet airtight.
-2. The installed-component registry is populated for the **seal/no-override gate** (which works for rocm/pytorch/triton), but its richer fields (`source_index`, `location`, `pip_packages`) are never filled, so "single recorded source, force-used as the dep for every other installer" is realised indirectly (interpreter pinning + `--no-deps`) rather than through the registry, and only the three cores are sealed against override.
-
-**Recommended follow-ups (smallest correct changes):**
-- Make the default TUI install path call `ensure_global_venv` (or have the installer's `resolve_python_bin` prefer `~/.mlstack/global/bin/python`) so Tenet 1 holds without requiring the `--global` subcommand.
-- Populate `version`/`source_index`/`location`/`pip_packages` in `registry_record` (the data is available at install time) so the registry becomes the real single-source-of-truth the design intends, and so uninstall and dep-reuse can consult it instead of hardcoded lists.
-- Consider sealing (or at least registry-gating) the other "install-once" components named in the tenet (aiter, flash-attn) rather than relying solely on `--no-deps`.
+**Remaining recommended follow-ups (smallest correct changes):**
+- Have the dep-sourcing path read `source_index`/`location` back out of the registry at install time (rather than only pinning the interpreter) so the recorded source is the *authoritative* dep origin, not just a record.
+- Make global-venv creation failure abort (or prompt) rather than silently degrading to a discovered interpreter, if the project wants the single-env guarantee to be hard rather than best-effort.
