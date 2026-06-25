@@ -247,14 +247,24 @@ pub fn device_is_integrated(
         // the sole reason, and never VRAM-rejects an explicitly-named dGPU
         // (e.g. a <4 GiB Radeon RX / Radeon Pro / Instinct / FirePro card) —
         // "dGPUs are never missed."
+        //
+        // The marker is an EXPLICIT dGPU qualifier only ("Radeon RX", " RX ",
+        // "Radeon Pro", "Instinct", "FirePro"). A bare brand name ("Radeon",
+        // "AMD Radeon") with no model qualifier is ambiguous — that is the APU
+        // reporting style — and must fall through to the VRAM gate rather than
+        // being treated as authoritative discrete. (Matching on "RADEON" alone
+        // would shield bare iGPU marketing names from the gate, leaking the
+        // iGPU.) RDNA iGPUs with model numbers ("Radeon 780M", "Radeon 680M")
+        // carry no qualifier either, so they too fall through and are gated by
+        // VRAM — correct, since they are APUs. The only cards lost are
+        // pre-RDNA "Radeon HD" dGPUs, which no ROCm release supports.
         if let Some(vram) = vram_bytes {
             let upper = name.to_ascii_uppercase();
             let has_discrete_marker = upper.contains("RADEON RX")
                 || upper.contains(" RX ")
                 || upper.contains("RADEON PRO")
                 || upper.contains("INSTINCT")
-                || upper.contains("FIREPRO")
-                || upper.contains("RADEON");
+                || upper.contains("FIREPRO");
             if !name.trim().is_empty() && !has_discrete_marker && vram < DISCRETE_MIN_VRAM_BYTES {
                 return true;
             }
@@ -361,6 +371,57 @@ mod tests {
             Some("0x9999"),
             None,
             Some(512 * 1024 * 1024)
+        ));
+    }
+
+    #[test]
+    fn bare_radeon_marketing_name_is_vram_gated() {
+        // Regression (PR #21 re-review): a bare brand string with no model
+        // qualifier, gfx arch, or PCI id at <4 GiB is the iGPU reporting style
+        // and must be VRAM-gated to integrated — NOT shielded by a "RADEON"
+        // substring. The marker list matches only explicit qualifiers.
+        let low = 2 * 1024 * 1024 * 1024u64;
+        assert!(device_is_integrated(Some("Radeon"), None, None, Some(low)));
+        assert!(device_is_integrated(
+            Some("AMD Radeon"),
+            None,
+            None,
+            Some(low)
+        ));
+
+        // RDNA iGPU models with no qualifier ("Radeon 780M" = Phoenix/Strix APU)
+        // also fall through to the VRAM gate and are correctly integrated — a
+        // naive "has-digit ⇒ discrete" rule would misclassify these as dGPUs.
+        assert!(device_is_integrated(
+            Some("AMD Radeon 780M"),
+            None,
+            None,
+            Some(low)
+        ));
+        assert!(device_is_integrated(
+            Some("AMD Radeon 680M"),
+            None,
+            None,
+            Some(low)
+        ));
+
+        // Same bare names with ample VRAM are NOT integrated (fail-safe: a
+        // bare name is never an authoritative dGPU signal, but ample VRAM
+        // declines to reclassify).
+        let high = 16 * 1024 * 1024 * 1024u64;
+        assert!(!device_is_integrated(
+            Some("Radeon"),
+            None,
+            None,
+            Some(high)
+        ));
+
+        // Explicitly-named dGPUs survive the gate regardless of VRAM.
+        assert!(!device_is_integrated(
+            Some("AMD Radeon RX 7900 XTX"),
+            None,
+            None,
+            Some(low)
         ));
     }
 

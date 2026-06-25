@@ -115,6 +115,12 @@ review found after the first 0.3.0 cut):**
 - **iGPU filter residuals closed** — Tenet 3: the lspci path now uses
   `device_is_integrated` (name + PCI-id + VRAM); the benchmark Python classifier
   now DERIVES its token list from the Rust `gpu` consts (single source, no drift).
+- **Bare-brand iGPU leak closed (re-review)** — Tenet 3: the low-VRAM gate's
+  `has_discrete_marker` no longer treats a bare `"Radeon"`/`"AMD Radeon"`
+  marketing name (no model qualifier, gfx arch, or PCI id) as discrete, so such
+  an iGPU is correctly VRAM-gated to integrated rather than leaked. RDNA iGPU
+  model names (`"Radeon 780M"`/`"680M"`) are likewise gated; only pre-RDNA
+  `"Radeon HD"` cards (unsupported by any ROCm release) are affected.
 - **Functional verification for ALL components** — Tenet 5: triton/mpi4py/
   deepspeed/megatron/aiter/ml-stack-core/migraphx/wandb/fastvideo upgraded from
   import-only to real functional probes (MPI.Is_initialized, compiled-op import,
