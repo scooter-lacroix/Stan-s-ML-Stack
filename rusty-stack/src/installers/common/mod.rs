@@ -15,6 +15,7 @@
 //! - **VAL-INFRA-001**: Module structure compiles and integrates
 //! - **VAL-INFRA-019**: No code duplication with platform modules
 
+pub mod askpass;
 pub mod benchmark_common;
 pub mod distro;
 pub mod env_validation;

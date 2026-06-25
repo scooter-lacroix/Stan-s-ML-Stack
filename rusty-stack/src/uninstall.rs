@@ -82,6 +82,11 @@ pub struct UninstallOptions {
     /// Also remove the `~/.mlstack/` data root (logs, cache, global venv).
     /// Off by default — preserves logs/diagnostics across reinstalls.
     pub purge_mlstack_dir: bool,
+    /// Optional sudo password for the privileged steps (system-package purge,
+    /// `/opt/rocm` removal). When set, privileged commands run via `sudo -A`
+    /// with an askpass helper so they work without a TTY or cached credentials
+    /// (which `sudo -n` cannot). When unset, falls back to `sudo -n`.
+    pub sudo_password: Option<String>,
 }
 
 /// A summary of what uninstall did.
@@ -159,7 +164,7 @@ pub fn uninstall_stack(opts: &UninstallOptions) -> anyhow::Result<UninstallRepor
             );
         } else if let Some((pm, purge_args)) = build_system_purge_cmd(&installed) {
             println!("[uninstall] Purging ROCm/amdgpu system packages via {pm} …");
-            let ran = run_privileged(&pm, &purge_args, &mut report);
+            let ran = run_privileged(&pm, &purge_args, opts.sudo_password.as_deref(), &mut report);
             report.system_packages_purged = ran;
         } else {
             report.note("no supported system package manager detected (apt/dnf/pacman/zypper) — skipping ROCm system-package purge");
@@ -171,6 +176,7 @@ pub fn uninstall_stack(opts: &UninstallOptions) -> anyhow::Result<UninstallRepor
             report.opt_rocm_removed = run_privileged(
                 "rm",
                 &["-rf".to_string(), "/opt/rocm".to_string()],
+                opts.sudo_password.as_deref(),
                 &mut report,
             );
         }
@@ -207,6 +213,7 @@ pub fn uninstall_stack(opts: &UninstallOptions) -> anyhow::Result<UninstallRepor
                 let removed = run_privileged(
                     "rm",
                     &["-rf".to_string(), root.to_string_lossy().into_owned()],
+                    opts.sudo_password.as_deref(),
                     &mut report,
                 );
                 if removed {
@@ -295,38 +302,76 @@ fn is_system_package_installed(pkg: &str) -> bool {
     true
 }
 
-/// Run a command directly if root, otherwise via `sudo -n`. Returns `true` if
-/// the command ran successfully. Never stalls on a hidden prompt: `sudo -n`
-/// (non-interactive) fails fast instead of prompting for a password when no
-/// TTY / cached credentials are available, so the command degrades to a warning
-/// rather than hanging in CI/CD or SSH-without-TTY contexts.
-fn run_privileged(program: &str, args: &[String], report: &mut UninstallReport) -> bool {
-    let is_root = is_root();
-    let (cmd_program, cmd_args) = if is_root {
-        (program.to_string(), args.to_vec())
-    } else if command_on_path("sudo") {
-        // `-n` = non-interactive: fail instead of prompting. `-S` reads the
-        // password from stdin only if one is pending; combined with `-n` this
-        // never blocks. The caller passes no password, so sudo will refuse
-        // rather than stall.
-        let mut a = vec!["-n".to_string(), program.to_string()];
-        a.extend_from_slice(args);
-        ("sudo".to_string(), a)
-    } else {
+/// Run a privileged command: directly if root, otherwise via sudo. Returns
+/// `true` if it ran successfully. Never stalls on a hidden prompt.
+///
+/// When `sudo_password` is supplied, the command runs as `sudo -A` with a
+/// temporary askpass helper (`SUDO_ASKPASS`), so it works with no TTY and no
+/// cached credentials — the case `sudo -n` cannot handle (it fails whenever a
+/// password is required, e.g. a normal desktop without NOPASSWD). When no
+/// password is supplied, it falls back to `sudo -n` (cached/NOPASSWD only),
+/// degrading to a warning rather than hanging in CI/CD or SSH-without-TTY.
+fn run_privileged(
+    program: &str,
+    args: &[String],
+    sudo_password: Option<&str>,
+    report: &mut UninstallReport,
+) -> bool {
+    if is_root() {
+        return run_command_status(program, args, None, report);
+    }
+    if !command_on_path("sudo") {
         report.note(format!(
             "skipping `{program} {args:?}` — not root and sudo unavailable",
         ));
         return false;
-    };
-    match Command::new(&cmd_program).args(&cmd_args).status() {
+    }
+    // Prefer askpass when a password is available — it works unattended where
+    // `sudo -n` cannot. The Askpass guard keeps its temp files alive for the
+    // duration of the (synchronous) command below.
+    if let Some(pw) = sudo_password.filter(|p| !p.is_empty()) {
+        match crate::installers::common::askpass::Askpass::new(pw) {
+            Ok(helper) => {
+                let mut sudo_args = vec!["-A".to_string(), program.to_string()];
+                sudo_args.extend_from_slice(args);
+                return run_command_status("sudo", &sudo_args, Some(helper.path()), report);
+            }
+            Err(e) => {
+                report.note(format!(
+                    "askpass setup failed ({e}); falling back to sudo -n"
+                ));
+            }
+        }
+    }
+    // No password (or askpass failed) → non-interactive sudo: fail fast instead
+    // of prompting when no cached credentials exist.
+    let mut a = vec!["-n".to_string(), program.to_string()];
+    a.extend_from_slice(args);
+    run_command_status("sudo", &a, None, report)
+}
+
+/// Spawn `program args` (optionally with `SUDO_ASKPASS` set) and return whether
+/// it succeeded. Records a note on failure.
+fn run_command_status(
+    program: &str,
+    args: &[String],
+    askpass_path: Option<&str>,
+    report: &mut UninstallReport,
+) -> bool {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(p) = askpass_path {
+        cmd.env("SUDO_ASKPASS", p);
+    }
+    match cmd.status() {
         Ok(s) if s.success() => true,
         Ok(s) => {
-            report.note(format!("`{cmd_program}` exited non-zero ({s})"));
+            report.note(format!("`{program}` exited non-zero ({s})"));
             false
         }
         Err(e) => {
             report.note(format!(
-                "could not run `{cmd_program}` ({e}) — sudo may require a password (no TTY)"
+                "could not run `{program}` ({e}) — sudo may require a password (no TTY)"
             ));
             false
         }

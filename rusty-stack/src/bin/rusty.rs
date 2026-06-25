@@ -214,6 +214,12 @@ enum Subcommands {
         /// Skip the confirmation notice.
         #[arg(long, short = 'y')]
         yes: bool,
+
+        /// Sudo password for privileged steps (system-package purge,
+        /// /opt/rocm removal). Omit to use MLSTACK_SUDO_PASSWORD env or a TTY
+        /// prompt. Ignored when running as root or with non-interactive sudo.
+        #[arg(long)]
+        sudo_password: Option<String>,
     },
 
     /// Force reinstall: uninstall the stack, then relaunch the TUI installer.
@@ -225,6 +231,11 @@ enum Subcommands {
         /// Also remove ~/.mlstack/ during the uninstall phase.
         #[arg(long)]
         purge_dir: bool,
+
+        /// Sudo password for the uninstall-phase privileged steps. Omit to use
+        /// MLSTACK_SUDO_PASSWORD env or a TTY prompt.
+        #[arg(long)]
+        sudo_password: Option<String>,
     },
 
     /// Install the ML stack.
@@ -247,6 +258,104 @@ enum Subcommands {
 // ===========================================================================
 // Update subcommand implementation
 // ===========================================================================
+
+// ===========================================================================
+// Shared sudo-credential helpers (install + uninstall/reinstall)
+// ===========================================================================
+
+/// Sudo credential resolution shared by the install and uninstall/reinstall
+/// paths. `sudo -n` fails whenever a password is required; these helpers read a
+/// password from a TTY (no echo) so privileged steps can run via an askpass
+/// helper unattended.
+mod sudo_creds {
+    use std::io::{IsTerminal, Write};
+
+    /// Read a password from TTY without echo. Returns `None` if not a TTY or
+    /// reading fails. Uses raw stdin reads (avoids `read_line` buffering).
+    pub fn read_password_from_tty() -> Option<String> {
+        use std::io::Read;
+        if !std::io::stdin().is_terminal() {
+            // Not a TTY — do not consume piped stdin as sudo password.
+            return None;
+        }
+        // Disable echo + canonical mode via termios, read raw bytes to newline.
+        #[cfg(unix)]
+        {
+            let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } != 0 {
+                return None;
+            }
+            let original = termios;
+            termios.c_lflag &= !(libc::ECHO | libc::ICANON);
+            if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) } != 0 {
+                return None;
+            }
+            let mut password = Vec::new();
+            let mut byte = [0u8; 1];
+            loop {
+                match std::io::stdin().read(&mut byte) {
+                    Ok(0) => break, // EOF
+                    Ok(_) if byte[0] == b'\n' => break,
+                    Ok(_) if byte[0] == b'\r' => break,
+                    Ok(_) => password.push(byte[0]),
+                    Err(_) => break,
+                }
+            }
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
+            };
+            eprintln!(); // newline after password input
+            String::from_utf8(password)
+                .ok()
+                .map(|s| s.trim().to_string())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    /// True when sudo can run non-interactively for the current user (cached
+    /// credential or NOPASSWD policy).
+    pub fn can_sudo_non_interactive() -> bool {
+        std::process::Command::new("sudo")
+            .arg("-n")
+            .arg("true")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Resolve a sudo password for the uninstall/reinstall privileged steps.
+    ///
+    /// Precedence: already-root ⇒ `None` (no sudo needed); `--sudo-password`
+    /// flag; `MLSTACK_SUDO_PASSWORD` env; non-interactive sudo already works ⇒
+    /// `None`; otherwise prompt on the TTY.
+    pub fn resolve_for_uninstall(flag: Option<String>) -> Option<String> {
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } == 0 {
+            return None;
+        }
+        if let Some(pw) = flag.filter(|p| !p.is_empty()) {
+            return Some(pw);
+        }
+        if let Ok(pw) = std::env::var("MLSTACK_SUDO_PASSWORD") {
+            if !pw.is_empty() {
+                return Some(pw);
+            }
+        }
+        if can_sudo_non_interactive() {
+            return None;
+        }
+        if std::io::stdin().is_terminal() {
+            eprint!("    sudo password for uninstall: ");
+            let _ = std::io::stderr().flush();
+            read_password_from_tty()
+        } else {
+            None
+        }
+    }
+}
 
 mod update_impl {
     use super::*;
@@ -795,67 +904,8 @@ mod update_impl {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        /// Read a password from TTY without echo.
-        /// Returns None if not a TTY or reading fails.
-        ///
-        /// Uses `std::io::Read::read()` on raw stdin for secure password input
-        /// (avoids line-buffering artifacts from `Stdin::read_line()`).
-        fn read_password_from_tty() -> Option<String> {
-            use std::io::Read;
-            if !std::io::stdin().is_terminal() {
-                // Not a TTY — do not consume piped stdin as sudo password.
-                return None;
-            }
-            // Use rpassword-like approach: disable echo via termios
-            #[cfg(unix)]
-            {
-                let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-                if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } != 0 {
-                    return None;
-                }
-                let original = termios;
-                // Disable echo and canonical mode for raw byte reading
-                termios.c_lflag &= !(libc::ECHO | libc::ICANON);
-                if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) } != 0 {
-                    return None;
-                }
-                // Read raw bytes until newline
-                let mut password = Vec::new();
-                let mut byte = [0u8; 1];
-                loop {
-                    match std::io::stdin().read(&mut byte) {
-                        Ok(0) => break, // EOF
-                        Ok(_) if byte[0] == b'\n' => break,
-                        Ok(_) if byte[0] == b'\r' => break,
-                        Ok(_) => password.push(byte[0]),
-                        Err(_) => break,
-                    }
-                }
-                // Restore original settings
-                unsafe {
-                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
-                };
-                eprintln!(); // newline after password input
-                String::from_utf8(password)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            }
-            #[cfg(not(unix))]
-            {
-                None
-            }
-        }
-
-        /// Returns true when sudo can run non-interactively for the current user
-        /// (cached credential or NOPASSWD policy).
-        fn can_sudo_non_interactive() -> bool {
-            std::process::Command::new("sudo")
-                .arg("-n")
-                .arg("true")
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
+        // Sudo-password helpers live in the top-level `sudo_creds` module so the
+        // uninstall/reinstall paths can share them.
 
         /// Direct installer executor - calls Rust installer functions in-process.
         struct DirectInstallerExecutor {
@@ -900,7 +950,7 @@ mod update_impl {
                 let sudo_password = if component.needs_sudo {
                     if unsafe { libc::geteuid() } == 0 {
                         None
-                    } else if can_sudo_non_interactive() {
+                    } else if sudo_creds::can_sudo_non_interactive() {
                         tracing::info!(
                             component = component_id,
                             "Using non-interactive sudo path (-n)"
@@ -909,7 +959,7 @@ mod update_impl {
                     } else {
                         eprint!("    sudo password for {}: ", component.name);
                         let _ = std::io::stderr().flush();
-                        let password = read_password_from_tty();
+                        let password = sudo_creds::read_password_from_tty();
                         if let Some(ref _pw) = password {
                             tracing::info!(component = component_id, "Sudo password provided");
                         } else {
@@ -2253,13 +2303,18 @@ mod verify_impl {
 mod uninstall_impl {
     use super::*;
 
-    pub fn run(keep_rocm: bool, purge_dir: bool, yes: bool) {
+    pub fn run(keep_rocm: bool, purge_dir: bool, yes: bool, sudo_password: Option<String>) {
         let _log_guard = rusty_stack::logging::init_logging("uninstall");
         println!("Rusty Stack — uninstall (keep_rocm={keep_rocm}, purge_dir={purge_dir})");
+        // Resolve a sudo password (flag > env > TTY prompt) so privileged steps
+        // (system-package purge, /opt/rocm removal) can run unattended via
+        // askpass — `sudo -n` alone fails when a password is required.
+        let sudo_password = sudo_creds::resolve_for_uninstall(sudo_password);
         let opts = rusty_stack::uninstall::UninstallOptions {
             keep_rocm,
             purge_mlstack_dir: purge_dir,
             yes,
+            sudo_password,
         };
         match rusty_stack::uninstall::uninstall_stack(&opts) {
             Ok(report) => {
@@ -2308,13 +2363,15 @@ mod reinstall_impl {
 
     /// Force-reinstall = uninstall the stack, then relaunch the TUI installer.
     /// (Stage 6: previously broken — `rusty` had no reinstall path at all.)
-    pub fn run(keep_rocm: bool, purge_dir: bool) {
+    pub fn run(keep_rocm: bool, purge_dir: bool, sudo_password: Option<String>) {
         let _log_guard = rusty_stack::logging::init_logging("reinstall");
         println!("Rusty Stack — reinstall: uninstalling, then relaunching installer…");
+        let sudo_password = sudo_creds::resolve_for_uninstall(sudo_password);
         let opts = rusty_stack::uninstall::UninstallOptions {
             keep_rocm,
             purge_mlstack_dir: purge_dir,
             yes: true,
+            sudo_password,
         };
         if let Err(e) = rusty_stack::uninstall::uninstall_stack(&opts) {
             eprintln!("Uninstall phase failed: {e:#}");
@@ -2460,14 +2517,16 @@ fn main() {
             keep_rocm,
             purge_dir,
             yes,
+            sudo_password,
         }) => {
-            uninstall_impl::run(keep_rocm, purge_dir, yes);
+            uninstall_impl::run(keep_rocm, purge_dir, yes, sudo_password);
         }
         Some(Subcommands::Reinstall {
             keep_rocm,
             purge_dir,
+            sudo_password,
         }) => {
-            reinstall_impl::run(keep_rocm, purge_dir);
+            reinstall_impl::run(keep_rocm, purge_dir, sudo_password);
         }
         Some(Subcommands::Install { env, global }) => {
             install_impl::run(env, global);
