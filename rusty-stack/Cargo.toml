@@ -33,11 +33,6 @@ name = "rusty-stack"
 path = "src/main.rs"
 required-features = ["tui", "unix-deps"]
 
-[[bin]]
-name = "rusty"
-path = "src/bin/rusty.rs"
-required-features = ["unix-deps"]
-
 [dependencies]
 anyhow = "1.0"
 chrono = "0.4"
