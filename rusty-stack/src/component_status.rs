@@ -236,7 +236,12 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         }
         "pytorch-profiler" => python_any(python_candidates, &["torch"]),
         "wandb" => python_any(python_candidates, &["wandb"]),
-        "fastvideo" => python_any(python_candidates, &["fastvideo"]),
+        "fastvideo" => python_candidates.iter().any(|python| {
+            python_exec(
+                python,
+                crate::installers::components::fastvideo::fastvideo_verification_snippet(),
+            )
+        }),
         "llama-cpp" => {
             // Use the detection contract from llama_cpp.rs: llama-cli --help must succeed
             crate::installers::components::llama_cpp::is_llama_cli_functional(&home)
@@ -399,7 +404,7 @@ pub fn component_verification_commands(
             "fastvideo",
             &["fastvideo"],
             python_candidates,
-            "import fastvideo,sys; import importlib; ok=False\nfor _m in ('fastvideo.inference','fastvideo.engine','fastvideo'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nver=getattr(fastvideo,'__version__','?')\nprint(f'FastVideo {ver} module_loaded={ok}'); sys.exit(0 if ok else 1)",
+            crate::installers::components::fastvideo::fastvideo_verification_snippet(),
         )],
         "llama-cpp" => vec![shell_command(
             "llama.cpp",
@@ -651,7 +656,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "fastvideo",
             &["fastvideo"],
             python_candidates,
-            "import fastvideo,sys; import importlib; ok=False\nfor _m in ('fastvideo.inference','fastvideo.engine','fastvideo'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nver=getattr(fastvideo,'__version__','?')\nprint(f'FastVideo {ver} module_loaded={ok}'); sys.exit(0 if ok else 1)",
+            crate::installers::components::fastvideo::fastvideo_verification_snippet(),
         ),
         shell_command("vLLM Studio", "vllm-studio", "bun", &["--version"]),
     ]);
@@ -1218,6 +1223,109 @@ fn repo_has_ml_stack_core() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fastvideo_verification_uses_shared_compiled_kernel_smoke_test() {
+        let candidates = vec!["python3".to_string()];
+        let commands = component_verification_commands("fastvideo", &candidates);
+        assert_eq!(commands.len(), 1);
+
+        let command = &commands[0];
+        assert_eq!(command.label, "FastVideo");
+        assert_eq!(command.target_id, "fastvideo");
+        assert_eq!(command.modules, vec!["fastvideo".to_string()]);
+        assert_eq!(
+            command.args,
+            vec![
+                "-c".to_string(),
+                crate::installers::components::fastvideo::fastvideo_verification_snippet()
+                    .to_string(),
+            ]
+        );
+
+        let snippet = &command.args[1];
+        for anchor in [
+            "from fastvideo_kernel import int8_quant",
+            "range(device_count)",
+            "int8_quant(source)",
+            "torch.cuda.synchronize(device)",
+            "raise SystemExit",
+        ] {
+            assert!(
+                snippet.contains(anchor),
+                "missing verification anchor: {anchor}"
+            );
+        }
+
+        let enhanced = enhanced_verification_commands(&candidates);
+        let enhanced_fastvideo: Vec<_> = enhanced
+            .iter()
+            .filter(|candidate| candidate.target_id == "fastvideo")
+            .collect();
+        assert_eq!(enhanced_fastvideo.len(), 1);
+        assert_eq!(
+            enhanced_fastvideo[0].args[1],
+            crate::installers::components::fastvideo::fastvideo_verification_snippet()
+        );
+        assert_eq!(enhanced_fastvideo[0].modules, vec!["fastvideo".to_string()]);
+    }
+
+    #[test]
+    fn test_fastvideo_installation_status_requires_compiled_kernel_smoke_test() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_nanos();
+        let temp_dir = env::temp_dir().join(format!(
+            "rusty-stack-fastvideo-status-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temporary FastVideo status test directory");
+
+        let import_only = temp_dir.join("import-only-python");
+        fs::write(
+            &import_only,
+            "#!/bin/sh\ncase \"$2\" in\n  *\"find_spec\"*\"fastvideo\"*) exit 0 ;;\n  *) exit 1 ;;\nesac\n",
+        )
+        .expect("write import-only fake Python");
+        let mut permissions = fs::metadata(&import_only)
+            .expect("stat import-only fake Python")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&import_only, permissions)
+            .expect("make import-only fake Python executable");
+
+        assert!(
+            !is_component_installed_by_id(
+                "fastvideo",
+                &[import_only.to_string_lossy().into_owned()]
+            ),
+            "an import spec alone must not report FastVideo installed"
+        );
+
+        let functional = temp_dir.join("functional-python");
+        fs::write(
+            &functional,
+            "#!/bin/sh\ncase \"$2\" in\n  *\"import fastvideo\"*\"from fastvideo_kernel import int8_quant\"*\"int8_quant(source)\"*) exit 0 ;;\n  *) exit 1 ;;\nesac\n",
+        )
+        .expect("write functional fake Python");
+        let mut permissions = fs::metadata(&functional)
+            .expect("stat functional fake Python")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&functional, permissions)
+            .expect("make functional fake Python executable");
+
+        assert!(
+            is_component_installed_by_id("fastvideo", &[functional.to_string_lossy().into_owned()]),
+            "the shared compiled-kernel smoke must report FastVideo installed"
+        );
+
+        fs::remove_dir_all(&temp_dir).expect("remove temporary FastVideo status test directory");
+    }
 
     #[test]
     fn test_pytorch_diagnostic_snippet_exits_strict() {

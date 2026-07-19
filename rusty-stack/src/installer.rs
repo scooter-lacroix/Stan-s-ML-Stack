@@ -3199,7 +3199,29 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 purge_pytorch(sender, &component.name);
             }
 
-            // Step 1: Install common deps
+            // Step 1: Install PyTorch FIRST, from the ROCm wheel index. This MUST
+            // precede the common-deps step: `torchsde` depends on `torch>=1.6.0`,
+            // and if torch isn't already installed, pip resolves that dep from the
+            // DEFAULT PyPI index — which is the CUDA build, dragging in the entire
+            // nvidia-*-cu13 / cuda-toolkit stack. Installing the ROCm torch first
+            // satisfies torchsde's dep so the deps step never pulls CUDA torch.
+            // (The original install_pytorch_rocm.sh installed torchsde/sentencepiece
+            // AFTER PyTorch — the port had inverted the order.)
+            let install_cmd = inst.build_install_command(&rocm_mm, use_uv);
+            execute_native_command(
+                &NativeCommand::Pip {
+                    program: install_cmd.program.clone(),
+                    args: install_cmd.args.clone(),
+                },
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 2: Install common deps (torchsde, sentencepiece) from PyPI. With
+            // the ROCm torch already installed, torchsde's torch dep is satisfied —
+            // pip (default --upgrade-strategy=only-if-needed) won't replace it with
+            // the CUDA build.
             let deps_cmd = inst.build_common_deps_command(use_uv);
             let _ = common_env.clone(); // Available for future env injection
             execute_native_command(
@@ -3212,13 +3234,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: Install PyTorch
-            let install_cmd = inst.build_install_command(&rocm_mm, use_uv);
+            // Step 3: Rusty centrally owns FastVideo's build/import prerequisites.
+            // Install exact pins without dependency resolution, then verify them
+            // read-only. Component installers may consume these packages but may
+            // never mutate or resolve the managed environment themselves.
+            let managed_python = resolve_python_bin();
+            let managed_install =
+                crate::installers::common::managed_python_install_command(managed_python.clone());
             execute_native_command(
                 &NativeCommand::Pip {
-                    program: install_cmd.program.clone(),
-                    args: install_cmd.args.clone(),
+                    program: managed_install.program,
+                    args: managed_install.args,
                 },
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            let managed_verify =
+                crate::installers::common::managed_python_verify_command(managed_python);
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&managed_verify.program, &managed_verify.args, &[]),
                 None,
                 sender,
                 &component.name,
@@ -4618,25 +4654,56 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
         // ── FastVideo ──────────────────────────────────────────────────
         "fastvideo" => {
-            use crate::installers::components::fastvideo::{FastVideoConfig, FastVideoInstaller};
-            let gpu_arch = ctx
-                .env_exports
-                .get("GPU_ARCH")
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(detect_gpu_arch);
+            use crate::installers::components::fastvideo::{
+                detect_discrete_gpu_archs_from_sysfs, fastvideo_build_warning, post_checkout_plan,
+                resolve_gpu_archs, resolve_install_user, select_visible_gpu_archs, FastVideoConfig,
+                FastVideoInstallStep, FastVideoInstaller,
+            };
+            let detected_archs =
+                detect_discrete_gpu_archs_from_sysfs(PathBuf::from("/sys/class/drm").as_path());
+            let selected_archs = select_visible_gpu_archs(
+                &detected_archs,
+                ctx.env_exports
+                    .get("ROCR_VISIBLE_DEVICES")
+                    .map(String::as_str),
+                ctx.env_exports
+                    .get("HIP_VISIBLE_DEVICES")
+                    .map(String::as_str),
+                ctx.env_exports
+                    .get("CUDA_VISIBLE_DEVICES")
+                    .map(String::as_str),
+            );
+            let gpu_archs = resolve_gpu_archs(
+                &selected_archs,
+                ctx.env_exports.get("GPU_ARCHS").map(String::as_str),
+                ctx.env_exports.get("GPU_ARCH").map(String::as_str),
+                None,
+            );
             let python_bin = ctx
                 .env_exports
                 .get("MLSTACK_PYTHON_BIN")
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "python3".to_string());
+                .unwrap_or_else(resolve_python_bin);
             let inst = FastVideoInstaller::new(FastVideoConfig {
-                gpu_arch: gpu_arch.clone(),
+                gpu_archs: gpu_archs.clone(),
                 python_bin: python_bin.clone(),
             });
             let build_dir = PathBuf::from("/tmp/FastVideo_ROCm_build");
-            let kernel_dir = build_dir.join("fastvideo-kernel");
+
+            // Always start from a fresh directory. Reusing a failed build could
+            // execute stale sitecustomize/build files or contaminate the wheel.
+            let initial_cleanup = inst.cleanup();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(
+                    &initial_cleanup.program,
+                    &initial_cleanup.args,
+                    &initial_cleanup.env,
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // mkdir -p build dir
             let mkdir_cmd = inst.mkdir_build_dir();
@@ -4647,11 +4714,15 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // git clone into build dir (idempotent)
-            git_clone_or_pull(
-                "https://github.com/scooter-lacroix/FastVideo.git",
-                &build_dir.to_string_lossy(),
-                &[],
+            // Clone only into the freshly emptied directory.
+            let clone_cmd = inst.git_clone();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &clone_cmd.program,
+                    &clone_cmd.args,
+                    &clone_cmd.env,
+                    clone_cmd.working_dir,
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
@@ -4671,53 +4742,85 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // git submodule update --init --recursive (in fastvideo-kernel)
-            let submod_cmd = inst.git_submodule_init();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &submod_cmd.program,
-                    &submod_cmd.args,
-                    &submod_cmd.env,
-                    Some(kernel_dir.clone()),
-                ),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+            let sudo_user = std::env::var("SUDO_USER").ok();
+            let user = std::env::var("USER").ok();
+            let run_user = resolve_install_user(sudo_user.as_deref(), user.as_deref())
+                .context("FastVideo install user unavailable from SUDO_USER or USER")?;
 
-            // patch CMakeLists.txt: remove flash_attn_rocm.cpp (CK submodule incompatible with current HIP compiler)
-            let patch_cmd = inst.patch_cmake();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &patch_cmd.program,
-                    &patch_cmd.args,
-                    &patch_cmd.env,
-                    Some(kernel_dir.clone()),
-                ),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+            for step in post_checkout_plan() {
+                let step_sudo = if step.requires_sudo() { sudo_pw } else { None };
+                if step == FastVideoInstallStep::KernelInstall {
+                    let snapshot = inst.distribution_snapshot(
+                        "before",
+                        crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES,
+                    );
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd(
+                            &snapshot.program,
+                            &snapshot.args,
+                            &snapshot.env,
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
 
-            // install build deps (scikit-build-core, cmake, ninja)
-            let deps_cmd = inst.install_build_deps();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&deps_cmd.program, &deps_cmd.args, &deps_cmd.env),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+                let command = match step {
+                    FastVideoInstallStep::Chown => {
+                        let cmd = inst.chown_build_dir(&run_user);
+                        NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env)
+                    }
+                    FastVideoInstallStep::ManagedDependenciesPreflight => {
+                        let cmd = inst.managed_dependencies_preflight();
+                        NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env)
+                    }
+                    FastVideoInstallStep::FlashAttentionPreflight => {
+                        let cmd = inst.flash_attention_preflight();
+                        NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env)
+                    }
+                    FastVideoInstallStep::SourcePolicyPreflight => {
+                        let cmd = inst.source_policy_preflight();
+                        NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir,
+                        )
+                    }
+                    FastVideoInstallStep::KernelInstall => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            fastvideo_build_warning(&gpu_archs),
+                            false,
+                        ));
+                        let cmd = inst.pip_install_kernel();
+                        NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir,
+                        )
+                    }
+                    FastVideoInstallStep::PackageInstall => {
+                        let cmd = inst.pip_install_package();
+                        NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir,
+                        )
+                    }
+                };
+                execute_native_command(&command, step_sudo, sender, &component.name)?;
+            }
 
-            // pip install fastvideo-kernel with ROCm cmake args
-            let pip_cmd = inst.pip_install_kernel();
+            let snapshot = inst.distribution_snapshot(
+                "after",
+                crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES,
+            );
             execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &pip_cmd.program,
-                    &pip_cmd.args,
-                    &pip_cmd.env,
-                    Some(kernel_dir),
-                ),
-                sudo_pw,
+                &NativeCommand::from_shell_cmd(&snapshot.program, &snapshot.args, &snapshot.env),
+                None,
                 sender,
                 &component.name,
             )?;
