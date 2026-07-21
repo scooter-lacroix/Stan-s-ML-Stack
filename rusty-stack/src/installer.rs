@@ -5064,6 +5064,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 }
             }
 
+            persist_onnx_install_status(
+                "1.23.2",
+                &["MIGraphXExecutionProvider", "CPUExecutionProvider"],
+            );
+
             let _ = sender.send(InstallerEvent::Log(
                 format!("[native] {} — ONNX Runtime (MIGraphX) installed successfully. \
                     Source build available via OnnxInstallMethod::SourceBuild for ROCMExecutionProvider.",
@@ -6853,6 +6858,40 @@ fn run_native_benchmark(component_id: &str, sender: &Sender<InstallerEvent>) -> 
 /// `~/.rusty-stack/logs` can be root-owned (from a prior sudo run), so we fall
 /// back through `$TMPDIR/rusty-stack/logs` (also scanned) rather than silently
 /// dropping the result.
+fn persist_onnx_install_status(version: &str, providers: &[&str]) {
+    let provider = providers
+        .iter()
+        .find(|p| matches!(**p, "MIGraphXExecutionProvider" | "ROCMExecutionProvider"))
+        .copied()
+        .unwrap_or("none");
+    persist_benchmark_result(
+        "onnx",
+        &crate::benchmark_runners::BenchmarkOutput {
+            name: "onnx".to_string(),
+            success: true,
+            execution_time_ms: 0,
+            results: serde_json::json!({
+                "ort_version": version,
+                "provider": provider,
+                "providers_available": providers,
+                "provider_priority": ["MIGraphXExecutionProvider", "ROCMExecutionProvider"],
+                "install_status": "provider_ready",
+                "benchmark_status": "not_run",
+                "graph_opt_level": "ORT_ENABLE_ALL",
+                "session_create_ms": 0.0,
+                "inference_latency_p50_ms": 0.0,
+                "inference_latency_p95_ms": 0.0,
+                "inference_latency_p99_ms": 0.0,
+                "throughput_inf_per_sec": 0.0,
+                "peak_rss_mb": 0.0,
+                "quantized_supported": false,
+                "inference_samples": []
+            }),
+            errors: Vec::new(),
+        },
+    );
+}
+
 fn persist_benchmark_result(bench_name: &str, output: &crate::benchmark_runners::BenchmarkOutput) {
     let metrics = output
         .results
@@ -7025,6 +7064,65 @@ mod tests {
         assert!(joined.contains("REASON: model timed out"));
         assert!(joined.contains("THROUGHPUT TOKENS PER SEC: 0"));
         assert!(joined.contains("ERROR: model timed out after 240 seconds"));
+    }
+
+    #[test]
+    fn test_persist_onnx_install_status_writes_clean_status_artifact() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_home = std::env::var("HOME").ok();
+        let old_tmpdir = std::env::var("TMPDIR").ok();
+        let old_log_dir = std::env::var("MLSTACK_LOG_DIR").ok();
+        let root = std::env::temp_dir().join(format!(
+            "rusty-stack-persist-onnx-status-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let logs = root.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::env::set_var("HOME", &root);
+        std::env::set_var("TMPDIR", root.join("tmp"));
+        std::env::set_var("MLSTACK_LOG_DIR", &logs);
+
+        persist_onnx_install_status(
+            "1.23.2",
+            &["MIGraphXExecutionProvider", "CPUExecutionProvider"],
+        );
+
+        let written = std::fs::read_dir(&logs)
+            .unwrap()
+            .find_map(|entry| {
+                let path = entry.ok()?.path();
+                (path
+                    .file_name()?
+                    .to_string_lossy()
+                    .starts_with("onnx_benchmarks_"))
+                .then_some(path)
+            })
+            .expect("onnx status log should be written");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(written).unwrap()).unwrap();
+
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(tmpdir) = old_tmpdir {
+            std::env::set_var("TMPDIR", tmpdir);
+        } else {
+            std::env::remove_var("TMPDIR");
+        }
+        if let Some(log_dir) = old_log_dir {
+            std::env::set_var("MLSTACK_LOG_DIR", log_dir);
+        } else {
+            std::env::remove_var("MLSTACK_LOG_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["errors"].as_array().unwrap().len(), 0);
+        assert_eq!(json["results"]["provider"], "MIGraphXExecutionProvider");
+        assert_eq!(json["results"]["benchmark_status"], "not_run");
     }
 
     #[test]

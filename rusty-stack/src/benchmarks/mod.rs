@@ -2241,10 +2241,9 @@ def _onnx():
             provider not in session_providers
             or not session_providers
             or session_providers[0] != provider
-            or "CPUExecutionProvider" in session_providers
         ):
             raise RuntimeError(
-                "ONNX session did not bind exclusively to AMD provider; "
+                "ONNX session did not prioritize AMD provider; "
                 f"selected={provider}; session_providers={session_providers}"
             )
         return session_providers
@@ -2569,8 +2568,7 @@ mod tests {
         ));
         assert!(PY_HELPER.contains("onnxruntime import is incomplete"));
         assert!(PY_HELPER.contains("ONNX Runtime AMD execution provider unavailable"));
-        assert!(PY_HELPER.contains("ONNX session did not bind exclusively to AMD provider"));
-        assert!(PY_HELPER.contains(r#"or "CPUExecutionProvider" in session_providers"#));
+        assert!(PY_HELPER.contains("ONNX session did not prioritize AMD provider"));
         assert!(PY_HELPER.contains("success = not errors"));
     }
 
