@@ -2096,11 +2096,30 @@ def _onnx():
             "inference_samples": [],
         }), [err]
 
-    ort_version = ort.__version__
+    amd_provider_order = ("MIGraphXExecutionProvider", "ROCMExecutionProvider")
+    ort_version = getattr(ort, "__version__", None)
+    if not ort_version or not hasattr(ort, "get_available_providers"):
+        err = f"onnxruntime import is incomplete: {getattr(ort, '__file__', '<unknown>')}"
+        return False, _degraded_metrics("onnx", err, {
+            "ort_version": "incomplete",
+            "provider": "none",
+            "providers_available": [],
+            "provider_priority": list(amd_provider_order),
+            "model_load_ms": 0.0,
+            "session_create_ms": 0.0,
+            "inference_latency_p50_ms": 0.0,
+            "inference_latency_p95_ms": 0.0,
+            "inference_latency_p99_ms": 0.0,
+            "throughput_inf_per_sec": 0.0,
+            "input_shape": [],
+            "output_shape": [],
+            "graph_opt_level": "ORT_ENABLE_ALL",
+            "inference_samples": [],
+        }), [err]
+
     all_providers = ort.get_available_providers()
     providers_available = list(all_providers)
 
-    amd_provider_order = ("MIGraphXExecutionProvider", "ROCMExecutionProvider")
     provider = next((name for name in amd_provider_order if name in all_providers), None)
     if provider is None:
         err = (
@@ -2548,6 +2567,7 @@ mod tests {
         assert!(PY_HELPER.contains(
             r#"amd_provider_order = ("MIGraphXExecutionProvider", "ROCMExecutionProvider")"#
         ));
+        assert!(PY_HELPER.contains("onnxruntime import is incomplete"));
         assert!(PY_HELPER.contains("ONNX Runtime AMD execution provider unavailable"));
         assert!(PY_HELPER.contains("ONNX session did not bind exclusively to AMD provider"));
         assert!(PY_HELPER.contains(r#"or "CPUExecutionProvider" in session_providers"#));

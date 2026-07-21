@@ -14,7 +14,7 @@
 //! - **VAL-INSTALL-045**: ONNX Runtime declares dependency on ROCm
 
 use crate::installers::common::RocmEnv;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ===========================================================================
 // Types
@@ -151,6 +151,23 @@ pub struct OnnxRuntimeInstaller {
     config: OnnxRuntimeConfig,
 }
 
+fn python_abi_tag(python_bin: &str) -> String {
+    fn parse(path: &str) -> Option<String> {
+        let name = Path::new(path).file_name()?.to_string_lossy();
+        let tail = name.strip_prefix("python")?;
+        let digits: String = tail.chars().filter(|ch| ch.is_ascii_digit()).collect();
+        (digits.len() >= 2).then_some(digits)
+    }
+
+    parse(python_bin)
+        .or_else(|| {
+            std::fs::canonicalize(python_bin)
+                .ok()
+                .and_then(|path| parse(&path.to_string_lossy()))
+        })
+        .unwrap_or_else(|| "312".to_string())
+}
+
 impl OnnxRuntimeInstaller {
     /// Create a new ONNX Runtime installer with the given config.
     pub fn new(config: OnnxRuntimeConfig) -> Self {
@@ -226,18 +243,7 @@ impl OnnxRuntimeInstaller {
     /// ROCm 7.2.4 ships onnxruntime_migraphx 1.23.2.
     pub fn build_migraphx_wheel_url(&self) -> String {
         let release = self.config.rocm_release();
-        let python_bin = &self.config.python_bin;
-        // Extract python version from binary (e.g., "python3.12" -> "312")
-        let py_ver = if python_bin.contains('.') {
-            let parts: Vec<&str> = python_bin.split('.').collect();
-            if parts.len() >= 2 {
-                format!("{}{}", parts[0], parts[1])
-            } else {
-                "312".to_string()
-            }
-        } else {
-            "312".to_string()
-        };
+        let py_ver = python_abi_tag(&self.config.python_bin);
 
         format!(
             "https://repo.radeon.com/rocm/manylinux/rocm-rel-{release}/\
@@ -276,6 +282,9 @@ impl OnnxRuntimeInstaller {
 import ctypes
 import os
 import onnxruntime as ort
+
+if not getattr(ort, "__version__", None) or not hasattr(ort, "get_available_providers"):
+    raise SystemExit(f"ONNX Runtime import incomplete: {getattr(ort, '__file__', '<unknown>')}")
 
 priority = ["MIGraphXExecutionProvider", "ROCMExecutionProvider"]
 available = ort.get_available_providers()
@@ -915,6 +924,36 @@ mod tests {
         assert!(url.contains("repo.radeon.com/rocm/manylinux/rocm-rel-7.2.4/"));
         assert!(url.contains("onnxruntime_migraphx-1.23.2"));
         assert!(url.contains("manylinux_2_27_x86_64"));
+    }
+
+    #[test]
+    fn test_python_abi_tag_from_versioned_binary() {
+        assert_eq!(python_abi_tag("python3.12"), "312");
+        assert_eq!(python_abi_tag("/tmp/mlstack/bin/python3.13"), "313");
+    }
+
+    #[test]
+    fn test_python_abi_tag_ignores_dots_in_path() {
+        assert_eq!(
+            python_abi_tag("/home/scooter/.mlstack/global/bin/python"),
+            "312"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_python_abi_tag_resolves_unversioned_symlink() {
+        let dir = std::env::temp_dir().join(format!("rusty-onnx-python-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("python3.13");
+        std::fs::write(&target, "").unwrap();
+        let link = dir.join("python");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(python_abi_tag(&link.to_string_lossy()), "313");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
