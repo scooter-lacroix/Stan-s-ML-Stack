@@ -381,8 +381,8 @@ mod tests {
             "must NOT set TORCH_CUDA_ARCH_LIST (Stage 2: no CUDA env leakage)"
         );
         assert!(
-            content.contains("PYTORCH_ALLOC_CONF"),
-            "must set PYTORCH_ALLOC_CONF"
+            content.contains("PYTORCH_CUDA_ALLOC_CONF"),
+            "must set PYTORCH_CUDA_ALLOC_CONF"
         );
         assert!(
             content.contains("PYTORCH_HIP_ALLOC_CONF"),
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn test_gpu_arch_from_marketing_name_9070_xt() {
         let arch = detect_correct_gpu_arch(Some("Radeon RX 9070 XT"));
-        assert_eq!(arch.gpu_arch, "gfx1200");
+        assert_eq!(arch.gpu_arch, "gfx1201");
     }
 
     #[test]

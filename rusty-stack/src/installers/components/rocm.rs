@@ -409,7 +409,7 @@ impl RocmInstaller {
     /// operation defaults to `yay -Syu`, i.e. a full system upgrade, which is
     /// what previously aborted ROCm installs.) The caller feeds yay's internal
     /// `sudo pacman` non-interactively — e.g. `SUDO_ASKPASS` +
-    /// `--sudo-flags=-A`, as the installer's Arch path does.
+    /// `--sudoflags=-A`, as the installer's Arch path does.
     pub fn pacman_install_commands(&self, aur_helper: &str) -> Vec<PackageCommand> {
         let packages = self.pacman_rocm_packages();
         let mut args = vec![
@@ -439,6 +439,10 @@ impl RocmInstaller {
         if self.config.channel != RocmChannel::Legacy {
             pkgs.push("rocm-opencl-sdk".to_string());
             pkgs.push("rccl".to_string());
+            // rocwmma: RDNA3+ WMMA flash-attention backend (used by Rusty Llama's
+            // fattn-wmma-f16). Optional at build time (the fork gates on it), but
+            // install it so the WMMA FA path is available out of the box.
+            pkgs.push("rocwmma".to_string());
         }
         pkgs
     }
@@ -803,6 +807,7 @@ mod tests {
         assert!(pkgs.contains(&"rocminfo".to_string()));
         assert!(pkgs.contains(&"rocm-opencl-sdk".to_string())); // Latest gets extra
         assert!(pkgs.contains(&"rccl".to_string())); // Latest gets extra
+        assert!(pkgs.contains(&"rocwmma".to_string())); // Latest: WMMA FA backend
         for p in &pkgs {
             assert!(cmds[0].args.contains(p), "yay args missing package {p}");
         }
@@ -818,6 +823,7 @@ mod tests {
         let pkgs = installer.pacman_rocm_packages();
         assert!(!pkgs.contains(&"rocm-opencl-sdk".to_string()));
         assert!(!pkgs.contains(&"rccl".to_string()));
+        assert!(!pkgs.contains(&"rocwmma".to_string())); // Legacy (RDNA2): no WMMA
     }
 
     #[test]

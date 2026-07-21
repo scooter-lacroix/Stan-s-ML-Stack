@@ -418,38 +418,13 @@ pub fn detect_correct_gpu_arch(marketing_name: Option<&str>) -> GpuArchInfo {
         None => return GpuArchInfo::default(),
     };
 
-    let lower = name.to_lowercase();
-
     // Skip integrated GPUs
     if is_integrated_gpu_name(name) {
         return GpuArchInfo::default();
     }
 
-    // Map marketing names to correct architectures
-    // RDNA3 cards are commonly misreported as gfx1030
-    let arch = if lower.contains("7900 xtx")
-        || lower.contains("7900xtx")
-        || lower.contains("7900 xt")
-        || lower.contains("7900xt")
-        || lower.contains("7900 gre")
-        || lower.contains("7900gre")
-    {
-        "gfx1100"
-    } else if lower.contains("7800 xt")
-        || lower.contains("7800xt")
-        || lower.contains("7800 gre")
-        || lower.contains("7800gre")
-        || lower.contains("7700 xt")
-        || lower.contains("7700xt")
-    {
-        "gfx1101"
-    } else if lower.contains("7600 xt") || lower.contains("7600xt") || lower.contains("7600") {
-        "gfx1102"
-    } else if lower.contains("9070 xt") || lower.contains("9070xt") {
-        "gfx1200"
-    } else {
-        "gfx1100" // default fallback
-    };
+    // Delegate to canonical name→gfx lookup; default to gfx1100 for unknown
+    let arch = crate::gpu::gfx_from_marketing_name(name).unwrap_or("gfx1100");
 
     GpuArchInfo::from_arch(arch)
 }
@@ -627,24 +602,40 @@ pub fn generate_env_file_content(
 # Created by Enhanced ML Stack Environment Setup (Rust native)
 # Date: {date}
 
-# GPU Selection
-# Only set if not already set
-if [ -z "${{HIP_VISIBLE_DEVICES:-}}" ]; then export HIP_VISIBLE_DEVICES={hip_visible_devices}; fi
-if [ -z "${{CUDA_VISIBLE_DEVICES:-}}" ]; then export CUDA_VISIBLE_DEVICES={hip_visible_devices}; fi
-if [ -z "${{PYTORCH_ROCM_DEVICE:-}}" ]; then export PYTORCH_ROCM_DEVICE={hip_visible_devices}; fi
+# GPU Selection — device filter is MANAGED (unconditional). It must reflect the
+# detected discrete GPUs on every source so a stale override can never re-expose
+# an integrated GPU (the iGPU segfault). ROCR_VISIBLE_DEVICES is the authoritative
+# ROCr (HSA) runtime filter; HIP/CUDA alias it for the HIP + CUDA-compat layers.
+# Discrete GPUs only (iGPUs filtered): {hip_visible_devices}
+export ROCR_VISIBLE_DEVICES={hip_visible_devices}
+export HIP_VISIBLE_DEVICES={hip_visible_devices}
+export CUDA_VISIBLE_DEVICES={hip_visible_devices}
+export PYTORCH_ROCM_DEVICE={hip_visible_devices}
 
 # ROCm Settings
 # Only set if not already set
 if [ -z "${{ROCM_HOME:-}}" ]; then export ROCM_HOME={rocm_path}; fi
+if [ -z "${{ROCM_PATH:-}}" ]; then export ROCM_PATH={rocm_path}; fi
+if [ -z "${{HIP_PATH:-}}" ]; then export HIP_PATH={rocm_path}; fi
 if [ -z "${{CUDA_HOME:-}}" ]; then export CUDA_HOME={rocm_path}; fi
 if [ -z "${{ROCM_VERSION:-}}" ]; then export ROCM_VERSION={rocm_version}; fi
 if [ -z "${{ROCM_CHANNEL:-}}" ]; then export ROCM_CHANNEL={rocm_channel}; fi
-# GPU_ARCH is set based on detected hardware (corrected for rocminfo bugs)
+# GPU arch identity is MANAGED (unconditional): must match detected hardware.
 export GPU_ARCH={gpu_arch}
+export PYTORCH_ROCM_ARCH={gpu_arch}
+export GPU_ARCHS={gpu_arch}
+# libdrm amdgpu ASIC id table (ROCm's amdgpu.ids lookup)
+export AMDGPU_ASIC_ID_TABLE_PATH=/usr/share/libdrm/amdgpu.ids
+export AMDGPU_ASIC_ID_TABLE_PATHS=/usr/share/libdrm
 
 # Path Settings - Hardcoded safe paths to prevent "command not found" errors
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{rocm_path}/bin:{rocm_path}/hip/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{rocm_path}/lib:{rocm_path}/hip/lib:{rocm_path}/opencl/lib:${{LD_LIBRARY_PATH:-}}"
+
+# Sealed RCCL overlay (only present when the functional multi-GPU probe requires it)
+if [ -r "$HOME/.mlstack/components/rccl/active/env.sh" ]; then
+  . "$HOME/.mlstack/components/rccl/active/env.sh"
+fi
 
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
@@ -664,7 +655,7 @@ if [ -z "${{MIOPEN_FIND_ENFORCE:-}}" ]; then export MIOPEN_FIND_ENFORCE=3; fi
 # Only set if not already set
 # (Stage 2: the CUDA build-arch env var is intentionally NOT exported on a
 # ROCm stack — ROCm uses PYTORCH_ROCM_ARCH. No CUDA env leakage.)
-if [ -z "${{PYTORCH_ALLOC_CONF:-}}" ]; then export PYTORCH_ALLOC_CONF="max_split_size_mb:512"; fi
+if [ -z "${{PYTORCH_CUDA_ALLOC_CONF:-}}" ]; then export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"; fi
 if [ -z "${{PYTORCH_HIP_ALLOC_CONF:-}}" ]; then export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"; fi
 if [ -z "${{VLLM_WORKER_MULTIPROC_METHOD:-}}" ]; then export VLLM_WORKER_MULTIPROC_METHOD=spawn; fi
 if [ -z "${{VLLM_ROCM_USE_AITER:-}}" ]; then export VLLM_ROCM_USE_AITER=0; fi
@@ -748,22 +739,35 @@ pub fn generate_fish_env_file_content(
 #
 # This file is auto-generated. Edit via rusty-stack's env setup, not by hand.
 
-# --- GPU Selection ---
-set -q HIP_VISIBLE_DEVICES; or set -gx HIP_VISIBLE_DEVICES {hip_visible_devices}
-set -q CUDA_VISIBLE_DEVICES; or set -gx CUDA_VISIBLE_DEVICES {hip_visible_devices}
-set -q PYTORCH_ROCM_DEVICE; or set -gx PYTORCH_ROCM_DEVICE {hip_visible_devices}
+# --- GPU Selection — device filter is MANAGED (unconditional) so a stale
+# override can never re-expose an integrated GPU. ROCR_VISIBLE_DEVICES is the
+# authoritative ROCr (HSA) filter. ---
+# Discrete GPUs only (iGPUs filtered): {hip_visible_devices}
+set -gx ROCR_VISIBLE_DEVICES {hip_visible_devices}
+set -gx HIP_VISIBLE_DEVICES {hip_visible_devices}
+set -gx CUDA_VISIBLE_DEVICES {hip_visible_devices}
+set -gx PYTORCH_ROCM_DEVICE {hip_visible_devices}
 
 # --- ROCm Settings ---
 set -q ROCM_HOME; or set -gx ROCM_HOME {rocm_path}
+set -q ROCM_PATH; or set -gx ROCM_PATH {rocm_path}
+set -q HIP_PATH; or set -gx HIP_PATH {rocm_path}
 set -q CUDA_HOME; or set -gx CUDA_HOME {rocm_path}
 set -q ROCM_VERSION; or set -gx ROCM_VERSION {rocm_version}
 set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL {rocm_channel}
-# GPU_ARCH is set based on detected hardware (corrected for rocminfo bugs)
+# GPU arch identity is MANAGED (unconditional): must match detected hardware.
 set -gx GPU_ARCH {gpu_arch}
+set -gx PYTORCH_ROCM_ARCH {gpu_arch}
+set -gx GPU_ARCHS {gpu_arch}
+set -gx AMDGPU_ASIC_ID_TABLE_PATH /usr/share/libdrm/amdgpu.ids
+set -gx AMDGPU_ASIC_ID_TABLE_PATHS /usr/share/libdrm
 
 # --- Path Settings ---
 set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
 set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
+
+# --- Sealed RCCL overlay (conditional) ---
+test -r $HOME/.mlstack/components/rccl/active/env.fish; and source $HOME/.mlstack/components/rccl/active/env.fish
 
 # --- Performance Settings ---
 set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}
@@ -780,7 +784,7 @@ set -q MIOPEN_FIND_ENFORCE; or set -gx MIOPEN_FIND_ENFORCE 3
 # --- PyTorch Settings ---
 # (Stage 2: the CUDA build-arch env var is intentionally NOT set on a ROCm
 # stack — ROCm uses PYTORCH_ROCM_ARCH. No CUDA env leakage.)
-set -q PYTORCH_ALLOC_CONF; or set -gx PYTORCH_ALLOC_CONF "max_split_size_mb:512"
+set -q PYTORCH_CUDA_ALLOC_CONF; or set -gx PYTORCH_CUDA_ALLOC_CONF "max_split_size_mb:512"
 set -q PYTORCH_HIP_ALLOC_CONF; or set -gx PYTORCH_HIP_ALLOC_CONF "max_split_size_mb:512"
 set -q VLLM_WORKER_MULTIPROC_METHOD; or set -gx VLLM_WORKER_MULTIPROC_METHOD spawn
 set -q VLLM_ROCM_USE_AITER; or set -gx VLLM_ROCM_USE_AITER 0
@@ -1064,7 +1068,7 @@ mod tests {
     #[test]
     fn test_detect_correct_gpu_arch_9070_xt() {
         let info = detect_correct_gpu_arch(Some("Radeon RX 9070 XT"));
-        assert_eq!(info.gpu_arch, "gfx1200");
+        assert_eq!(info.gpu_arch, "gfx1201");
     }
 
     #[test]
@@ -1237,7 +1241,7 @@ mod tests {
             "python3",
         );
         assert!(!content.contains("TORCH_CUDA_ARCH_LIST"));
-        assert!(content.contains("PYTORCH_ALLOC_CONF"));
+        assert!(content.contains("PYTORCH_CUDA_ALLOC_CONF"));
         assert!(content.contains("PYTORCH_HIP_ALLOC_CONF"));
         assert!(content.contains("VLLM_WORKER_MULTIPROC_METHOD"));
     }
@@ -1304,8 +1308,12 @@ mod tests {
             "11.0.0",
             "python3",
         );
-        // Should use "if [ -z ... ]" guards for conditional exports
-        assert!(content.contains("if [ -z \"${HIP_VISIBLE_DEVICES:-}\" ]"));
+        // Device filter is MANAGED/unconditional (stale override must never
+        // re-expose an iGPU): ROCR/HIP/CUDA_VISIBLE_DEVICES are bare exports.
+        assert!(content.contains("export ROCR_VISIBLE_DEVICES=0"));
+        assert!(content.contains("export HIP_VISIBLE_DEVICES=0"));
+        assert!(!content.contains("if [ -z \"${HIP_VISIBLE_DEVICES:-}\" ]"));
+        // Tuning vars still use "if [ -z ... ]" guards (respect user overrides).
         assert!(content.contains("if [ -z \"${ROCM_HOME:-}\" ]"));
     }
 
@@ -1428,6 +1436,8 @@ mod tests {
         assert!(content.contains("UV_PIP_BREAK_SYSTEM_PACKAGES"));
         assert!(content.contains("UV_SYSTEM_PYTHON"));
         assert!(content.contains("FLASH_ATTENTION_TRITON_AMD_ENABLE"));
+        assert!(content.contains("components/rccl/active/env.fish"));
+        assert!(content.contains("and source"));
         assert!(content.contains("0,1"));
     }
 
@@ -1463,6 +1473,8 @@ mod tests {
         assert!(content.contains("export UV_PIP_BREAK_SYSTEM_PACKAGES=1"));
         assert!(content.contains("export UV_SYSTEM_PYTHON=1"));
         assert!(content.contains("export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE"));
+        assert!(content.contains("components/rccl/active/env.sh"));
+        assert!(content.contains(". \"$HOME/.mlstack/components/rccl/active/env.sh\""));
     }
 
     // --- setup_environment integration ---

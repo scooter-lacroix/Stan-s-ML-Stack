@@ -7,7 +7,6 @@
 //!
 //! - **VAL-INSTALL-003**: PyTorch installer correct wheel selection
 
-use crate::installers::common::RocmEnv;
 use std::fmt;
 
 // ===========================================================================
@@ -147,8 +146,13 @@ impl PyTorchInstaller {
     pub fn index_url_for_rocm(&self, rocm_mm: &str) -> String {
         let mm: f32 = rocm_mm.parse().unwrap_or(7.2);
         if mm >= 7.0 {
-            // For ROCm 7.x, use the Radeon manylinux index
-            format!("https://repo.radeon.com/rocm/manylinux/rocm-rel-{rocm_mm}/")
+            // PyTorch's OWN PEP 503 simple index for ROCm 7.x. NOT AMD's Radeon
+            // manylinux listing (repo.radeon.com/rocm/manylinux/rocm-rel-X.Y/) —
+            // that is a flat --find-links directory with no per-package /torch/
+            // subpage, so `pip --index-url` against it fails with "No matching
+            // distribution found for torch". PyTorch's index serves proper
+            // manylinux wheels (torch-X.Y+rocm7.2) + torchvision/torchaudio.
+            format!("https://download.pytorch.org/whl/rocm{rocm_mm}")
         } else if mm >= 6.4 {
             format!("https://download.pytorch.org/whl/nightly/rocm{rocm_mm}")
         } else if mm >= 6.3 {
@@ -301,47 +305,6 @@ impl PyTorchInstaller {
         };
         PipCommand { program, args }
     }
-
-    /// Construct the ROCm environment variable exports.
-    ///
-    /// Returns a list of (VAR, VALUE) pairs matching the original script.
-    pub fn rocm_env_exports(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
-        let mut exports = vec![
-            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
-            ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
-            (
-                "ROCM_PATH".to_string(),
-                rocm_env
-                    .path()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "/opt/rocm".to_string()),
-            ),
-        ];
-
-        // HSA_TOOLS_LIB - check for rocprofiler library
-        // Try the ROCm 7.x layout first (lib/rocprofiler-sdk/), then the old layout (lib/)
-        let rocm_lib = rocm_env.path().and_then(|p| {
-            let new_layout = p.join("lib/rocprofiler-sdk/librocprofiler-sdk-tool.so");
-            let old_layout = p.join("lib/librocprofiler-sdk-tool.so");
-            if new_layout.exists() {
-                Some(new_layout)
-            } else if old_layout.exists() {
-                Some(old_layout)
-            } else {
-                None
-            }
-        });
-        if let Some(lib) = rocm_lib {
-            exports.push((
-                "HSA_TOOLS_LIB".to_string(),
-                lib.to_string_lossy().to_string(),
-            ));
-        } else {
-            exports.push(("HSA_TOOLS_LIB".to_string(), "0".to_string()));
-        }
-
-        exports
-    }
 }
 
 // ===========================================================================
@@ -358,14 +321,14 @@ mod tests {
     fn test_index_url_rocm_72() {
         let installer = PyTorchInstaller::with_defaults();
         let url = installer.index_url_for_rocm("7.2");
-        assert_eq!(url, "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/");
+        assert_eq!(url, "https://download.pytorch.org/whl/rocm7.2");
     }
 
     #[test]
     fn test_index_url_rocm_70() {
         let installer = PyTorchInstaller::with_defaults();
         let url = installer.index_url_for_rocm("7.0");
-        assert_eq!(url, "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0/");
+        assert_eq!(url, "https://download.pytorch.org/whl/rocm7.0");
     }
 
     #[test]
@@ -479,26 +442,6 @@ mod tests {
         let cmd = installer.build_common_deps_command(true);
         assert!(cmd.args.contains(&"torchsde".to_string()));
         assert!(cmd.args.contains(&"sentencepiece".to_string()));
-    }
-
-    #[test]
-    fn test_rocm_env_exports() {
-        let installer = PyTorchInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(
-            Some(std::path::PathBuf::from("/opt/rocm")),
-            "7.2.0".to_string(),
-        );
-        let exports = installer.rocm_env_exports(&rocm_env);
-        assert!(exports
-            .iter()
-            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(exports
-            .iter()
-            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-        assert!(exports
-            .iter()
-            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(exports.iter().any(|(k, _)| k == "HSA_TOOLS_LIB"));
     }
 
     #[test]

@@ -9,6 +9,15 @@ All notable changes to Stan's ML Stack will be documented in this file.
 ### Release Track Status
 - Next changes accumulate here after 0.3.1.
 
+### Added
+- Automatic RCCL multi-GPU validation: systems with at least two discrete AMD GPUs run a two-process PyTorch `all_reduce` probe after normal system RCCL installation. Only known ROCm/RCCL collective failure fingerprints trigger the pinned-source repair, including the ROCm 7.2.1 `operation cannot be performed in present state` failure ([ROCm issue #6074](https://github.com/ROCm/ROCm/issues/6074)) and the distributed RCCL 2.27.7 `invalid device pointer`/`ncclUnhandledCudaError` form; unrelated failures stop the install.
+- Version-aware RCCL repair profiles. The current `latest`/ROCm 7.2.x profile uses checksum-pinned ROCm 7.2.0 compiler and HIPIFY tools for a per-`gfx` RCCL build with no package-manager changes or NVIDIA/CUDA dependencies. Rusty installs the result as an immutable, atomically activated overlay under `~/.mlstack/components/rccl/` and requires a passing final probe on both GPUs.
+
+### Fixed
+- PyTorch now loads a remediated RCCL without replacing PyTorch or `/opt/rocm` files. The activation shim validates its manifest and library hash before torch imports, dynamically locates PyTorch, and uses glibc RPATH inhibition instead of `LD_PRELOAD`.
+- The 7.2.x RCCL overlay exports `NCCL_P2P_DISABLE=1`/`RCCL_P2P_DISABLE=1` after validation showed mixed consumer RDNA cards fail on direct P2P/IPC with `invalid device pointer` but pass through the non-P2P transport path.
+- Valid active RCCL overlays remain sealed against later component installs. Replacement is rejected unless recovery is explicitly enabled with `MLSTACK_UNSEAL_CORE=1`.
+
 ## [0.3.1] - 2026-06-25
 
 Critical hotfix for v0.3.0 surfaced by the first real install on Arch (CachyOS).

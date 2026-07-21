@@ -1,7 +1,7 @@
 //! Component registry and installed component detection.
 //!
 //! Provides:
-//! - **Component registry** — 19 known components with display names and installer mappings
+//! - **Component registry** — 21 known components with display names and installer mappings
 //!   (VAL-PLAT-009, VAL-PLAT-010)
 //! - **Installed component detection** — path-based, Python module, and git-based strategies
 //!   (VAL-PLAT-011, VAL-PLAT-012, VAL-PLAT-013)
@@ -65,7 +65,7 @@ pub struct VersionInfo {
 // Component Registry (VAL-PLAT-009, VAL-PLAT-010)
 // ===========================================================================
 
-/// Returns the canonical list of all 19 known components.
+/// Returns the canonical list of all 21 known components.
 pub fn known_components() -> &'static [ComponentInfo] {
     // Built once, reused across calls.
     static COMPONENTS: std::sync::OnceLock<Vec<ComponentInfo>> = std::sync::OnceLock::new();
@@ -124,6 +124,22 @@ pub fn known_components() -> &'static [ComponentInfo] {
             ComponentInfo {
                 id: "flash-attn".into(),
                 display_name: "Flash Attention".into(),
+                detection_method: DetectionMethod::PythonModule,
+                installer_script: "install_flash_attention_ck.sh".into(),
+                python_import: Some("flash_attn".into()),
+                clone_dir: None,
+            },
+            ComponentInfo {
+                id: "flash-attn-triton".into(),
+                display_name: "Flash Attention (Triton)".into(),
+                detection_method: DetectionMethod::PythonModule,
+                installer_script: "install_flash_attention_triton.sh".into(),
+                python_import: Some("flash_attn".into()),
+                clone_dir: None,
+            },
+            ComponentInfo {
+                id: "flash-attn-ck".into(),
+                display_name: "Flash Attention (CK)".into(),
                 detection_method: DetectionMethod::PythonModule,
                 installer_script: "install_flash_attention_ck.sh".into(),
                 python_import: Some("flash_attn".into()),
@@ -246,7 +262,7 @@ pub fn get_component(id: &str) -> Option<&'static ComponentInfo> {
 /// Return the human-readable display name for a component ID.
 ///
 /// Unknown IDs are returned as-is (passthrough).
-/// VAL-PLAT-010: The mapping must be bijective for all 19 known components.
+/// VAL-PLAT-010: The mapping must be bijective for all 21 known components.
 pub fn display_name(id: &str) -> String {
     get_component(id)
         .map(|c| c.display_name.clone())
@@ -843,16 +859,16 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // VAL-PLAT-009: Component registry contains all 19 known components
+    // VAL-PLAT-009: Component registry contains all 21 known components
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_registry_has_exactly_19_components() {
+    fn test_registry_has_exactly_21_components() {
         let components = known_components();
         assert_eq!(
             components.len(),
-            19,
-            "Registry must contain exactly 19 known components, found {}",
+            21,
+            "Registry must contain exactly 21 known components, found {}",
             components.len()
         );
     }
@@ -871,6 +887,8 @@ mod tests {
             "bitsandbytes",
             "migraphx",
             "flash-attn",
+            "flash-attn-triton",
+            "flash-attn-ck",
             "mpi4py",
             "wandb",
             "comfyui",
@@ -890,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_known_component_accepts_all_19() {
+    fn test_is_known_component_accepts_all_21() {
         let ids = [
             "rocm",
             "pytorch",
@@ -903,6 +921,8 @@ mod tests {
             "bitsandbytes",
             "migraphx",
             "flash-attn",
+            "flash-attn-triton",
+            "flash-attn-ck",
             "mpi4py",
             "wandb",
             "comfyui",

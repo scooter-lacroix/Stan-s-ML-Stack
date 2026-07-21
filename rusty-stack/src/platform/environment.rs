@@ -32,6 +32,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 // ===========================================================================
@@ -184,18 +185,20 @@ pub fn ensure_mlstack_dirs() -> std::io::Result<()> {
 /// non-deterministic interpreter scan for global installs.
 pub fn ensure_global_venv(bootstrap_python: &str) -> anyhow::Result<PathBuf> {
     let global_python = mlstack_global_python();
-    if global_python.exists() {
-        return Ok(global_python);
-    }
-    ensure_mlstack_dirs()?;
-    let global_dir = mlstack_global_dir();
-    create_venv(&global_dir, bootstrap_python)?;
     if !global_python.exists() {
-        anyhow::bail!(
-            "global venv creation reported success but {} is missing",
-            global_python.display()
-        );
+        ensure_mlstack_dirs()?;
+        let global_dir = mlstack_global_dir();
+        create_venv(&global_dir, bootstrap_python)?;
+        if !global_python.exists() {
+            anyhow::bail!(
+                "global venv creation reported success but {} is missing",
+                global_python.display()
+            );
+        }
     }
+    // Always ensure pip is present (uv venvs don't seed pip by default; a venv
+    // created before --seed may lack it). Every installer runs `python -m pip`.
+    ensure_pip_in_venv(&global_python)?;
     Ok(global_python)
 }
 
@@ -219,27 +222,32 @@ pub fn ensure_named_venv(name: &str, bootstrap_python: &str) -> anyhow::Result<P
     ensure_mlstack_dirs()?;
     let env_dir = mlstack_env_dir(name);
     let env_python = env_dir.join("bin").join("python");
-    if env_python.exists() {
-        return Ok(env_python);
-    }
-    create_venv(&env_dir, bootstrap_python)?;
     if !env_python.exists() {
-        anyhow::bail!(
-            "named venv creation reported success but {} is missing",
-            env_python.display()
-        );
+        create_venv(&env_dir, bootstrap_python)?;
+        if !env_python.exists() {
+            anyhow::bail!(
+                "named venv creation reported success but {} is missing",
+                env_python.display()
+            );
+        }
     }
+    // Always ensure pip is present (same rationale as the global venv).
+    ensure_pip_in_venv(&env_python)?;
     Ok(env_python)
 }
 
 /// Create a venv at `dir` using `uv` when available, else `python -m venv`.
 fn create_venv(dir: &Path, bootstrap_python: &str) -> anyhow::Result<()> {
     if command_on_path("uv") {
+        // --seed installs pip/setuptools/wheel so `python -m pip` works in the
+        // venv. uv venvs ship WITHOUT pip by default, which breaks every
+        // installer (they all run `<python> -m pip install …`).
         // Treat a uv SPAWN failure (e.g. uv on PATH but not executable / missing
         // runtime) the same as a non-successful run: fall through to the
         // `python -m venv` fallback rather than bailing with a spawn error.
         let uv_status = std::process::Command::new("uv")
             .arg("venv")
+            .arg("--seed")
             .arg("--python")
             .arg(bootstrap_python)
             .arg(dir)
@@ -260,6 +268,47 @@ fn create_venv(dir: &Path, bootstrap_python: &str) -> anyhow::Result<()> {
             "failed to create venv at {} via uv/venv (bootstrap={})",
             dir.display(),
             bootstrap_python
+        );
+    }
+    Ok(())
+}
+
+/// Ensure `pip` is importable in the managed venv. `uv venv` does not seed pip
+/// by default, and a venv created before `--seed` may lack it — but every
+/// installer runs `<python> -m pip install …`, so a pip-less venv breaks ALL of
+/// them. Bootstrap via `uv pip install pip` (preferred; works on uv-managed
+/// cpython, which may not ship `ensurepip`) or stdlib `ensurepip` as a fallback.
+fn ensure_pip_in_venv(venv_python: &Path) -> anyhow::Result<()> {
+    // Fast path: pip already importable.
+    let has_pip = std::process::Command::new(venv_python)
+        .args(["-m", "pip", "--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if has_pip {
+        return Ok(());
+    }
+    // Prefer uv (uv-managed cpython may not ship ensurepip).
+    if command_on_path("uv") {
+        let s = std::process::Command::new("uv")
+            .args(["pip", "install", "--python"])
+            .arg(venv_python)
+            .arg("pip")
+            .status();
+        if let Ok(status) = s {
+            if status.success() {
+                return Ok(());
+            }
+        }
+    }
+    // Fallback: stdlib ensurepip.
+    let status = std::process::Command::new(venv_python)
+        .args(["-m", "ensurepip", "--upgrade"])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!(
+            "could not bootstrap pip into {} (tried `uv pip install pip` and `ensurepip`)",
+            venv_python.display()
         );
     }
     Ok(())
@@ -496,6 +545,353 @@ fn extract_python_version(path: &Path) -> (u32, u32) {
         }
     }
     (0, 0)
+}
+
+// ===========================================================================
+// Managed Python Environment (Track B §7)
+// ===========================================================================
+
+/// Resolve a managed Python interpreter (≤3.13, prefer 3.12) via backend.
+///
+/// **uv backend**: runs `uv python find 3.12`; if absent, falls back to
+/// `uv python find ">=3.10,<3.14"` (uv picks newest ≤3.13).
+/// **python backend**: scans `python3.12`, `python3.11`, `python3.10`, `python3.13`
+/// in that order. EXPLICITLY REJECTS 3.14+ via `--version` parse.
+///
+/// Returns the path to the Python binary.
+pub fn resolve_managed_python(backend: &crate::config::PythonBackend) -> anyhow::Result<PathBuf> {
+    match backend {
+        crate::config::PythonBackend::Uv => {
+            if !command_on_path("uv") {
+                anyhow::bail!("uv backend selected but uv not on PATH");
+            }
+
+            // Try 3.12 first (ML stable target)
+            let output = std::process::Command::new("uv")
+                .args(["python", "find", "3.12"])
+                .output();
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    if let Some(line) = stdout.lines().next() {
+                        let path = line.trim();
+                        if !path.is_empty() {
+                            return Ok(PathBuf::from(path));
+                        }
+                    }
+                }
+            }
+
+            // Fallback: newest Python in range ≥3.10,<3.14
+            let output = std::process::Command::new("uv")
+                .args(["python", "find", ">=3.10,<3.14"])
+                .output()?;
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(line) = stdout.lines().next() {
+                    let path = line.trim();
+                    if !path.is_empty() {
+                        return Ok(PathBuf::from(path));
+                    }
+                }
+            }
+
+            anyhow::bail!("uv python find failed to locate a Python ≤3.13");
+        }
+        crate::config::PythonBackend::Python => {
+            // Scan in order: 3.12 (preferred), 3.11, 3.10, 3.13
+            let candidates = ["python3.12", "python3.11", "python3.10", "python3.13"];
+            for name in &candidates {
+                if let Some(path) = check_python_version_cap(name) {
+                    return Ok(path);
+                }
+            }
+
+            anyhow::bail!(
+                "No suitable Python ≤3.13 found on PATH (tried: {})",
+                candidates.join(", ")
+            );
+        }
+    }
+}
+
+/// Check if `python_name` exists and meets version cap (≤3.13).
+/// Returns `Some(path)` if valid, `None` if not found or rejected (3.14+).
+fn check_python_version_cap(python_name: &str) -> Option<PathBuf> {
+    let output = std::process::Command::new(python_name)
+        .arg("--version")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    // Parse "Python 3.14.5" → (major, minor)
+    let (major, minor) = parse_python_version_cap(&version_str)?;
+
+    // Hard cap: major > 3 OR minor > 13 → reject (3.14+ is FORBIDDEN)
+    if major > 3 || (major == 3 && minor > 13) {
+        return None;
+    }
+
+    // Resolve full path via PATH scan (dependency-free)
+    for dir in env::split_paths(&env::var("PATH").unwrap_or_default()) {
+        let candidate = dir.join(python_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Parse Python version from "Python 3.14.5" output → (major, minor).
+fn parse_python_version_cap(version_str: &str) -> Option<(u32, u32)> {
+    // Expected format: "Python 3.14.5"
+    let rest = version_str.strip_prefix("Python ")?;
+    let parts: Vec<&str> = rest.split('.').collect();
+    if parts.len() >= 2 {
+        let major = parts[0].parse::<u32>().ok()?;
+        let minor = parts[1].parse::<u32>().ok()?;
+        Some((major, minor))
+    } else {
+        None
+    }
+}
+
+/// Create the managed global environment at `~/.mlstack/global/`.
+///
+/// **uv backend**: `uv venv ~/.mlstack/global --python <resolved>`
+/// **python backend**: `<resolved> -m venv ~/.mlstack/global`
+///
+/// Returns the path to the global venv's `python` binary.
+pub fn create_global_env(backend: &crate::config::PythonBackend) -> anyhow::Result<PathBuf> {
+    let bootstrap_python = resolve_managed_python(backend)?;
+    let global_dir = mlstack_global_dir();
+
+    if global_dir.exists() {
+        // Already exists — verify the python binary is present
+        let global_python = mlstack_global_python();
+        if global_python.exists() {
+            // Exists — but ensure pip is present (uv venvs don't seed pip by
+            // default; a venv created before --seed may lack it). Every installer
+            // runs `<python> -m pip install …`, so a pip-less venv breaks all of them.
+            ensure_pip_in_venv(&global_python)?;
+            return Ok(global_python);
+        }
+        // Corrupted — recreate
+        std::fs::remove_dir_all(&global_dir)?;
+    }
+
+    std::fs::create_dir_all(&global_dir)?;
+
+    match backend {
+        crate::config::PythonBackend::Uv => {
+            // --seed installs pip/setuptools/wheel so `python -m pip` works.
+            let status = std::process::Command::new("uv")
+                .arg("venv")
+                .arg("--seed")
+                .arg(&global_dir)
+                .arg("--python")
+                .arg(&bootstrap_python)
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("uv venv failed for global env");
+            }
+        }
+        crate::config::PythonBackend::Python => {
+            let status = std::process::Command::new(&bootstrap_python)
+                .arg("-m")
+                .arg("venv")
+                .arg(&global_dir)
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("python -m venv failed for global env");
+            }
+        }
+    }
+
+    let global_python = mlstack_global_python();
+    if !global_python.exists() {
+        anyhow::bail!(
+            "global env creation reported success but {} is missing",
+            global_python.display()
+        );
+    }
+    // Belt-and-suspenders: --seed should have installed pip, but verify/bootstrap
+    // (covers the `python -m venv` fallback path + any --seed shortcoming).
+    ensure_pip_in_venv(&global_python)?;
+
+    Ok(global_python)
+}
+
+/// Write activation snippets to `~/.mlstack/global/`.
+///
+/// Creates:
+/// - `activate-global.sh` (bash/zsh): `export PATH="$HOME/.mlstack/global/bin:$PATH"`
+/// - `activate-global.fish` (fish): `fish_add_path $HOME/.mlstack/global/bin`
+///
+/// Returns (sh_path, fish_path).
+pub fn write_activate_snippets() -> anyhow::Result<(PathBuf, PathBuf)> {
+    let global_dir = mlstack_global_dir();
+    std::fs::create_dir_all(&global_dir)?;
+
+    let sh_path = global_dir.join("activate-global.sh");
+    let fish_path = global_dir.join("activate-global.fish");
+
+    // bash/zsh snippet
+    let sh_content = r#"# mlstack-global-python activation — generated by Rusty-Stack
+# Do NOT edit manually — uninstall strips this marker line
+export PATH="$HOME/.mlstack/global/bin:$PATH"
+"#;
+    std::fs::write(&sh_path, sh_content)?;
+
+    // fish snippet (fish_add_path is idempotent)
+    let fish_content = r#"# mlstack-global-python activation — generated by Rusty-Stack
+# Do NOT edit manually — uninstall strips this marker line
+fish_add_path $HOME/.mlstack/global/bin
+"#;
+    std::fs::write(&fish_path, fish_content)?;
+
+    Ok((sh_path, fish_path))
+}
+
+/// Offer to prepend the global env to the user's shell rc.
+///
+/// Detects shell via `$SHELL` (bash/zsh/fish). If TTY, prompts:
+/// `Make ~/.mlstack/global the default Python in your <shell> rc? [Y/n]`
+/// (default Y). If no TTY or `yes_default=true`: act=true.
+///
+/// On act: appends ONE idempotent marker line to the correct rc:
+/// - `~/.bashrc` / `~/.zshrc`: `source "$HOME/.mlstack/global/activate-global.sh  # mlstack-global-python"`
+/// - `~/.config/fish/config.fish`: `source $HOME/.mlstack/global/activate-global.fish  # mlstack-global-python"`
+///
+/// Marker tag `# mlstack-global-python` ensures idempotency (uninstall strips).
+pub fn offer_global_prepend(yes_default: bool) -> anyhow::Result<bool> {
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let (rc_path, _snippet_path) = if shell.contains("fish") {
+        let rc = resolve_user_home().join(".config/fish/config.fish");
+        let snippet = mlstack_global_dir().join("activate-global.fish");
+        (rc, snippet)
+    } else if shell.contains("zsh") {
+        let rc = resolve_user_home().join(".zshrc");
+        let snippet = mlstack_global_dir().join("activate-global.sh");
+        (rc, snippet)
+    } else {
+        // Default to bash
+        let rc = resolve_user_home().join(".bashrc");
+        let snippet = mlstack_global_dir().join("activate-global.sh");
+        (rc, snippet)
+    };
+
+    let marker = "# mlstack-global-python";
+
+    // Check if marker already present
+    if rc_path.exists() {
+        let content = std::fs::read_to_string(&rc_path).unwrap_or_default();
+        if content.contains(marker) {
+            return Ok(false); // Already present, no action needed
+        }
+    }
+
+    // Determine action
+    let act = if yes_default {
+        true
+    } else {
+        // Check TTY via stdin is terminal (dependency-free)
+        let is_tty = std::io::stdin().is_terminal();
+        if !is_tty {
+            true // Non-interactive: default to yes
+        } else {
+            // Prompt
+            eprint!(
+                "Make ~/.mlstack/global the default Python in your {} rc? [Y/n] ",
+                if shell.contains("fish") {
+                    "fish"
+                } else if shell.contains("zsh") {
+                    "zsh"
+                } else {
+                    "bash"
+                }
+            );
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).ok();
+            let trimmed = input.trim().to_lowercase();
+            trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+        }
+    };
+
+    if !act {
+        return Ok(false);
+    }
+
+    // Ensure rc file exists
+    if let Some(parent) = rc_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if !rc_path.exists() {
+        std::fs::write(&rc_path, "")?;
+    }
+
+    // Append idempotent marker line using $HOME for portability
+    let source_line = if shell.contains("fish") {
+        format!(
+            "source \"$HOME/.mlstack/global/activate-global.fish\"  {}",
+            marker
+        )
+    } else {
+        format!(
+            "source \"$HOME/.mlstack/global/activate-global.sh\"  {}",
+            marker
+        )
+    };
+
+    let mut content = std::fs::read_to_string(&rc_path).unwrap_or_default();
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&source_line);
+    content.push('\n');
+
+    std::fs::write(&rc_path, content)?;
+    Ok(true)
+}
+
+/// Idempotently append a `source ~/.mlstack_env` line to `~/.bashrc` and
+/// `~/.zshrc` so the device-filtered ROCm env (iGPUs excluded) is auto-sourced
+/// on every POSIX shell launch — the "persistent env" the Global install option
+/// promises. Fish is NOT handled here: it auto-loads the `conf.d/mlstack_env.fish`
+/// written by `ensure_mlstack_env`.
+///
+/// Idempotency: skips an rc file that already references `.mlstack_env`. The
+/// appended line contains the literal `.mlstack_env` + `source`, which is exactly
+/// what `uninstall::strip_shell_sourcing` removes, so uninstall cleans it up.
+/// Marker tag `# mlstack-rocm-env` documents provenance.
+pub fn offer_mlstack_env_source() -> anyhow::Result<()> {
+    const MARKER: &str = "# mlstack-rocm-env";
+    let source_line = format!(
+        "[ -f \"$HOME/.mlstack_env\" ] && source \"$HOME/.mlstack_env\"  {}",
+        MARKER
+    );
+    for name in ["bashrc", "zshrc"] {
+        let rc_path = resolve_user_home().join(format!(".{}", name));
+        let mut content = std::fs::read_to_string(&rc_path).unwrap_or_default();
+        if content.contains(".mlstack_env") {
+            continue; // already sourcing the env — idempotent
+        }
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str("# mlstack ROCm env — auto-sourced on Global install\n");
+        content.push_str(&source_line);
+        content.push('\n');
+        if let Some(parent) = rc_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&rc_path, content)?;
+    }
+    Ok(())
 }
 
 // ===========================================================================
@@ -1090,5 +1486,159 @@ export LD_LIBRARY_PATH=\"/opt/rocm-6.0/lib:/opt/rocm-6.0/hip/lib:/opt/rocm-6.0/o
         assert!(result.contains("export MLSTACK_PYTHON_BIN=/usr/bin/python3.13"));
         // Should also add missing ROCM_PATH
         assert!(result.contains("export ROCM_PATH=/opt/rocm"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Track B: Managed Python Environment (≤3.13, prefer 3.12)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_python_version_cap_3_12() {
+        let (major, minor) = parse_python_version_cap("Python 3.12.12").unwrap();
+        assert_eq!(major, 3);
+        assert_eq!(minor, 12);
+    }
+
+    #[test]
+    fn test_parse_python_version_cap_3_14_rejected() {
+        let parsed = parse_python_version_cap("Python 3.14.5");
+        assert!(
+            parsed.is_some(),
+            "3.14.5 parses to (3, 14) but cap check rejects later"
+        );
+        let (major, minor) = parsed.unwrap();
+        assert_eq!(major, 3);
+        assert_eq!(minor, 14);
+    }
+
+    #[test]
+    fn test_parse_python_version_cap_invalid() {
+        assert!(parse_python_version_cap("Not a version string").is_none());
+    }
+
+    #[test]
+    fn test_check_python_version_cap_rejects_3_14() {
+        // Verify that 3.14 is rejected at the version cap check.
+        // The parse helper returns (3, 14), and check_python_version_cap
+        // returns None when major > 3 OR (major == 3 && minor > 13).
+        let (major, minor) = parse_python_version_cap("Python 3.14.0").unwrap();
+        assert!(
+            major > 3 || (major == 3 && minor > 13),
+            "3.14.0 exceeds cap (≤3.13)"
+        );
+    }
+
+    #[test]
+    fn test_check_python_version_cap_accepts_3_12() {
+        let (major, minor) = parse_python_version_cap("Python 3.12.12").unwrap();
+        assert!(major <= 3 && minor <= 13, "3.12.12 is within cap (≤3.13)");
+    }
+
+    #[test]
+    fn test_write_activate_snippets_creates_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = crate::test_support::lock_env();
+        let saved_home = std::env::var("HOME").ok();
+
+        // Pin home to temp dir
+        std::env::set_var("HOME", dir.path().to_string_lossy().to_string());
+
+        let (sh_path, fish_path) = write_activate_snippets().unwrap();
+
+        assert!(sh_path.exists());
+        assert!(fish_path.exists());
+
+        let sh_content = std::fs::read_to_string(&sh_path).unwrap();
+        assert!(sh_content.contains("export PATH=\"$HOME/.mlstack/global/bin:$PATH\""));
+        assert!(sh_content.contains("# mlstack-global-python"));
+
+        let fish_content = std::fs::read_to_string(&fish_path).unwrap();
+        assert!(fish_content.contains("fish_add_path $HOME/.mlstack/global/bin"));
+        assert!(fish_content.contains("# mlstack-global-python"));
+
+        // Restore
+        match saved_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn test_offer_global_prepend_idempotent_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = crate::test_support::lock_env();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_shell = std::env::var("SHELL").ok();
+
+        // Pin home and shell to temp dir
+        std::env::set_var("HOME", dir.path().to_string_lossy().to_string());
+        std::env::set_var("SHELL", "/bin/bash");
+
+        let rc_path = dir.path().join(".bashrc");
+        std::fs::write(&rc_path, "# Existing rc\n").unwrap();
+
+        // First call: should append marker line
+        let act1 = offer_global_prepend(true).unwrap();
+        assert!(act1, "First call should append marker line");
+
+        let content1 = std::fs::read_to_string(&rc_path).unwrap();
+        assert!(
+            content1.contains("# mlstack-global-python"),
+            "Marker line should be present"
+        );
+
+        // Second call: should detect marker and skip (idempotent)
+        let act2 = offer_global_prepend(true).unwrap();
+        assert!(!act2, "Second call should detect existing marker and skip");
+
+        let content2 = std::fs::read_to_string(&rc_path).unwrap();
+        let marker_count = content2.matches("# mlstack-global-python").count();
+        assert_eq!(
+            marker_count, 1,
+            "Marker should appear exactly once (idempotent)"
+        );
+
+        // Restore
+        match saved_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match saved_shell {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[test]
+    fn test_offer_global_prepend_detects_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let _env = crate::test_support::lock_env();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_shell = std::env::var("SHELL").ok();
+
+        // Test fish shell
+        std::env::set_var("HOME", dir.path().to_string_lossy().to_string());
+        std::env::set_var("SHELL", "/usr/bin/fish");
+
+        let fish_config = dir.path().join(".config/fish/config.fish");
+        std::fs::create_dir_all(fish_config.parent().unwrap()).unwrap();
+        std::fs::write(&fish_config, "# Fish rc\n").unwrap();
+
+        let act_fish = offer_global_prepend(true).unwrap();
+        assert!(act_fish);
+
+        let fish_content = std::fs::read_to_string(&fish_config).unwrap();
+        assert!(fish_content.contains("source $HOME/.mlstack/global/activate-global.fish"));
+        assert!(fish_content.contains("# mlstack-global-python"));
+
+        // Restore
+        match saved_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match saved_shell {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
     }
 }

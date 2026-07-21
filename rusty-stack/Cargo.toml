@@ -59,6 +59,11 @@ ratatui = { version = "0.30", optional = true }
 # Optional: Unix-only (libc for geteuid, etc.)
 libc = { version = "0.2", optional = true }
 
+# No-echo password prompt from /dev/tty (install + uninstall sudo credentials).
+# Robust across terminals; replaces a hand-rolled termios raw-read that
+# corrupted the captured password.
+rpassword = "7"
+
 # Optional: Telemetry HTTPS submission
 reqwest = { version = "0.13", features = ["json"], default-features = false, optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }

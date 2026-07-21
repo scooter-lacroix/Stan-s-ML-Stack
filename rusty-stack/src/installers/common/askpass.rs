@@ -8,7 +8,7 @@
 //! This module writes the caller-supplied password to a mode-`0600` file owned
 //! by the current user, next to a mode-`0700` askpass script that `cat`s it,
 //! inside a private temp directory. Assign the script path to `SUDO_ASKPASS`
-//! and run `sudo -A …` (or, for `yay`, `yay --sudo-flags=-A …`): sudo reads the
+//! and run `sudo -A …` (or, for `yay`, `yay --sudoflags=-A …`): sudo reads the
 //! password from the helper with no TTY and no interactive prompt.
 //!
 //! Notes:
@@ -19,7 +19,7 @@
 //!   duration. [`Askpass`] is an RAII guard that wipes both files on drop.
 //! - `yay` must run as the **user**, never under `sudo` (it refuses root for
 //!   AUR builds); its internal `sudo pacman` is what consumes the askpass
-//!   helper via `--sudo-flags=-A`.
+//!   helper via `--sudoflags=-A`.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -73,7 +73,8 @@ impl Askpass {
                 .create_new(true)
                 .open(&script_path)?;
             writeln!(f, "#!/bin/sh")?;
-            writeln!(f, "exec cat {}", pw_path.display())?;
+            writeln!(f, "pw_dir=$(dirname \"$0\")")?;
+            writeln!(f, "exec cat \"$pw_dir/pw\"")?;
             f.set_permissions(fs::Permissions::from_mode(0o700))?;
         }
 
