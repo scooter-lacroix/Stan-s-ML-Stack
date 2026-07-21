@@ -7,7 +7,47 @@ All notable changes to Stan's ML Stack will be documented in this file.
 2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
 
 ### Release Track Status
-- Next changes accumulate here after 0.3.0.
+- Next changes accumulate here after 0.3.1.
+
+## [0.3.1] - 2026-06-25
+
+Critical hotfix for v0.3.0 surfaced by the first real install on Arch (CachyOS).
+Four defects, root-caused from `~/.mlstack/logs/rusty-stack.log`:
+
+### Fixed
+- **ROCm install no longer triggers a full system upgrade (Arch).** The Arch
+  path emitted a bare `sudo yay` as its first command; `yay` with no operation
+  defaults to `yay -Syu`, which synced the DBs and listed **419 system packages
+  to upgrade** as root (`yay` warned "Avoid running yay as root/sudo"), then hit
+  the AUR cleanBuild menu, read EOF (the installer closes the child's stdin),
+  and aborted exit 1 — so the intended `yay -S --needed --noconfirm <pkgs>` never
+  ran. Replaced the two-command `[sudo yay, yay …]` with a single user-space
+  `yay -S --needed --noconfirm <pkgs>` (yay must run as the user — makepkg
+  refuses root), feeding its internal `sudo pacman` non-interactively.
+- **Force-reinstall no longer aborts on dependency conflicts.** The
+  `pacman -Rns <subset>` pre-removal refused because installed dependents
+  (`hip-runtime-amd`, `hipblaslt`, `migraphx`, `miopen-hip`, `rocwmma`) require
+  the ROCm libs. Removed the redundant pre-removal — `yay -S` without `--needed`
+  already reinstalls in place.
+- **A failed install is no longer sealed as installed.** The verify step
+  overrode the install result: when the install command failed but verification
+  passed (rocminfo still ran against a surviving `/opt/rocm`), the component was
+  marked installed. Verification can now only make the verdict stricter, never
+  rescue a failed install (Tenet 5).
+- **`uninstall` actually removes `/opt/rocm` and ROCm system packages.** The
+  privileged steps used `sudo -n`, which fails whenever a password is required
+  (no NOPASSWD) — so `/opt/rocm` and the env files survived the purge and the
+  (accurate) detection kept reporting ROCm as installed. Added a `SUDO_ASKPASS`
+  helper: privileged steps run `sudo -A` with the password supplied via
+  `--sudo-password` / `MLSTACK_SUDO_PASSWORD` / TTY prompt.
+
+### Added
+- `installers/common/askpass`: RAII askpass guard (mode-0600 password file +
+  mode-0700 `cat` script in a private temp dir, wiped on drop). Shared by the
+  Arch `yay` path and `uninstall`'s privileged steps.
+- `rusty uninstall --sudo-password` / `rusty reinstall --sudo-password` flags
+  (+ `MLSTACK_SUDO_PASSWORD` env); a shared `sudo_creds` module resolves the
+  password for both install and uninstall.
 
 ## [0.3.0] - 2026-06-24
 

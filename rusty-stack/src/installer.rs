@@ -99,6 +99,11 @@ pub fn run_installation(
                 let _ = sender.send(InstallerEvent::Finished { success: false });
                 return;
             }
+        } else if can_sudo_non_interactive() {
+            let _ = sender.send(InstallerEvent::Log(
+                "Using cached/passwordless sudo credentials".into(),
+                false,
+            ));
         } else {
             let _ = sender.send(InstallerEvent::Log(
                 "Sudo password missing; cannot continue".into(),
@@ -256,9 +261,6 @@ pub fn run_installation(
                             format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                             false,
                         ));
-                    } else {
-                        // Success — record in the registry (seals core components).
-                        registry_record(&component);
                     }
                 }
                 Err(blocked) => {
@@ -310,9 +312,6 @@ pub fn run_installation(
                     format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                     false,
                 ));
-            } else {
-                // Tenet 2: record legacy-script installs in the registry too.
-                registry_record(&component);
             }
         }
 
@@ -338,23 +337,31 @@ pub fn run_installation(
             overall_success = false;
         }
 
-        // Verification result overrides install step outcome.
-        // When verification passes, the component is functional regardless of
-        // whether the install script reported a non-zero exit code (e.g. partial
-        // install that succeeded, or non-fatal errors). Only when verification
-        // also fails do we mark the component as failed.
-        let final_success = verification_outcome.success;
+        // Verification can only make the verdict STRICTER, never rescue a
+        // failed install. A failed install step means the operation did not
+        // complete as intended; verification passing on pre-existing artifacts
+        // (e.g. a stale `/opt/rocm` left by an incomplete purge) must NOT seal
+        // the component as installed — otherwise a broken install is recorded
+        // as good (Tenet 5: honest verification). The previous behavior sealed
+        // ROCm as installed after a fully-aborted install merely because
+        // rocminfo still ran against the surviving `/opt/rocm`.
+        let final_success = install_success && verification_outcome.success;
         if !install_success && verification_outcome.success {
             let _ = sender.send(InstallerEvent::Log(
                 format!(
-                    "{} verification passed despite install warnings; marking as installed",
+                    "[{}] install step failed — NOT marking installed despite passing \
+                     verification (verification likely ran against pre-existing/stale artifacts)",
                     component.name
                 ),
-                false,
+                true,
             ));
         }
         if !final_success {
             overall_success = false;
+        } else {
+            // Success is sealed only after both the install step and its final
+            // verification pass.
+            registry_record(&component);
         }
 
         // Debug logging for environment components
@@ -480,6 +487,18 @@ fn validate_sudo(password: String) -> Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.lines().next().unwrap_or("sudo validation failed");
     anyhow::bail!(detail.to_string())
+}
+
+fn can_sudo_non_interactive() -> bool {
+    Command::new("sudo")
+        .arg("-n")
+        .arg("true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2964,14 +2983,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
     // VAL-INSTALL-033: Preserve sudo behavior for components that need it
     let component_needs_sudo = component.needs_sudo && needs_sudo();
+    let cached_sudo =
+        component_needs_sudo && ctx.sudo_password.is_none() && can_sudo_non_interactive();
     let sudo_pw: Option<&str> = if component_needs_sudo {
-        ctx.sudo_password.as_deref()
+        ctx.sudo_password
+            .as_deref()
+            .or(if cached_sudo { Some("") } else { None })
     } else {
         None
     };
 
     // VAL-INSTALL-036: Error message format matches original scripts
-    if component_needs_sudo && ctx.sudo_password.is_none() {
+    if component_needs_sudo && sudo_pw.is_none() {
         bail!("{} requires sudo but no password provided", component.name);
     }
 
@@ -3028,40 +3051,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
         // ── rocm ──────────────────────────────────────────────────────
         "rocm" => {
-            use crate::installers::components::rocm::{PackageCommand, RocmConfig, RocmInstaller};
+            use crate::installers::components::rocm::{RocmConfig, RocmInstaller};
             let rocm_force = is_force_reinstall();
             let inst = RocmInstaller::new(RocmConfig {
                 force_reinstall: rocm_force,
                 ..RocmConfig::default()
             });
             let distro = crate::installers::common::DistroFacade::detect();
-            let commands = if distro.uses_apt() {
-                inst.apt_install_commands()
-            } else if distro.uses_dnf() || distro.uses_yum() {
-                let rhel_ver = distro.version().split('.').next().unwrap_or("9");
-                inst.dnf_install_commands(rhel_ver)
-            } else if distro.uses_zypper() {
-                inst.zypper_install_commands()
-            } else {
-                // Arch/pacman: pre-check already-installed packages to avoid
-                // unnecessary yay/pacman invocations that trigger warnings.
+            let is_arch = distro.is_arch_family();
+            if is_arch {
+                // Arch/pacman path. The AUR helper (`yay`) MUST run as the
+                // user — makepkg refuses root, and `yay` warns "Avoid running
+                // yay as root/sudo". This branch therefore does NOT reuse the
+                // sudo-wrapped package loop below; it runs a single user-space
+                // `yay` and feeds its internal `sudo pacman` via SUDO_ASKPASS.
                 let all_pkgs = inst.pacman_rocm_packages();
-                let need_install = RocmInstaller::filter_already_installed_pacman(&all_pkgs);
-
-                if need_install.is_empty() {
-                    // Check force_reinstall — if set, reinstall all packages
-                    let force_reinstall = is_force_reinstall();
-                    if force_reinstall {
-                        let _ = sender.send(InstallerEvent::Log(
-                            format!(
-                                "[native] {} — all ROCm packages already installed, force-reinstalling",
-                                component.name
-                            ),
-                            false,
-                        ));
-                        // Continue with all_pkgs for reinstall
-                        // Fall through to the install commands below
-                    } else {
+                let force_reinstall = is_force_reinstall();
+                let pkgs_to_install = if force_reinstall {
+                    all_pkgs.clone()
+                } else {
+                    let need_install = RocmInstaller::filter_already_installed_pacman(&all_pkgs);
+                    if need_install.is_empty() {
                         let _ = sender.send(InstallerEvent::Log(
                             format!(
                                 "[native] {} — all ROCm packages already installed, skipping",
@@ -3071,18 +3081,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                         ));
                         return Ok(());
                     }
-                }
-                // If force_reinstall, use all_pkgs; otherwise use need_install
-                let force_reinstall = is_force_reinstall();
-                let pkgs_to_install = if force_reinstall {
-                    all_pkgs.clone()
-                } else {
                     need_install
                 };
 
                 let _ = sender.send(InstallerEvent::Log(
                     format!(
-                        "[native] {} — {} of {} packages need installation: {}",
+                        "[native] {} — installing {} of {} ROCm packages via yay \
+                         (user-space, non-interactive): {}",
                         component.name,
                         pkgs_to_install.len(),
                         all_pkgs.len(),
@@ -3091,62 +3096,87 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     false,
                 ));
 
-                // Force reinstall: remove existing ROCm packages before reinstalling.
-                // Non-fatal — some packages may not be installed.
-                if is_force_reinstall() {
-                    let mut remove_args = vec!["-Rns".to_string(), "--noconfirm".to_string()];
-                    remove_args.extend(all_pkgs.iter().filter(|p| !p.is_empty()).cloned());
+                // Build a fully non-interactive `yay` command. `--noconfirm`
+                // skips pacman + yay menus. `--sudoflags=-A` combined with
+                // SUDO_ASKPASS hands the password to yay's internal sudo with
+                // no TTY. Force-reinstall omits `--needed` so yay reinstalls in
+                // place — the previous explicit `pacman -Rns` pre-removal was
+                // removed: it aborted on dependency conflicts
+                // (hip-runtime-amd/hipblaslt/migraphx/miopen-hip depend on the
+                // ROCm libs) and was redundant, since `yay -S` without
+                // `--needed` already reinstalls.
+                let mut args = vec!["-S".to_string()];
+                if !force_reinstall {
+                    args.push("--needed".to_string());
+                }
+                args.push("--noconfirm".to_string());
+
+                // Askpass guard — keeps the password file alive for the op.
+                let askpass = sudo_pw.filter(|p| !p.is_empty()).and_then(|p| {
+                    match crate::installers::common::askpass::Askpass::new(p) {
+                        Ok(g) => Some(g),
+                        Err(e) => {
+                            let _ = sender.send(InstallerEvent::Log(
+                                format!(
+                                    "[native] {} — askpass setup failed ({e}); yay's \
+                                     privileged steps may not authenticate",
+                                    component.name
+                                ),
+                                true,
+                            ));
+                            None
+                        }
+                    }
+                });
+                let mut envs: Vec<(String, String)> = Vec::new();
+                if let Some(ref ap) = askpass {
+                    envs.push(("SUDO_ASKPASS".to_string(), ap.path().to_string()));
+                    args.push("--sudoflags=-A".to_string());
+                } else {
                     let _ = sender.send(InstallerEvent::Log(
                         format!(
-                            "[native] {} — force reinstall: removing existing packages",
+                            "[native] {} — no sudo password supplied; yay will only \
+                             authenticate if sudo is cached / passwordless",
                             component.name
                         ),
                         false,
                     ));
-                    let remove_cmd = NativeCommand::Package {
-                        program: "sudo".to_string(),
-                        args: {
-                            let mut a = vec!["pacman".to_string()];
-                            a.extend(remove_args);
-                            a
-                        },
-                    };
-                    let _ = execute_native_command(&remove_cmd, sudo_pw, sender, &component.name);
                 }
-
-                // Build a minimal pacman command with only the packages that
-                // actually need installation.
-                let aur_helper = "yay";
-                let mut args = if is_force_reinstall() {
-                    vec!["-S".to_string(), "--noconfirm".to_string()]
-                } else {
-                    vec![
-                        "-S".to_string(),
-                        "--needed".to_string(),
-                        "--noconfirm".to_string(),
-                    ]
-                };
                 args.extend(pkgs_to_install);
 
-                vec![
-                    PackageCommand {
-                        program: "sudo".to_string(),
-                        args: vec![aur_helper.to_string()],
-                    },
-                    PackageCommand {
-                        program: aur_helper.to_string(),
-                        args,
-                    },
-                ]
-            };
-            for pkg_cmd in &commands {
-                let native_cmd = NativeCommand::Package {
-                    program: pkg_cmd.program.clone(),
-                    args: pkg_cmd.args.clone(),
+                let yay_cmd = NativeCommand::Shell {
+                    program: "yay".to_string(),
+                    args,
+                    env: envs,
+                    working_dir: None,
                 };
-                // Package commands may already include "sudo" as the program;
-                // don't double-wrap with sudo.
-                execute_native_command(&native_cmd, sudo_pw, sender, &component.name)?;
+                // Pass sudo_pw = None: `execute_native_command` would otherwise
+                // wrap the program in `sudo -S` (running yay as root → refused).
+                execute_native_command(&yay_cmd, None, sender, &component.name)?;
+            } else {
+                let commands = if distro.uses_apt() {
+                    inst.apt_install_commands()
+                } else if distro.uses_dnf() || distro.uses_yum() {
+                    let rhel_ver = distro.version().split('.').next().unwrap_or("9");
+                    inst.dnf_install_commands(rhel_ver)
+                } else if distro.uses_zypper() {
+                    inst.zypper_install_commands()
+                } else {
+                    bail!(
+                        "Unsupported distribution for ROCm installation: {} ({})",
+                        distro.name(),
+                        distro.id()
+                    );
+                };
+                for pkg_cmd in &commands {
+                    let native_cmd = NativeCommand::Package {
+                        program: pkg_cmd.program.clone(),
+                        args: pkg_cmd.args.clone(),
+                    };
+                    // Package commands may already include "sudo" as the program;
+                    // don't double-wrap with sudo.
+                    execute_native_command(&native_cmd, sudo_pw, sender, &component.name)?;
+                }
             }
 
             // After successful ROCm install, create reboot marker when force-reinstalling

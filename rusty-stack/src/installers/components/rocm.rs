@@ -401,6 +401,15 @@ impl RocmInstaller {
     /// Construct the pacman install commands for ROCm on Arch.
     ///
     /// Arch uses AUR packages (yay/paru) for ROCm.
+    /// Build the pacman/AUR (`yay`) install command for ROCm.
+    ///
+    /// `yay` MUST run as the user — makepkg refuses root and `yay` warns
+    /// "Avoid running yay as root/sudo". This therefore returns a SINGLE
+    /// user-space command, never wrapped in `sudo`. (A bare `sudo yay` with no
+    /// operation defaults to `yay -Syu`, i.e. a full system upgrade, which is
+    /// what previously aborted ROCm installs.) The caller feeds yay's internal
+    /// `sudo pacman` non-interactively — e.g. `SUDO_ASKPASS` +
+    /// `--sudoflags=-A`, as the installer's Arch path does.
     pub fn pacman_install_commands(&self, aur_helper: &str) -> Vec<PackageCommand> {
         let packages = self.pacman_rocm_packages();
         let mut args = vec![
@@ -410,16 +419,10 @@ impl RocmInstaller {
         ];
         args.extend(packages);
 
-        vec![
-            PackageCommand {
-                program: "sudo".to_string(),
-                args: vec![aur_helper.to_string()],
-            },
-            PackageCommand {
-                program: aur_helper.to_string(),
-                args,
-            },
-        ]
+        vec![PackageCommand {
+            program: aur_helper.to_string(),
+            args,
+        }]
     }
 
     /// Get the list of ROCm AUR packages for pacman-based installs.
@@ -776,13 +779,33 @@ mod tests {
             install_type: RocmInstallType::Standard,
             ..Default::default()
         });
-        let _cmds = installer.pacman_install_commands("yay");
+        let cmds = installer.pacman_install_commands("yay");
+        // Single user-space `yay` command — never a bare `sudo yay` (which
+        // defaults to `yay -Syu`, a full system upgrade as root). Regression
+        // guard for the malformed two-command [sudo yay, yay …] that aborted
+        // ROCm installs on Arch.
+        assert_eq!(
+            cmds.len(),
+            1,
+            "pacman install must be a single user-space yay command"
+        );
+        assert_eq!(cmds[0].program, "yay");
+        assert!(
+            !cmds.iter().any(|c| c.program == "sudo"),
+            "yay must not run under sudo"
+        );
+        assert!(cmds[0].args.contains(&"-S".to_string()));
+        assert!(cmds[0].args.contains(&"--needed".to_string()));
+        assert!(cmds[0].args.contains(&"--noconfirm".to_string()));
         // Should have packages for Latest channel
         let pkgs = installer.pacman_rocm_packages();
         assert!(pkgs.contains(&"rocm-hip-sdk".to_string()));
         assert!(pkgs.contains(&"rocminfo".to_string()));
         assert!(pkgs.contains(&"rocm-opencl-sdk".to_string())); // Latest gets extra
         assert!(pkgs.contains(&"rccl".to_string())); // Latest gets extra
+        for p in &pkgs {
+            assert!(cmds[0].args.contains(p), "yay args missing package {p}");
+        }
     }
 
     #[test]
