@@ -395,7 +395,7 @@ mod tests {
         assert!(cmd.args.contains(&"install".to_string()));
         assert!(cmd.args.contains(&"--break-system-packages".to_string()));
         assert!(cmd.args.contains(&"--index-url".to_string()));
-        assert!(cmd.args.iter().any(|a| a.contains("rocm-rel-7.2")));
+        assert!(cmd.args.iter().any(|a| a.contains("rocm7.2")));
         assert!(cmd.args.contains(&"torch".to_string()));
     }
 

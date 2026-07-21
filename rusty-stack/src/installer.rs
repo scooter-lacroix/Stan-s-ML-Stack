@@ -7068,6 +7068,7 @@ mod tests {
 
     #[test]
     fn test_persist_onnx_install_status_writes_clean_status_artifact() {
+        let _global_env = crate::test_support::lock_env();
         let _guard = ENV_LOCK.lock().unwrap();
         let old_home = std::env::var("HOME").ok();
         let old_tmpdir = std::env::var("TMPDIR").ok();
@@ -7078,9 +7079,11 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let logs = root.join("logs");
+        let tmp = root.join("tmp");
         std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("HOME", &root);
-        std::env::set_var("TMPDIR", root.join("tmp"));
+        std::env::set_var("TMPDIR", &tmp);
         std::env::set_var("MLSTACK_LOG_DIR", &logs);
 
         persist_onnx_install_status(
@@ -7127,6 +7130,7 @@ mod tests {
 
     #[test]
     fn test_persist_full_suite_keeps_nested_results() {
+        let _global_env = crate::test_support::lock_env();
         let _guard = ENV_LOCK.lock().unwrap();
         let old_home = std::env::var("HOME").ok();
         let old_tmpdir = std::env::var("TMPDIR").ok();
@@ -7137,9 +7141,11 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let logs = root.join("logs");
+        let tmp = root.join("tmp");
         std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
         std::env::set_var("HOME", &root);
-        std::env::set_var("TMPDIR", root.join("tmp"));
+        std::env::set_var("TMPDIR", &tmp);
         std::env::set_var("MLSTACK_LOG_DIR", &logs);
 
         let output = crate::benchmark_runners::BenchmarkOutput {

@@ -1628,7 +1628,7 @@ export LD_LIBRARY_PATH=\"/opt/rocm-6.0/lib:/opt/rocm-6.0/hip/lib:/opt/rocm-6.0/o
         assert!(act_fish);
 
         let fish_content = std::fs::read_to_string(&fish_config).unwrap();
-        assert!(fish_content.contains("source $HOME/.mlstack/global/activate-global.fish"));
+        assert!(fish_content.contains("source \"$HOME/.mlstack/global/activate-global.fish\""));
         assert!(fish_content.contains("# mlstack-global-python"));
 
         // Restore

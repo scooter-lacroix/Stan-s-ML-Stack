@@ -2495,6 +2495,7 @@ mod tests {
 
     #[test]
     fn resolve_benchmark_python_uses_mlstack_env_python_before_system_python() {
+        let _global_env = crate::test_support::lock_env();
         let _guard = ENV_LOCK.lock().unwrap();
         let old_home = env::var("HOME").ok();
         let old_benchmark_python = env::var("MLSTACK_BENCHMARK_PYTHON").ok();

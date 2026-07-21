@@ -4,19 +4,87 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
-2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
-
 ### Release Track Status
-- Next changes accumulate here after 0.3.1.
+- Next changes accumulate here after 0.3.2.
+
+## [0.3.2] - 2026-07-21
+
+ROCm-native installer hardening and benchmark validation release. This release
+keeps Rusty Stack's dependency contract intact: components must use the managed
+Rusty environment, must not resolve their own dependency trees over stack-owned
+packages, and must never introduce NVIDIA/CUDA runtime packages into the
+AMD/ROCm stack.
 
 ### Added
-- Automatic RCCL multi-GPU validation: systems with at least two discrete AMD GPUs run a two-process PyTorch `all_reduce` probe after normal system RCCL installation. Only known ROCm/RCCL collective failure fingerprints trigger the pinned-source repair, including the ROCm 7.2.1 `operation cannot be performed in present state` failure ([ROCm issue #6074](https://github.com/ROCm/ROCm/issues/6074)) and the distributed RCCL 2.27.7 `invalid device pointer`/`ncclUnhandledCudaError` form; unrelated failures stop the install.
-- Version-aware RCCL repair profiles. The current `latest`/ROCm 7.2.x profile uses checksum-pinned ROCm 7.2.0 compiler and HIPIFY tools for a per-`gfx` RCCL build with no package-manager changes or NVIDIA/CUDA dependencies. Rusty installs the result as an immutable, atomically activated overlay under `~/.mlstack/components/rccl/` and requires a passing final probe on both GPUs.
+- Automatic RCCL multi-GPU validation: systems with at least two discrete AMD
+  GPUs run a real two-process PyTorch `all_reduce` probe after the normal system
+  RCCL installation. Only known ROCm/RCCL collective failure fingerprints trigger
+  the pinned-source repair, including ROCm issue #6074's
+  `operation cannot be performed in present state` form and RCCL 2.27.7's
+  distributed `invalid device pointer` / `ncclUnhandledCudaError` form.
+  Unrecognized failures remain visible and fail closed.
+- Version-aware RCCL repair profiles. The `latest` / ROCm 7.2.x profile uses
+  checksum-pinned ROCm 7.2.0 compiler and HIPIFY tooling for a per-`gfx` RCCL
+  build with no package-manager changes and no NVIDIA/CUDA dependencies. Rusty
+  installs the result as an immutable, atomically activated overlay under
+  `~/.mlstack/components/rccl/` and requires final two-GPU validation before
+  reporting success.
+- A Maintenance-category RCCL repair action in the TUI so users can explicitly
+  run or re-run the repair path without hunting for hidden commands.
+- A component-detection progress screen between preflight and selection. The
+  screen shows each comprehensive detection step and waits for Enter after the
+  summary, so verification remains deep without making the UI appear frozen.
+- Real benchmark coverage improvements: vLLM now benchmarks an actual SmolLM2
+  model path, records model download/startup time instead of hiding it, and
+  surfaces dependency/import failures as benchmark errors. ONNX benchmark support
+  is exposed in the benchmark options.
 
 ### Fixed
-- PyTorch now loads a remediated RCCL without replacing PyTorch or `/opt/rocm` files. The activation shim validates its manifest and library hash before torch imports, dynamically locates PyTorch, and uses glibc RPATH inhibition instead of `LD_PRELOAD`.
-- The 7.2.x RCCL overlay exports `NCCL_P2P_DISABLE=1`/`RCCL_P2P_DISABLE=1` after validation showed mixed consumer RDNA cards fail on direct P2P/IPC with `invalid device pointer` but pass through the non-P2P transport path.
-- Valid active RCCL overlays remain sealed against later component installs. Replacement is rejected unless recovery is explicitly enabled with `MLSTACK_UNSEAL_CORE=1`.
+- FastVideo installation now stays ROCm-native: CUDA/NVIDIA dependency paths are
+  filtered, stack-owned dependencies are installed with `--no-deps`, and CUTLASS
+  usage is substituted so the AMD path does not pull NVIDIA build/runtime
+  packages.
+- PyTorch now loads a remediated RCCL without replacing PyTorch or `/opt/rocm`
+  files. The activation shim validates its manifest and library hash before
+  torch imports, dynamically locates PyTorch, and uses glibc RPATH inhibition
+  instead of `LD_PRELOAD`.
+- The ROCm 7.2.x RCCL overlay exports `NCCL_P2P_DISABLE=1` and
+  `RCCL_P2P_DISABLE=1` after validation showed mixed consumer RDNA cards fail on
+  direct P2P/IPC with `invalid device pointer` but pass through the non-P2P
+  transport path.
+- Valid active RCCL overlays remain sealed against later component installs.
+  Replacement is rejected unless recovery is explicitly enabled with
+  `MLSTACK_UNSEAL_CORE=1`, preventing later installers from overwriting the
+  corrected RCCL.
+- vLLM installer/benchmark dependency closure now includes missing runtime
+  dependencies such as `uvloop`, validates the installed vLLM package before
+  declaring success, and no longer silently records an empty benchmark result.
+- ONNX Runtime installation now targets AMD provider wheels in the managed
+  environment, derives the correct Python ABI tag from the Rusty environment's
+  interpreter, installs without dependency overrides, and verifies provider
+  availability after install.
+- ONNX benchmarking now requires `MIGraphXExecutionProvider` first, accepts the
+  older `ROCMExecutionProvider` as a fallback, and rejects CPU-only execution
+  instead of reporting a false success. It also handles incomplete
+  `onnxruntime` imports without crashing on a missing `__version__`.
+- Successful ONNX Runtime install/repair writes a clean status artifact so stale
+  benchmark failures no longer survive as misleading "Recent errors" after the
+  component has been repaired.
+- Rusty Llama detection and installer behavior were hardened around the pinned
+  HIP fork, reducing false "not installed" reports and avoiding source-build
+  paths that reference developer-local directories.
+- Benchmark reporting now distinguishes completed-with-data from degraded or
+  error-only runs, so exported reports do not imply successful measurements when
+  a benchmark produced no usable metrics.
+
+### Changed
+- Benchmark and maintenance actions are no longer shown as installable component
+  checks on the preflight component-detection screen.
+- ROCm, PyTorch, Flash Attention, AITER, MiGraphX, OpenMPI/RCCL, ONNX Runtime,
+  vLLM, FastVideo, and benchmark paths consistently source runtime configuration
+  from the existing Rusty environment instead of setting ad hoc overrides.
+- Release metadata is bumped across the Rust crate and Python wrapper surfaces:
+  `rusty-stack` and `VERSION` now publish as 0.3.2.
 
 ## [0.3.1] - 2026-06-25
 

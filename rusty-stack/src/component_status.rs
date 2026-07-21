@@ -1063,6 +1063,10 @@ fn component_candidate_homes(preferred_home: &str) -> Vec<String> {
 }
 
 fn resolve_component_user_home() -> String {
+    if let Ok(home) = env::var("MLSTACK_USER_HOME") {
+        return home;
+    }
+
     let fallback = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let candidates = component_candidate_homes(&fallback);
 

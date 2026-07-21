@@ -978,7 +978,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // VAL-PLAT-010: Display name mapping is bijective for all 19 components
+    // VAL-PLAT-010: Display name mapping is bijective for all known components
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1011,8 +1011,8 @@ mod tests {
         let map = display_name_to_id_map();
         assert_eq!(
             map.len(),
-            19,
-            "Display name to ID map must have exactly 19 entries"
+            known_components().len(),
+            "Display name to ID map must cover every known component"
         );
 
         // Verify round-trip: display_name(id) -> display_name -> id == original id

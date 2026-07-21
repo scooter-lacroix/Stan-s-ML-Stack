@@ -1989,15 +1989,18 @@ mod tests {
 
     #[test]
     fn load_benchmark_results_reads_native_benchmark_filenames() {
+        let _global_env = crate::test_support::lock_env();
         let _guard = ENV_LOCK.lock().unwrap();
         let old_home = std::env::var("HOME").ok();
         let old_tmpdir = std::env::var("TMPDIR").ok();
         let home = unique_test_home("native-benchmark-filenames");
         let _ = fs::remove_dir_all(&home);
         let log_dir = home.join(".rusty-stack").join("logs");
+        let tmp_dir = home.join("tmp");
         fs::create_dir_all(&log_dir).unwrap();
+        fs::create_dir_all(&tmp_dir).unwrap();
         std::env::set_var("HOME", &home);
-        std::env::set_var("TMPDIR", home.join("tmp"));
+        std::env::set_var("TMPDIR", &tmp_dir);
 
         let gpu_log = log_dir.join("gpu-capability_benchmarks_1.json");
         let mem_log = log_dir.join("memory-bandwidth_benchmarks_2.json");
