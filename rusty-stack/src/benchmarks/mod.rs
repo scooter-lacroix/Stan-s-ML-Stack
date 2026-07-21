@@ -94,6 +94,10 @@ fn resolve_benchmark_python() -> String {
         }
     }
 
+    if let Some(value) = mlstack_env_python_bin() {
+        return value;
+    }
+
     {
         let candidate = "/usr/local/bin/python3";
         let path = Path::new(candidate);
@@ -109,6 +113,25 @@ fn resolve_benchmark_python() -> String {
     }
 
     "python3".to_string()
+}
+
+fn mlstack_env_python_bin() -> Option<String> {
+    let home = env::var("HOME").ok()?;
+    let contents = fs::read_to_string(Path::new(&home).join(".mlstack_env")).ok()?;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let Some(value) = trimmed
+            .strip_prefix("export MLSTACK_PYTHON_BIN=")
+            .or_else(|| trimmed.strip_prefix("MLSTACK_PYTHON_BIN="))
+        else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 fn extract_helper_payload(stdout: &str) -> Option<serde_json::Value> {
@@ -174,11 +197,19 @@ fn run_python_benchmark(name: &str) -> BenchmarkResult {
         }
     };
 
-    let mut command = Command::new(&python_bin);
-    command.arg(helper).arg(name).arg("--json");
-    if env::var_os("PYTHONHASHSEED").is_none() {
-        command.env("PYTHONHASHSEED", "0");
-    }
+    // Source the canonical env so the benchmark inherits ROCR_VISIBLE_DEVICES
+    // (discrete GPUs only — the env is the single GPU source), GPU_ARCH, and
+    // MLSTACK_GPU_NAMES/VRAM. `bash -c '... exec "$@"'` runs python with the
+    // env active; "_" is $0, python_bin + args follow as "$@" ($1..).
+    let mut command = Command::new("bash");
+    command
+        .arg("-c")
+        .arg("source \"$HOME/.mlstack_env\" 2>/dev/null; exec \"$@\"")
+        .arg("_")
+        .arg(&python_bin)
+        .arg(&helper)
+        .arg(name)
+        .arg("--json");
     let output = command.output();
 
     let parse_payload_result = |parsed: serde_json::Value| BenchmarkResult {
@@ -302,10 +333,21 @@ pub fn run_pytorch_benchmark() -> BenchmarkResult {
     run_python_benchmark("pytorch")
 }
 pub fn run_llama_cpp_benchmark() -> BenchmarkResult {
+    // Ensure a GGUF model is present before running llama-bench — downloads
+    // the canonical Qwen3-0.6B model to ~/.mlstack/models/ if none is found.
+    // Reuses the installer's download path (single source of truth for the URL).
+    if let Some(home) = dirs::home_dir() {
+        let _ = crate::installers::components::llama_cpp::ensure_default_gguf_model(
+            &home.to_string_lossy(),
+        );
+    }
     run_python_benchmark("llama-cpp")
 }
 pub fn run_flash_attention_benchmark() -> BenchmarkResult {
     run_python_benchmark("flash-attention")
+}
+pub fn run_flash_attention_ck_benchmark() -> BenchmarkResult {
+    run_python_benchmark("flash-attention-ck")
 }
 pub fn run_vllm_benchmark() -> BenchmarkResult {
     run_python_benchmark("vllm")
@@ -330,6 +372,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from glob import glob
 
@@ -368,6 +411,44 @@ def _resolve_gguf_model_path(raw):
     return ""
 
 
+def _ensure_cached_hf_model_weights(model_name):
+    try:
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
+    except Exception as exc:
+        return False, f"huggingface_hub unavailable for benchmark model download: {exc}"
+
+    weight_files = (
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    )
+    marker_files = ("config.json", "tokenizer.json", "tokenizer_config.json")
+
+    for filename in weight_files:
+        path = try_to_load_from_cache(model_name, filename)
+        if isinstance(path, str) and os.path.isfile(path):
+            return True, ""
+
+    try:
+        path = hf_hub_download(repo_id=model_name, filename="model.safetensors")
+        if isinstance(path, str) and os.path.isfile(path):
+            return True, ""
+    except Exception as exc:
+        cached_markers = []
+        for filename in marker_files:
+            path = try_to_load_from_cache(model_name, filename)
+            if isinstance(path, str) and os.path.isfile(path):
+                cached_markers.append(filename)
+        marker_msg = f" cached files: {', '.join(cached_markers)};" if cached_markers else ""
+        return False, (
+            f"could not download/cache model.safetensors for {model_name};"
+            f"{marker_msg} {exc}"
+        )
+
+    return False, f"downloaded model.safetensors for {model_name} but no local file was found"
+
+
 def _find_llama_cpp_binary():
     candidates = [
         os.path.expanduser("~/.mlstack/components/llama-cpp/bin/llama-bench"),
@@ -390,44 +471,30 @@ def _find_gguf_model():
     return ""
 
 
-def _detect_llama_cpp_gpus():
-    gpu_names = []
-    try:
-        proc = subprocess.run(
-            ["rocm-smi", "--showproductname"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        for line in output.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            lowered = line.lower()
-            if "gfx" in lowered or "amd" in lowered or "radeon" in lowered or "instinct" in lowered:
-                gpu_names.append(line)
-    except Exception:
-        pass
-    if gpu_names:
-        return gpu_names
-
-    try:
-        proc = subprocess.run(
-            "rocminfo | grep gfx",
-            shell=True,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        for line in output.splitlines():
-            line = line.strip()
-            if "gfx" in line.lower():
-                gpu_names.append(line)
-    except Exception:
-        pass
-    return gpu_names
+def _gpu_info_from_env():
+    """GPU info from the canonical env (~/.mlstack_env) — the SINGLE source.
+    Carries ROCR_VISIBLE_DEVICES (discrete indices, iGPU filtered), GPU_ARCH,
+    MLSTACK_GPU_NAMES, MLSTACK_GPU_VRAM_GB, MLSTACK_GPU_CUS. No rocm-smi/rocminfo
+    here. Returns (indices, names, vram_gb_strings, cus_strings, arch)."""
+    rocr = os.environ.get("ROCR_VISIBLE_DEVICES", "").strip()
+    indices = []
+    for part in rocr.split(","):
+        part = part.strip()
+        if part.isdigit():
+            indices.append(int(part))
+    if not indices:
+        indices = [0]
+    names = [s.strip() for s in os.environ.get("MLSTACK_GPU_NAMES", "").split(",") if s.strip()]
+    vram = [s.strip() for s in os.environ.get("MLSTACK_GPU_VRAM_GB", "").split(",") if s.strip()]
+    cus = [s.strip() for s in os.environ.get("MLSTACK_GPU_CUS", "").split(",") if s.strip()]
+    arch = os.environ.get("GPU_ARCH", "").strip()
+    while len(names) < len(indices):
+        names.append("GPU {}".format(indices[len(names)]))
+    while len(vram) < len(indices):
+        vram.append("0")
+    while len(cus) < len(indices):
+        cus.append("0")
+    return indices, names, vram, cus, arch
 
 
 def _llama_cpp():
@@ -442,6 +509,14 @@ def _llama_cpp():
             "errors": ["llama-cpp not installed"],
         }, ["llama-cpp not installed"]
 
+    # llama-bench links libggml*.so from a sibling lib/ dir (bin/../lib). Add it
+    # to LD_LIBRARY_PATH or the loader can't start the binary (libs aren't beside
+    # it). Set once here so every subprocess.run below inherits it.
+    _bench_lib = os.path.join(os.path.dirname(os.path.dirname(bench)), "lib")
+    if os.path.isdir(_bench_lib):
+        _cur_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        os.environ["LD_LIBRARY_PATH"] = _bench_lib + (":" + _cur_ld if _cur_ld else "")
+
     model = _find_gguf_model()
     if not model:
         elapsed = int((time.perf_counter() - start) * 1000)
@@ -453,25 +528,51 @@ def _llama_cpp():
             "errors": ["no GGUF model found"],
         }, ["no GGUF model found"]
 
-    gpus = _detect_llama_cpp_gpus()
-    if not gpus:
+    indices, gpu_names, gpu_vram, gpu_cus, gpu_arch = _gpu_info_from_env()
+    if not indices:
         elapsed = int((time.perf_counter() - start) * 1000)
         return False, {
             "name": "llama-cpp",
             "success": False,
             "execution_time_ms": elapsed,
             "metrics": {},
-            "errors": ["no ROCm GPUs detected"],
-        }, ["no ROCm GPUs detected"]
+            "errors": ["no GPUs in ROCR_VISIBLE_DEVICES (source ~/.mlstack_env)"],
+        }, ["no GPUs in ROCR_VISIBLE_DEVICES (source ~/.mlstack_env)"]
 
-    metrics = {}
+    # Metadata (from the env — canonical GPU info) emitted alongside throughput
+    # so the results panel shows real GPU names/arch/VRAM + the model + ROCm ver.
+    def _has_wmma(a):
+        return a in ("gfx1100", "gfx1101", "gfx1102", "gfx1151", "gfx1200", "gfx1201")
+
+    metrics = {
+        "gpu_arch": gpu_arch,
+        "gpu_names": gpu_names,
+        "gpu_vram_gb": [float(v) for v in gpu_vram],
+        "model": os.path.basename(model) if model else "",
+        "rocm_version": os.environ.get("ROCM_VERSION", "").strip(),
+        # Full GPU inventory (model/vram/CUs/tensor_cores) so the "GPU Inventory"
+        # panel + HTML export show real devices, not "No GPU detected".
+        "gpus": [
+            {
+                "index": indices[i],
+                "gpu_model": gpu_names[i],
+                "vram_gb": float(gpu_vram[i]),
+                "compute_units": int(gpu_cus[i]) if gpu_cus[i].isdigit() else 0,
+                "tensor_cores": _has_wmma(gpu_arch),
+            }
+            for i in range(len(indices))
+        ],
+    }
     errors = []
-    for gpu_idx, _ in enumerate(gpus):
+    got_throughput = False
+    for gpu_idx in indices:
         env = os.environ.copy()
-        env["ROCM_VISIBLE_DEVICES"] = str(gpu_idx)
+        # ROCR_VISIBLE_DEVICES (the ROCr runtime filter) — NOT the nonexistent
+        # ROCM_VISIBLE_DEVICES — isolates one discrete GPU per llama-bench run.
+        env["ROCR_VISIBLE_DEVICES"] = str(gpu_idx)
         try:
             proc = subprocess.run(
-                [bench, "-m", model, "-p", "512", "-p", "2048", "-p", "8192", "-n", "128", "-o", "json", "-r", "3"],
+                [bench, "-m", model, "-p", "512", "-p", "2048", "-p", "8192", "-p", "16384", "-p", "32768", "-n", "128", "-o", "json", "-r", "3"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -496,11 +597,12 @@ def _llama_cpp():
                 context = n_prompt if prefix == "prefill" else n_gen
                 metrics[f"{prefix}_{context}_tps_gpu{gpu_idx}"] = float(avg_ts)
                 metrics[f"{prefix}_{context}_stddev_tps_gpu{gpu_idx}"] = float(stddev_ts or 0.0)
+                got_throughput = True
         except Exception as exc:
             errors.append(str(exc))
 
     elapsed = int((time.perf_counter() - start) * 1000)
-    success = bool(metrics) and not errors
+    success = got_throughput and not errors
     result = {
         "name": "llama-cpp",
         "success": success,
@@ -819,7 +921,7 @@ def _memory_bandwidth():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("memory-bandwidth", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("memory-bandwidth", probe_reason, extra), [probe_reason]
 
     device = torch.device("cuda:0")
     sizes_mb = [64, 128, 256, 512]
@@ -872,7 +974,7 @@ def _tensor_core():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("tensor-core", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("tensor-core", probe_reason, extra), [probe_reason]
 
     device = torch.device("cuda:0")
     sizes = [512, 1024, 2048]
@@ -940,7 +1042,7 @@ def _gemm():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("gemm", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("gemm", probe_reason, extra), [probe_reason]
 
     device = torch.device("cuda:0")
     shapes = [(1024, 1024, 1024), (1536, 1536, 1536), (2048, 2048, 2048)]
@@ -978,7 +1080,7 @@ def _pytorch():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("pytorch", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("pytorch", probe_reason, extra), [probe_reason]
 
     device = torch.device("cuda:0")
     m = k = n = 1024
@@ -1043,7 +1145,7 @@ def _flash_attention():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("flash-attention", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("flash-attention", probe_reason, extra), [probe_reason]
 
     try:
         from torch.backends.cuda import sdp_kernel
@@ -1099,65 +1201,178 @@ def _flash_attention():
     }, []
 
 
+def _flash_attention_ck():
+    """Genuine-model forward benchmark for Flash Attention (CK) on RDNA3.
+
+    CK is forward-only on RDNA3 (no backward, ROCm/composable_kernel#1434), so
+    this measures the SUPPORTED inference path: a real Llama-style decoder
+    (RMSNorm + rotary + GQA via flash_attn_func + SwiGLU MLP) run forward under
+    no_grad. No external model download: built in-torch, so it is reproducible
+    on any box with torch+flash_attn.
+    """
+    torch = _load_torch()
+    if isinstance(torch, tuple):
+        _, errors = torch
+        return False, {}, errors
+    if not torch.cuda.is_available():
+        return False, {}, ["torch.cuda not available"]
+
+    from pathlib import Path
+    marker = Path.home() / ".mlstack" / "flash-attention" / ".backend"
+    backend = marker.read_text().strip() if marker.exists() else ""
+    if backend != "ck":
+        return False, {}, [
+            "flash-attention-ck requires backend marker 'ck' (found '"
+            + backend
+            + "'); install Flash Attention (CK) first"
+        ]
+
+    try:
+        import flash_attn
+        from flash_attn import flash_attn_func
+    except Exception as exc:
+        return False, {}, ["flash_attn import failed: " + str(exc)]
+
+    probe_ok, probe_reason, probe_meta = _probe_gpu_runtime()
+    if not probe_ok:
+        extra = {
+            "backend": "ck",
+            "forward_samples_ms": [],
+            "throughput_samples_tok_s": [],
+            "peak_throughput_tok_s": 0.0,
+        }
+        if isinstance(probe_meta, dict):
+            extra.update(probe_meta)
+        return False, _degraded_metrics("flash-attention-ck", probe_reason, extra), [probe_reason]
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+
+    def _rope(dim, max_seq, base=10000.0):
+        inv = 1.0 / (base ** (torch.arange(0, dim, 2, device=device).float() / dim))
+        seq = torch.arange(max_seq, device=device).float()
+        freqs = torch.outer(seq, inv)
+        return torch.cat([freqs, freqs], dim=-1)
+
+    def _apply_rope(x, table):
+        s = x.shape[1]
+        cos = table[:s].unsqueeze(1)
+        sin = table[s:2 * s].unsqueeze(1)
+        x1, x2 = x.float().chunk(2, dim=-1)
+        rot = torch.cat([-x2, x1], dim=-1)
+        return (x.float() * cos + rot * sin).to(x.dtype)
+
+    class _RMSNorm(nn.Module):
+        def __init__(self, d, eps=1e-6):
+            super().__init__()
+            self.w = nn.Parameter(torch.ones(d))
+            self.eps = eps
+
+        def forward(self, x):
+            v = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
+            return (x * torch.rsqrt(v + self.eps)).to(x.dtype) * self.w
+
+    class _Block(nn.Module):
+        def __init__(self, dim, n_heads, n_kv, rope_table):
+            super().__init__()
+            self.n_heads, self.n_kv, self.dim = n_heads, n_kv, dim
+            self.head_dim = dim // n_heads
+            self.wq = nn.Linear(dim, n_heads * self.head_dim, bias=False)
+            self.wk = nn.Linear(dim, n_kv * self.head_dim, bias=False)
+            self.wv = nn.Linear(dim, n_kv * self.head_dim, bias=False)
+            self.wo = nn.Linear(n_heads * self.head_dim, dim, bias=False)
+            hidden = int(8 * dim / 3)
+            self.w1 = nn.Linear(dim, hidden, bias=False)
+            self.w3 = nn.Linear(dim, hidden, bias=False)
+            self.w2 = nn.Linear(hidden, dim, bias=False)
+            self.n1, self.n2 = _RMSNorm(dim), _RMSNorm(dim)
+            self.rope_table = rope_table
+
+        def forward(self, x):
+            b, s, _ = x.shape
+            q = self.wq(self.n1(x)).view(b, s, self.n_heads, self.head_dim)
+            k = self.wk(self.n1(x)).view(b, s, self.n_kv, self.head_dim)
+            v = self.wv(self.n1(x)).view(b, s, self.n_kv, self.head_dim)
+            q = _apply_rope(q, self.rope_table)
+            k = _apply_rope(k, self.rope_table)
+            if self.n_kv != self.n_heads:
+                rep = self.n_heads // self.n_kv
+                k = k.repeat_interleave(rep, dim=2)
+                v = v.repeat_interleave(rep, dim=2)
+            attn = flash_attn_func(q, k, v, causal=True)  # CK forward path
+            attn = attn.reshape(b, s, -1)
+            x = x + self.wo(attn)
+            m = F.silu(self.w1(self.n2(x))) * self.w3(self.n2(x))
+            return x + self.w2(m)
+
+    class _TransformerLM(nn.Module):
+        def __init__(self, vocab, dim, n_layers, n_heads, n_kv, max_seq):
+            super().__init__()
+            rope_table = _rope(dim // n_heads, 2 * max_seq)
+            self.embed = nn.Embedding(vocab, dim)
+            self.layers = nn.ModuleList(
+                [_Block(dim, n_heads, n_kv, rope_table) for _ in range(n_layers)]
+            )
+            self.norm = _RMSNorm(dim)
+            self.head = nn.Linear(dim, vocab, bias=False)
+
+        def forward(self, ids):
+            x = self.embed(ids)
+            for blk in self.layers:
+                x = blk(x)
+            return self.head(self.norm(x))
+
+    vocab = 49152
+    dim, n_layers, n_heads, n_kv, max_seq = 768, 12, 12, 4, 4096
+    model = _TransformerLM(vocab, dim, n_layers, n_heads, n_kv, max_seq).to(device, dtype)
+    model.eval()
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+
+    seq_lengths = [512, 1024, 2048, 4096]
+    latencies_ms = []
+    throughputs = []
+    errors = []
+    for seqlen in seq_lengths:
+        ids = torch.randint(0, vocab, (1, seqlen), device=device)
+        try:
+            with torch.no_grad():
+                fwd_t = _time_fn(lambda: model(ids), warmup=3, repeat=10)
+            out = model(ids)
+            if not torch.isfinite(out).all():
+                errors.append("seq " + str(seqlen) + ": non-finite output")
+            latencies_ms.append(round(fwd_t * 1000.0, 2))
+            throughputs.append(round(seqlen / fwd_t, 0))
+        except Exception as exc:
+            errors.append("seq " + str(seqlen) + ": " + type(exc).__name__ + ": " + str(exc))
+            latencies_ms.append(0.0)
+            throughputs.append(0.0)
+
+    peak = max(throughputs) if throughputs else 0.0
+    success = len(errors) == 0 and peak > 0
+    metrics = {
+        "backend": "ck",
+        "flash_attn_version": getattr(flash_attn, "__version__", "unknown"),
+        "model_params_m": round(n_params),
+        "model_config": str(n_layers) + "L d" + str(dim) + " h" + str(n_heads)
+        + " GQA-kv" + str(n_kv) + " (genuine Llama-style)",
+        "seq_lengths": seq_lengths,
+        "forward_samples_ms": latencies_ms,
+        "throughput_samples_tok_s": throughputs,
+        "peak_throughput_tok_s": peak,
+    }
+    return success, metrics, errors
+
+
 def _vllm():
-    # Some shell setups can propagate an empty/whitespace-only target device.
-    # vLLM rejects empty device strings, so normalize aggressively before import.
     target_device = _env_or_default("VLLM_TARGET_DEVICE", "rocm")
     if target_device not in {"rocm", "cuda", "cpu"}:
         target_device = "rocm"
-    os.environ["VLLM_TARGET_DEVICE"] = target_device
 
-    def _ensure_writable_triton_cache_env():
-        import tempfile
-
-        def _writable_dir(path):
-            if not path:
-                return False
-            try:
-                os.makedirs(path, exist_ok=True)
-                probe = os.path.join(path, f".mlstack_probe_{os.getpid()}")
-                with open(probe, "w", encoding="utf-8") as fp:
-                    fp.write("ok")
-                os.remove(probe)
-                return True
-            except Exception:
-                return False
-
-        triton_cache = (os.environ.get("TRITON_CACHE_DIR") or "").strip()
-        if triton_cache and _writable_dir(triton_cache):
-            triton_home = (os.environ.get("TRITON_HOME") or os.path.dirname(triton_cache)).strip()
-            os.environ.setdefault("TRITON_HOME", triton_home or os.path.expanduser("~/.cache/mlstack/triton"))
-            os.environ.setdefault("TRITON_DUMP_DIR", os.path.join(os.environ["TRITON_HOME"], "dump"))
-            os.environ.setdefault("TRITON_OVERRIDE_DIR", os.path.join(os.environ["TRITON_HOME"], "override"))
-            _writable_dir(os.environ.get("TRITON_DUMP_DIR", ""))
-            _writable_dir(os.environ.get("TRITON_OVERRIDE_DIR", ""))
-            return
-
-        home = os.path.expanduser("~")
-        candidates = [
-            os.environ.get("MLSTACK_TRITON_HOME", "").strip(),
-            os.environ.get("TRITON_HOME", "").strip(),
-            os.path.join(home, ".cache", "mlstack", "triton"),
-            os.path.join(tempfile.gettempdir(), f"mlstack-triton-{os.getuid()}"),
-        ]
-        for root in candidates:
-            if not root:
-                continue
-            cache_dir = os.path.join(root, "cache")
-            dump_dir = os.path.join(root, "dump")
-            override_dir = os.path.join(root, "override")
-            if _writable_dir(cache_dir) and _writable_dir(dump_dir) and _writable_dir(override_dir):
-                os.environ["MLSTACK_TRITON_HOME"] = root
-                os.environ["TRITON_HOME"] = root
-                os.environ["TRITON_CACHE_DIR"] = cache_dir
-                os.environ["TRITON_DUMP_DIR"] = dump_dir
-                os.environ["TRITON_OVERRIDE_DIR"] = override_dir
-                return
-
-    _ensure_writable_triton_cache_env()
-
-    def _normalize_visible_devices():
-        visible = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get("CUDA_VISIBLE_DEVICES") or ""
+    def _visible_devices_from_env():
+        visible = os.environ.get("HIP_VISIBLE_DEVICES") or os.environ.get("ROCR_VISIBLE_DEVICES") or os.environ.get("CUDA_VISIBLE_DEVICES") or ""
         candidates = []
         seen = set()
         for token in visible.split(","):
@@ -1169,18 +1384,9 @@ def _vllm():
         if not candidates:
             candidates = ["0"]
 
-        normalized = ",".join(candidates)
-        primary = candidates[0]
-        os.environ["HIP_VISIBLE_DEVICES"] = normalized
-        os.environ["CUDA_VISIBLE_DEVICES"] = normalized
-        if not str(os.environ.get("PYTORCH_ROCM_DEVICE", "")).strip():
-            os.environ["PYTORCH_ROCM_DEVICE"] = primary
-        return normalized, primary
+        return ",".join(candidates), candidates[0]
 
-    # Preserve the full discrete-GPU set. Do not collapse to a single GPU.
-    visible_devices, primary_visible = _normalize_visible_devices()
-    if target_device == "rocm":
-        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    visible_devices, primary_visible = _visible_devices_from_env()
 
     candidates = _resolve_vllm_model_candidates()
     candidate_names = [f"{c.get('format')}:{c.get('model')}" for c in candidates]
@@ -1188,7 +1394,7 @@ def _vllm():
     if isinstance(torch, tuple):
         _, errors = torch
         reason = "; ".join(errors) if errors else "unable to import torch"
-        return True, _degraded_metrics("vllm", reason, {
+        return False, _degraded_metrics("vllm", reason, {
             "model": "vLLM (Unavailable)",
             "model_format": "unavailable",
             "throughput_tokens_per_sec": 0.0,
@@ -1212,6 +1418,12 @@ def _vllm():
             import types
 
             if os.environ.get("MLSTACK_VLLM_DISABLE_AMDSMI_SHIM", "").strip() in {"1", "true", "TRUE"}:
+                return
+            try:
+                import amdsmi as _real_amdsmi
+            except Exception:
+                _real_amdsmi = None
+            if _real_amdsmi is not None:
                 return
 
             arch_hint = (
@@ -1269,7 +1481,7 @@ def _vllm():
         logging.getLogger("vllm").setLevel(logging.ERROR)
     except Exception as exc:
         err = f"vLLM not available: {exc}"
-        return True, _degraded_metrics("vllm", err, {
+        return False, _degraded_metrics("vllm", err, {
             "model": "vLLM (Unavailable)",
             "model_format": "unavailable",
             "throughput_tokens_per_sec": 0.0,
@@ -1286,7 +1498,7 @@ def _vllm():
             abi_errors.append(f"{ext_name} import failed: {exc}")
     if len(abi_errors) == 2:
         reason = "vLLM ROCm native extensions failed to load; " + "; ".join(abi_errors)
-        return True, _degraded_metrics("vllm", reason, {
+        return False, _degraded_metrics("vllm", reason, {
             "model": "vLLM (Unavailable)",
             "model_format": "unavailable",
             "throughput_tokens_per_sec": 0.0,
@@ -1309,7 +1521,7 @@ def _vllm():
             "This commonly means amdsmi is missing, so ROCm platform detection failed. "
             "Install amdsmi in the benchmark/runtime Python environment and rerun."
         )
-        return True, _degraded_metrics("vllm", platform_reason, {
+        return False, _degraded_metrics("vllm", platform_reason, {
             "model": "vLLM (Detected)",
             "model_format": "unavailable",
             "throughput_tokens_per_sec": 0.0,
@@ -1332,7 +1544,7 @@ def _vllm():
     max_tokens = 24
     attempt_errors = []
 
-    def _run_vllm_attempt_subprocess(llm_kwargs, prompts, max_tokens, env_overrides=None):
+    def _run_vllm_attempt_subprocess(llm_kwargs, prompts, max_tokens):
         payload = {
             "llm_kwargs": llm_kwargs,
             "prompts": prompts,
@@ -1349,98 +1561,163 @@ import traceback
 def _emit(obj):
     print(json.dumps(obj))
 
-try:
-    payload = json.loads(sys.stdin.read())
-    llm_kwargs = payload.get("llm_kwargs", {})
-    prompts = payload.get("prompts", [])
-    max_tokens = int(payload.get("max_tokens", 24))
+def _main():
     try:
-        import types
-        if os.environ.get("MLSTACK_VLLM_DISABLE_AMDSMI_SHIM", "").strip() not in {"1", "true", "TRUE"}:
-            arch_hint = (
-                os.environ.get("GPU_ARCH")
-                or os.environ.get("PYTORCH_ROCM_ARCH")
-                or os.environ.get("HSA_OVERRIDE_GFX_VERSION")
-                or ""
-            ).strip()
-            if arch_hint and not arch_hint.startswith("gfx") and "." in arch_hint:
-                parts = [p for p in arch_hint.split(".") if p]
-                if len(parts) >= 2:
-                    arch_hint = f"gfx{parts[0]}{parts[1]}"
-            if arch_hint:
-                shim = types.ModuleType("amdsmi")
-                class AmdSmiException(Exception):
-                    pass
-                def amdsmi_init():
-                    return None
-                def amdsmi_shut_down():
-                    return None
-                def amdsmi_get_processor_handles():
-                    return [0]
-                def amdsmi_get_gpu_asic_info(_handle):
-                    return {"target_graphics_version": arch_hint}
-                def amdsmi_topo_get_link_type(*_args, **_kwargs):
-                    return (0, 0)
-                shim.AmdSmiException = AmdSmiException
-                shim.amdsmi_init = amdsmi_init
-                shim.amdsmi_shut_down = amdsmi_shut_down
-                shim.amdsmi_get_processor_handles = amdsmi_get_processor_handles
-                shim.amdsmi_get_gpu_asic_info = amdsmi_get_gpu_asic_info
-                shim.amdsmi_topo_get_link_type = amdsmi_topo_get_link_type
-                sys.modules["amdsmi"] = shim
-    except Exception:
-        pass
-    import vllm
-    from vllm import LLM, SamplingParams
-    logging.getLogger("vllm").setLevel(logging.ERROR)
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
-    llm = LLM(**llm_kwargs)
-    start = time.perf_counter()
-    outputs = llm.generate(prompts, sampling_params)
-    elapsed = time.perf_counter() - start
-
-    throughput_samples = []
-    for prompt in prompts:
-        sample_start = time.perf_counter()
-        sample_out = llm.generate([prompt], sampling_params)
-        sample_elapsed = time.perf_counter() - sample_start
-        tokens = len(sample_out[0].outputs[0].token_ids)
-        throughput_samples.append(tokens / sample_elapsed if sample_elapsed > 0 else 0.0)
-
-    total_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
-    throughput = total_tokens / elapsed if elapsed > 0 else 0.0
-    _emit({
-        "ok": True,
-        "throughput_tokens_per_sec": round(throughput, 2),
-        "latency_ms": round((elapsed / max(len(prompts), 1)) * 1000, 2),
-        "throughput_samples": [round(x, 2) for x in throughput_samples],
-    })
-except Exception as exc:
-    tb = traceback.format_exc().strip()
-    tail_lines = [line.strip() for line in tb.splitlines()[-12:] if line.strip()]
-    msg = str(exc).strip() or repr(exc)
-    if tail_lines:
-        msg = f"{msg} :: traceback_tail: {' | '.join(tail_lines)}"
-    _emit({"ok": False, "error": msg})
-"""
-        env = os.environ.copy()
-        if isinstance(env_overrides, dict):
-            for key, value in env_overrides.items():
-                if value is None:
-                    env.pop(key, None)
-                else:
-                    env[key] = str(value)
+        payload_path = sys.argv[1] if len(sys.argv) > 1 else ""
+        with open(payload_path, "r", encoding="utf-8") as payload_file:
+            payload = json.load(payload_file)
+        llm_kwargs = payload.get("llm_kwargs", {})
+        prompts = payload.get("prompts", [])
+        max_tokens = int(payload.get("max_tokens", 24))
         try:
+            import types
+            if os.environ.get("MLSTACK_VLLM_DISABLE_AMDSMI_SHIM", "").strip() not in {"1", "true", "TRUE"}:
+                try:
+                    import amdsmi as _real_amdsmi
+                except Exception:
+                    _real_amdsmi = None
+                if _real_amdsmi is not None:
+                    raise RuntimeError("__MLSTACK_REAL_AMDSMI_PRESENT__")
+                arch_hint = (
+                    os.environ.get("GPU_ARCH")
+                    or os.environ.get("PYTORCH_ROCM_ARCH")
+                    or os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+                    or ""
+                ).strip()
+                if arch_hint and not arch_hint.startswith("gfx") and "." in arch_hint:
+                    parts = [p for p in arch_hint.split(".") if p]
+                    if len(parts) >= 2:
+                        arch_hint = f"gfx{parts[0]}{parts[1]}"
+                if arch_hint:
+                    shim = types.ModuleType("amdsmi")
+                    class AmdSmiException(Exception):
+                        pass
+                    def amdsmi_init():
+                        return None
+                    def amdsmi_shut_down():
+                        return None
+                    def amdsmi_get_processor_handles():
+                        return [0]
+                    def amdsmi_get_gpu_asic_info(_handle):
+                        return {"target_graphics_version": arch_hint}
+                    def amdsmi_topo_get_link_type(*_args, **_kwargs):
+                        return (0, 0)
+                    shim.AmdSmiException = AmdSmiException
+                    shim.amdsmi_init = amdsmi_init
+                    shim.amdsmi_shut_down = amdsmi_shut_down
+                    shim.amdsmi_get_processor_handles = amdsmi_get_processor_handles
+                    shim.amdsmi_get_gpu_asic_info = amdsmi_get_gpu_asic_info
+                    shim.amdsmi_topo_get_link_type = amdsmi_topo_get_link_type
+                    sys.modules["amdsmi"] = shim
+        except RuntimeError as exc:
+            if str(exc) != "__MLSTACK_REAL_AMDSMI_PRESENT__":
+                pass
+        except Exception:
+            pass
+        import vllm
+        from vllm import LLM, SamplingParams
+        logging.getLogger("vllm").setLevel(logging.ERROR)
+        sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
+        startup_start = time.perf_counter()
+        _emit({"event": "startup_begin", "phase": "vllm_startup"})
+        llm = LLM(**llm_kwargs)
+        startup_ms = int((time.perf_counter() - startup_start) * 1000)
+        _emit({"event": "startup_complete", "phase": "vllm_startup", "startup_ms": startup_ms})
+
+        generation_start = time.perf_counter()
+        outputs = llm.generate(prompts, sampling_params)
+        generation_elapsed = time.perf_counter() - generation_start
+
+        throughput_samples = []
+        for prompt in prompts:
+            sample_start = time.perf_counter()
+            sample_out = llm.generate([prompt], sampling_params)
+            sample_elapsed = time.perf_counter() - sample_start
+            tokens = len(sample_out[0].outputs[0].token_ids)
+            throughput_samples.append(tokens / sample_elapsed if sample_elapsed > 0 else 0.0)
+
+        total_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
+        throughput = total_tokens / generation_elapsed if generation_elapsed > 0 else 0.0
+        _emit({
+            "ok": True,
+            "startup_ms": startup_ms,
+            "generation_ms": int(generation_elapsed * 1000),
+            "throughput_tokens_per_sec": round(throughput, 2),
+            "latency_ms": round((generation_elapsed / max(len(prompts), 1)) * 1000, 2),
+            "throughput_samples": [round(x, 2) for x in throughput_samples],
+        })
+    except Exception as exc:
+        tb = traceback.format_exc().strip()
+        tail_lines = [line.strip() for line in tb.splitlines()[-12:] if line.strip()]
+        msg = str(exc).strip() or repr(exc)
+        if tail_lines:
+            msg = f"{msg} :: traceback_tail: {' | '.join(tail_lines)}"
+        _emit({"ok": False, "error": msg})
+
+if __name__ == "__main__":
+    _main()
+"""
+        payload_path = None
+        runner_path = None
+        timeout_seconds = 900
+        attempt_started_at = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as payload_file:
+                json.dump(payload, payload_file)
+                payload_path = payload_file.name
+            with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as runner_file:
+                runner_file.write(runner)
+                runner_path = runner_file.name
+            attempt_started_at = time.perf_counter()
             proc = subprocess.run(
-                [sys.executable, "-c", runner],
-                input=json.dumps(payload),
+                [sys.executable, runner_path, payload_path],
                 capture_output=True,
                 text=True,
-                timeout=240,
-                env=env,
+                timeout=timeout_seconds,
             )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            stderr = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            timeout_ms = int(((time.perf_counter() - attempt_started_at) * 1000) if attempt_started_at else (timeout_seconds * 1000))
+            startup_complete = False
+            startup_ms = 0
+            for line in stdout.splitlines():
+                text = line.strip()
+                if not text.startswith("{") or not text.endswith("}"):
+                    continue
+                try:
+                    event = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(event, dict) and event.get("event") == "startup_complete":
+                    startup_complete = True
+                    startup_ms = int(event.get("startup_ms") or 0)
+            timeout_phase = "generation" if startup_complete else "startup"
+            detail_parts = []
+            for label, text in (("stdout_tail", stdout), ("stderr_tail", stderr)):
+                tail = " | ".join([line.strip() for line in text.splitlines() if line.strip()][-20:])
+                if tail:
+                    detail_parts.append(f"{label}: {tail[:3000]}")
+            detail = "; ".join(detail_parts) if detail_parts else "no subprocess output captured"
+            return {
+                "ok": False,
+                "error": f"vLLM {timeout_phase} timed out after {timeout_seconds} seconds; {detail}",
+                "startup_ms": startup_ms,
+                "startup_timed_out": not startup_complete,
+                "generation_timed_out": startup_complete,
+                "timeout_ms": timeout_ms,
+                "timeout_limit_ms": timeout_seconds * 1000,
+                "vllm_timeout_phase": timeout_phase,
+            }
         except Exception as exc:
             return {"ok": False, "error": f"subprocess launch failed: {exc}"}
+        finally:
+            for temp_path in (payload_path, runner_path):
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
 
         merged = (proc.stdout or "").splitlines()
         if proc.stderr:
@@ -1489,12 +1766,14 @@ except Exception as exc:
             detail = f"exit code {proc.returncode}"
         return {"ok": False, "error": detail}
 
+    last_attempt_metrics = {}
     for candidate in candidates:
         model_name = candidate.get("model")
         model_format = candidate.get("format", "unknown")
         if not model_name:
             continue
 
+        model_cache_ms = 0
         llm_kwargs = {
             "model": model_name,
             "trust_remote_code": True,
@@ -1508,14 +1787,37 @@ except Exception as exc:
             tokenizer_name = candidate.get("tokenizer")
             if tokenizer_name:
                 llm_kwargs["tokenizer"] = tokenizer_name
+        elif model_format == "safetensors":
+            model_cache_start = time.perf_counter()
+            weights_ready, weights_reason = _ensure_cached_hf_model_weights(model_name)
+            model_cache_ms = int((time.perf_counter() - model_cache_start) * 1000)
+            last_attempt_metrics = {"model_cache_ms": model_cache_ms}
+            if not weights_ready:
+                attempt_errors.append(f"{model_format} model {model_name} failed: {weights_reason}")
+                continue
 
         attempt = _run_vllm_attempt_subprocess(llm_kwargs, prompts, max_tokens)
+        last_attempt_metrics = {"model_cache_ms": model_cache_ms}
+        for key in (
+            "startup_ms",
+            "generation_ms",
+            "startup_timed_out",
+            "generation_timed_out",
+            "timeout_ms",
+            "timeout_limit_ms",
+            "vllm_timeout_phase",
+        ):
+            if key in attempt:
+                last_attempt_metrics[key] = attempt[key]
         if attempt.get("ok"):
             return True, {
                 "model": model_name,
                 "model_format": model_format,
                 "target_device": target_device,
-                "visible_devices": os.environ.get("HIP_VISIBLE_DEVICES", primary_visible),
+                "visible_devices": visible_devices or primary_visible,
+                "model_cache_ms": model_cache_ms,
+                "startup_ms": int(attempt.get("startup_ms", 0)),
+                "generation_ms": int(attempt.get("generation_ms", 0)),
                 "throughput_tokens_per_sec": float(attempt.get("throughput_tokens_per_sec", 0.0)),
                 "latency_ms": float(attempt.get("latency_ms", 0.0)),
                 "throughput_samples": [
@@ -1524,80 +1826,6 @@ except Exception as exc:
                 "candidate_models": candidate_names,
             }, []
         err_msg = str(attempt.get("error") or "unknown vLLM execution error")
-        engine_core_failure = (
-            "Engine core initialization failed" in err_msg
-            or "Failed core proc" in err_msg
-            or "No HIP GPUs are available" in err_msg
-            or "torch.cuda is not available" in err_msg
-        )
-        # Defensive fallback for intermittent vLLM device/runtime failures.
-        # Preserve full visible GPU list for multi-GPU hosts.
-        if "Device string must not be empty" in err_msg or engine_core_failure:
-            retry_profiles = [
-                (
-                    "spawn-v1-default",
-                    {
-                        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
-                        "VLLM_ENABLE_V1_MULTIPROCESSING": "1",
-                        "VLLM_USE_V1": "1",
-                    },
-                ),
-                (
-                    "fork-v1-default",
-                    {
-                        "VLLM_WORKER_MULTIPROC_METHOD": "fork",
-                        "VLLM_ENABLE_V1_MULTIPROCESSING": "1",
-                        "VLLM_USE_V1": "1",
-                    },
-                ),
-                (
-                    "spawn-v0-singleproc",
-                    {
-                        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
-                        "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
-                        "VLLM_USE_V1": "0",
-                    },
-                ),
-                (
-                    "spawn-v0-no-aiter",
-                    {
-                        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
-                        "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
-                        "VLLM_USE_V1": "0",
-                        "VLLM_ROCM_USE_AITER": "0",
-                    },
-                ),
-            ]
-            retry_failures = []
-            for profile_name, profile_overrides in retry_profiles:
-                retry_overrides = {
-                    "HIP_VISIBLE_DEVICES": visible_devices,
-                    "CUDA_VISIBLE_DEVICES": visible_devices,
-                    "PYTORCH_ROCM_DEVICE": primary_visible,
-                    "VLLM_TARGET_DEVICE": target_device,
-                }
-                retry_overrides.update(profile_overrides)
-                retry = _run_vllm_attempt_subprocess(
-                    llm_kwargs,
-                    prompts,
-                    max_tokens,
-                    env_overrides=retry_overrides,
-                )
-                if retry.get("ok"):
-                    return True, {
-                        "model": model_name,
-                        "model_format": model_format,
-                        "target_device": target_device,
-                        "throughput_tokens_per_sec": float(retry.get("throughput_tokens_per_sec", 0.0)),
-                        "latency_ms": float(retry.get("latency_ms", 0.0)),
-                        "throughput_samples": [float(x) for x in (retry.get("throughput_samples") or [])],
-                        "candidate_models": candidate_names,
-                        "visible_devices_after_retry": visible_devices,
-                        "fallback_mode": profile_name,
-                    }, []
-                retry_failures.append(f"{profile_name}: {retry.get('error', 'unknown retry failure')}")
-            if retry_failures:
-                err_msg = f"{err_msg}; retry_profiles_failed: {' || '.join(retry_failures)}"
         if "Entry Not Found" in err_msg or "not found on the Hugging Face Hub" in err_msg:
             err_msg = (
                 f"Model {model_name} not found. Download/copy it first or override "
@@ -1613,16 +1841,18 @@ except Exception as exc:
     if attempt_errors:
         failure_reason = f"{failure_reason}; {attempt_errors[0]}"
 
-    return True, _degraded_metrics("vllm", failure_reason, {
+    failure_metrics = {
         "model": "vLLM (Detected)",
         "model_format": "unavailable",
         "target_device": target_device,
-        "visible_devices": os.environ.get("HIP_VISIBLE_DEVICES", primary_visible),
+        "visible_devices": visible_devices or primary_visible,
         "throughput_tokens_per_sec": 0.0,
         "latency_ms": 0.0,
         "throughput_samples": [],
         "candidate_models": candidate_names,
-    }), attempt_errors or [failure_reason]
+    }
+    failure_metrics.update(last_attempt_metrics)
+    return False, _degraded_metrics("vllm", failure_reason, failure_metrics), attempt_errors or [failure_reason]
 
 
 def _deepspeed():
@@ -1633,7 +1863,7 @@ def _deepspeed():
         import os
     except Exception as exc:
         err = f"DeepSpeed or Torch not available: {exc}"
-        return True, _degraded_metrics("deepspeed", err, {
+        return False, _degraded_metrics("deepspeed", err, {
             "throughput_samples_per_sec": 0.0,
             "avg_latency_ms": 0.0,
             "stage": 1,
@@ -1651,7 +1881,7 @@ def _deepspeed():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("deepspeed", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("deepspeed", probe_reason, extra), [probe_reason]
 
     # Ensure ROCm environment
     os.environ["DS_ACCELERATOR"] = "rocm"
@@ -1755,7 +1985,7 @@ def _deepspeed():
         }, []
     except Exception as exc:
         err = f"DeepSpeed benchmark failed: {exc}"
-        return True, _degraded_metrics("deepspeed", err, {
+        return False, _degraded_metrics("deepspeed", err, {
             "throughput_samples_per_sec": 0.0,
             "avg_latency_ms": 0.0,
             "stage": 1,
@@ -1770,7 +2000,7 @@ def _megatron():
         import megatron
     except Exception as exc:
         err = f"Megatron not available: {exc}"
-        return True, _degraded_metrics("megatron", err, {
+        return False, _degraded_metrics("megatron", err, {
             "megatron_backend": "unavailable",
             "megatron_throughput_samples_per_sec": 0.0,
             "megatron_avg_latency_ms": 0.0,
@@ -1787,7 +2017,7 @@ def _megatron():
         }
         if isinstance(probe_meta, dict):
             extra.update(probe_meta)
-        return True, _degraded_metrics("megatron", probe_reason, extra), [probe_reason]
+        return False, _degraded_metrics("megatron", probe_reason, extra), [probe_reason]
 
     try:
         device = torch.device("cuda:0")
@@ -1824,7 +2054,7 @@ def _megatron():
         }, []
     except Exception as exc:
         err = f"Megatron benchmark failed: {exc}"
-        return True, _degraded_metrics("megatron", err, {
+        return False, _degraded_metrics("megatron", err, {
             "megatron_backend": "megatron-core",
             "megatron_throughput_samples_per_sec": 0.0,
             "megatron_avg_latency_ms": 0.0,
@@ -1838,7 +2068,7 @@ def _onnx():
         import onnxruntime as ort
     except Exception as exc:
         err = f"onnxruntime not available: {exc}"
-        return True, _degraded_metrics("onnx", err, {
+        return False, _degraded_metrics("onnx", err, {
             "ort_version": "unavailable",
             "provider": "none",
             "providers_available": [],
@@ -1873,7 +2103,7 @@ def _onnx():
         import numpy as np
     except Exception:
         err = "numpy not available for ONNX benchmark"
-        return True, _degraded_metrics("onnx", err, {
+        return False, _degraded_metrics("onnx", err, {
             "ort_version": ort_version,
             "provider": provider,
             "providers_available": providers_available,
@@ -1917,14 +2147,18 @@ def _onnx():
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
         model.ir_version = 8
         onnx.checker.validate = False
-        return onnx._serialize(model)
+        return model.SerializeToString()
 
     def _build_quantized_model():
         X = helper.make_tensor_value_info("input", TensorProto.FLOAT, input_shape)
         Y = helper.make_tensor_value_info("output", TensorProto.FLOAT, input_shape)
-        W_init = numpy_helper.from_array(
-            np.random.randn(hidden, hidden).astype(np.float32) * 0.01, name="W"
-        )
+        W_quant = np.clip(
+            np.round((np.random.randn(hidden, hidden).astype(np.float32) * 0.01) / 0.01) + 128,
+            0,
+            255,
+        ).astype(np.uint8)
+        W_init = numpy_helper.from_array(W_quant, name="W_quant")
+        W_zp = numpy_helper.from_array(np.array(128, dtype=np.uint8), name="W_zp")
         B_init = numpy_helper.from_array(
             np.zeros(hidden, dtype=np.float32), name="B"
         )
@@ -1932,7 +2166,7 @@ def _onnx():
             "DynamicQuantizeLinear", ["input"], ["input_quant", "input_scale", "input_zp"]
         )
         matmul_int = helper.make_node(
-            "MatMulInteger", ["input_quant", "W"], ["matmul_int_out"]
+            "MatMulInteger", ["input_quant", "W_quant", "input_zp", "W_zp"], ["matmul_int_out"]
         )
         cast_out = helper.make_node(
             "Cast", ["matmul_int_out"], ["matmul_fp_out"], to=TensorProto.FLOAT
@@ -1940,12 +2174,12 @@ def _onnx():
         add = helper.make_node("Add", ["matmul_fp_out", "B"], ["output"])
         graph = helper.make_graph(
             [dq, matmul_int, cast_out, add], "quant_bench_graph",
-            [X], [Y], initializer=[W_init, B_init]
+            [X], [Y], initializer=[W_init, W_zp, B_init]
         )
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
         model.ir_version = 8
         onnx.checker.validate = False
-        return onnx._serialize(model)
+        return model.SerializeToString()
 
     import tempfile
     sess_opts = ort.SessionOptions()
@@ -2139,6 +2373,7 @@ BENCHES = {
     "gemm": _gemm,
     "pytorch": _pytorch,
     "flash-attention": _flash_attention,
+    "flash-attention-ck": _flash_attention_ck,
     "vllm": _vllm,
     "deepspeed": _deepspeed,
     "megatron": _megatron,
@@ -2185,3 +2420,114 @@ def main():
 if __name__ == "__main__":
     main()
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_benchmark_python_uses_mlstack_env_python_before_system_python() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_home = env::var("HOME").ok();
+        let old_benchmark_python = env::var("MLSTACK_BENCHMARK_PYTHON").ok();
+        let old_python_bin = env::var("MLSTACK_PYTHON_BIN").ok();
+        let old_uv_python = env::var("UV_PYTHON").ok();
+        let home = env::temp_dir().join(format!(
+            "rusty-stack-benchmark-python-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".mlstack_env"),
+            "export MLSTACK_PYTHON_BIN=/tmp/rusty-managed-python\n",
+        )
+        .unwrap();
+        env::set_var("HOME", &home);
+        env::remove_var("MLSTACK_BENCHMARK_PYTHON");
+        env::remove_var("MLSTACK_PYTHON_BIN");
+        env::remove_var("UV_PYTHON");
+
+        let resolved = resolve_benchmark_python();
+
+        if let Some(home) = old_home {
+            env::set_var("HOME", home);
+        } else {
+            env::remove_var("HOME");
+        }
+        if let Some(value) = old_benchmark_python {
+            env::set_var("MLSTACK_BENCHMARK_PYTHON", value);
+        } else {
+            env::remove_var("MLSTACK_BENCHMARK_PYTHON");
+        }
+        if let Some(value) = old_python_bin {
+            env::set_var("MLSTACK_PYTHON_BIN", value);
+        } else {
+            env::remove_var("MLSTACK_PYTHON_BIN");
+        }
+        if let Some(value) = old_uv_python {
+            env::set_var("UV_PYTHON", value);
+        } else {
+            env::remove_var("UV_PYTHON");
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(resolved, "/tmp/rusty-managed-python");
+    }
+
+    #[test]
+    fn vllm_amdsmi_shim_preserves_real_amdsmi_when_available() {
+        assert!(PY_HELPER.contains("import amdsmi as _real_amdsmi"));
+        assert!(PY_HELPER.contains("if _real_amdsmi is not None:"));
+    }
+
+    #[test]
+    fn onnx_benchmark_uses_public_model_serialization() {
+        assert!(!PY_HELPER.contains("onnx._serialize"));
+        assert!(PY_HELPER.contains("model.SerializeToString()"));
+    }
+
+    #[test]
+    fn onnx_quantized_benchmark_uses_integer_weight_tensor() {
+        assert!(PY_HELPER.contains("W_quant"));
+        assert!(!PY_HELPER.contains(r#""MatMulInteger", ["input_quant", "W"]"#));
+    }
+
+    #[test]
+    fn vllm_helper_uses_file_payload_without_env_overrides() {
+        assert!(PY_HELPER.contains(r#"if __name__ == "__main__":"#));
+        assert!(PY_HELPER.contains("NamedTemporaryFile"));
+        assert!(!PY_HELPER.contains("env_overrides"));
+        assert!(!PY_HELPER.contains("MLSTACK_VLLM_PAYLOAD_JSON"));
+        assert!(!PY_HELPER.contains(r#"os.environ["VLLM_TARGET_DEVICE"]"#));
+        assert!(!PY_HELPER.contains(r#"os.environ["HIP_VISIBLE_DEVICES"]"#));
+        assert!(!PY_HELPER.contains(r#"os.environ["CUDA_VISIBLE_DEVICES"]"#));
+    }
+
+    #[test]
+    fn degraded_benchmarks_report_failure_not_success() {
+        assert!(PY_HELPER.contains("return False, _degraded_metrics"));
+        assert!(!PY_HELPER.contains("return True, _degraded_metrics"));
+    }
+
+    #[test]
+    fn vllm_benchmark_downloads_missing_hf_weights() {
+        assert!(PY_HELPER.contains("def _ensure_cached_hf_model_weights"));
+        assert!(PY_HELPER.contains("hf_hub_download"));
+        assert!(PY_HELPER.contains(r#"filename="model.safetensors""#));
+    }
+
+    #[test]
+    fn vllm_timeout_reports_subprocess_output_tail() {
+        assert!(PY_HELPER.contains("except subprocess.TimeoutExpired as exc"));
+        assert!(PY_HELPER.contains("stdout_tail"));
+        assert!(PY_HELPER.contains("stderr_tail"));
+        assert!(PY_HELPER.contains("startup_timed_out"));
+        assert!(PY_HELPER.contains("vllm_timeout_phase"));
+        assert!(PY_HELPER.contains("\"event\": \"startup_begin\""));
+        assert!(PY_HELPER.contains("\"event\": \"startup_complete\""));
+    }
+}

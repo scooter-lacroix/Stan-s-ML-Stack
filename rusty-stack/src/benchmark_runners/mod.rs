@@ -40,6 +40,7 @@ pub fn available_benchmarks() -> Vec<&'static str> {
         "pytorch",
         "llama-cpp",
         "flash-attention",
+        "flash-attention-ck",
         "vllm",
         "deepspeed",
         "megatron",
@@ -79,6 +80,10 @@ pub fn run_benchmark(name: &str) -> Result<BenchmarkOutput, String> {
         "flash-attention" => Ok(convert_result(
             name,
             benchmarks::run_flash_attention_benchmark(),
+        )),
+        "flash-attention-ck" => Ok(convert_result(
+            name,
+            benchmarks::run_flash_attention_ck_benchmark(),
         )),
         "vllm" => Ok(convert_result(name, benchmarks::run_vllm_benchmark())),
         "deepspeed" => Ok(convert_result(name, benchmarks::run_deepspeed_benchmark())),
@@ -192,6 +197,13 @@ fn run_all() -> BenchmarkOutput {
         "flash_attention",
         &mut output,
         benchmarks::run_flash_attention_benchmark(),
+        false,
+    );
+    collect_benchmark(
+        &mut combined,
+        "flash_attention_ck",
+        &mut output,
+        benchmarks::run_flash_attention_ck_benchmark(),
         false,
     );
     collect_benchmark(
@@ -358,6 +370,7 @@ mod tests {
         assert!(names.contains(&"gemm"));
         assert!(names.contains(&"pytorch"));
         assert!(names.contains(&"flash-attention"));
+        assert!(names.contains(&"flash-attention-ck"));
         assert!(names.contains(&"vllm"));
         assert!(names.contains(&"deepspeed"));
         assert!(names.contains(&"megatron"));

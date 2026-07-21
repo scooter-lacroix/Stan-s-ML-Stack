@@ -170,7 +170,11 @@ pub fn load_benchmark_results() -> BenchmarkResults {
     // primary JSON sources written by the wrapper scripts
     for pattern in &[
         "rocm_benchmarks",
+        "gpu-capability_benchmarks",
         "gpu_memory_bandwidth",
+        "memory-bandwidth_benchmarks",
+        "tensor-core_benchmarks",
+        "gemm_benchmarks",
         "pytorch_performance",
         "llama_cpp_benchmarks",
         "llama-cpp",
@@ -178,8 +182,11 @@ pub fn load_benchmark_results() -> BenchmarkResults {
         "vllm_benchmarks",
         "deepspeed_benchmarks",
         "megatron_benchmarks",
+        "flash-attention_benchmarks",
+        "flash-attention-ck_benchmarks",
         "onnx_benchmarks",
         "full_benchmarks",
+        "all_benchmarks",
     ] {
         if let Some(log_path) = find_latest_log_in_dirs(&log_dirs, pattern) {
             let modified = fs::metadata(&log_path)
@@ -191,12 +198,12 @@ pub fn load_benchmark_results() -> BenchmarkResults {
 
     let newest_component_log = selected_logs
         .iter()
-        .filter(|(pattern, _, _)| *pattern != "full_benchmarks")
+        .filter(|(pattern, _, _)| !matches!(*pattern, "full_benchmarks" | "all_benchmarks"))
         .map(|(_, _, modified)| *modified)
         .max();
 
     for (pattern, log_path, modified) in selected_logs {
-        if pattern == "full_benchmarks" {
+        if matches!(pattern, "full_benchmarks" | "all_benchmarks") {
             if let Some(component_mtime) = newest_component_log {
                 let is_stale = component_mtime
                     .duration_since(modified)
@@ -247,11 +254,18 @@ pub fn load_benchmark_results() -> BenchmarkResults {
 fn load_baseline(log_dirs: &[PathBuf]) -> Option<Box<BenchmarkResults>> {
     let baseline_patterns = [
         "rocm_benchmarks",
+        "gpu-capability_benchmarks",
+        "memory-bandwidth_benchmarks",
+        "tensor-core_benchmarks",
+        "gemm_benchmarks",
         "vllm_benchmarks",
         "deepspeed_benchmarks",
         "megatron_benchmarks",
+        "flash-attention_benchmarks",
+        "flash-attention-ck_benchmarks",
         "onnx_benchmarks",
         "full_benchmarks",
+        "all_benchmarks",
     ];
     let mut log_files = collect_matching_logs(log_dirs, &baseline_patterns);
     let json_files: Vec<PathBuf> = log_files
@@ -801,6 +815,28 @@ fn apply_metrics_internal(
             let mut prefill = Vec::new();
             let mut decode = Vec::new();
 
+            // Per-GPU metadata from the benchmark payload (sourced from the
+            // canonical env — see _gpu_info_from_env). Indexed by device index.
+            let gpu_names: Vec<String> = obj
+                .get("gpu_names")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let gpu_vram: Vec<f64> = obj
+                .get("gpu_vram_gb")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_f64()).collect())
+                .unwrap_or_default();
+            let gpu_arch = obj
+                .get("gpu_arch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
             // Collect unique GPU indices from metric keys
             let mut gpu_indices: Vec<usize> = obj
                 .keys()
@@ -813,11 +849,15 @@ fn apply_metrics_internal(
             gpu_indices.sort();
             gpu_indices.dedup();
 
-            for gpu_idx in &gpu_indices {
+            for &gpu_idx in &gpu_indices {
                 gpus.push(LlamaCppGpu {
-                    name: format!("GPU {}", gpu_idx),
-                    arch: String::new(),
-                    vram_gb: 0.0,
+                    name: gpu_names
+                        .get(gpu_idx)
+                        .cloned()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| format!("GPU {}", gpu_idx)),
+                    arch: gpu_arch.clone(),
+                    vram_gb: gpu_vram.get(gpu_idx).copied().unwrap_or(0.0),
                 });
             }
 
@@ -874,8 +914,16 @@ fn apply_metrics_internal(
                 gpus,
                 prefill,
                 decode,
-                model: String::new(),
-                rocm_version: String::new(),
+                model: obj
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                rocm_version: obj
+                    .get("rocm_version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             });
         }
     }
@@ -1924,6 +1972,90 @@ fn render_onnx_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
                         .borders(Borders::ALL),
                 ),
             area,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn unique_test_home(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("rusty-stack-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn load_benchmark_results_reads_native_benchmark_filenames() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_home = std::env::var("HOME").ok();
+        let old_tmpdir = std::env::var("TMPDIR").ok();
+        let home = unique_test_home("native-benchmark-filenames");
+        let _ = fs::remove_dir_all(&home);
+        let log_dir = home.join(".rusty-stack").join("logs");
+        fs::create_dir_all(&log_dir).unwrap();
+        std::env::set_var("HOME", &home);
+        std::env::set_var("TMPDIR", home.join("tmp"));
+
+        let gpu_log = log_dir.join("gpu-capability_benchmarks_1.json");
+        let mem_log = log_dir.join("memory-bandwidth_benchmarks_2.json");
+        fs::write(
+            &gpu_log,
+            r#"{
+              "name": "gpu-capability",
+              "success": true,
+              "execution_time_ms": 1,
+              "results": {
+                "gpus": [{"index": 0, "gpu_model": "AMD Radeon RX 7900 XTX", "vram_gb": 24.0}]
+              },
+              "errors": []
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &mem_log,
+            r#"{
+              "name": "memory-bandwidth",
+              "success": true,
+              "execution_time_ms": 1,
+              "results": {
+                "hbm_peak_gb_s": 123.0,
+                "system_peak_gb_s": 45.0,
+                "hbm_ratio": 2.7,
+                "hbm_samples_gbps": [100.0, 123.0],
+                "system_samples_gbps": [40.0, 45.0]
+              },
+              "errors": []
+            }"#,
+        )
+        .unwrap();
+        for path in [&gpu_log, &mem_log] {
+            let _ = std::process::Command::new("touch")
+                .args(["-d", "2100-01-01"])
+                .arg(path)
+                .status();
+        }
+
+        let results = load_benchmark_results();
+
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(tmpdir) = old_tmpdir {
+            std::env::set_var("TMPDIR", tmpdir);
+        } else {
+            std::env::remove_var("TMPDIR");
+        }
+        let _ = fs::remove_dir_all(&home);
+
+        assert_eq!(results.gpus[0].model, "AMD Radeon RX 7900 XTX");
+        assert_eq!(
+            results.memory_bandwidth.as_ref().unwrap().hbm_peak_gb_s,
+            123.0
         );
     }
 }

@@ -58,9 +58,6 @@ const DEFAULT_BUILD_DIR: &str = "/tmp/llama-cpp-rocm-build";
 /// Install prefix for llama.cpp binaries.
 const DEFAULT_INSTALL_PREFIX: &str = ".mlstack/components/llama-cpp";
 
-/// Binary targets to build.
-const BUILD_TARGETS: &[&str] = &["llama-cli", "llama-bench", "llama-server"];
-
 /// The primary detection binary.
 pub const DETECTION_BINARY: &str = "llama-cli";
 
@@ -107,6 +104,10 @@ impl HipArchs {
     ///
     /// Unknown/indeterminate hardware degrades to conservative gfx1030.
     pub fn gpu_targets_for_channel(&self, channel: &str) -> String {
+        // Multi-arch union is PRESERVED — the fork's vendors/hip.h arch gate
+        // (RDNA3+ only for rocwmma/WMMA, RDNA2 cleanly excluded per pass) makes
+        // the full union compile for RDNA2+3+4. Do NOT narrow this to a single
+        // arch family: the whole point of the gate is that gfx1030 builds too.
         match (self, channel) {
             // Legacy channel: RDNA2 only regardless of detected GPU
             (_, "legacy") => "gfx1030".to_string(),
@@ -190,7 +191,6 @@ pub struct LlamaCppConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct ReleaseAsset {
     pub url: String,
     pub sha256: String,
@@ -301,6 +301,12 @@ impl LlamaCppInstaller {
         Self::new(LlamaCppConfig::default())
     }
 
+    /// The directory the source is cloned + built into (also a verification
+    /// model search root while it still exists).
+    pub fn build_dir_path(&self) -> &str {
+        self.config.build_dir()
+    }
+
     // -------------------------------------------------------------------
     // Dependencies
     // -------------------------------------------------------------------
@@ -312,11 +318,32 @@ impl LlamaCppInstaller {
         &["rocm"]
     }
 
+    /// Resolve the auth token for cloning the private fork.
+    ///
+    /// Order: runtime `GITHUB_INSTALLER_TOKEN` (per-run override) → build-time
+    /// embedded `LLAMA_CPP_DEPLOY_TOKEN` (shipped in the binary so end-users
+    /// can clone the private fork without their own credentials) → none
+    /// (public repo / dev machine with stored git creds).
+    ///
+    /// The deploy token is injected at build time
+    /// (`LLAMA_CPP_DEPLOY_TOKEN=<readonly-pat> cargo build --release`) and is
+    /// never committed to source. It should be scoped read-only to this single
+    /// repo: any client-side secret is recoverable via `strings`, so scope
+    /// limits the blast radius if extracted.
+    fn resolve_auth_token(&self) -> SealedToken {
+        let mut runtime = SealedToken::from_env();
+        if !runtime.as_str().is_empty() {
+            return runtime;
+        }
+        runtime.purge();
+        SealedToken::new(option_env!("LLAMA_CPP_DEPLOY_TOKEN").unwrap_or(""))
+    }
+
     /// Fetch the latest release manifest from GitHub.
     ///
     /// Returns `None` for HTTP/API failures, including 404.
     pub fn check_latest_release(&self) -> Option<ReleaseManifest> {
-        let mut token = SealedToken::from_env();
+        let mut token = self.resolve_auth_token();
         let result = self.fetch_latest_release_manifest(token.as_str());
         token.purge();
         result
@@ -344,7 +371,7 @@ impl LlamaCppInstaller {
     /// Returns `Ok(())` if the repo is accessible (public or private with valid auth).
     /// Returns `Err(String)` with an actionable error message if auth fails.
     pub fn validate_repo_access(&self) -> Result<(), String> {
-        let mut github_token = Some(SealedToken::from_env());
+        let mut github_token = Some(self.resolve_auth_token());
 
         // Try to clone a single file to validate access
         let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -462,12 +489,34 @@ impl LlamaCppInstaller {
             "-DGGML_CUDA=OFF".to_string(),
             "-DGGML_VULKAN=OFF".to_string(),
             "-DGGML_METAL=OFF".to_string(),
+            // We build only the tool targets (llama-cli/bench/server), not the
+            // full test/example set. The fork defaults LLAMA_BUILD_TESTS /
+            // GGML_BUILD_TESTS / LLAMA_TESTS_INSTALL / LLAMA_BUILD_EXAMPLES ON
+            // (standalone), so `cmake --install` would otherwise try to install
+            // unbuilt test binaries (test-tokenizer-0) AND example binaries
+            // (llama-batched, …) and fail. Disable build + install of tests and
+            // examples; keep tools + server on so the 3 targets exist.
+            "-DLLAMA_BUILD_TESTS=OFF".to_string(),
+            "-DGGML_BUILD_TESTS=OFF".to_string(),
+            "-DLLAMA_TESTS_INSTALL=OFF".to_string(),
+            "-DLLAMA_BUILD_EXAMPLES=OFF".to_string(),
+            "-DLLAMA_BUILD_TOOLS=ON".to_string(),
+            "-DLLAMA_BUILD_SERVER=ON".to_string(),
         ];
 
-        // RDNA3 probes and WMMA flash attention are enabled for stable/latest only
+        // WMMA flash attention (stable/latest only): the hip.h include of
+        // <rocwmma/rocwmma-version.hpp> is version-macros only and safe across
+        // arches, so the WMMA FA path (fattn-wmma-f16) builds for the full
+        // multi-arch union (gfx1030;gfx1100;gfx1101).
         if channel.enable_wmma_fa() {
-            flags.push("-DGGML_HIP_RDNA3_PROBES=ON".to_string());
             flags.push("-DGGML_HIP_ROCWMMA_FATTN=ON".to_string());
+            // GGML_HIP_RDNA3_PROBES adds rdna3-wmma-*.cu to the MAIN ggml-hip
+            // sources; those #include <rocwmma/rocwmma.hpp> (the FULL header),
+            // whose config.hpp does `static_assert("Unsupported architecture")`
+            // for gfx1030 (RDNA2 has no WMMA) — breaking the multi-arch build.
+            // The probes are dev validation tools, NOT needed for the WMMA FA
+            // runtime path, so they stay OFF to keep the multi-arch build green.
+            flags.push("-DGGML_HIP_RDNA3_PROBES=OFF".to_string());
         }
 
         flags
@@ -490,7 +539,7 @@ impl LlamaCppInstaller {
 
     /// Build source install commands, passing installer token auth when available.
     fn build_source_commands_from_env(&self, home: &str) -> Vec<ShellCommand> {
-        let mut token = SealedToken::from_env();
+        let mut token = self.resolve_auth_token();
         if token.as_str().is_empty() {
             token.purge();
             self.build_commands_with_auth(home, None)
@@ -742,8 +791,7 @@ impl LlamaCppInstaller {
 
         commands.push(self.git_checkout(&build_dir));
         commands.push(self.cmake_configure(&build_dir, &install_prefix));
-        commands.push(self.cmake_build(&build_dir));
-        commands.push(self.cmake_install(&build_dir));
+        commands.push(self.cmake_build_and_install(&build_dir));
         commands.push(self.purge_source_artifacts_command(home));
 
         commands
@@ -805,8 +853,14 @@ impl LlamaCppInstaller {
             let is_cmake_configure = command.program == "cmake"
                 && command.args.iter().any(|arg| arg == "-B")
                 && command.args.iter().any(|arg| arg == "-S");
-            let is_cmake_install =
-                command.program == "cmake" && command.args.iter().any(|arg| arg == "--install");
+            // Detect the install step — either `cmake --install build` or the
+            // merged `cmake --build build --target install` (both signal that
+            // binaries have been installed + are ready for linkage verification).
+            let is_cmake_install = command.program == "cmake"
+                && command
+                    .args
+                    .iter()
+                    .any(|arg| arg == "--install" || arg == "install");
             let command_working_dir = command.working_dir.clone();
 
             let mut process = std::process::Command::new(&command.program);
@@ -917,9 +971,15 @@ impl LlamaCppInstaller {
     }
 
     fn mkdir_build_dir(&self, build_dir: &str) -> ShellCommand {
+        // Clear any stale clone/build from a prior failed run before re-cloning:
+        // git refuses to clone into a non-empty dir, and a partial CMakeCache
+        // would shadow the fresh -D flags. Idempotent re-runs need a clean slate.
         ShellCommand {
-            program: "mkdir".to_string(),
-            args: vec!["-p".to_string(), build_dir.to_string()],
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!("rm -rf -- '{bd}' && mkdir -p '{bd}'", bd = build_dir),
+            ],
             env: vec![],
             working_dir: None,
         }
@@ -969,26 +1029,23 @@ impl LlamaCppInstaller {
         }
     }
 
-    fn cmake_build(&self, build_dir: &str) -> ShellCommand {
-        let mut args = vec!["--build".to_string(), "build".to_string(), "-j".to_string()];
-        // Add build targets
-        for target in BUILD_TARGETS {
-            args.push("--target".to_string());
-            args.push(target.to_string());
-        }
-
+    /// Build + install in one step via the `install` target.
+    ///
+    /// `cmake --build build --target install` builds EXACTLY the install-rule
+    /// closure (libs + the tools the fork installs) and then installs it — so it
+    /// can never hit the "file INSTALL cannot find <unbuilt binary>" mismatch
+    /// that a separate targeted build + `cmake --install` caused (the fork's
+    /// install set spans tests, examples, AND multiple tools, all defaulted ON).
+    fn cmake_build_and_install(&self, build_dir: &str) -> ShellCommand {
         ShellCommand {
             program: "cmake".to_string(),
-            args,
-            env: vec![],
-            working_dir: Some(PathBuf::from(build_dir)),
-        }
-    }
-
-    fn cmake_install(&self, build_dir: &str) -> ShellCommand {
-        ShellCommand {
-            program: "cmake".to_string(),
-            args: vec!["--install".to_string(), "build".to_string()],
+            args: vec![
+                "--build".to_string(),
+                "build".to_string(),
+                "-j".to_string(),
+                "--target".to_string(),
+                "install".to_string(),
+            ],
             env: vec![],
             working_dir: Some(PathBuf::from(build_dir)),
         }
@@ -1076,12 +1133,18 @@ pub fn is_llama_cli_functional(home: &str) -> bool {
     if !bin_path.exists() {
         return false;
     }
-    // Run the detection subcommand to verify the binary is functional
-    std::process::Command::new(bin_path)
-        .arg(DETECTION_SUBCOMMAND)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    // Run via the env+lib helper: the shared libs live in a sibling lib/ dir
+    // (not beside the binary), so the loader needs LD_LIBRARY_PATH=lib to find
+    // libggml*.so; and ~/.mlstack_env must be sourced so the device filter
+    // (iGPUs excluded) is honored. Without both, --help fails to load or
+    // segfaults probing the APU → false "not installed".
+    run_rocm_tool_with_env(
+        home,
+        bin_path.to_str().unwrap_or(""),
+        &[DETECTION_SUBCOMMAND],
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
 }
 
 /// Check if llama-cli is on PATH and functional.
@@ -1129,49 +1192,82 @@ fn verify_binary_linkage(binary_path: &Path) -> Result<(), String> {
         ));
     }
 
-    let output = std::process::Command::new("ldd")
-        .arg(binary_path)
-        .output()
-        .map_err(|e| format!("Failed to run ldd on {}: {}", binary_path.display(), e))?;
+    // The shared libs (libggml-hip.so, …) install to a sibling `lib/` dir, NOT
+    // beside the binary in `bin/`. Without LD_LIBRARY_PATH pointing there, ldd
+    // can't resolve them, so the ROCm linkage (amdhip64, pulled transitively via
+    // libggml-hip.so) is invisible → false "CPU-only build". Build an
+    // LD_LIBRARY_PATH covering the install lib/ + /opt/rocm/lib + the existing.
+    let lib_dir = binary_path
+        .parent()
+        .and_then(|bin| bin.parent())
+        .map(|prefix| prefix.join("lib"));
+    let mut ld_parts: Vec<String> = Vec::new();
+    if let Some(dir) = &lib_dir {
+        ld_parts.push(dir.to_string_lossy().into_owned());
+    }
+    ld_parts.push("/opt/rocm/lib".to_string());
+    if let Ok(existing) = std::env::var("LD_LIBRARY_PATH") {
+        if !existing.trim().is_empty() {
+            ld_parts.push(existing);
+        }
+    }
+    let ld_path = ld_parts.join(":");
 
-    if !output.status.success() {
-        return Err(format!(
-            "ldd failed on {}: {}",
-            binary_path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    // ldd a path with LD_LIBRARY_PATH set → (cuda_contaminated, has_rocm_link).
+    let ldd_analyze = |path: &Path| -> Option<(bool, bool)> {
+        let out = std::process::Command::new("ldd")
+            .arg(path)
+            .env("LD_LIBRARY_PATH", &ld_path)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        let cuda = ["libcuda.so", "libnvidia", "libcudart"]
+            .iter()
+            .any(|m| s.contains(m));
+        let rocm = s.contains("amdhip64") || s.contains("hipblas") || s.contains("libhip");
+        Some((cuda, rocm))
+    };
+
+    // Check the binary AND the HIP backend lib. libggml-hip.so is what DIRECTLY
+    // links amdhip64; with ggml's backend dispatcher, the executable's ldd may
+    // not show it (the backend is dlopen'd at runtime), so verify both.
+    let mut paths = vec![binary_path.to_path_buf()];
+    if let Some(dir) = &lib_dir {
+        paths.push(dir.join("libggml-hip.so"));
     }
 
-    let ldd_output = String::from_utf8_lossy(&output.stdout);
-
-    // Check for CUDA contamination
-    let cuda_markers = ["libcuda.so", "libnvidia", "libcudart"];
-    for marker in &cuda_markers {
-        if ldd_output.contains(marker) {
-            return Err(format!(
-                "CUDA contamination detected: {} links against '{}'. \
-                 The binary was built with CUDA instead of ROCm/HIP. \
-                 This should not happen — check CMake configuration.",
-                binary_path.display(),
-                marker
-            ));
+    let mut any_rocm = false;
+    for path in &paths {
+        if !path.exists() {
+            continue;
+        }
+        if let Some((cuda, rocm)) = ldd_analyze(path) {
+            if cuda {
+                return Err(format!(
+                    "CUDA contamination detected: {} links against libcuda/cudart. \
+                     The binary was built with CUDA instead of ROCm/HIP — check CMake.",
+                    path.display()
+                ));
+            }
+            if rocm {
+                any_rocm = true;
+            }
         }
     }
 
-    // Check for ROCm linkage
-    let has_rocm = ldd_output.contains("amdhip64")
-        || ldd_output.contains("hipblas")
-        || ldd_output.contains("libhip");
-
-    if !has_rocm {
-        return Err(format!(
-            "ROCm/HIP linkage not found in {}. The binary may be a CPU-only build \
-             or was built without GPU acceleration. Expected linkage to amdhip64 or hipblas.",
+    if any_rocm {
+        Ok(())
+    } else {
+        Err(format!(
+            "ROCm/HIP linkage not found in {} (or its libggml-hip.so). The binary may \
+             be a CPU-only build or was built without GPU acceleration. Expected linkage \
+             to amdhip64 or hipblas.",
             binary_path.display()
-        ));
+        ))
     }
-
-    Ok(())
 }
 
 /// Check if NVIDIA CUDA toolkit artifacts are present on the system.
@@ -1228,13 +1324,21 @@ fn validate_cmake_cache(cache_path: &Path, expected_gpu_targets: &str) -> Result
             hip_on = true;
         } else if trimmed == "GGML_CUDA:BOOL=OFF" {
             cuda_off = true;
-        } else if let Some(value) = trimmed.strip_prefix("GPU_TARGETS:STRING=") {
-            gpu_targets_seen = true;
-            if value != expected_gpu_targets {
-                return Err(format!(
-                    "GPU_TARGETS mismatch in CMakeCache.txt: expected '{}', found '{}'",
-                    expected_gpu_targets, value
-                ));
+        } else if let Some(rest) = trimmed.strip_prefix("GPU_TARGETS:") {
+            // CMake cache form is GPU_TARGETS:<TYPE>=<value>. The type depends
+            // on how -D was passed and whether the project re-declares the var:
+            // a typeless `-DGPU_TARGETS=...` lands as UNINITIALIZED, a typed one
+            // as STRING. Match the value regardless of type (the prior
+            // hard-coded ":STRING=" prefix rejected valid UNINITIALIZED entries).
+            if let Some(eq) = rest.find('=') {
+                let value = &rest[eq + 1..];
+                gpu_targets_seen = true;
+                if value != expected_gpu_targets {
+                    return Err(format!(
+                        "GPU_TARGETS mismatch in CMakeCache.txt: expected '{}', found '{}'",
+                        expected_gpu_targets, value
+                    ));
+                }
             }
         }
     }
@@ -1285,32 +1389,83 @@ pub struct PostInstallVerification {
     pub summary: String,
 }
 
-/// Default verification model search paths relative to home.
-const VERIFICATION_MODEL_SEARCH_PATHS: &[&str] = &[
-    "models/Qwen3-0.6B-F16.gguf",
-    ".mlstack/models/Qwen3-0.6B-F16.gguf",
-    "llama.cpp-turboquant-hip/models/Qwen3-0.6B-F16.gguf",
-];
+/// Verification model used for the llama-bench stronger check.
+const VERIFICATION_MODEL_FILENAME: &str = "Qwen3-0.6B-Q4_0.gguf";
 
-/// Locate a model file for llama-bench verification.
-fn find_verification_model(home: &str, fork_dir: &str) -> Option<PathBuf> {
-    for relative in VERIFICATION_MODEL_SEARCH_PATHS {
-        let candidate = PathBuf::from(home)
-            .join("Documents/Product/Stan-s-ML-Stack/Fork")
-            .join(relative.trim_start_matches("llama.cpp-turboquant-hip/"));
-        if candidate.exists() {
-            return Some(candidate);
-        }
+/// Locate a verification model for llama-bench. Searches the managed models dir
+/// and (if still present) the cloned source tree. This model is NOT shipped in
+/// the repo, so on a clean machine it returns None and the bench stronger-check
+/// is skipped — the --help and ROCm-linkage checks remain authoritative.
+fn find_verification_model(home: &str, clone_dir: &str) -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from(home)
+            .join(".mlstack/models")
+            .join(VERIFICATION_MODEL_FILENAME),
+        PathBuf::from(clone_dir)
+            .join("models")
+            .join(VERIFICATION_MODEL_FILENAME),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// Hugging Face source for the verification model (official ggml-org GGUF repo).
+/// Q4_0 quant (~430 MB) — small so the download is fast; llama-bench takes the
+/// model path as an argument so any GGUF works. NOTE: the repo filename is
+/// lowercase (`Qwen3-0.6B-Q4_0.gguf`); HF is case-sensitive, so the casing here
+/// must match exactly or the download 404s (the prior `F16.gguf` always 404'd).
+const VERIFICATION_MODEL_URL: &str =
+    "https://huggingface.co/ggml-org/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf";
+
+/// Ensure a verification model exists for the llama-bench stronger check.
+/// Returns an already-present model if one is found, else downloads the small
+/// F16 gguf from Hugging Face into `~/.mlstack/models/`. Returns `None` only if
+/// the download fails or the result is not a valid GGUF (so a HF error page can
+/// never masquerade as a model). When `None`, the bench check is SKIPPED, not
+/// failed — the `--help` + ROCm-linkage checks remain authoritative.
+fn ensure_verification_model(home: &str, clone_dir: &str) -> Option<PathBuf> {
+    if let Some(p) = find_verification_model(home, clone_dir) {
+        return Some(p);
     }
-    // Also check the fork_dir directly
-    for relative in VERIFICATION_MODEL_SEARCH_PATHS {
-        let candidate =
-            PathBuf::from(fork_dir).join(relative.trim_start_matches("llama.cpp-turboquant-hip/"));
-        if candidate.exists() {
-            return Some(candidate);
-        }
+    ensure_default_gguf_model(home)
+}
+
+/// Ensure the canonical verification/benchmark GGUF model exists at
+/// `~/.mlstack/models/<FILENAME>`, downloading it from the canonical URL if
+/// absent. Shared by the llama.cpp installer verification AND the benchmark
+/// runner so there is one download path and one model URL. Validates with
+/// `is_gguf` and removes any corrupt/error file left behind. `curl -s` keeps
+/// it silent so it does not corrupt the TUI's alternate screen.
+pub fn ensure_default_gguf_model(home: &str) -> Option<PathBuf> {
+    let dest = PathBuf::from(home)
+        .join(".mlstack")
+        .join("models")
+        .join(VERIFICATION_MODEL_FILENAME);
+    if dest.exists() && is_gguf(&dest) {
+        return Some(dest);
     }
-    None
+    let _ = fs::create_dir_all(dest.parent().unwrap_or(Path::new(".")));
+    let ok = std::process::Command::new("curl")
+        .args(["-fLs", "--connect-timeout", "20", "--retry", "2", "-o"])
+        .arg(&dest)
+        .arg(VERIFICATION_MODEL_URL)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok && dest.exists() && is_gguf(&dest) {
+        Some(dest)
+    } else {
+        let _ = fs::remove_file(&dest); // don't leave a corrupt/error file behind
+        None
+    }
+}
+
+/// True if `path` begins with the GGUF magic ("GGUF" = 0x47 47 55 46).
+fn is_gguf(path: &Path) -> bool {
+    let mut buf = [0u8; 4];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .is_ok()
+        && buf == *b"GGUF"
 }
 
 /// Performs stronger-than---help post-install verification on the installed binary.
@@ -1318,6 +1473,46 @@ fn find_verification_model(home: &str, fork_dir: &str) -> Option<PathBuf> {
 /// Runs from the installed path (VAL-CROSS-009, VAL-CROSS-011).
 /// Attempts llama-bench with a small model for VAL-CROSS-010.
 /// Runs rdna3_validation if available for RDNA3 proof (VAL-CROSS-011).
+/// Run a ROCm tool (llama-cli / llama-bench / rdna3_validation) with
+/// `~/.mlstack_env` sourced so the device filter (ROCR/HIP_VISIBLE_DEVICES —
+/// iGPUs excluded) is honored. Without this, a tool launched from an unsourced
+/// shell enumerates every ROCm device including integrated GPUs, which crashes
+/// when probing them. Args are shell-quoted (model paths may contain spaces).
+fn run_rocm_tool_with_env(
+    home: &str,
+    program: &str,
+    args: &[&str],
+) -> std::io::Result<std::process::Output> {
+    let env_file = format!("{}/.mlstack_env", home);
+    // The tool's shared libs (libggml*.so) install to a sibling `lib/` dir
+    // (bin/../lib), NOT beside the binary. Without LD_LIBRARY_PATH pointing
+    // there, the loader can't find them and `llama-cli --help` / `llama-bench`
+    // fail to even start — false verification failures. Add the sibling lib/.
+    let lib_export = Path::new(program)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("lib"))
+        .filter(|d| d.exists())
+        .map(|d| {
+            format!(
+                "export LD_LIBRARY_PATH=\"{}:$LD_LIBRARY_PATH\"\n",
+                d.display()
+            )
+        })
+        .unwrap_or_default();
+    let mut script = format!(
+        "source '{}' 2>/dev/null\n{}exec '{}'",
+        env_file, lib_export, program
+    );
+    for a in args {
+        script.push_str(&format!(" '{}'", a.replace('\'', "'\\''")));
+    }
+    std::process::Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .output()
+}
+
 pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerification {
     let bin_dir = resolve_install_bin_dir(home);
     let cli_path = bin_dir.join(DETECTION_BINARY);
@@ -1341,10 +1536,11 @@ pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerific
 
     // ── Step 1: Basic --help check ──────────────────────────────────
     if cli_path.exists() {
-        match std::process::Command::new(&cli_path)
-            .arg(DETECTION_SUBCOMMAND)
-            .output()
-        {
+        match run_rocm_tool_with_env(
+            home,
+            cli_path.to_str().unwrap_or(""),
+            &[DETECTION_SUBCOMMAND],
+        ) {
             Ok(out) => {
                 result.help_check_passed = out.status.success();
             }
@@ -1356,18 +1552,16 @@ pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerific
 
     // ── Step 2: Stronger check via llama-bench (if available) ──────
     if bench_path.exists() {
-        result.stronger_check_attempted = true;
-        if let Some(model_path) = find_verification_model(home, fork_dir) {
-            if let Ok(out) = std::process::Command::new(&bench_path)
-                .arg("-m")
-                .arg(model_path.to_str().unwrap_or(""))
-                .arg("-p")
-                .arg("128")
-                .arg("-n")
-                .arg("32")
-                .arg("-ngl")
-                .arg("33")
-                .output()
+        // ensure_verification_model downloads the small F16 gguf from HF on
+        // demand. Only mark the stronger check "attempted" when we actually
+        // obtain a model — otherwise the bench is SKIPPED (not FAILED), so a
+        // missing/offline model never blocks install success.
+        if let Some(model_path) = ensure_verification_model(home, fork_dir) {
+            result.stronger_check_attempted = true;
+            let model_str = model_path.to_str().unwrap_or("");
+            let bench_args: [&str; 8] = ["-m", model_str, "-p", "128", "-n", "32", "-ngl", "33"];
+            if let Ok(out) =
+                run_rocm_tool_with_env(home, bench_path.to_str().unwrap_or(""), &bench_args)
             {
                 if out.status.success() {
                     result.stronger_check_passed = true;
@@ -1393,7 +1587,7 @@ pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerific
     // ── Step 3: RDNA3 proof (if available) ─────────────────────────
     if rdna3_path.exists() {
         result.rdna3_check_attempted = true;
-        if let Ok(out) = std::process::Command::new(&rdna3_path).output() {
+        if let Ok(out) = run_rocm_tool_with_env(home, rdna3_path.to_str().unwrap_or(""), &[]) {
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 result.is_rdna3_device = Some(stdout.contains("Is RDNA3: YES"));
@@ -1607,7 +1801,7 @@ mod tests {
 
         assert!(flags.contains(&"-DGGML_HIP=ON".to_string()));
         assert!(flags.contains(&"-DGPU_TARGETS=gfx1030;gfx1100;gfx1101".to_string()));
-        assert!(flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
+        assert!(flags.contains(&"-DGGML_HIP_RDNA3_PROBES=OFF".to_string()));
         assert!(flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
     }
 
@@ -1623,7 +1817,7 @@ mod tests {
 
         assert!(flags.contains(&"-DGGML_HIP=ON".to_string()));
         assert!(flags.contains(&"-DGPU_TARGETS=gfx1030;gfx1100;gfx1101;gfx1200".to_string()));
-        assert!(flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
+        assert!(flags.contains(&"-DGGML_HIP_RDNA3_PROBES=OFF".to_string()));
         assert!(flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
     }
 
@@ -1652,9 +1846,9 @@ mod tests {
         assert!(!legacy_flags
             .iter()
             .any(|flag| flag.contains("RDNA3_PROBES") || flag.contains("ROCWMMA_FATTN")));
-        assert!(stable_flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
+        assert!(stable_flags.contains(&"-DGGML_HIP_RDNA3_PROBES=OFF".to_string()));
         assert!(stable_flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
-        assert!(latest_flags.contains(&"-DGGML_HIP_RDNA3_PROBES=ON".to_string()));
+        assert!(latest_flags.contains(&"-DGGML_HIP_RDNA3_PROBES=OFF".to_string()));
         assert!(latest_flags.contains(&"-DGGML_HIP_ROCWMMA_FATTN=ON".to_string()));
     }
 
@@ -1686,6 +1880,22 @@ mod tests {
         fs::write(
             temp.path(),
             "GGML_HIP:BOOL=ON\nGGML_CUDA:BOOL=OFF\nGPU_TARGETS:STRING=gfx1030;gfx1100;gfx1101\n",
+        )
+        .unwrap();
+
+        assert!(validate_cmake_cache(temp.path(), "gfx1030;gfx1100;gfx1101").is_ok());
+    }
+
+    #[test]
+    fn test_validate_cmake_cache_accepts_uninitialized_gpu_targets() {
+        // Regression: a typeless `-DGPU_TARGETS=...` is stored by CMake as
+        // GPU_TARGETS:UNINITIALIZED=..., not :STRING=. The validator must accept
+        // the value regardless of cache type (the prior hard-coded ":STRING="
+        // prefix rejected this valid configure and broke every source build).
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            temp.path(),
+            "GGML_HIP:BOOL=ON\nGGML_CUDA:BOOL=OFF\nGPU_TARGETS:UNINITIALIZED=gfx1030;gfx1100;gfx1101\n",
         )
         .unwrap();
 
@@ -1730,15 +1940,25 @@ mod tests {
         let installer = LlamaCppInstaller::new(config);
         let commands = installer.build_commands("/home/testuser");
 
-        // Should have 7 commands: mkdir, clone, checkout, cmake configure, build, install, purge
-        assert_eq!(commands.len(), 7);
-        assert_eq!(commands[0].program, "mkdir");
+        // Should have 6 commands: clear+mkdir, clone, checkout, cmake configure,
+        // build-and-install (single `--target install` step), purge.
+        assert_eq!(commands.len(), 6);
+        // commands[0] clears any stale build dir then recreates it (idempotent re-runs).
+        assert_eq!(commands[0].program, "sh");
+        assert!(commands[0]
+            .args
+            .iter()
+            .any(|a| a.contains("rm -rf") && a.contains("mkdir -p")));
         assert_eq!(commands[1].program, "git");
         assert_eq!(commands[2].program, "git");
         assert_eq!(commands[3].program, "cmake");
+        // commands[4] = the merged build+install (`cmake --build build --target install`).
         assert_eq!(commands[4].program, "cmake");
-        assert_eq!(commands[5].program, "cmake");
-        assert_eq!(commands[6].program, "sh");
+        assert!(
+            commands[4].args.iter().any(|a| a == "--target")
+                && commands[4].args.iter().any(|a| a == "install")
+        );
+        assert_eq!(commands[5].program, "sh");
     }
 
     #[test]
