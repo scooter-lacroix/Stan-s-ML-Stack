@@ -4526,6 +4526,17 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Step 4: fail loud if the explicit --no-deps closure is incomplete.
+            // This is read-only: it prevents a false "vLLM completed" without
+            // letting pip mutate torch/ROCm/NVIDIA/CUDA dependencies.
+            let cmd = inst.build_integrity_check_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── aiter ─────────────────────────────────────────────────────

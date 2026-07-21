@@ -424,6 +424,19 @@ impl VllmInstaller {
         }
     }
 
+    /// Validate that the vLLM dependency closure is internally consistent.
+    ///
+    /// This is intentionally read-only. It catches stale or missing packages
+    /// after Rusty's `--no-deps` installs without allowing pip to mutate torch,
+    /// ROCm, CUDA/NVIDIA libraries, or any other stack component.
+    pub fn build_integrity_check_command(&self) -> ShellCommand {
+        ShellCommand {
+            program: self.config.python_bin.clone(),
+            args: vec!["-m".to_string(), "pip".to_string(), "check".to_string()],
+            env: vec![],
+        }
+    }
+
     /// Construct the Triton cache environment setup command.
     ///
     /// Sets up writable cache directories for Triton kernel compilation.
@@ -758,6 +771,15 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg.to_ascii_lowercase().contains("cuda")));
+    }
+
+    #[test]
+    fn test_integrity_check_command_is_read_only() {
+        let installer = VllmInstaller::with_defaults();
+        let cmd = installer.build_integrity_check_command();
+        assert_eq!(cmd.program, "python3");
+        assert_eq!(cmd.args, vec!["-m", "pip", "check"]);
+        assert!(cmd.env.is_empty());
     }
 
     #[test]
