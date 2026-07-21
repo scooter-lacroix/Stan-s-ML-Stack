@@ -305,6 +305,56 @@ impl MigraphxInstaller {
 }
 
 // ===========================================================================
+// Functional runtime checks (detection + verification)
+// ===========================================================================
+//
+// On Arch/CachyOS the `migraphx` pip wheel does not exist — only the C++
+// toolchain ships (`/opt/rocm/bin/migraphx-driver` + libs). Detection and
+// verification therefore cannot rely on `import migraphx` alone; they must also
+// confirm the driver actually LOADS. A driver that fails to load its shared
+// libraries is NOT functional — the classic cause on a rolling-release distro
+// is a SONAME desync from a partial upgrade: migraphx is built against
+// libprotobuf.so.35.1.0 / libabsl_*.so.2605.0.0 but the system still has the
+// older libprotobuf.so.35.0.0 / older abseil. `sudo pacman -Syu` resolves it.
+
+/// Run `migraphx-driver --version`. Returns `Ok(())` if it loads, or
+/// `Err(missing_libs)` listing the shared libraries that failed to load (from
+/// `ldd`), so the failure is actionable rather than a vague "verify error".
+pub fn migraphx_driver_status() -> Result<(), Vec<String>> {
+    let driver = std::process::Command::new("/opt/rocm/bin/migraphx-driver")
+        .arg("--version")
+        .output();
+    match driver {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(_) => Err(migraphx_missing_libs()),
+        Err(_) => Err(vec![
+            "/opt/rocm/bin/migraphx-driver not found (is the migraphx package installed?)"
+                .to_string(),
+        ]),
+    }
+}
+
+/// Boolean form of [`migraphx_driver_status`] for detection.
+pub fn migraphx_driver_functional() -> bool {
+    migraphx_driver_status().is_ok()
+}
+
+/// Collect the `=> not found` shared libraries from `ldd migraphx-driver`.
+fn migraphx_missing_libs() -> Vec<String> {
+    match std::process::Command::new("ldd")
+        .arg("/opt/rocm/bin/migraphx-driver")
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| l.contains("not found"))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 

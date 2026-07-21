@@ -186,60 +186,6 @@ impl MigraphxPythonInstaller {
         }
     }
 
-    /// Construct the ROCm environment setup for the install.
-    ///
-    /// Stage 1: never trust inherited `HIP_VISIBLE_DEVICES` verbatim — the
-    /// parent env may carry the iGPU index (the root cause of the LeIndex
-    /// ONNX/MIGraphX worker failure). Re-derive the dGPU list from the
-    /// canonical discrete detector; only honor an inherited value when it is a
-    /// strict subset of the detected dGPUs (preserves intentional narrowing).
-    ///
-    /// A visibility mask is emitted ONLY when at least one discrete GPU is
-    /// confirmed. When no dGPU is detected (iGPU-only / detection failure) the
-    /// `HIP_VISIBLE_DEVICES`/`ROCR_VISIBLE_DEVICES` keys are left unset so the
-    /// process inherits the caller's environment — never leaking a default
-    /// `"0"` (which would make the iGPU the only visible device).
-    pub fn build_rocm_env(&self) -> Vec<(String, String)> {
-        let detected: Vec<String> = crate::installer::detect_discrete_gpus();
-        let detected_set: std::collections::HashSet<&str> =
-            detected.iter().map(|s| s.as_str()).collect();
-
-        let gpu_visible = std::env::var("HIP_VISIBLE_DEVICES")
-            .or_else(|_| std::env::var("CUDA_VISIBLE_DEVICES"))
-            .ok()
-            .and_then(|v| {
-                let inherited: Vec<&str> = v
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                let all_subset = !inherited.is_empty()
-                    && inherited.iter().all(|idx| detected_set.contains(*idx));
-                if all_subset {
-                    Some(inherited.join(","))
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
-                if detected.is_empty() {
-                    None
-                } else {
-                    Some(detected.join(","))
-                }
-            });
-
-        let mut env = vec![
-            ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
-            ("AMD_LOG_LEVEL".to_string(), "0".to_string()),
-        ];
-        if let Some(visible) = gpu_visible {
-            env.push(("HIP_VISIBLE_DEVICES".to_string(), visible.clone()));
-            env.push(("ROCR_VISIBLE_DEVICES".to_string(), visible));
-        }
-        env
-    }
-
     /// Get the package name.
     pub fn package_name(&self) -> &'static str {
         PACKAGE_NAME
@@ -379,16 +325,6 @@ mod tests {
         let cmd = installer.build_python_import_check();
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.iter().any(|a| a.contains("import migraphx")));
-    }
-
-    #[test]
-    fn test_rocm_env() {
-        let installer = MigraphxPythonInstaller::with_defaults();
-        let env = installer.build_rocm_env();
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, v)| k == "AMD_LOG_LEVEL" && v == "0"));
     }
 
     // --- Arch-specific availability tests ---

@@ -27,11 +27,11 @@ use rusty_stack::state::{default_components, Category, Component};
 
 #[test]
 fn test_all_35_native_components_recognized() {
-    // 24 installer + 9 benchmark + 1 fastvideo + 1 llama-cpp = 35
+    // 26 installer (flash-attn kept as canonical + triton/ck split) + 9 benchmark + 1 fastvideo + 1 llama-cpp = 37
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),
-        35,
-        "Must have exactly 35 native components (24 installers + 9 benchmarks + 1 fastvideo + 1 llama-cpp)"
+        37,
+        "Must have exactly 37 native components (26 installers + 9 benchmarks + 1 fastvideo + 1 llama-cpp)"
     );
 
     for id in NATIVE_COMPONENT_IDS {
@@ -50,7 +50,7 @@ fn test_no_bash_dispatch_for_native_components() {
     let components = default_components();
     let native_installers: Vec<&Component> = components
         .iter()
-        .filter(|c| c.category != Category::Verification && c.category != Category::Performance)
+        .filter(|c| c.category != Category::Maintenance && c.category != Category::Performance)
         .collect();
 
     for comp in &native_installers {
@@ -125,9 +125,11 @@ fn test_component_is_native_method() {
 #[test]
 fn test_verification_components_use_native_rust() {
     let components = default_components();
+    // verify-* live in the Maintenance category alongside repair-stack; filter
+    // by id prefix to isolate the three verification components.
     let verification: Vec<&Component> = components
         .iter()
-        .filter(|c| c.category == Category::Verification)
+        .filter(|c| c.id.starts_with("verify-"))
         .collect();
 
     assert_eq!(verification.len(), 3, "Must have 3 verification components");
@@ -195,15 +197,11 @@ fn test_deepspeed_depends_on_pytorch() {
 
 #[test]
 fn test_flash_attention_depends_on_pytorch_and_rocm() {
-    let deps = get_dependencies("flash-attn");
-    assert!(
-        deps.contains(&"pytorch"),
-        "Flash Attention must depend on pytorch"
-    );
-    assert!(
-        deps.contains(&"rocm"),
-        "Flash Attention must depend on rocm"
-    );
+    for id in &["flash-attn-triton", "flash-attn-ck"] {
+        let deps = get_dependencies(id);
+        assert!(deps.contains(&"pytorch"), "{id} must depend on pytorch");
+        assert!(deps.contains(&"rocm"), "{id} must depend on rocm");
+    }
 }
 
 #[test]
@@ -266,7 +264,7 @@ fn test_topological_sort_orders_dependencies_before_dependents() {
 fn test_topological_sort_complex_dependency_chain() {
     let ids = vec![
         "megatron".to_string(),
-        "flash-attn".to_string(),
+        "flash-attn-triton".to_string(),
         "vllm".to_string(),
         "aiter".to_string(),
         "onnx".to_string(),
@@ -282,7 +280,7 @@ fn test_topological_sort_complex_dependency_chain() {
 
     // Verify declared dependency constraints
     // rocm -> flash-attn, onnx, aiter
-    assert!(pos("rocm") < pos("flash-attn"));
+    assert!(pos("rocm") < pos("flash-attn-triton"));
     assert!(pos("rocm") < pos("onnx"));
     assert!(pos("rocm") < pos("aiter"));
     // pytorch -> megatron, vllm, deepspeed, flash-attn, aiter, comfyui
@@ -326,7 +324,7 @@ fn test_every_native_component_has_installer_module() {
             "ml-stack-core" => {
                 let _ = MlStackInstaller::with_defaults();
             }
-            "flash-attn" => {
+            "flash-attn" | "flash-attn-triton" | "flash-attn-ck" => {
                 let _ = FlashAttentionInstaller::with_defaults();
             }
             "megatron" => {
@@ -354,7 +352,7 @@ fn test_every_native_component_has_installer_module() {
                 let _ = BitsAndBytesInstaller::with_defaults();
             }
             "rocm-smi" => {
-                let _ = RocmSmiInstaller::with_defaults();
+                let _ = RocmSmiInstaller::new();
             }
             "migraphx" => {
                 let _ = MigraphxInstaller::with_defaults();

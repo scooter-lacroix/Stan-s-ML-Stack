@@ -22,14 +22,14 @@
 
 ## Phase 2 — Functional verification (real, not import-only)
 
-- [x] **2.1 Smoke test implementation:** initialize FastVideo and run `fastvideo_kernel.int8_quant` on **each visible logical GPU**, synchronizing and checking dtype, shape, and finite scale. Both component-specific and aggregate verification paths use the same snippet.
-  - Runtime execution on gfx1100 + gfx1101 remains in **Validate (user runs)** below.
+- [x] **2.1 Smoke test implementation:** isolate **each physical ROCr visibility token** in its own child process, clear conflicting HIP/CUDA/legacy AMD masks, and run `fastvideo_kernel.int8_quant` on the child's logical `cuda:0`, synchronizing and checking dtype, shape, finite scale, and GPU identity. Both component-specific and aggregate verification paths use the same snippet.
+  - Runtime execution passed on gfx1100 + gfx1101.
 
 ## Phase 3 — Flash-attn routing (needs source investigation first)
 
 - [x] **3.1 Source study:** pinned fork `22e448771ebf5c81108f1c57b9c7ef4d5c26d182` imports the environment package's public and private `flash_attn` APIs from Python. Bundled FlashAttention C++ is removed.
 - [x] **3.2 Backend selection:** the installer preflight reads `~/.mlstack/flash-attention/.backend`, accepts exactly `ck` or `triton`, and imports the required public/private APIs. Current backend: **CK**.
-- [ ] **3.3 User installation/runtime validation:** Rusty will install the root package dependency-free against managed `flash_attn`. The user will run the actual Rusty installer and compiled-op smoke on both dGPUs.
+- [x] **3.3 User installation/runtime validation:** Rusty installed the root package dependency-free against managed `flash_attn`; the compiled-op smoke passed on both dGPUs.
 
 ---
 
@@ -39,12 +39,12 @@
 - [x] Code commit: `5beed1c` (`fix(rusty-stack): harden FastVideo ROCm install`).
 - [x] Atomic binary replacement complete; source/deployed SHA-256: `18007be04bd194b94562220532ac6c983aef1319aacb9b694fe9469099ac2130` (`rusty-stack 0.3.1`).
 
-## Validate (user runs)
-- [ ] Install FastVideo through the replaced Rusty binary.
-- [ ] Confirm the installer builds both `gfx1100` and `gfx1101`.
-- [ ] Confirm the shared compiled-op smoke passes on 7900 XTX + 7800 XT.
-- [ ] Confirm FlashAttention routes to the Rusty-managed CK/Triton package.
-- [ ] Confirm the post-install distribution guard reports no dependency changes or NVIDIA/CUDA packages.
+## Validated on target system
+- [x] FastVideo installed through the replaced Rusty binary.
+- [x] Installer built both `gfx1100` and `gfx1101`.
+- [x] Shared compiled-op smoke passed on 7900 XTX + 7800 XT.
+- [x] FlashAttention routed to the Rusty-managed CK package.
+- [x] Post-install distribution guard reported no dependency changes or NVIDIA/CUDA packages.
 
 ---
 

@@ -173,45 +173,76 @@ pub fn fastvideo_build_warning(gpu_archs: &str) -> String {
 
 /// Functional FastVideo verification run through the selected Python interpreter.
 ///
-/// The runner already applies ROCr/HIP/CUDA visibility masks, so this uses only
-/// PyTorch's logical device indices. Each visible device must execute the
-/// compiled FastVideo INT8 quantization kernel and satisfy its output contract.
+/// Each physical ROCr visibility token gets its own child process. Removing the
+/// inherited HIP/CUDA masks prevents them from filtering the child's renumbered
+/// logical device 0.
 pub fn fastvideo_verification_snippet() -> &'static str {
-    r#"import fastvideo
+    r#"import os
+import subprocess
+import sys
+
+probe = r"""
+import fastvideo
 import torch
 from fastvideo_kernel import int8_quant
 
 if not torch.cuda.is_available():
     raise SystemExit("FastVideo verification requires an available ROCm GPU")
 device_count = torch.cuda.device_count()
-if device_count < 1:
+if device_count != 1:
+    raise SystemExit(f"FastVideo verification expected one isolated ROCm GPU, found {device_count}")
+
+device = "cuda:0"
+source = torch.randn(
+    (2, 128),
+    device=device,
+    dtype=torch.float16,
+).contiguous()
+quantized, scale = int8_quant(source)
+torch.cuda.synchronize()
+
+shape_ok = quantized.shape == source.shape
+dtype_ok = quantized.dtype == torch.int8
+scale_finite = bool(torch.isfinite(scale).all().item())
+if not (shape_ok and dtype_ok and scale_finite):
+    raise SystemExit(
+        "FastVideo int8_quant invariant failed on device 0: "
+        f"shape_ok={shape_ok} dtype={quantized.dtype} scale_finite={scale_finite}"
+    )
+
+name = torch.cuda.get_device_name(0)
+print(
+    f"[FastVideo] device=0 name={name} int8_quant=ok "
+    f"shape={tuple(quantized.shape)} dtype={quantized.dtype} "
+    f"scale_finite={scale_finite}"
+)
+"""
+
+visible = os.environ.get("ROCR_VISIBLE_DEVICES", "")
+devices = [device.strip() for device in visible.split(",") if device.strip()]
+if not devices:
+    env = os.environ.copy()
+    env.pop("HIP_VISIBLE_DEVICES", None)
+    env.pop("CUDA_VISIBLE_DEVICES", None)
+    env.pop("GPU_DEVICE_ORDINAL", None)
+    discovered = subprocess.run(
+        [sys.executable, "-c", "import torch; print(torch.cuda.device_count())"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    devices = [str(device) for device in range(int(discovered.stdout.strip()))]
+if not devices:
     raise SystemExit("FastVideo verification requires at least one visible ROCm GPU")
 
-for device in range(device_count):
-    with torch.cuda.device(device):
-        source = torch.randn(
-            (2, 128),
-            device=f'cuda:{device}',
-            dtype=torch.float16,
-        ).contiguous()
-        quantized, scale = int8_quant(source)
-        torch.cuda.synchronize(device)
-
-        shape_ok = quantized.shape == source.shape
-        dtype_ok = quantized.dtype == torch.int8
-        scale_finite = bool(torch.isfinite(scale).all().item())
-        if not (shape_ok and dtype_ok and scale_finite):
-            raise SystemExit(
-                f"FastVideo int8_quant invariant failed on device {device}: "
-                f"shape_ok={shape_ok} dtype={quantized.dtype} scale_finite={scale_finite}"
-            )
-
-        name = torch.cuda.get_device_name(device)
-        print(
-            f"[FastVideo] device={device} name={name} int8_quant=ok "
-            f"shape={tuple(quantized.shape)} dtype={quantized.dtype} "
-            f"scale_finite={scale_finite}"
-        )
+for device in devices:
+    env = os.environ.copy()
+    env["ROCR_VISIBLE_DEVICES"] = device
+    env.pop("HIP_VISIBLE_DEVICES", None)
+    env.pop("CUDA_VISIBLE_DEVICES", None)
+    env.pop("GPU_DEVICE_ORDINAL", None)
+    subprocess.run([sys.executable, "-c", probe], check=True, env=env)
 "#
 }
 
@@ -1039,28 +1070,37 @@ mod tests {
     }
 
     #[test]
-    fn test_verification_snippet_runs_compiled_kernel_on_every_visible_gpu() {
+    fn test_verification_snippet_isolates_each_visible_gpu_with_rocr_only() {
         use std::process::Command;
 
         let snippet = fastvideo_verification_snippet();
         for anchor in [
+            "import os",
+            "import subprocess",
             "import fastvideo",
             "import torch",
             "from fastvideo_kernel import int8_quant",
             "torch.cuda.is_available()",
             "torch.cuda.device_count()",
-            "range(device_count)",
-            "with torch.cuda.device(device):",
+            "visible = os.environ.get(\"ROCR_VISIBLE_DEVICES\", \"\")",
+            "devices = [device.strip() for device in visible.split(\",\") if device.strip()]",
+            "for device in devices:",
+            "env = os.environ.copy()",
+            "env[\"ROCR_VISIBLE_DEVICES\"] = device",
+            "env.pop(\"HIP_VISIBLE_DEVICES\", None)",
+            "env.pop(\"CUDA_VISIBLE_DEVICES\", None)",
+            "env.pop(\"GPU_DEVICE_ORDINAL\", None)",
+            "subprocess.run(",
+            "device = \"cuda:0\"",
             "(2, 128)",
-            "device=f'cuda:{device}'",
             "dtype=torch.float16",
             ".contiguous()",
             "int8_quant(source)",
-            "torch.cuda.synchronize(device)",
+            "torch.cuda.synchronize()",
             "quantized.shape == source.shape",
             "quantized.dtype == torch.int8",
             "torch.isfinite(scale).all()",
-            "torch.cuda.get_device_name(device)",
+            "torch.cuda.get_device_name(0)",
             "raise SystemExit",
         ] {
             assert!(
@@ -1069,10 +1109,10 @@ mod tests {
             );
         }
 
-        for forbidden in ["rocminfo", "/sys/class/drm", "ROCR_VISIBLE_DEVICES"] {
+        for forbidden in ["rocminfo", "/sys/class/drm"] {
             assert!(
                 !snippet.contains(forbidden),
-                "snippet must use runner-provided logical visibility, found {forbidden}"
+                "snippet must use Python/ROCr visibility, found {forbidden}"
             );
         }
 
