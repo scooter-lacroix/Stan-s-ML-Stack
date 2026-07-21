@@ -1614,12 +1614,21 @@ def _main():
                 pass
         except Exception:
             pass
+        # vLLM 0.25.0's ROCm V1 multiprocessing engine path can hang or fail
+        # before the offline LLM benchmark reaches real generation. Keep the
+        # benchmark environment sourced from ~/.mlstack_env, but force the local
+        # benchmark process onto vLLM's in-process EngineCore path via vLLM's
+        # lazy module setting instead of mutating os.environ.
+        import vllm.envs as _vllm_envs
+        _vllm_envs.environment_variables["VLLM_ENABLE_V1_MULTIPROCESSING"] = lambda: False
+        if hasattr(_vllm_envs.__getattr__, "cache_clear"):
+            _vllm_envs.__getattr__.cache_clear()
         import vllm
         from vllm import LLM, SamplingParams
         logging.getLogger("vllm").setLevel(logging.ERROR)
         sampling_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
         startup_start = time.perf_counter()
-        _emit({"event": "startup_begin", "phase": "vllm_startup"})
+        _emit({"event": "startup_begin", "phase": "vllm_startup", "vllm_v1_multiprocessing": False})
         llm = LLM(**llm_kwargs)
         startup_ms = int((time.perf_counter() - startup_start) * 1000)
         _emit({"event": "startup_complete", "phase": "vllm_startup", "startup_ms": startup_ms})
@@ -1645,6 +1654,7 @@ def _main():
             "throughput_tokens_per_sec": round(throughput, 2),
             "latency_ms": round((generation_elapsed / max(len(prompts), 1)) * 1000, 2),
             "throughput_samples": [round(x, 2) for x in throughput_samples],
+            "vllm_v1_multiprocessing": False,
         })
     except Exception as exc:
         tb = traceback.format_exc().strip()
@@ -1806,6 +1816,7 @@ if __name__ == "__main__":
             "timeout_ms",
             "timeout_limit_ms",
             "vllm_timeout_phase",
+            "vllm_v1_multiprocessing",
         ):
             if key in attempt:
                 last_attempt_metrics[key] = attempt[key]
@@ -1823,6 +1834,7 @@ if __name__ == "__main__":
                 "throughput_samples": [
                     float(x) for x in (attempt.get("throughput_samples") or [])
                 ],
+                "vllm_v1_multiprocessing": attempt.get("vllm_v1_multiprocessing"),
                 "candidate_models": candidate_names,
             }, []
         err_msg = str(attempt.get("error") or "unknown vLLM execution error")
@@ -2505,6 +2517,16 @@ mod tests {
         assert!(!PY_HELPER.contains(r#"os.environ["VLLM_TARGET_DEVICE"]"#));
         assert!(!PY_HELPER.contains(r#"os.environ["HIP_VISIBLE_DEVICES"]"#));
         assert!(!PY_HELPER.contains(r#"os.environ["CUDA_VISIBLE_DEVICES"]"#));
+        assert!(!PY_HELPER.contains(r#"os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"]"#));
+    }
+
+    #[test]
+    fn vllm_benchmark_disables_v1_multiprocessing_without_env_mutation() {
+        assert!(PY_HELPER.contains("import vllm.envs as _vllm_envs"));
+        assert!(PY_HELPER.contains(
+            r#"_vllm_envs.environment_variables["VLLM_ENABLE_V1_MULTIPROCESSING"] = lambda: False"#
+        ));
+        assert!(PY_HELPER.contains(r#""vllm_v1_multiprocessing": False"#));
     }
 
     #[test]
