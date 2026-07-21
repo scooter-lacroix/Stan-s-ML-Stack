@@ -5009,7 +5009,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: Run model optimizer on known .onnx model paths
+            // Step 3: Validate AMD execution provider availability before accepting install
+            let cmd = inst.build_provider_validation_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program,
+                    &cmd.args,
+                    &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 4: Run model optimizer on known .onnx model paths
             let model_dirs = [
                 dirs::home_dir().map(|h| h.join(".mlstack/models")),
                 dirs::home_dir().map(|h| h.join(".local/share/models")),

@@ -204,6 +204,8 @@ impl OnnxRuntimeInstaller {
                 "pip".to_string(),
                 "install".to_string(),
                 "--upgrade".to_string(),
+                "--force-reinstall".to_string(),
+                "--no-deps".to_string(),
                 "--prefer-binary".to_string(),
                 "onnxruntime-rocm".to_string(),
             ],
@@ -258,8 +260,47 @@ impl OnnxRuntimeInstaller {
                 "pip".to_string(),
                 "install".to_string(),
                 "--upgrade".to_string(),
+                "--force-reinstall".to_string(),
+                "--no-deps".to_string(),
+                "--no-cache-dir".to_string(),
                 url,
             ],
+            env: vec![],
+            working_dir: None,
+        }
+    }
+
+    /// Construct a provider validation command for AMD ONNX Runtime.
+    pub fn build_provider_validation_command(&self) -> ShellCommand {
+        let script = r#"
+import ctypes
+import os
+import onnxruntime as ort
+
+priority = ["MIGraphXExecutionProvider", "ROCMExecutionProvider"]
+available = ort.get_available_providers()
+selected = next((p for p in priority if p in available), None)
+if selected is None:
+    capi = os.path.join(os.path.dirname(ort.__file__), "capi")
+    loader_errors = []
+    for lib in ("libonnxruntime_providers_migraphx.so", "libonnxruntime_providers_rocm.so"):
+        path = os.path.join(capi, lib)
+        if os.path.exists(path):
+            try:
+                ctypes.CDLL(path)
+            except OSError as exc:
+                loader_errors.append(f"{lib}: {exc}")
+    raise SystemExit(
+        "ONNX Runtime AMD provider unavailable; expected MiGraphXExecutionProvider "
+        f"or legacy ROCMExecutionProvider; available={available}; "
+        f"loader_errors={loader_errors or 'none'}"
+    )
+print(f"ONNX Runtime AMD provider ready: {selected}; available={available}")
+"#;
+
+        ShellCommand {
+            program: self.config.python_bin.clone(),
+            args: vec!["-c".to_string(), script.trim().to_string()],
             env: vec![],
             working_dir: None,
         }
@@ -279,11 +320,13 @@ impl OnnxRuntimeInstaller {
 
         let script = format!(
             "import onnxruntime as ort; \
+             providers = [p for p in ['MIGraphXExecutionProvider', 'ROCMExecutionProvider'] if p in ort.get_available_providers()]; \
+             assert providers, f'No AMD ONNX Runtime provider available: {{ort.get_available_providers()}}'; \
              opts = ort.SessionOptions(); \
              opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL; \
              opts.optimized_model_filepath = '{optimized_path}'; \
-             ort.InferenceSession('{model_path}', opts, providers=['CPUExecutionProvider']); \
-             print('Optimized: {model_path} -> {optimized_path}')"
+             ort.InferenceSession('{model_path}', opts, providers=providers); \
+             print('Optimized: {model_path} -> {optimized_path} using ' + providers[0])"
         );
 
         ShellCommand {
@@ -432,30 +475,7 @@ impl OnnxRuntimeInstaller {
 
         args.push("--allow_running_as_root".to_string());
 
-        let env = vec![
-            ("ROCM_HOME".to_string(), rocm_path.clone()),
-            ("ROCM_PATH".to_string(), rocm_path.clone()),
-            ("HIP_PATH".to_string(), rocm_path),
-            ("PYTHONPATH".to_string(), String::new()),
-            ("CMAKE_PREFIX_PATH".to_string(), "/opt/rocm".to_string()),
-            ("CMAKE_CXX_STANDARD".to_string(), "20".to_string()),
-            (
-                "CMAKE_FIND_PACKAGE_NO_PACKAGE_REGISTRY".to_string(),
-                "ON".to_string(),
-            ),
-            (
-                "CMAKE_FIND_PACKAGE_NO_SYSTEM_PACKAGE_REGISTRY".to_string(),
-                "ON".to_string(),
-            ),
-            (
-                "CMAKE_FIND_USE_PACKAGE_REGISTRY".to_string(),
-                "OFF".to_string(),
-            ),
-            (
-                "CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY".to_string(),
-                "OFF".to_string(),
-            ),
-        ];
+        let env = vec![];
 
         ShellCommand {
             program: "./build.sh".to_string(),
@@ -681,18 +701,14 @@ mod tests {
     }
 
     #[test]
-    fn test_build_command_cmake_cxx_standard_env_var() {
+    fn test_build_command_does_not_override_env_vars() {
         let installer = OnnxRuntimeInstaller::with_defaults();
         let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_build_command(&rocm_env);
 
-        // The CXX standard should also be set as an environment variable for
-        // cmake to pick up during the C++20 standard library test.
         assert!(
-            cmd.env
-                .iter()
-                .any(|(k, v)| k == "CMAKE_CXX_STANDARD" && v == "20"),
-            "build command env must include CMAKE_CXX_STANDARD=20, got env: {:?}",
+            cmd.env.is_empty(),
+            "ONNX build must inherit ~/.mlstack_env, got env: {:?}",
             cmd.env
         );
     }
@@ -712,22 +728,7 @@ mod tests {
         let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
         let cmd = installer.build_build_command(&rocm_env);
 
-        assert!(cmd
-            .env
-            .iter()
-            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
-        assert!(cmd
-            .env
-            .iter()
-            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(cmd
-            .env
-            .iter()
-            .any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
-        assert!(cmd
-            .env
-            .iter()
-            .any(|(k, v)| k == "PYTHONPATH" && v.is_empty()));
+        assert!(cmd.env.is_empty());
     }
 
     #[test]
@@ -789,8 +790,11 @@ mod tests {
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.contains(&"pip".to_string()));
         assert!(cmd.args.contains(&"--upgrade".to_string()));
+        assert!(cmd.args.contains(&"--force-reinstall".to_string()));
+        assert!(cmd.args.contains(&"--no-deps".to_string()));
         assert!(cmd.args.contains(&"--prefer-binary".to_string()));
         assert!(cmd.args.contains(&"onnxruntime-rocm".to_string()));
+        assert!(cmd.env.is_empty());
     }
 
     // --- Git commands ---
@@ -931,11 +935,30 @@ mod tests {
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.contains(&"pip".to_string()));
         assert!(cmd.args.contains(&"install".to_string()));
+        assert!(cmd.args.contains(&"--upgrade".to_string()));
+        assert!(cmd.args.contains(&"--force-reinstall".to_string()));
+        assert!(cmd.args.contains(&"--no-deps".to_string()));
+        assert!(cmd.args.contains(&"--no-cache-dir".to_string()));
         assert!(cmd.args.iter().any(|a| a.contains("repo.radeon.com")));
         assert!(cmd.args.iter().any(|a| a.contains("onnxruntime_migraphx")));
+        assert!(cmd.env.is_empty());
     }
 
-    // --- Model optimizer ---
+    // --- Provider validation / model optimizer ---
+
+    #[test]
+    fn test_provider_validation_command() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let cmd = installer.build_provider_validation_command();
+        assert_eq!(cmd.program, "python3");
+        assert!(cmd.args.contains(&"-c".to_string()));
+        let script = &cmd.args[1];
+        assert!(script.contains("MIGraphXExecutionProvider"));
+        assert!(script.contains("ROCMExecutionProvider"));
+        assert!(script.contains("ctypes.CDLL"));
+        assert!(script.contains("loader_errors"));
+        assert!(cmd.env.is_empty());
+    }
 
     #[test]
     fn test_model_optimizer_command() {
@@ -944,9 +967,13 @@ mod tests {
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.contains(&"-c".to_string()));
         let script = &cmd.args[1];
+        assert!(script.contains("MIGraphXExecutionProvider"));
+        assert!(script.contains("ROCMExecutionProvider"));
+        assert!(!script.contains("CPUExecutionProvider"));
         assert!(script.contains("ORT_ENABLE_ALL"));
         assert!(script.contains("/path/to/model.onnx"));
         assert!(script.contains("/path/to/model.onnx.optimized"));
+        assert!(cmd.env.is_empty());
     }
 
     // --- OnnxInstallMethod ---

@@ -2100,16 +2100,30 @@ def _onnx():
     all_providers = ort.get_available_providers()
     providers_available = list(all_providers)
 
-    if "MIGraphXExecutionProvider" in all_providers:
-        provider = "MIGraphXExecutionProvider"
-    elif "DmlExecutionProvider" in all_providers:
-        provider = "DmlExecutionProvider"
-    elif "ROCMExecutionProvider" in all_providers:
-        provider = "ROCMExecutionProvider"
-    elif "CUDAExecutionProvider" in all_providers:
-        provider = "CUDAExecutionProvider"
-    else:
-        provider = "CPUExecutionProvider"
+    amd_provider_order = ("MIGraphXExecutionProvider", "ROCMExecutionProvider")
+    provider = next((name for name in amd_provider_order if name in all_providers), None)
+    if provider is None:
+        err = (
+            "ONNX Runtime AMD execution provider unavailable; expected "
+            "MiGraphXExecutionProvider or legacy ROCMExecutionProvider; "
+            f"available={providers_available}"
+        )
+        return False, _degraded_metrics("onnx", err, {
+            "ort_version": ort_version,
+            "provider": "none",
+            "providers_available": providers_available,
+            "provider_priority": list(amd_provider_order),
+            "model_load_ms": 0.0,
+            "session_create_ms": 0.0,
+            "inference_latency_p50_ms": 0.0,
+            "inference_latency_p95_ms": 0.0,
+            "inference_latency_p99_ms": 0.0,
+            "throughput_inf_per_sec": 0.0,
+            "input_shape": [],
+            "output_shape": [],
+            "graph_opt_level": "ORT_ENABLE_ALL",
+            "inference_samples": [],
+        }), [err]
 
     try:
         import numpy as np
@@ -2119,6 +2133,7 @@ def _onnx():
             "ort_version": ort_version,
             "provider": provider,
             "providers_available": providers_available,
+            "provider_priority": list(amd_provider_order),
             "model_load_ms": 0.0,
             "session_create_ms": 0.0,
             "inference_latency_p50_ms": 0.0,
@@ -2201,6 +2216,20 @@ def _onnx():
     results = {}
     errors = []
 
+    def _assert_amd_session(session):
+        session_providers = list(session.get_providers())
+        if (
+            provider not in session_providers
+            or not session_providers
+            or session_providers[0] != provider
+            or "CPUExecutionProvider" in session_providers
+        ):
+            raise RuntimeError(
+                "ONNX session did not bind exclusively to AMD provider; "
+                f"selected={provider}; session_providers={session_providers}"
+            )
+        return session_providers
+
     # --- FP32 model benchmark ---
     try:
         if onnx is not None:
@@ -2218,6 +2247,7 @@ def _onnx():
         t0 = time.perf_counter()
         session = ort.InferenceSession(fp32_path, sess_opts, providers=[provider])
         session_create_ms = (time.perf_counter() - t0) * 1000.0
+        session_providers = _assert_amd_session(session)
 
         input_meta = session.get_inputs()[0]
         output_meta = session.get_outputs()[0]
@@ -2261,6 +2291,7 @@ def _onnx():
 
         results.update({
             "fp32_session_create_ms": round(session_create_ms, 2),
+            "fp32_session_providers": session_providers,
             "fp32_inference_latency_p50_ms": round(p50, 3),
             "fp32_inference_latency_p95_ms": round(p95, 3),
             "fp32_inference_latency_p99_ms": round(p99, 3),
@@ -2297,6 +2328,7 @@ def _onnx():
                     quant_path, sess_opts, providers=[provider]
                 )
                 q_create_ms = (time.perf_counter() - t0) * 1000.0
+                q_session_providers = _assert_amd_session(q_session)
 
                 q_input = q_session.get_inputs()[0]
                 q_feed = {
@@ -2324,6 +2356,7 @@ def _onnx():
 
                 results.update({
                     "quantized_session_create_ms": round(q_create_ms, 2),
+                    "quantized_session_providers": q_session_providers,
                     "quantized_inference_latency_p50_ms": round(q_p50, 3),
                     "quantized_avg_latency_ms": round(q_avg, 3),
                     "quantized_throughput_inf_per_sec": round(q_throughput, 2),
@@ -2346,6 +2379,8 @@ def _onnx():
         "ort_version": ort_version,
         "provider": provider,
         "providers_available": providers_available,
+        "provider_priority": list(amd_provider_order),
+        "session_providers": results.get("fp32_session_providers", []),
         "graph_opt_level": "ORT_ENABLE_ALL",
         "model_load_ms": results.get("fp32_session_create_ms", 0.0),
         "session_create_ms": results.get("fp32_session_create_ms", 0.0),
@@ -2366,15 +2401,15 @@ def _onnx():
 
     for k in ("fp32_inference_samples", "fp32_session_create_ms", "fp32_inference_latency_p50_ms",
               "fp32_inference_latency_p95_ms", "fp32_inference_latency_p99_ms",
-              "fp32_avg_latency_ms", "fp32_throughput_inf_per_sec",
-              "quantized_session_create_ms", "quantized_inference_latency_p50_ms",
+              "fp32_avg_latency_ms", "fp32_throughput_inf_per_sec", "fp32_session_providers",
+              "quantized_session_create_ms", "quantized_session_providers", "quantized_inference_latency_p50_ms",
               "quantized_avg_latency_ms", "quantized_throughput_inf_per_sec",
               "quantized_inference_samples", "quantized_ops",
               "quantized_error", "fp32_error"):
         if k in results:
             metrics[k] = results[k]
 
-    success = True
+    success = not errors and "fp32_inference_samples" in results and quantized_ok
     return success, metrics, errors
 
 
@@ -2506,6 +2541,17 @@ mod tests {
     fn onnx_quantized_benchmark_uses_integer_weight_tensor() {
         assert!(PY_HELPER.contains("W_quant"));
         assert!(!PY_HELPER.contains(r#""MatMulInteger", ["input_quant", "W"]"#));
+    }
+
+    #[test]
+    fn onnx_benchmark_requires_amd_execution_provider() {
+        assert!(PY_HELPER.contains(
+            r#"amd_provider_order = ("MIGraphXExecutionProvider", "ROCMExecutionProvider")"#
+        ));
+        assert!(PY_HELPER.contains("ONNX Runtime AMD execution provider unavailable"));
+        assert!(PY_HELPER.contains("ONNX session did not bind exclusively to AMD provider"));
+        assert!(PY_HELPER.contains(r#"or "CPUExecutionProvider" in session_providers"#));
+        assert!(PY_HELPER.contains("success = not errors"));
     }
 
     #[test]
