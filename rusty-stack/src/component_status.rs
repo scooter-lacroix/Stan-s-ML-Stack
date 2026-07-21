@@ -134,7 +134,7 @@ fn push_python_candidate(candidates: &mut Vec<String>, value: String) {
 }
 
 pub fn is_component_installed(component: &Component, python_candidates: &[String]) -> bool {
-    if component.category == Category::Verification {
+    if component.category == Category::Maintenance {
         return false;
     }
     is_component_installed_by_id(&component.id, python_candidates)
@@ -174,10 +174,25 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "ml-stack-core" => {
             python_any(python_candidates, &["stans_ml_stack"]) || repo_has_ml_stack_core()
         }
-        "flash-attn" => {
+        // Canonical "flash-attn" id (used by verify/migrate): installed if the
+        // flash_attn package is importable under ANY backend. The concrete TUI
+        // components (flash-attn-triton / flash-attn-ck) below use the stricter
+        // backend-marker check.
+        "flash-attn" => python_any(python_candidates, &["flash_attn", "flash_attn_2"]),
+        // Flash Attention backends install the SAME `flash_attn` package, so
+        // importability alone can't tell them apart. "installed" requires the
+        // module importable AND the backend marker
+        // (~/.mlstack/flash-attention/.backend) to match — this is what stops a
+        // leftover build dir or a manual/unknown install from false-reporting as
+        // installed. Only the last-installed backend (the marker value) reports
+        // installed (mutual exclusivity).
+        "flash-attn-triton" => {
             python_any(python_candidates, &["flash_attn", "flash_attn_2"])
-                || path_exists(home_path(&home, &["ml_stack", "flash_attn_amd"]))
-                || path_exists(home_path(&home, &["ml_stack", "flash_attn_amd_direct"]))
+                && backend_marker_is("triton")
+        }
+        "flash-attn-ck" => {
+            python_any(python_candidates, &["flash_attn", "flash_attn_2"])
+                && backend_marker_is("ck")
         }
         "megatron" => {
             path_exists(home_path(&home, &["megatron", "Megatron-LM"]))
@@ -231,8 +246,13 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             false
         }
         "migraphx" => {
+            // Python bindings (Debian/ROCm image) OR the C++ driver (Arch/CachyOS,
+            // where pip `migraphx` is unavailable). Functional only — a driver that
+            // can't load its shared libs (libprotobuf/libabsl SONAME desync from a
+            // partial upgrade) is NOT installed. The old `migraphx_build` dir check
+            // was a false-positive surface (leftover build dir ≠ functional), removed.
             python_any(python_candidates, &["migraphx"])
-                || path_exists(home_path(&home, &["migraphx_build"]))
+                || crate::installers::components::migraphx_multi::migraphx_driver_functional()
         }
         "pytorch-profiler" => python_any(python_candidates, &["torch"]),
         "wandb" => python_any(python_candidates, &["wandb"]),
@@ -324,12 +344,26 @@ pub fn component_verification_commands(
             python_candidates,
             "import stans_ml_stack,sys; import importlib; ok=True\nfor _s in ('core','utils','cli','installers'):\n    try:\n        importlib.import_module(f'stans_ml_stack.{_s}')\n    except Exception:\n        ok=False; break\nver=getattr(stans_ml_stack,'__version__','ok')\nprint(f'ML Stack Core {ver} submodule_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
-        "flash-attn" => vec![python_command(
+        // Canonical id (verify/migrate): flash_attn importable under ANY backend.
+        "flash-attn" => vec![flash_attention_verification_command(
             "Flash Attention",
             "flash-attn",
-            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
+            None,
             python_candidates,
-            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
+        )],
+        // Split TUI ids: require the backend marker to match, so a successful
+        // install verifies + a stale/manual one does not.
+        "flash-attn-triton" => vec![flash_attention_verification_command(
+            "Flash Attention (Triton)",
+            "flash-attn-triton",
+            Some("triton"),
+            python_candidates,
+        )],
+        "flash-attn-ck" => vec![flash_attention_verification_command(
+            "Flash Attention (CK)",
+            "flash-attn-ck",
+            Some("ck"),
+            python_candidates,
         )],
         "megatron" => vec![python_command(
             "Megatron-LM",
@@ -383,7 +417,7 @@ pub fn component_verification_commands(
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
+            migraphx_verify_snippet(),
         )],
         "pytorch-profiler" => vec![python_command(
             "PyTorch Profiler",
@@ -594,12 +628,11 @@ fn basic_verification_commands(python_candidates: &[String]) -> Vec<Verification
 fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<VerificationCommand> {
     let mut steps = basic_verification_commands(python_candidates);
     steps.extend(vec![
-        python_command(
+        flash_attention_verification_command(
             "Flash Attention",
             "flash-attn",
-            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
+            None,
             python_candidates,
-            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         ),
         python_command(
             "vLLM",
@@ -635,7 +668,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
+            migraphx_verify_snippet(),
         ),
         python_command(
             "PyTorch Profiler",
@@ -673,19 +706,18 @@ fn build_verification_commands(python_candidates: &[String]) -> Vec<Verification
             python_candidates,
             "import onnxruntime as ort; import pathlib; import os; import sys; print('Version:', ort.__version__); base=pathlib.Path(ort.__file__).parent; libs=list(base.rglob('libonnxruntime_providers_rocm.so')); [os.environ.update({'ORT_ROCM_EP_PROVIDER_PATH': str(l)}) for l in libs[:1]]; providers=ort.get_available_providers(); print('Providers:', providers); sys.exit(0 if 'ROCMExecutionProvider' in providers else 1)",
         ),
-        python_command(
+        flash_attention_verification_command(
             "Flash Attention (build)",
             "flash-attn",
-            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
+            None,
             python_candidates,
-            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         ),
         python_command(
             "MIGraphX",
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
+            migraphx_verify_snippet(),
         ),
     ]);
     steps
@@ -735,12 +767,16 @@ print(f'torch version: {torch.__version__}')
 hip_version = getattr(torch.version, 'hip', None)
 cuda_version = getattr(torch.version, 'cuda', None)
 print(f'hip: {hip_version}')
-print(f'cuda: {cuda_version}')
+print(f'cuda_build: {cuda_version}')
 
 # Tier 3: Runtime HIP/CUDA availability
 try:
     hip_available = torch.cuda.is_available()
-    print(f'torch.cuda.is_available(): {hip_available}')
+    # 'cuda' here is AVAILABILITY (CUDA-via-HIP on ROCm), NOT torch.version.cuda
+    # (which is None on a ROCm build — that's the CUDA *toolkit* version torch was
+    # built against, not whether CUDA-style code can run). is_available()==True
+    # means CUDA works through HIP, which is the user-facing answer.
+    print(f'cuda: {hip_available}')
     if hip_available:
         device_count = torch.cuda.device_count()
         print(f'device_count: {device_count}')
@@ -779,7 +815,7 @@ if not hip_available:
     if hip_version is None and cuda_version is None:
         print('HINT: torch.version.hip and torch.version.cuda are both None.')
         print('  This torch build may not have GPU support.')
-        print('  Reinstall with ROCm index: pip install torch --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/')
+        print('  Reinstall with ROCm index: pip install torch --index-url https://download.pytorch.org/whl/rocm7.2/')
     elif hip_version is not None and not hip_available:
         print('HINT: torch.version.hip is set but HIP runtime not available.')
         print('  Possible causes:')
@@ -1111,16 +1147,6 @@ pub fn python_search_paths() -> Vec<String> {
     let home = resolve_component_user_home();
     let mut paths = vec![
         format!("{}/pytorch", home),
-        format!("{}/ml_stack/flash_attn_amd_direct", home),
-        format!("{}/ml_stack/flash_attn_amd", home),
-        format!(
-            "{}/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313",
-            home
-        ),
-        format!(
-            "{}/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-312",
-            home
-        ),
         format!("{}/.local/lib/python3.13/site-packages", home),
         format!("{}/.local/lib/python3.12/site-packages", home),
         format!("{}/rocm_venv/lib/python3.13/site-packages", home),
@@ -1192,6 +1218,58 @@ fn home_path(home: &str, parts: &[&str]) -> PathBuf {
     path
 }
 
+/// Read the active Flash Attention backend marker
+/// (`~/.mlstack/flash-attention/.backend`) and return `true` iff it equals
+/// `name`. The installer writes this file on success; detection requires it so
+/// that a leftover build directory or a manual/unknown install can NEVER
+/// false-report Flash Attention as "installed".
+fn backend_marker_is(name: &str) -> bool {
+    let home = resolve_component_user_home();
+    let marker = home_path(&home, &[".mlstack", "flash-attention", ".backend"]);
+    std::fs::read_to_string(&marker)
+        .ok()
+        .map(|s| s.trim() == name)
+        .unwrap_or(false)
+}
+
+/// Multi-modal MIGraphX verification snippet (run via `python -c`).
+///
+/// Tries the Python bindings (`migraphx.parse_onnx`) first — the path that
+/// works on Debian / the ROCm Docker image. On Arch/CachyOS there is no pip
+/// `migraphx`, so `ImportError` falls back to running `migraphx-driver
+/// --version`: if the C++ driver loads, migraphx is functional. This also
+/// catches a broken shared-library state (the driver won't load on a SONAME
+/// desync), so the check can never false-pass.
+fn migraphx_verify_snippet() -> &'static str {
+    "import sys,subprocess\nok=False;ver='ok';via='none'\ntry:\n    import migraphx\n    ok=hasattr(migraphx,'parse_onnx');ver=getattr(migraphx,'__version__','ok');via='python'\nexcept ImportError:\n    r=subprocess.run(['/opt/rocm/bin/migraphx-driver','--version'],capture_output=True)\n    ok=(r.returncode==0);ver='driver';via='driver'\nprint(f'MIGraphX {ver} parse_onnx={ok} via={via}')\nsys.exit(0 if ok else 1)"
+}
+
+/// Flash Attention verification command (run via `python -c`).
+///
+/// Verifies `flash_attn` importability (the hard minimum — both ROCm backends
+/// install the same `flash_attn` package). When `expected_backend` is `Some`,
+/// ALSO requires the `~/.mlstack/flash-attention/.backend` marker to match, so a
+/// successful `flash-attn-triton`/`flash-attn-ck` install reaches final success
+/// while a stale or manual install cannot. Never accepts the legacy
+/// `flash_attention_amd` module — detection dropped it, so verification must too.
+fn flash_attention_verification_command(
+    label: &str,
+    target_id: &str,
+    expected_backend: Option<&str>,
+    python_candidates: &[String],
+) -> VerificationCommand {
+    let marker_block = match expected_backend {
+        Some(name) => format!(
+            "home=pathlib.Path(os.environ.get('HOME',''))\nmarker=home/'.mlstack'/'flash-attention'/'.backend'\nif not marker.exists() or marker.read_text().strip()!='{name}':\n    print(f'backend marker mismatch (expected {name})');sys.exit(1)\n"
+        ),
+        None => String::new(),
+    };
+    let code = format!(
+        "import importlib,sys,os,pathlib\nm=importlib.import_module('flash_attn')\nver=getattr(m,'__version__','unknown')\nhas_func=hasattr(m,'flash_attn_func') or hasattr(m,'flash_attn_qkvpacked_func')\n{marker_block}print(f'flash_attn {{ver}} func={{has_func}}')"
+    );
+    python_command(label, target_id, &["flash_attn"], python_candidates, &code)
+}
+
 fn env_file_has_enhanced(path: &Path) -> bool {
     if let Ok(contents) = fs::read_to_string(path) {
         return contents.contains("Enhanced ML Stack Environment Setup Script");
@@ -1201,12 +1279,48 @@ fn env_file_has_enhanced(path: &Path) -> bool {
 
 fn env_file_has_permanent(path: &Path) -> bool {
     if let Ok(contents) = fs::read_to_string(path) {
-        return contents.contains("Permanent ROCm Environment")
+        let has_marker = contents.contains("Permanent ROCm Environment")
             || contents.contains("Permanent ROCm Env")
             || (contents.contains("ML Stack Environment File")
                 && contents.contains("MLSTACK_PYTHON_BIN"));
+        if !has_marker {
+            return false;
+        }
+        // Reject gfx000 — invalid placeholder arch
+        // Validate arch pattern: gfx(9|10|11|12)NN
+        let valid_arch_prefixes = ["gfx9", "gfx10", "gfx11", "gfx12"];
+        let mut has_gpu_arch_line = false;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            // The env file is a sourced shell script, so assignments carry an
+            // `export ` prefix (e.g. `export GPU_ARCH=gfx1100`). Strip it before
+            // matching, or the check never finds the arch line and a perfectly
+            // valid env reports "not configured". Note `GPU_ARCHS=` / other
+            // `*_ARCH=` lines do NOT start with `GPU_ARCH=` and are correctly
+            // ignored.
+            let assign = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            if assign.starts_with("GPU_ARCH=") {
+                has_gpu_arch_line = true;
+                if let Some(rest) = assign.split("GPU_ARCH=").nth(1) {
+                    let arch = rest.split_whitespace().next().unwrap_or(rest);
+                    if arch == "gfx000" {
+                        return false;
+                    }
+                    // Check if arch starts with a valid prefix
+                    if !valid_arch_prefixes
+                        .iter()
+                        .any(|prefix| arch.starts_with(prefix))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        // Require a GPU_ARCH= line to be present
+        has_gpu_arch_line
+    } else {
+        false
     }
-    false
 }
 
 fn repo_has_ml_stack_core() -> bool {
@@ -1246,9 +1360,9 @@ mod tests {
         let snippet = &command.args[1];
         for anchor in [
             "from fastvideo_kernel import int8_quant",
-            "range(device_count)",
+            "range(int(discovered.stdout.strip()))",
             "int8_quant(source)",
-            "torch.cuda.synchronize(device)",
+            "torch.cuda.synchronize()",
             "raise SystemExit",
         ] {
             assert!(

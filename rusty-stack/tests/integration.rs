@@ -1088,6 +1088,8 @@ fn test_integration_tui_types_still_functional() {
         progress: 0.0,
         estimate: "10-15 min".to_string(),
         needs_sudo: true,
+        experimental: false,
+        note: None,
     };
 
     // Verify serde still works

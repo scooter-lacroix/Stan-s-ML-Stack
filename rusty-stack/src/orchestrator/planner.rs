@@ -598,6 +598,8 @@ impl UpdatePlanner {
                 | "onnx"
                 | "migraphx"
                 | "flash-attn"
+                | "flash-attn-triton"
+                | "flash-attn-ck"
                 | "rccl"
                 | "vllm"
                 | "aiter"
@@ -730,7 +732,19 @@ impl UpdatePlanner {
         match component_id {
             "pytorch" => vec!["rocm".to_string()],
             "triton" => vec!["pytorch".to_string()],
-            "flash-attn" => vec!["pytorch".to_string()],
+            // FA-Triton's Triton backend imports aiter.ops.triton at runtime —
+            // aiter must be installed first or flash_attn import fails. CK uses
+            // composable_kernel, not aiter.
+            "flash-attn-triton" => {
+                vec![
+                    "pytorch".to_string(),
+                    "rocm".to_string(),
+                    "aiter".to_string(),
+                ]
+            }
+            "flash-attn" | "flash-attn-ck" => {
+                vec!["pytorch".to_string(), "rocm".to_string()]
+            }
             "deepspeed" => vec!["pytorch".to_string()],
             "vllm" => vec!["pytorch".to_string()],
             "megatron" => vec!["pytorch".to_string(), "mpi4py".to_string()],

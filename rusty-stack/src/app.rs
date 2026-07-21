@@ -4,7 +4,8 @@ use crate::hardware::{detect_hardware, run_preflight_checks};
 use crate::installer::{run_installation, InstallerEvent};
 use crate::installers::components::llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
 use crate::state::{
-    default_components, Category, Component, HardwareState, InstallStatus, PreflightResult, Stage,
+    default_components, Category, Component, HardwareState, InstallStatus, PreflightResult,
+    RunMode, Stage,
 };
 use crate::telemetry::opt_in::{
     OptInGate, TELEMETRY_DESCRIPTION, TELEMETRY_DISABLE_LABEL, TELEMETRY_ENABLE_LABEL,
@@ -56,6 +57,55 @@ struct UiNotice {
     message: String,
     color: Color,
     expires_at_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComponentDetectionStatus {
+    Pending,
+    Running,
+    Installed,
+    NotInstalled,
+    Skipped,
+}
+
+#[derive(Debug)]
+enum ComponentStatusEvent {
+    Started(usize),
+    Finished { index: usize, installed: bool },
+    Skipped(usize),
+    Complete(Vec<Component>),
+}
+
+impl ComponentDetectionStatus {
+    fn icon(self) -> &'static str {
+        match self {
+            ComponentDetectionStatus::Pending => "○",
+            ComponentDetectionStatus::Running => "…",
+            ComponentDetectionStatus::Installed => "✓",
+            ComponentDetectionStatus::NotInstalled => "◇",
+            ComponentDetectionStatus::Skipped => "⊘",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ComponentDetectionStatus::Pending => "pending",
+            ComponentDetectionStatus::Running => "checking",
+            ComponentDetectionStatus::Installed => "installed",
+            ComponentDetectionStatus::NotInstalled => "not installed",
+            ComponentDetectionStatus::Skipped => "skipped",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            ComponentDetectionStatus::Pending => Color::Yellow,
+            ComponentDetectionStatus::Running => Color::Cyan,
+            ComponentDetectionStatus::Installed => Color::Green,
+            ComponentDetectionStatus::NotInstalled => Color::Gray,
+            ComponentDetectionStatus::Skipped => Color::DarkGray,
+        }
+    }
 }
 
 impl TaskStatus {
@@ -128,6 +178,10 @@ pub struct App {
     install_input_sender: Option<Sender<String>>,
     install_receiver: Option<Receiver<InstallerEvent>>,
     hardware_receiver: Option<Receiver<anyhow::Result<HardwareState>>>,
+    component_status_receiver: Option<Receiver<ComponentStatusEvent>>,
+    component_detection_statuses: Vec<ComponentDetectionStatus>,
+    component_detection_done: bool,
+    install_activity_tick: u64,
 }
 
 impl App {
@@ -182,6 +236,10 @@ impl App {
             install_input_sender: None,
             install_receiver: None,
             hardware_receiver: None,
+            component_status_receiver: None,
+            component_detection_statuses: Vec::new(),
+            component_detection_done: false,
+            install_activity_tick: 0,
         }
     }
 
@@ -195,6 +253,7 @@ impl App {
             self.benchmark_notice = None;
         }
         self.poll_hardware();
+        self.poll_component_status_detection();
         self.poll_installer();
     }
 
@@ -255,8 +314,7 @@ impl App {
                 KeyCode::Down => self.move_preflight_selection(1),
                 KeyCode::Enter => {
                     if self.preflight.can_continue {
-                        self.refresh_component_statuses();
-                        self.stage = Stage::ComponentSelect;
+                        self.start_component_status_detection();
                     } else {
                         self.errors
                             .push("Preflight checks failed; resolve critical issues".into());
@@ -267,6 +325,15 @@ impl App {
                 KeyCode::Char('q') => self.stage = Stage::Recovery,
                 _ => {}
             },
+            Stage::ComponentDetect => {
+                if let KeyCode::Enter = key.code {
+                    if self.component_detection_done {
+                        self.stage = Stage::ComponentSelect;
+                    }
+                } else if let KeyCode::Char('q') = key.code {
+                    self.stage = Stage::Recovery;
+                }
+            }
             Stage::ComponentSelect => match key.code {
                 KeyCode::Up => self.move_selection(-1),
                 KeyCode::Down => self.move_selection(1),
@@ -518,6 +585,7 @@ impl App {
             Stage::Welcome => self.draw_welcome(frame, chunks[1]),
             Stage::HardwareDetect => self.draw_hardware(frame, chunks[1]),
             Stage::Preflight => self.draw_preflight(frame, chunks[1]),
+            Stage::ComponentDetect => self.draw_component_detection(frame, chunks[1]),
             Stage::ComponentSelect => self.draw_component_select(frame, chunks[1]),
             Stage::Configuration => self.draw_configuration(frame, chunks[1]),
             Stage::Confirm => self.draw_confirm(frame, chunks[1]),
@@ -544,6 +612,7 @@ impl App {
             Stage::Welcome => "Enter start • Q recovery",
             Stage::HardwareDetect => "Enter preflight • Esc back • Q recovery",
             Stage::Preflight => "↑/↓ select • Enter continue • Esc back • Q recovery",
+            Stage::ComponentDetect => "checking components • Q recovery",
             Stage::ComponentSelect => {
                 "↑/↓ select • ←/→ category • Space toggle • A toggle all • Enter config • Esc back"
             }
@@ -910,6 +979,157 @@ impl App {
         frame.render_widget(summary, chunks[1]);
     }
 
+    fn draw_component_detection(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(4),
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(4),
+            ])
+            .split(area);
+
+        let visible: Vec<(usize, &Component)> = self
+            .components
+            .iter()
+            .enumerate()
+            .filter(|(_, component)| show_on_component_detection_screen(component))
+            .collect();
+        let total = visible.len();
+        let checked = visible
+            .iter()
+            .filter(|(idx, _)| {
+                let status = self
+                    .component_detection_statuses
+                    .get(*idx)
+                    .copied()
+                    .unwrap_or(ComponentDetectionStatus::Pending);
+                matches!(
+                    status,
+                    ComponentDetectionStatus::Installed | ComponentDetectionStatus::NotInstalled
+                )
+            })
+            .count();
+        let installed = visible
+            .iter()
+            .filter(|(idx, _)| {
+                self.component_detection_statuses.get(*idx).copied()
+                    == Some(ComponentDetectionStatus::Installed)
+            })
+            .count();
+        let not_installed = visible
+            .iter()
+            .filter(|(idx, _)| {
+                self.component_detection_statuses.get(*idx).copied()
+                    == Some(ComponentDetectionStatus::NotInstalled)
+            })
+            .count();
+        let ratio = if total == 0 {
+            1.0
+        } else {
+            checked as f64 / total as f64
+        };
+
+        let header = Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled(
+                    "🔎 Component Detection",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(self.spinner(), Style::default().fg(Color::Cyan)),
+                Span::raw(" Running comprehensive installed-component checks"),
+            ]),
+            Line::from(
+                "Full probes stay enabled; slow ROCm/Python checks report progress instead of freezing.",
+            ),
+        ]))
+        .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(header, chunks[0]);
+
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title("Progress"))
+            .gauge_style(Style::default().fg(Color::Green))
+            .label(format!("{checked}/{total} checks complete"))
+            .ratio(ratio);
+        frame.render_widget(gauge, chunks[1]);
+
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+            .split(chunks[2]);
+
+        let items: Vec<ListItem> = visible
+            .iter()
+            .map(|(idx, component)| {
+                let status = self
+                    .component_detection_statuses
+                    .get(*idx)
+                    .copied()
+                    .unwrap_or(ComponentDetectionStatus::Pending);
+                ListItem::new(Line::from(vec![
+                    Span::styled(status.icon(), Style::default().fg(status.color())),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{:<13}", status.label()),
+                        Style::default().fg(status.color()),
+                    ),
+                    Span::raw(" "),
+                    Span::raw(component.name.clone()),
+                ]))
+            })
+            .collect();
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Installable Component Checks"),
+        );
+        frame.render_widget(list, body[0]);
+
+        let summary_prompt = if self.component_detection_done {
+            "Complete. Press Enter to continue."
+        } else {
+            "Running. Please wait."
+        };
+        let summary = Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                "Detection Summary",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(format!("Checked: {checked}/{total}")),
+            Line::from(format!("Installed: {installed}")),
+            Line::from(format!("Not installed: {not_installed}")),
+            Line::from(""),
+            Line::from("Hidden here: verify/repair and benchmark actions."),
+            Line::from("They remain available in their categories."),
+            Line::from(""),
+            Line::from(Span::styled(
+                summary_prompt,
+                Style::default().fg(if self.component_detection_done {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                }),
+            )),
+        ]))
+        .block(Block::default().borders(Borders::ALL).title("Summary"))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(summary, body[1]);
+
+        let footer = Paragraph::new(Text::from(vec![
+            Line::from("This stage may import torch/vLLM/FastVideo and run ROCm probes."),
+            Line::from("When detection finishes, press Enter to open component selection."),
+        ]))
+        .block(Block::default().borders(Borders::ALL).title("Status"));
+        frame.render_widget(footer, chunks[3]);
+    }
+
     fn draw_component_select(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -923,10 +1143,10 @@ impl App {
         let categories = [
             (Category::Environment, "🌍", "Environment"),
             (Category::Foundation, "🔧", "Foundation"),
-            (Category::Core, "⚙️", "Core"),
+            (Category::Core, "💠", "Core"),
             (Category::Extension, "📦", "Extensions"),
             (Category::UiUx, "🎨", "UI/UX"),
-            (Category::Verification, "✅", "Verification"),
+            (Category::Maintenance, "🛠️", "Maintenance"),
             (Category::Performance, "📊", "Performance"),
         ];
         let category_items: Vec<ListItem> = categories
@@ -970,19 +1190,24 @@ impl App {
                 let icon = match comp.category {
                     Category::Environment => "🌍",
                     Category::Foundation => "🔧",
-                    Category::Core => "⚙️",
+                    Category::Core => "💠",
                     Category::UiUx => "🎨",
                     Category::Extension => "📦",
-                    Category::Verification => "✅",
+                    Category::Maintenance => "🛠️",
                     Category::Performance => "📊",
                 };
 
                 let indicator = if comp.selected { "☑" } else { "☐" };
                 let status_indicator = if comp.installed { "✓" } else { "○" };
 
+                let display_name = if comp.experimental {
+                    format!("🧪 {}", comp.name)
+                } else {
+                    comp.name.clone()
+                };
                 let line = format!(
                     "{} {} {} {} [{}]",
-                    indicator, icon, comp.name, status_indicator, comp.estimate
+                    indicator, icon, display_name, status_indicator, comp.estimate
                 );
 
                 let style = if selected {
@@ -1015,6 +1240,35 @@ impl App {
                 Span::styled("Name: ", Style::default().fg(Color::Gray)),
                 Span::styled(comp.name.clone(), Style::default().fg(Color::White)),
             ]));
+            if comp.experimental {
+                detail_lines.push(Line::from(Span::styled(
+                    "⚠ EXPERIMENTAL BUILD",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                if let Some(note) = &comp.note {
+                    let mut wrap = String::new();
+                    for word in note.split_whitespace() {
+                        if !wrap.is_empty() && wrap.len() + word.len() + 1 > 42 {
+                            detail_lines.push(Line::from(Span::styled(
+                                std::mem::take(&mut wrap),
+                                Style::default().fg(Color::Yellow),
+                            )));
+                        }
+                        if !wrap.is_empty() {
+                            wrap.push(' ');
+                        }
+                        wrap.push_str(word);
+                    }
+                    if !wrap.is_empty() {
+                        detail_lines.push(Line::from(Span::styled(
+                            wrap,
+                            Style::default().fg(Color::Yellow),
+                        )));
+                    }
+                }
+            }
             detail_lines.push(Line::from(vec![
                 Span::styled("Required: ", Style::default().fg(Color::Gray)),
                 Span::styled(on_off(comp.required), Style::default().fg(Color::Yellow)),
@@ -1048,11 +1302,12 @@ impl App {
                         ("Not installed", Color::Yellow, "○")
                     }
                 }
-                Category::Verification => {
+                Category::Maintenance => {
+                    // Verify / repair are actions: "Completed" after a successful run.
                     if comp.installed {
-                        ("Verified", Color::Green, "✓")
+                        ("Completed", Color::Green, "✓")
                     } else {
-                        ("Unverified", Color::Yellow, "○")
+                        ("Not run", Color::Yellow, "○")
                     }
                 }
                 Category::Performance => {
@@ -1102,10 +1357,10 @@ impl App {
                 )));
                 detail_lines.push(Line::from("Sets up persistent ROCm environment variables"));
                 detail_lines.push(Line::from("for Python 3.12 across sessions."));
-            } else if comp.category == Category::Verification {
+            } else if comp.category == Category::Maintenance {
                 detail_lines.push(Line::from(""));
                 detail_lines.push(Line::from(Span::styled(
-                    "Verification Summary",
+                    "Maintenance Summary",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
@@ -1227,7 +1482,7 @@ impl App {
             format!("Execution Mode: {}", execution_mode),
             format!("Install Method: {}", self.config.install_method),
             "Back to Configuration".into(),
-            "Start Installation".into(),
+            self.action_label().into(),
         ];
         let mut lines = vec![
             Line::from(Span::styled(
@@ -1237,25 +1492,34 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from("Selected Components:"),
+            Line::from(format!("{}:", self.selection_label())),
             Line::from(""),
         ];
         for comp in selected {
             lines.push(Line::from(format!("• {} ({})", comp.name, comp.estimate)));
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "ROCm Install Path: {}",
-            self.config.install_path
-        )));
+        // Install-specific context — not meaningful for benchmark/verify runs.
+        if self.run_mode() == RunMode::Install {
+            lines.push(Line::from(format!(
+                "ROCm Install Path: {}",
+                self.config.install_path
+            )));
+        }
         lines.push(Line::from(format!("Execution Mode: {}", execution_mode)));
-        lines.push(Line::from(format!(
-            "Install Method: {}",
-            self.config.install_method
-        )));
+        if self.run_mode() == RunMode::Install {
+            lines.push(Line::from(format!(
+                "Install Method: {}",
+                self.config.install_method
+            )));
+        }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Pre-install options:",
+            if self.run_mode() == RunMode::Install {
+                "Pre-install options:"
+            } else {
+                "Run options:"
+            },
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -1421,7 +1685,7 @@ impl App {
         let log_list = List::new(log_items).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Installation Log"),
+                .title(format!("{} Log", self.flow_noun())),
         );
         frame.render_widget(log_list, body[0]);
 
@@ -1432,10 +1696,11 @@ impl App {
             .filter(|c| !c.installed && c.progress > 0.0)
             .count();
         let pending_count = selected.iter().filter(|c| c.progress == 0.0).count();
+        let idle_secs = self.tick_count.saturating_sub(self.install_activity_tick) / 10;
 
         let base_lines = vec![
             Line::from(Span::styled(
-                "Installation Status",
+                format!("{} Status", self.flow_noun()),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -1446,6 +1711,11 @@ impl App {
             Line::from(format!("Pending: {}", pending_count)),
             Line::from(""),
             Line::from(format!("Current: {}", self.install_status.message)),
+            Line::from(format!(
+                "Activity: {} live; last output ~{}s ago",
+                self.spinner(),
+                idle_secs
+            )),
         ];
 
         let tail_lines = vec![
@@ -1506,7 +1776,7 @@ impl App {
 
         let mut lines = Vec::new();
         lines.push(Line::from(Span::styled(
-            "Full Installation Logs",
+            format!("Full {} Logs", self.flow_noun()),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -1551,7 +1821,7 @@ impl App {
         let (benchmarks, tests) = self.count_log_keywords();
         let mut lines = vec![
             Line::from(Span::styled(
-                "Installation Summary",
+                self.summary_title(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -1560,7 +1830,7 @@ impl App {
         ];
 
         lines.push(Line::from(Span::styled(
-            "Installed:",
+            format!("{}:", self.success_label()),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -1570,7 +1840,7 @@ impl App {
         } else {
             for comp in installed.iter() {
                 let (status, color) = if comp.installed {
-                    ("installed", Color::Green)
+                    (self.success_status(), Color::Green)
                 } else if comp.progress > 0.0 {
                     ("failed", Color::Red)
                 } else {
@@ -2063,6 +2333,11 @@ impl App {
         if let Some(component) = self.components.get_mut(index) {
             component.selected = !component.selected;
         }
+        // Flash Attention backends are mutually exclusive: both install the
+        // identical `flash_attn` package, so the last-installed overwrites the
+        // other (the .backend marker tracks which is active). Selecting one
+        // deselects the other so the choice is explicit, never accidental.
+        self.enforce_flash_attn_exclusivity(Some(index));
     }
 
     fn toggle_all(&mut self) {
@@ -2070,63 +2345,175 @@ impl App {
         for comp in self.components.iter_mut() {
             comp.selected = !any_selected;
         }
+        // Bulk select may have picked both FA backends — keep at most one.
+        self.enforce_flash_attn_exclusivity(None);
     }
 
-    fn config_items(&self) -> Vec<String> {
+    /// Ensure at most one Flash Attention backend is selected.
+    /// - `Some(idx)`: the just-toggled component; only act if it's a FA backend
+    ///   that was turned ON (then deselect the sibling).
+    /// - `None` (bulk toggle): if more than one FA backend ended up selected,
+    ///   keep the first in list order and deselect the rest.
+    fn enforce_flash_attn_exclusivity(&mut self, toggled_index: Option<usize>) {
+        const FA_BACKENDS: &[&str] = &["flash-attn-triton", "flash-attn-ck", "flash-attn"];
+        match toggled_index {
+            Some(idx) => {
+                let turned_on = self
+                    .components
+                    .get(idx)
+                    .map(|c| c.selected && FA_BACKENDS.contains(&c.id.as_str()))
+                    == Some(true);
+                if !turned_on {
+                    return;
+                }
+                let toggled_id = self.components[idx].id.clone();
+                for c in self.components.iter_mut() {
+                    if c.id != toggled_id && FA_BACKENDS.contains(&c.id.as_str()) {
+                        c.selected = false;
+                    }
+                }
+            }
+            None => {
+                let first_selected = self
+                    .components
+                    .iter()
+                    .position(|c| c.selected && FA_BACKENDS.contains(&c.id.as_str()));
+                let Some(keep) = first_selected else {
+                    return;
+                };
+                let keep_id = self.components[keep].id.clone();
+                for c in self.components.iter_mut() {
+                    if c.id != keep_id && FA_BACKENDS.contains(&c.id.as_str()) {
+                        c.selected = false;
+                    }
+                }
+            }
+        }
+    }
+
+    fn config_rows(&self) -> Vec<(ConfigKey, String)> {
         vec![
-            format!("ROCm Install Path: {}", self.config.install_path),
-            format!("Batch Mode: {}", on_off(self.config.batch_mode)),
-            format!("Auto Confirm: {}", on_off(self.config.auto_confirm)),
-            format!("Star ML Stack Repo: {}", on_off(self.config.star_repos)),
-            format!(
-                "Force Reinstall All: {}",
-                on_off(self.config.force_reinstall)
+            (
+                ConfigKey::RocmPath,
+                format!("ROCm Install Path: {}", self.config.install_path),
             ),
-            format!("Theme: {}", self.config.theme),
-            format!("Performance Profile: {}", self.config.performance_profile),
-            "Save Configuration".into(),
+            (
+                ConfigKey::BatchMode,
+                format!("Batch Mode: {}", on_off(self.config.batch_mode)),
+            ),
+            (
+                ConfigKey::AutoConfirm,
+                format!("Auto Confirm: {}", on_off(self.config.auto_confirm)),
+            ),
+            (
+                ConfigKey::StarRepo,
+                format!("Star ML Stack Repo: {}", on_off(self.config.star_repos)),
+            ),
+            (
+                ConfigKey::ForceReinstall,
+                format!(
+                    "Force Reinstall All: {}",
+                    on_off(self.config.force_reinstall)
+                ),
+            ),
+            (ConfigKey::Theme, format!("Theme: {}", self.config.theme)),
+            (
+                ConfigKey::PerfProfile,
+                format!("Performance Profile: {}", self.config.performance_profile),
+            ),
+            (
+                ConfigKey::VllmVersionLag,
+                format!(
+                    "vLLM version lag: {} ({}; 0=latest)",
+                    self.config.vllm_version_lag,
+                    if self.config.vllm_version_lag == 0 {
+                        "latest"
+                    } else {
+                        "skip newest"
+                    }
+                ),
+            ),
+            (
+                ConfigKey::VllmVersionAge,
+                format!(
+                    "vLLM min release age: {} days ({}; 0=off)",
+                    self.config.vllm_version_min_age_days,
+                    if self.config.vllm_version_min_age_days == 0 {
+                        "off"
+                    } else {
+                        "age gate"
+                    }
+                ),
+            ),
+            (ConfigKey::Save, "Save Configuration".into()),
         ]
     }
 
+    fn selected_config_key(&self) -> ConfigKey {
+        let mode = self.run_mode();
+        self.config_rows()
+            .into_iter()
+            .filter(|(k, _)| config_applies(*k, mode))
+            .nth(self.config_selection)
+            .map(|(k, _)| k)
+            .unwrap_or(ConfigKey::Save)
+    }
+
+    fn config_items(&self) -> Vec<String> {
+        let mode = self.run_mode();
+        self.config_rows()
+            .into_iter()
+            .filter(|(k, _)| config_applies(*k, mode))
+            .map(|(_, label)| label)
+            .collect()
+    }
+
     fn config_help_lines(&self) -> Vec<Line<'_>> {
-        match self.config_selection {
-            0 => vec![
+        let mut lines = match self.selected_config_key() {
+            ConfigKey::RocmPath => vec![
                 Line::from("ROCm install path used by installers."),
                 Line::from("Default: /opt/rocm (system-wide ROCm)."),
             ],
-            1 => vec![
+            ConfigKey::BatchMode => vec![
                 Line::from("Batch mode runs scripts non-interactively."),
                 Line::from("Defaults are chosen when prompts appear."),
             ],
-            2 => vec![
+            ConfigKey::AutoConfirm => vec![
                 Line::from("Auto confirm answers yes to prompts"),
                 Line::from("when supported by the script."),
             ],
-            3 => vec![
+            ConfigKey::StarRepo => vec![
                 Line::from("Star the ML Stack repository on GitHub."),
                 Line::from("https://github.com/scooter-lacroix/Stan-s-ML-Stack"),
             ],
-            4 => vec![
+            ConfigKey::ForceReinstall => vec![
                 Line::from("FORCE REINSTALL ALL COMPONENTS."),
                 Line::from("Forces purging and re-downloading of everything."),
             ],
-            5 => vec![
+            ConfigKey::Theme => vec![
                 Line::from("Theme affects TUI color styling."),
                 Line::from("Switches between dark/light palettes."),
             ],
-            6 => vec![
+            ConfigKey::PerfProfile => vec![
                 Line::from("Performance profile adjusts installer tuning."),
                 Line::from("Balanced/performance/efficiency presets."),
             ],
-            7 => vec![
+            ConfigKey::VllmVersionLag => vec![
+                Line::from("Supply-chain gate: skip this many newest vLLM releases."),
+                Line::from("0=latest, 1=skip newest (default), 2+=more conservative."),
+            ],
+            ConfigKey::VllmVersionAge => vec![
+                Line::from("Supply-chain gate: only adopt vLLM releases at least"),
+                Line::from("this many days old (0=off). Combined with the lag."),
+            ],
+            ConfigKey::Save => vec![
                 Line::from("Persist current settings to config.json."),
                 Line::from("Dirty=yes means there are unsaved changes."),
             ],
-            _ => vec![
-                Line::from("Select a setting for details."),
-                Line::from(TELEMETRY_PRIVACY_NOTE),
-            ],
-        }
+        };
+        lines.push(Line::from(""));
+        lines.push(Line::from(TELEMETRY_PRIVACY_NOTE));
+        lines
     }
 
     fn move_config_selection(&mut self, delta: i32) {
@@ -2210,24 +2597,24 @@ impl App {
     }
 
     fn activate_config_selection(&mut self) {
-        match self.config_selection {
-            1 => {
+        match self.selected_config_key() {
+            ConfigKey::BatchMode => {
                 self.config.batch_mode = !self.config.batch_mode;
                 self.config_dirty = true;
             }
-            2 => {
+            ConfigKey::AutoConfirm => {
                 self.config.auto_confirm = !self.config.auto_confirm;
                 self.config_dirty = true;
             }
-            3 => {
+            ConfigKey::StarRepo => {
                 self.config.star_repos = !self.config.star_repos;
                 self.config_dirty = true;
             }
-            4 => {
+            ConfigKey::ForceReinstall => {
                 self.config.force_reinstall = !self.config.force_reinstall;
                 self.config_dirty = true;
             }
-            5 => {
+            ConfigKey::Theme => {
                 self.config.theme = if self.config.theme == "dark" {
                     "light".into()
                 } else {
@@ -2235,7 +2622,7 @@ impl App {
                 };
                 self.config_dirty = true;
             }
-            6 => {
+            ConfigKey::PerfProfile => {
                 let profiles = ["balanced", "performance", "efficiency"];
                 let current = profiles
                     .iter()
@@ -2245,8 +2632,23 @@ impl App {
                 self.config.performance_profile = profiles[next].into();
                 self.config_dirty = true;
             }
-            7 => self.save_config(),
-            _ => {}
+            ConfigKey::VllmVersionLag => {
+                // cycle 0 → 1 → 2 → 3 → 4 → 5 → 0
+                self.config.vllm_version_lag = (self.config.vllm_version_lag + 1) % 6;
+                self.config_dirty = true;
+            }
+            ConfigKey::VllmVersionAge => {
+                // cycle off + common age windows (days)
+                let ages = [0, 7, 14, 30, 60, 90];
+                let cur = ages
+                    .iter()
+                    .position(|&a| a == self.config.vllm_version_min_age_days)
+                    .unwrap_or(0);
+                self.config.vllm_version_min_age_days = ages[(cur + 1) % ages.len()];
+                self.config_dirty = true;
+            }
+            ConfigKey::Save => self.save_config(),
+            ConfigKey::RocmPath => {} // display-only, no toggle
         }
     }
 
@@ -2302,8 +2704,7 @@ impl App {
                 self.stage = Stage::Preflight;
             }
             2 => {
-                self.refresh_component_statuses();
-                self.stage = Stage::ComponentSelect;
+                self.start_component_status_detection();
             }
             3 => self.should_exit = true,
             _ => {}
@@ -2345,6 +2746,7 @@ impl App {
         self.stage = Stage::Installing;
         self.install_status.progress = 0.0;
         self.install_status.message = "Starting installation".into();
+        self.mark_install_activity();
         let (tx, rx) = mpsc::channel();
         let (input_tx, input_rx) = mpsc::channel();
         let sudo_password = self.sudo_password.clone();
@@ -2369,21 +2771,31 @@ impl App {
 
         for event in events {
             match event {
-                InstallerEvent::Log(line, is_transient) => self.push_log_ext(line, is_transient),
+                InstallerEvent::Log(line, is_transient) => {
+                    self.mark_install_activity();
+                    if let Some(progress) = parse_log_progress(&line) {
+                        self.apply_log_progress(progress, &line);
+                    }
+                    self.push_log_ext(line, is_transient);
+                }
                 InstallerEvent::Progress {
                     component_id,
                     progress,
                     message,
                 } => {
-                    if component_id != "__overall__" {
+                    self.mark_install_activity();
+                    if component_id == "__overall__" {
+                        self.install_status.progress = progress.clamp(0.0, 1.0);
+                    } else {
                         self.update_component_progress(&component_id, progress);
+                        self.recalculate_overall_progress();
                     }
                     self.install_status.message = message.clone();
-                    self.recalculate_overall_progress();
                     // Progress messages are usually transient
                     self.push_log_ext(message, true);
                 }
                 InstallerEvent::ComponentStart { component_id, name } => {
+                    self.mark_install_activity();
                     if let Some(comp) = self.components.iter_mut().find(|c| c.id == component_id) {
                         self.install_status.message = if comp.category == Category::Performance {
                             format!("Running {}", name)
@@ -2403,6 +2815,7 @@ impl App {
                     success,
                     message,
                 } => {
+                    self.mark_install_activity();
                     if let Some(comp) = self.components.iter_mut().find(|c| c.id == component_id) {
                         comp.installed = success;
                         comp.progress = 1.0;
@@ -2417,6 +2830,7 @@ impl App {
                     component_id,
                     lines,
                 } => {
+                    self.mark_install_activity();
                     let cleaned = lines
                         .into_iter()
                         .map(|line| Self::sanitize_line(&line))
@@ -2424,6 +2838,7 @@ impl App {
                     self.verification_reports.insert(component_id, cleaned);
                 }
                 InstallerEvent::Finished { success } => {
+                    self.mark_install_activity();
                     self.install_status.completed = success;
                     self.install_input_sender = None;
                     self.install_input_buffer.clear();
@@ -2450,6 +2865,30 @@ impl App {
                 component.progress = next;
             }
         }
+    }
+
+    fn apply_log_progress(&mut self, progress: f32, line: &str) {
+        let next = progress.clamp(0.0, 1.0);
+        if let Some(component) = self
+            .components
+            .iter_mut()
+            .find(|c| c.selected && c.progress > 0.0 && c.progress < 1.0)
+        {
+            if next > component.progress {
+                component.progress = next;
+            }
+            self.recalculate_overall_progress();
+        } else if next > self.install_status.progress {
+            self.install_status.progress = next;
+        }
+
+        let percent = (next * 100.0).round() as i32;
+        self.install_status.message =
+            format!("Build activity: {percent}% {}", trim_status_line(line));
+    }
+
+    fn mark_install_activity(&mut self) {
+        self.install_activity_tick = self.tick_count;
     }
 
     fn recalculate_overall_progress(&mut self) {
@@ -2489,7 +2928,7 @@ impl App {
     }
 
     fn verify_task_status(&self, component: &Component) -> TaskStatus {
-        if component.category == Category::Verification {
+        if component.category == Category::Maintenance {
             return self.verification_task_status(&component.id);
         }
         if self.verification_reports.contains_key(&component.id) {
@@ -2539,9 +2978,11 @@ impl App {
                 break;
             }
 
-            if comp.category != Category::Verification {
+            if comp.category != Category::Maintenance || !comp.id.starts_with("verify-") {
                 let task_label = if comp.category == Category::Performance {
                     "Benchmark"
+                } else if comp.category == Category::Maintenance {
+                    "Repair"
                 } else {
                     "Install"
                 };
@@ -2684,19 +3125,83 @@ impl App {
         }
     }
 
-    fn refresh_component_statuses(&mut self) {
-        let python_candidates = python_interpreters();
+    fn start_component_status_detection(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        let mut components = self.components.clone();
         let force_reinstall = self.config.force_reinstall;
-        for component in &mut self.components {
-            if component.category == Category::Verification {
-                continue;
+
+        self.component_detection_statuses = components
+            .iter()
+            .map(|component| {
+                if component.category == Category::Maintenance {
+                    ComponentDetectionStatus::Skipped
+                } else {
+                    ComponentDetectionStatus::Pending
+                }
+            })
+            .collect();
+        self.component_detection_done = false;
+        self.component_status_receiver = Some(rx);
+        self.stage = Stage::ComponentDetect;
+
+        thread::spawn(move || {
+            let python_candidates = python_interpreters();
+            for (index, component) in components.iter_mut().enumerate() {
+                if component.category == Category::Maintenance {
+                    let _ = tx.send(ComponentStatusEvent::Skipped(index));
+                    continue;
+                }
+
+                let _ = tx.send(ComponentStatusEvent::Started(index));
+                component.installed = is_component_installed(component, &python_candidates);
+                if component.installed && !force_reinstall {
+                    // Only auto-deselect when force reinstall is OFF.
+                    // When force reinstall is ON, keep installed components selected
+                    // so the installer will properly purge and reinstall them.
+                    component.selected = false;
+                }
+                let _ = tx.send(ComponentStatusEvent::Finished {
+                    index,
+                    installed: component.installed,
+                });
             }
-            component.installed = is_component_installed(component, &python_candidates);
-            if component.installed && !force_reinstall {
-                // Only auto-deselect when force reinstall is OFF.
-                // When force reinstall is ON, keep installed components selected
-                // so the installer will properly purge and reinstall them.
-                component.selected = false;
+            let _ = tx.send(ComponentStatusEvent::Complete(components));
+        });
+    }
+
+    fn poll_component_status_detection(&mut self) {
+        let events: Vec<_> = if let Some(receiver) = &self.component_status_receiver {
+            std::iter::from_fn(|| receiver.try_recv().ok()).collect()
+        } else {
+            Vec::new()
+        };
+
+        for event in events {
+            match event {
+                ComponentStatusEvent::Started(index) => {
+                    if let Some(status) = self.component_detection_statuses.get_mut(index) {
+                        *status = ComponentDetectionStatus::Running;
+                    }
+                }
+                ComponentStatusEvent::Finished { index, installed } => {
+                    if let Some(status) = self.component_detection_statuses.get_mut(index) {
+                        *status = if installed {
+                            ComponentDetectionStatus::Installed
+                        } else {
+                            ComponentDetectionStatus::NotInstalled
+                        };
+                    }
+                }
+                ComponentStatusEvent::Skipped(index) => {
+                    if let Some(status) = self.component_detection_statuses.get_mut(index) {
+                        *status = ComponentDetectionStatus::Skipped;
+                    }
+                }
+                ComponentStatusEvent::Complete(components) => {
+                    self.components = components;
+                    self.component_status_receiver = None;
+                    self.component_detection_done = true;
+                }
             }
         }
     }
@@ -2709,6 +3214,81 @@ impl App {
             .collect()
     }
 
+    /// Derive the run mode from the selected components so the flow verbiage
+    /// matches what is actually happening. A pure-Performance selection runs
+    /// benchmarks; pure verify-* Maintenance selection runs verification;
+    /// repair actions and installable components run as install/action flows.
+    fn run_mode(&self) -> RunMode {
+        let selected: Vec<&Component> = self.components.iter().filter(|c| c.selected).collect();
+        if selected.is_empty() {
+            return RunMode::Install;
+        }
+        if selected.iter().all(|c| c.category == Category::Performance) {
+            RunMode::Benchmark
+        } else if selected
+            .iter()
+            .all(|c| c.category == Category::Maintenance && c.id.starts_with("verify-"))
+        {
+            RunMode::Verify
+        } else {
+            RunMode::Install
+        }
+    }
+
+    /// "Installation" / "Benchmark" / "Verification" — the flow noun for titles.
+    fn flow_noun(&self) -> &'static str {
+        match self.run_mode() {
+            RunMode::Install => "Installation",
+            RunMode::Benchmark => "Benchmark",
+            RunMode::Verify => "Verification",
+        }
+    }
+
+    /// The primary action button label on the confirm screen.
+    fn action_label(&self) -> &'static str {
+        match self.run_mode() {
+            RunMode::Install => "Start Installation",
+            RunMode::Benchmark => "Run Benchmarks",
+            RunMode::Verify => "Run Verification",
+        }
+    }
+
+    /// Heading for the selected-components list.
+    fn selection_label(&self) -> &'static str {
+        match self.run_mode() {
+            RunMode::Install => "Selected Components",
+            RunMode::Benchmark => "Selected Benchmarks",
+            RunMode::Verify => "Selected Checks",
+        }
+    }
+
+    /// The summary screen title.
+    fn summary_title(&self) -> &'static str {
+        match self.run_mode() {
+            RunMode::Install => "Installation Summary",
+            RunMode::Benchmark => "Benchmark Results",
+            RunMode::Verify => "Verification Summary",
+        }
+    }
+
+    /// Noun for a component that completed successfully on the summary screen.
+    fn success_label(&self) -> &'static str {
+        match self.run_mode() {
+            RunMode::Install => "Installed",
+            RunMode::Benchmark => "Completed",
+            RunMode::Verify => "Passed",
+        }
+    }
+
+    /// Lowercase status word shown per-component on the summary screen.
+    fn success_status(&self) -> &'static str {
+        match self.run_mode() {
+            RunMode::Install => "installed",
+            RunMode::Benchmark => "completed",
+            RunMode::Verify => "passed",
+        }
+    }
+
     fn current_category(&self) -> Category {
         match self.selected_category {
             0 => Category::Environment,
@@ -2716,7 +3296,7 @@ impl App {
             2 => Category::Core,
             3 => Category::Extension,
             4 => Category::UiUx,
-            5 => Category::Verification,
+            5 => Category::Maintenance,
             _ => Category::Performance,
         }
     }
@@ -2818,7 +3398,7 @@ impl App {
         let verification = self
             .components
             .iter()
-            .filter(|c| c.category == Category::Verification && c.selected)
+            .filter(|c| c.category == Category::Maintenance && c.selected)
             .cloned()
             .collect::<Vec<_>>();
         (env, verification)
@@ -3003,10 +3583,206 @@ impl App {
     }
 }
 
+/// Stable identity for a config row, independent of which rows the current
+/// run-mode filters into the visible list. Toggle/help key off this, not list
+/// position, so hiding install-only rows for benchmark/verify can't desync the
+/// action from the highlighted row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigKey {
+    RocmPath,
+    BatchMode,
+    AutoConfirm,
+    StarRepo,
+    ForceReinstall,
+    Theme,
+    PerfProfile,
+    VllmVersionLag,
+    VllmVersionAge,
+    Save,
+}
+
+/// Which config rows apply to the current run mode. Benchmark/verify runs hide
+/// install-only rows (ROCm path, star repo, force reinstall, perf profile)
+/// since they aren't meaningful for those runs.
+fn config_applies(key: ConfigKey, mode: RunMode) -> bool {
+    match mode {
+        RunMode::Install => true,
+        RunMode::Benchmark | RunMode::Verify => matches!(
+            key,
+            ConfigKey::BatchMode | ConfigKey::AutoConfirm | ConfigKey::Theme | ConfigKey::Save
+        ),
+    }
+}
+
 fn on_off(value: bool) -> &'static str {
     if value {
         "on"
     } else {
         "off"
+    }
+}
+
+fn parse_log_progress(line: &str) -> Option<f32> {
+    let open = line.find('[')?;
+    let percent = line[open + 1..].find('%')? + open + 1;
+    let value = line[open + 1..percent].trim().parse::<f32>().ok()?;
+    Some((value / 100.0).clamp(0.0, 1.0))
+}
+
+fn trim_status_line(line: &str) -> String {
+    const MAX: usize = 72;
+    let trimmed = line.trim();
+    if trimmed.chars().count() <= MAX {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(MAX.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn show_on_component_detection_screen(component: &Component) -> bool {
+    !matches!(
+        component.category,
+        Category::Maintenance | Category::Performance
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn preflight_enter_starts_component_detection_screen() {
+        let mut app = App::new("/tmp".into());
+        app.entering_password = false;
+        app.components.clear();
+        app.stage = Stage::Preflight;
+        app.preflight.can_continue = true;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.stage, Stage::ComponentDetect);
+        assert!(app.component_status_receiver.is_some());
+    }
+
+    #[test]
+    fn component_detection_screen_hides_action_categories() {
+        let maintenance = Component {
+            id: "rccl-repair".into(),
+            name: "Repair RCCL Multi-GPU".into(),
+            description: String::new(),
+            script: String::new(),
+            category: Category::Maintenance,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: String::new(),
+            needs_sudo: false,
+            experimental: false,
+            note: None,
+        };
+        let mut performance = maintenance.clone();
+        performance.id = "all-benchmarks".into();
+        performance.name = "Full Suite Benchmark".into();
+        performance.category = Category::Performance;
+        let mut installable = maintenance.clone();
+        installable.id = "fastvideo".into();
+        installable.name = "FastVideo".into();
+        installable.category = Category::Extension;
+
+        assert!(!show_on_component_detection_screen(&maintenance));
+        assert!(!show_on_component_detection_screen(&performance));
+        assert!(show_on_component_detection_screen(&installable));
+    }
+
+    #[test]
+    fn explicit_overall_progress_event_updates_overall_bar() {
+        let mut app = App::new("/tmp".into());
+        app.entering_password = false;
+        app.components.clear();
+        app.components.push(Component {
+            id: "rccl-repair".into(),
+            name: "Repair RCCL Multi-GPU".into(),
+            description: String::new(),
+            script: String::new(),
+            category: Category::Maintenance,
+            required: false,
+            selected: true,
+            installed: false,
+            progress: 0.05,
+            estimate: String::new(),
+            needs_sudo: false,
+            experimental: false,
+            note: None,
+        });
+        let (tx, rx) = mpsc::channel();
+        app.install_receiver = Some(rx);
+
+        tx.send(InstallerEvent::Progress {
+            component_id: "__overall__".into(),
+            progress: 0.73,
+            message: "RCCL build: 73%".into(),
+        })
+        .unwrap();
+        app.poll_installer();
+
+        assert!((app.install_status.progress - 0.73).abs() < f32::EPSILON);
+        assert_eq!(app.install_status.message, "RCCL build: 73%");
+    }
+
+    #[test]
+    fn build_log_percentage_updates_running_component_progress() {
+        let mut app = App::new("/tmp".into());
+        app.entering_password = false;
+        app.components.clear();
+        app.components.push(Component {
+            id: "rccl-repair".into(),
+            name: "Repair RCCL Multi-GPU".into(),
+            description: String::new(),
+            script: String::new(),
+            category: Category::Maintenance,
+            required: false,
+            selected: true,
+            installed: false,
+            progress: 0.05,
+            estimate: String::new(),
+            needs_sudo: false,
+            experimental: false,
+            note: None,
+        });
+        let (tx, rx) = mpsc::channel();
+        app.install_receiver = Some(rx);
+
+        tx.send(InstallerEvent::Log(
+            "[ 70%] Building CXX object CMakeFiles/rccl.dir/foo.cpp.o".into(),
+            true,
+        ))
+        .unwrap();
+        app.poll_installer();
+
+        assert!((app.components[0].progress - 0.70).abs() < f32::EPSILON);
+        assert!((app.install_status.progress - 0.70).abs() < f32::EPSILON);
+        assert!(app.install_status.message.contains("70%"));
+    }
+
+    #[test]
+    fn component_detection_complete_waits_for_enter() {
+        let mut app = App::new("/tmp".into());
+        app.entering_password = false;
+        app.components.clear();
+        app.stage = Stage::ComponentDetect;
+        let (tx, rx) = mpsc::channel();
+        app.component_status_receiver = Some(rx);
+
+        tx.send(ComponentStatusEvent::Complete(Vec::new())).unwrap();
+        app.poll_component_status_detection();
+
+        assert_eq!(app.stage, Stage::ComponentDetect);
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.stage, Stage::ComponentSelect);
     }
 }

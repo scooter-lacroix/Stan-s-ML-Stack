@@ -273,45 +273,25 @@ mod sudo_creds {
     /// Read a password from TTY without echo. Returns `None` if not a TTY or
     /// reading fails. Uses raw stdin reads (avoids `read_line` buffering).
     pub fn read_password_from_tty() -> Option<String> {
-        use std::io::Read;
         if !std::io::stdin().is_terminal() {
             // Not a TTY — do not consume piped stdin as sudo password.
             return None;
         }
-        // Disable echo + canonical mode via termios, read raw bytes to newline.
-        #[cfg(unix)]
-        {
-            let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-            if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } != 0 {
-                return None;
-            }
-            let original = termios;
-            termios.c_lflag &= !(libc::ECHO | libc::ICANON);
-            if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) } != 0 {
-                return None;
-            }
-            let mut password = Vec::new();
-            let mut byte = [0u8; 1];
-            loop {
-                match std::io::stdin().read(&mut byte) {
-                    Ok(0) => break, // EOF
-                    Ok(_) if byte[0] == b'\n' => break,
-                    Ok(_) if byte[0] == b'\r' => break,
-                    Ok(_) => password.push(byte[0]),
-                    Err(_) => break,
+        // rpassword reads from /dev/tty with echo disabled and restores the
+        // terminal state itself — robust across terminals. This replaces a
+        // hand-rolled termios raw byte-at-a-time read that interacted poorly
+        // with stdin buffering and delivered a corrupted password to sudo's
+        // askpass helper (3 "incorrect password" attempts even though the
+        // user typed it correctly).
+        match rpassword::read_password() {
+            Ok(pw) => {
+                if pw.is_empty() {
+                    None
+                } else {
+                    Some(pw)
                 }
             }
-            unsafe {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
-            };
-            eprintln!(); // newline after password input
-            String::from_utf8(password)
-                .ok()
-                .map(|s| s.trim().to_string())
-        }
-        #[cfg(not(unix))]
-        {
-            None
+            Err(_) => None,
         }
     }
 
@@ -434,7 +414,7 @@ mod update_impl {
                         }
                     } else {
                         // Apply the plan
-                        let apply_result = apply_plan(&plan);
+                        let apply_result = apply_plan(&plan, json_mode);
                         let output = JsonOutput {
                             scan,
                             plan: Some(plan),
@@ -527,7 +507,7 @@ mod update_impl {
                         let log_path = rusty_stack::logging::log_dir();
                         println!("  Logging to: {}", log_path.display());
                         println!();
-                        let apply_result = apply_plan(&plan);
+                        let apply_result = apply_plan(&plan, json_mode);
                         print_apply_summary(&apply_result);
                         if apply_result.has_failures() {
                             process::exit(1);
@@ -541,7 +521,7 @@ mod update_impl {
                         if io::stdin().read_line(&mut input).is_ok() {
                             match input.trim().to_lowercase().as_str() {
                                 "y" | "yes" => {
-                                    let apply_result = apply_plan(&plan);
+                                    let apply_result = apply_plan(&plan, json_mode);
                                     print_apply_summary(&apply_result);
                                     if apply_result.has_failures() {
                                         process::exit(1);
@@ -828,6 +808,12 @@ mod update_impl {
                 termios.c_cc[libc::VTIME] = 0;
                 let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) };
 
+                // Ensure terminal is restored even on panic/ctrl+c
+                let restore_termios = || {
+                    let _ =
+                        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+                };
+
                 let mut confirmed = false;
                 let mut cancelled = false;
 
@@ -864,8 +850,8 @@ mod update_impl {
                     }
                 }
 
-                // Restore original terminal settings
-                let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+                // Restore original terminal settings (always executed)
+                restore_termios();
 
                 eprint!("\r{}\r", " ".repeat(40));
 
@@ -899,6 +885,7 @@ mod update_impl {
     /// directly - no subprocess spawning.
     fn apply_plan(
         plan: &rusty_stack::orchestrator::planner::PlanOutput,
+        json_mode: bool,
     ) -> rusty_stack::orchestrator::apply::ApplySummary {
         use rusty_stack::orchestrator::apply::{ApplyEngine, ApplyExecutor, ApplyOptions};
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -910,11 +897,15 @@ mod update_impl {
         /// Direct installer executor - calls Rust installer functions in-process.
         struct DirectInstallerExecutor {
             cancelled: Arc<AtomicBool>,
+            json_mode: bool,
         }
 
         impl DirectInstallerExecutor {
-            fn new(cancelled: Arc<AtomicBool>) -> Self {
-                Self { cancelled }
+            fn new(cancelled: Arc<AtomicBool>, json_mode: bool) -> Self {
+                Self {
+                    cancelled,
+                    json_mode,
+                }
             }
             fn component_for_id(id: &str) -> Option<rusty_stack::state::Component> {
                 rusty_stack::state::default_components()
@@ -1020,7 +1011,12 @@ mod update_impl {
                 loop {
                     match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok(rusty_stack::installer::InstallerEvent::Log(line, _)) => {
-                            println!("    | {}", line);
+                            // Route logs to stderr in JSON mode to keep stdout clean
+                            if self.json_mode {
+                                eprintln!("    | {}", line);
+                            } else {
+                                println!("    | {}", line);
+                            }
                             tracing::info!(component = %cid, log = %line);
                         }
                         Ok(rusty_stack::installer::InstallerEvent::Progress {
@@ -1038,7 +1034,11 @@ mod update_impl {
                             name, ..
                         }) => {
                             eprint!("\r    ");
-                            println!("    > Installing {}...", name);
+                            if self.json_mode {
+                                eprintln!("    > Installing {}...", name);
+                            } else {
+                                println!("    > Installing {}...", name);
+                            }
                             tracing::info!(component = %cid, name = %name, "Component started");
                         }
                         Ok(rusty_stack::installer::InstallerEvent::ComponentComplete {
@@ -1048,10 +1048,18 @@ mod update_impl {
                         }) => {
                             eprint!("\r{}\r", " ".repeat(80));
                             if s {
-                                println!("    ok {} - {}", component_name, message);
+                                if self.json_mode {
+                                    eprintln!("    ok {} - {}", component_name, message);
+                                } else {
+                                    println!("    ok {} - {}", component_name, message);
+                                }
                                 tracing::info!(component = %cid, "Completed successfully");
                             } else {
-                                println!("    FAIL {} - {}", component_name, message);
+                                if self.json_mode {
+                                    eprintln!("    FAIL {} - {}", component_name, message);
+                                } else {
+                                    println!("    FAIL {} - {}", component_name, message);
+                                }
                                 tracing::error!(component = %cid, error = %message, "Failed");
                                 success = false;
                                 error_msg = message;
@@ -1062,7 +1070,11 @@ mod update_impl {
                             ..
                         }) => {
                             for line in &lines {
-                                println!("    | {}", line);
+                                if self.json_mode {
+                                    eprintln!("    | {}", line);
+                                } else {
+                                    println!("    | {}", line);
+                                }
                             }
                         }
                         Ok(rusty_stack::installer::InstallerEvent::Finished { success: s }) => {
@@ -1084,7 +1096,14 @@ mod update_impl {
                         }
                     }
                 }
-                let _ = handle.join();
+                // Treat join errors as failures
+                match handle.join() {
+                    Ok(_) => {}
+                    Err(_) => {
+                        success = false;
+                        error_msg = "Installer thread panicked or disconnected".into();
+                    }
+                }
                 eprint!("\r{}\r", " ".repeat(80));
                 if success {
                     tracing::info!(component=%cid,"Succeeded");
@@ -1145,7 +1164,7 @@ mod update_impl {
             .collect();
 
         let cancelled = Arc::new(AtomicBool::new(false));
-        let engine = ApplyEngine::new(DirectInstallerExecutor::new(cancelled));
+        let engine = ApplyEngine::new(DirectInstallerExecutor::new(cancelled, json_mode));
         engine.apply(&items, &ApplyOptions::default())
     }
 

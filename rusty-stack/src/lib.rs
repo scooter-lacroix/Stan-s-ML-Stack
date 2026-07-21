@@ -110,7 +110,7 @@ pub fn run_tui() -> anyhow::Result<()> {
     std::panic::set_hook(Box::new(|info| {
         let _ = disable_raw_mode();
         let mut stdout = io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = execute!(stdout, LeaveAlternateScreen, crossterm::cursor::Show);
         eprintln!("Rusty-Stack crashed: {info}");
     }));
 
@@ -122,6 +122,10 @@ pub fn run_tui() -> anyhow::Result<()> {
     }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    // Hide the cursor for the duration of the TUI — it is never positioned
+    // (no text-input cursor), so a visible cursor floats to the last-redrawn
+    // cell each frame and shows up as a stray character. Restored on exit.
+    terminal.hide_cursor()?;
 
     let scripts_dir = detect_scripts_dir();
     set_repo_root(&scripts_dir);
