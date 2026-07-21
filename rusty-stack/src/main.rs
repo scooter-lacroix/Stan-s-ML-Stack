@@ -214,12 +214,6 @@ enum Subcommands {
         /// Skip the confirmation notice.
         #[arg(long, short = 'y')]
         yes: bool,
-
-        /// Sudo password for privileged steps (system-package purge,
-        /// /opt/rocm removal). Omit to use MLSTACK_SUDO_PASSWORD env or a TTY
-        /// prompt. Ignored when running as root or with non-interactive sudo.
-        #[arg(long)]
-        sudo_password: Option<String>,
     },
 
     /// Force reinstall: uninstall the stack, then relaunch the TUI installer.
@@ -231,11 +225,6 @@ enum Subcommands {
         /// Also remove ~/.mlstack/ during the uninstall phase.
         #[arg(long)]
         purge_dir: bool,
-
-        /// Sudo password for the uninstall-phase privileged steps. Omit to use
-        /// MLSTACK_SUDO_PASSWORD env or a TTY prompt.
-        #[arg(long)]
-        sudo_password: Option<String>,
     },
 
     /// Install the ML stack.
@@ -308,16 +297,13 @@ mod sudo_creds {
 
     /// Resolve a sudo password for the uninstall/reinstall privileged steps.
     ///
-    /// Precedence: already-root ⇒ `None` (no sudo needed); `--sudo-password`
-    /// flag; `MLSTACK_SUDO_PASSWORD` env; non-interactive sudo already works ⇒
+    /// Precedence: already-root ⇒ `None` (no sudo needed);
+    /// `MLSTACK_SUDO_PASSWORD` env; non-interactive sudo already works ⇒
     /// `None`; otherwise prompt on the TTY.
-    pub fn resolve_for_uninstall(flag: Option<String>) -> Option<String> {
+    pub fn resolve_for_uninstall() -> Option<String> {
         #[cfg(unix)]
         if unsafe { libc::geteuid() } == 0 {
             return None;
-        }
-        if let Some(pw) = flag.filter(|p| !p.is_empty()) {
-            return Some(pw);
         }
         if let Ok(pw) = std::env::var("MLSTACK_SUDO_PASSWORD") {
             if !pw.is_empty() {
@@ -941,6 +927,12 @@ mod update_impl {
                 let sudo_password = if component.needs_sudo {
                     if unsafe { libc::geteuid() } == 0 {
                         None
+                    } else if let Ok(pw) = std::env::var("MLSTACK_SUDO_PASSWORD") {
+                        if pw.is_empty() {
+                            None
+                        } else {
+                            Some(pw)
+                        }
                     } else if sudo_creds::can_sudo_non_interactive() {
                         tracing::info!(
                             component = component_id,
@@ -1581,7 +1573,9 @@ mod upgrade_impl {
     fn find_file_recursively(root: &Path, filename: &str) -> Option<PathBuf> {
         let entries = std::fs::read_dir(root).ok()?;
         for entry in entries {
-            let entry = entry.ok()?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
             if path.is_dir() {
                 if let Some(found) = find_file_recursively(&path, filename) {
@@ -2187,17 +2181,29 @@ mod deps_impl {
         let content = std::fs::read_to_string(cargo_toml).unwrap_or_default();
         let mut deps = Vec::new();
         let mut in_deps = false;
+        let mut in_dep_subtable = false;
 
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed == "[dependencies]" {
                 in_deps = true;
+                in_dep_subtable = false;
                 continue;
             }
             if in_deps && trimmed.starts_with('[') {
+                if let Some(name) = trimmed
+                    .strip_prefix("[dependencies.")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .map(|s| s.trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    deps.push(DirectDep { name });
+                    in_dep_subtable = true;
+                    continue;
+                }
                 break;
             }
-            if in_deps {
+            if in_deps && !in_dep_subtable {
                 // Match: name = "version" or name = { version = "...", ... }
                 if let Some(eq_pos) = trimmed.find('=') {
                     let name = trimmed[..eq_pos].trim().to_string();
@@ -2322,13 +2328,13 @@ mod verify_impl {
 mod uninstall_impl {
     use super::*;
 
-    pub fn run(keep_rocm: bool, purge_dir: bool, yes: bool, sudo_password: Option<String>) {
+    pub fn run(keep_rocm: bool, purge_dir: bool, yes: bool, _sudo_password: Option<String>) {
         let _log_guard = rusty_stack::logging::init_logging("uninstall");
         println!("Rusty Stack — uninstall (keep_rocm={keep_rocm}, purge_dir={purge_dir})");
-        // Resolve a sudo password (flag > env > TTY prompt) so privileged steps
+        // Resolve a sudo password (env > TTY prompt) so privileged steps
         // (system-package purge, /opt/rocm removal) can run unattended via
         // askpass — `sudo -n` alone fails when a password is required.
-        let sudo_password = sudo_creds::resolve_for_uninstall(sudo_password);
+        let sudo_password = sudo_creds::resolve_for_uninstall();
         let opts = rusty_stack::uninstall::UninstallOptions {
             keep_rocm,
             purge_mlstack_dir: purge_dir,
@@ -2382,10 +2388,10 @@ mod reinstall_impl {
 
     /// Force-reinstall = uninstall the stack, then relaunch the TUI installer.
     /// (Stage 6: previously broken — `rusty` had no reinstall path at all.)
-    pub fn run(keep_rocm: bool, purge_dir: bool, sudo_password: Option<String>) {
+    pub fn run(keep_rocm: bool, purge_dir: bool, _sudo_password: Option<String>) {
         let _log_guard = rusty_stack::logging::init_logging("reinstall");
         println!("Rusty Stack — reinstall: uninstalling, then relaunching installer…");
-        let sudo_password = sudo_creds::resolve_for_uninstall(sudo_password);
+        let sudo_password = sudo_creds::resolve_for_uninstall();
         let opts = rusty_stack::uninstall::UninstallOptions {
             keep_rocm,
             purge_mlstack_dir: purge_dir,
@@ -2536,16 +2542,14 @@ fn main() {
             keep_rocm,
             purge_dir,
             yes,
-            sudo_password,
         }) => {
-            uninstall_impl::run(keep_rocm, purge_dir, yes, sudo_password);
+            uninstall_impl::run(keep_rocm, purge_dir, yes, None);
         }
         Some(Subcommands::Reinstall {
             keep_rocm,
             purge_dir,
-            sudo_password,
         }) => {
-            reinstall_impl::run(keep_rocm, purge_dir, sudo_password);
+            reinstall_impl::run(keep_rocm, purge_dir, None);
         }
         Some(Subcommands::Install { env, global }) => {
             install_impl::run(env, global);
