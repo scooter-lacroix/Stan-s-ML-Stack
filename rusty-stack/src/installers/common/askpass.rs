@@ -23,6 +23,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -47,10 +48,11 @@ impl Askpass {
     pub fn new(password: &str) -> std::io::Result<Self> {
         // Private dir (0700); tempfile's Builder already uses restrictive perms,
         // set explicitly for clarity.
-        let dir = tempfile::Builder::new()
-            .prefix("mlstack-askpass-")
-            .permissions(fs::Permissions::from_mode(0o700))
-            .tempdir()?;
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("mlstack-askpass-");
+        #[cfg(unix)]
+        builder.permissions(fs::Permissions::from_mode(0o700));
+        let dir = builder.tempdir()?;
 
         // Password file — raw bytes, mode 0600. Written verbatim (no newline
         // synthesis) so any password content is handled safely.
@@ -61,11 +63,12 @@ impl Askpass {
                 .create_new(true)
                 .open(&pw_path)?;
             f.write_all(password.as_bytes())?;
+            #[cfg(unix)]
             f.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
 
-        // Askpass script — `cat`s the password file. No shell quoting needed
-        // because the password never appears in the script.
+        // Askpass script — `cat`s the sibling password file. The password
+        // never appears in the script and the path is quoted.
         let script_path = dir.path().join("askpass.sh");
         {
             let mut f = OpenOptions::new()
@@ -73,7 +76,9 @@ impl Askpass {
                 .create_new(true)
                 .open(&script_path)?;
             writeln!(f, "#!/bin/sh")?;
-            writeln!(f, "exec cat {}", pw_path.display())?;
+            writeln!(f, "pw_dir=$(dirname \"$0\")")?;
+            writeln!(f, "exec cat \"$pw_dir/pw\"")?;
+            #[cfg(unix)]
             f.set_permissions(fs::Permissions::from_mode(0o700))?;
         }
 
@@ -91,7 +96,7 @@ impl Askpass {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

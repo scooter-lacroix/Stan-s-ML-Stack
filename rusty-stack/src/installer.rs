@@ -99,6 +99,11 @@ pub fn run_installation(
                 let _ = sender.send(InstallerEvent::Finished { success: false });
                 return;
             }
+        } else if can_sudo_non_interactive() {
+            let _ = sender.send(InstallerEvent::Log(
+                "Using cached/passwordless sudo credentials".into(),
+                false,
+            ));
         } else {
             let _ = sender.send(InstallerEvent::Log(
                 "Sudo password missing; cannot continue".into(),
@@ -256,9 +261,6 @@ pub fn run_installation(
                             format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                             false,
                         ));
-                    } else {
-                        // Success — record in the registry (seals core components).
-                        registry_record(&component);
                     }
                 }
                 Err(blocked) => {
@@ -310,9 +312,6 @@ pub fn run_installation(
                     format!("[ERROR] {} {} failed: {}", component.name, err_label, chain),
                     false,
                 ));
-            } else {
-                // Tenet 2: record legacy-script installs in the registry too.
-                registry_record(&component);
             }
         }
 
@@ -359,6 +358,10 @@ pub fn run_installation(
         }
         if !final_success {
             overall_success = false;
+        } else {
+            // Success is sealed only after both the install step and its final
+            // verification pass.
+            registry_record(&component);
         }
 
         // Debug logging for environment components
@@ -484,6 +487,18 @@ fn validate_sudo(password: String) -> Result<()> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.lines().next().unwrap_or("sudo validation failed");
     anyhow::bail!(detail.to_string())
+}
+
+fn can_sudo_non_interactive() -> bool {
+    Command::new("sudo")
+        .arg("-n")
+        .arg("true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2968,14 +2983,18 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
     // VAL-INSTALL-033: Preserve sudo behavior for components that need it
     let component_needs_sudo = component.needs_sudo && needs_sudo();
+    let cached_sudo =
+        component_needs_sudo && ctx.sudo_password.is_none() && can_sudo_non_interactive();
     let sudo_pw: Option<&str> = if component_needs_sudo {
-        ctx.sudo_password.as_deref()
+        ctx.sudo_password
+            .as_deref()
+            .or(if cached_sudo { Some("") } else { None })
     } else {
         None
     };
 
     // VAL-INSTALL-036: Error message format matches original scripts
-    if component_needs_sudo && ctx.sudo_password.is_none() {
+    if component_needs_sudo && sudo_pw.is_none() {
         bail!("{} requires sudo but no password provided", component.name);
     }
 
@@ -3039,10 +3058,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ..RocmConfig::default()
             });
             let distro = crate::installers::common::DistroFacade::detect();
-            let is_arch = !(distro.uses_apt()
-                || distro.uses_dnf()
-                || distro.uses_yum()
-                || distro.uses_zypper());
+            let is_arch = distro.is_arch_family();
             if is_arch {
                 // Arch/pacman path. The AUR helper (`yay`) MUST run as the
                 // user — makepkg refuses root, and `yay` warns "Avoid running
