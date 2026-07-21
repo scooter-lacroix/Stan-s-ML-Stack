@@ -22,16 +22,16 @@ use rusty_stack::installers::components::{
 use rusty_stack::state::{default_components, Category, Component};
 
 // ===========================================================================
-// VAL-INSTALL-031 + VAL-INSTALL-039: All 35 ported components are native
+// VAL-INSTALL-031 + VAL-INSTALL-039: All ported components are native
 // ===========================================================================
 
 #[test]
-fn test_all_35_native_components_recognized() {
-    // 26 installer (flash-attn kept as canonical + triton/ck split) + 9 benchmark + 1 fastvideo + 1 llama-cpp = 37
+fn test_all_native_components_recognized() {
+    // 28 installer/action ids + 11 benchmarks + fastvideo + llama-cpp.
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),
-        37,
-        "Must have exactly 37 native components (26 installers + 9 benchmarks + 1 fastvideo + 1 llama-cpp)"
+        41,
+        "Must have exactly 41 native component/action IDs"
     );
 
     for id in NATIVE_COMPONENT_IDS {
@@ -152,7 +152,7 @@ fn test_performance_components_use_native_rust() {
         .filter(|c| c.category == Category::Performance)
         .collect();
 
-    assert_eq!(performance.len(), 8, "Must have 8 performance components");
+    assert_eq!(performance.len(), 11, "Must have 11 performance components");
 
     for comp in &performance {
         assert!(
@@ -375,6 +375,16 @@ fn test_every_native_component_has_installer_module() {
             "repair-stack" => {
                 let _ = RepairInstaller::with_defaults();
             }
+            "rccl-repair" => {
+                let _ = rccl::RcclInstaller::new(
+                    "/tmp",
+                    "python3",
+                    "/opt/rocm",
+                    "7.2.1",
+                    "latest",
+                    None,
+                );
+            }
             "enhanced-env" => {} // env setup module (no dedicated installer struct yet)
             // Benchmark components — dispatched via benchmark_runners module
             "mlperf-inference"
@@ -385,6 +395,9 @@ fn test_every_native_component_has_installer_module() {
             | "vllm-performance"
             | "deepspeed-performance"
             | "megatron-performance"
+            | "onnx-performance"
+            | "rusty-llama-performance"
+            | "flash-attention-ck-performance"
             | "all-benchmarks" => {
                 // Benchmarks are dispatched via benchmark_runners::run_benchmark()
             }
@@ -449,8 +462,9 @@ fn test_native_components_preserve_needs_sudo_flag() {
 #[test]
 fn test_default_components_total_count() {
     let components = default_components();
-    // 23 native TUI installers (incl fastvideo + llama-cpp) + 3 verification + 8 performance = 34
-    assert_eq!(components.len(), 34, "Expected 34 total components");
+    // 24 native TUI installers/actions (incl fastvideo + llama-cpp + RCCL repair)
+    // + 3 verification + 11 performance = 38.
+    assert_eq!(components.len(), 38, "Expected 38 total components");
 }
 
 #[test]
