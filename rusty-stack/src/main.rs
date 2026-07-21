@@ -1552,7 +1552,9 @@ mod upgrade_impl {
     fn find_file_recursively(root: &Path, filename: &str) -> Option<PathBuf> {
         let entries = std::fs::read_dir(root).ok()?;
         for entry in entries {
-            let entry = entry.ok()?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
             if path.is_dir() {
                 if let Some(found) = find_file_recursively(&path, filename) {
@@ -2158,17 +2160,29 @@ mod deps_impl {
         let content = std::fs::read_to_string(cargo_toml).unwrap_or_default();
         let mut deps = Vec::new();
         let mut in_deps = false;
+        let mut in_dep_subtable = false;
 
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed == "[dependencies]" {
                 in_deps = true;
+                in_dep_subtable = false;
                 continue;
             }
             if in_deps && trimmed.starts_with('[') {
+                if let Some(name) = trimmed
+                    .strip_prefix("[dependencies.")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .map(|s| s.trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    deps.push(DirectDep { name });
+                    in_dep_subtable = true;
+                    continue;
+                }
                 break;
             }
-            if in_deps {
+            if in_deps && !in_dep_subtable {
                 // Match: name = "version" or name = { version = "...", ... }
                 if let Some(eq_pos) = trimmed.find('=') {
                     let name = trimmed[..eq_pos].trim().to_string();

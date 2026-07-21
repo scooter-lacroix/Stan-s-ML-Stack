@@ -409,7 +409,7 @@ impl RocmInstaller {
     /// operation defaults to `yay -Syu`, i.e. a full system upgrade, which is
     /// what previously aborted ROCm installs.) The caller feeds yay's internal
     /// `sudo pacman` non-interactively — e.g. `SUDO_ASKPASS` +
-    /// `--sudo-flags=-A`, as the installer's Arch path does.
+    /// `--sudoflags=-A`, as the installer's Arch path does.
     pub fn pacman_install_commands(&self, aur_helper: &str) -> Vec<PackageCommand> {
         let packages = self.pacman_rocm_packages();
         let mut args = vec![

@@ -3097,7 +3097,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 ));
 
                 // Build a fully non-interactive `yay` command. `--noconfirm`
-                // skips pacman + yay menus. `--sudo-flags=-A` combined with
+                // skips pacman + yay menus. `--sudoflags=-A` combined with
                 // SUDO_ASKPASS hands the password to yay's internal sudo with
                 // no TTY. Force-reinstall omits `--needed` so yay reinstalls in
                 // place — the previous explicit `pacman -Rns` pre-removal was
@@ -3131,7 +3131,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 let mut envs: Vec<(String, String)> = Vec::new();
                 if let Some(ref ap) = askpass {
                     envs.push(("SUDO_ASKPASS".to_string(), ap.path().to_string()));
-                    args.push("--sudo-flags=-A".to_string());
+                    args.push("--sudoflags=-A".to_string());
                 } else {
                     let _ = sender.send(InstallerEvent::Log(
                         format!(
@@ -3159,8 +3159,14 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 } else if distro.uses_dnf() || distro.uses_yum() {
                     let rhel_ver = distro.version().split('.').next().unwrap_or("9");
                     inst.dnf_install_commands(rhel_ver)
-                } else {
+                } else if distro.uses_zypper() {
                     inst.zypper_install_commands()
+                } else {
+                    bail!(
+                        "Unsupported distribution for ROCm installation: {} ({})",
+                        distro.name(),
+                        distro.id()
+                    );
                 };
                 for pkg_cmd in &commands {
                     let native_cmd = NativeCommand::Package {
