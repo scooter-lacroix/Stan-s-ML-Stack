@@ -221,7 +221,11 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
-            needs_sudo: true,
+            // pip-install of the ROCm wheel into the managed venv — no system
+            // writes, no sudo. (Was `true`, which made run_installation's sudo
+            // gate spawn `sudo -n true` and leak "a password is required" when
+            // the sudo timestamp lapsed, even though pip never needs root.)
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -236,7 +240,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "5-10 min".into(),
-            needs_sudo: true,
+            // pip-install of the triton wheel — no system writes, no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -251,7 +256,9 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "3-5 min".into(),
-            needs_sudo: true,
+            // pip-install against an EXISTING system openmpi (the installer only
+            // reads its path, never apt-installs it). No sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -266,7 +273,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "8-12 min".into(),
-            needs_sudo: true,
+            // pip-install of the deepspeed wheel — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -296,7 +304,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "3-5 min".into(),
-            needs_sudo: true,
+            // pip-install of profiler wheels — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -315,7 +324,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "20-30 min".into(),
-            needs_sudo: true,
+            // pip build-from-source into the venv — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: Some(
                 "Full forward + backward pass — the only Flash Attention backend \
@@ -340,7 +350,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "20-30 min".into(),
-            needs_sudo: true,
+            // pip build-from-source into the venv — no sudo.
+            needs_sudo: false,
             experimental: true,
             note: Some(
                 "EXPERIMENTAL — RDNA3 forward-pass only. The composable-kernel \
@@ -365,7 +376,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
-            needs_sudo: true,
+            // prebuilt/wheel install — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -380,7 +392,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-15 min".into(),
-            needs_sudo: true,
+            // cmake build + git clone into user space — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -395,7 +408,9 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "25-40 min".into(),
-            needs_sudo: true,
+            // git clone + `pip install -e .` into the managed venv — no sudo.
+            // Same mis-flag as pytorch; flipping stops the spurious sudo prompt.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -410,7 +425,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "10-20 min".into(),
-            needs_sudo: true,
+            // pip-install of the aiter wheel — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -426,7 +442,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "15-25 min".into(),
-            needs_sudo: true,
+            // pip-install of the vllm wheel — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -456,7 +473,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "3-5 min".into(),
-            needs_sudo: true,
+            // pip-install of the bitsandbytes wheel — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },
@@ -471,7 +489,8 @@ pub fn default_components() -> Vec<Component> {
             installed: false,
             progress: 0.0,
             estimate: "5-8 min".into(),
-            needs_sudo: true,
+            // pip-install of the wandb wheel — no sudo.
+            needs_sudo: false,
             experimental: false,
             note: None,
         },

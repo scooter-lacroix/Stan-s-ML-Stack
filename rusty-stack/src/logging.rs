@@ -138,7 +138,7 @@ pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blockin
         .with_writer(std::io::stderr)
         .with_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn")),
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn")),
         );
 
     tracing_subscriber::registry()
@@ -150,6 +150,67 @@ pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blockin
         context = context,
         log_dir = %log_path.display(),
         "Batch logging initialized"
+    );
+
+    Some(guard)
+}
+
+/// Initialize logging for interactive contexts (the `update` command's inline
+/// selection + animated apply panel).
+///
+/// Stdout stays free of log lines (the ratatui `Viewport::Inline` panel owns
+/// it). Stderr is **WARN+ only** — the per-line `tracing::info!(log = …)` that
+/// the installer emits for every pip/git line goes to the FILE (full debug),
+/// not the terminal, so it can't flood around the panel. Without this, the
+/// interactive run reproduces the raw-log flood on stderr.
+pub fn init_interactive_logging(
+    context: &str,
+) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let log_path = log_dir();
+    if let Err(e) = std::fs::create_dir_all(&log_path) {
+        eprintln!(
+            "[WARN] Could not create log directory {}: {}",
+            log_path.display(),
+            e
+        );
+        return None;
+    }
+
+    let file_appender =
+        tracing_appender::rolling::daily(&log_path, format!("{}-rusty-stack", context));
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    // File layer — full debug detail (every installer log line is captured here).
+    let file_layer = fmt::layer()
+        .json()
+        .with_timer(LocalTime::rfc_3339())
+        .with_writer(non_blocking)
+        .with_target(true)
+        .with_span_events(fmt::format::FmtSpan::CLOSE)
+        .with_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug")),
+        );
+
+    // Stderr layer — WARN+ only. The terminal is owned by the inline panel; the
+    // torrent of INFO installer-log lines must not bleed onto it.
+    let stderr_layer = fmt::layer()
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .with_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn")),
+        );
+
+    tracing_subscriber::registry()
+        .with(file_layer)
+        .with(stderr_layer)
+        .init();
+
+    tracing::info!(
+        context = context,
+        log_dir = %log_path.display(),
+        "Interactive logging initialized"
     );
 
     Some(guard)

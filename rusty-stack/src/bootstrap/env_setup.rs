@@ -596,6 +596,9 @@ pub fn generate_env_file_content(
     python_bin: &str,
 ) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
+    // RCCL overlay env is MANAGED here (the persistent-env generator is the
+    // single source of truth for env vars — components no longer write env files).
+    let rccl_block = rccl_overlay_bash_block(&home);
 
     format!(
         r#"# ML Stack Environment File
@@ -628,14 +631,13 @@ export GPU_ARCHS={gpu_arch}
 export AMDGPU_ASIC_ID_TABLE_PATH=/usr/share/libdrm/amdgpu.ids
 export AMDGPU_ASIC_ID_TABLE_PATHS=/usr/share/libdrm
 
-# Path Settings - Hardcoded safe paths to prevent "command not found" errors
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{rocm_path}/bin:{rocm_path}/hip/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{rocm_path}/lib:{rocm_path}/hip/lib:{rocm_path}/opencl/lib:${{LD_LIBRARY_PATH:-}}"
-
-# Sealed RCCL overlay (only present when the functional multi-GPU probe requires it)
-if [ -r "$HOME/.mlstack/components/rccl/active/env.sh" ]; then
-  . "$HOME/.mlstack/components/rccl/active/env.sh"
-fi
+# Path Settings - Hardcoded safe paths to prevent "command not found" errors.
+# Idempotent: prepend the ROCm bin/lib blocks only if not already on the var, so
+# re-sourcing the env never grows PATH/LD_LIBRARY_PATH (the old un-guarded
+# `:$PATH` form accumulated a duplicate entry per source).
+case ":${{PATH:-}}:" in *:"{rocm_path}/bin":*) ;; *) export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{rocm_path}/bin:{rocm_path}/hip/bin:${{PATH:-}}";; esac
+case ":${{LD_LIBRARY_PATH:-}}:" in *:"{rocm_path}/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{rocm_path}/lib:{rocm_path}/hip/lib:{rocm_path}/opencl/lib:${{LD_LIBRARY_PATH:-}}";; esac
+{rccl_block}
 
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
@@ -709,6 +711,7 @@ fi
         hsa_override_gfx_version = hsa_override_gfx_version,
         home = home,
         python_bin = python_bin,
+        rccl_block = rccl_block,
     )
 }
 
@@ -731,6 +734,8 @@ pub fn generate_fish_env_file_content(
 
     // Build ONNX Runtime PYTHONPATH check
     let onnx_path = format!("{home}/onnxruntime_build/onnxruntime/build/Linux/Release");
+    // RCCL overlay env is MANAGED here (single source of truth — no component env files).
+    let rccl_block = rccl_overlay_fish_block(&home);
 
     format!(
         r##"# ML Stack Environment File — Fish Shell Native
@@ -763,11 +768,11 @@ set -gx AMDGPU_ASIC_ID_TABLE_PATH /usr/share/libdrm/amdgpu.ids
 set -gx AMDGPU_ASIC_ID_TABLE_PATHS /usr/share/libdrm
 
 # --- Path Settings ---
-set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
-set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
-
-# --- Sealed RCCL overlay (conditional) ---
-test -r $HOME/.mlstack/components/rccl/active/env.fish; and source $HOME/.mlstack/components/rccl/active/env.fish
+# Idempotent: prepend the ROCm bin/lib blocks only if not already on the var, so
+# re-sourcing never grows PATH/LD_LIBRARY_PATH (no per-source duplicate buildup).
+contains -- {rocm_path}/bin $PATH; or set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
+contains -- {rocm_path}/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
+{rccl_block}
 
 # --- Performance Settings ---
 set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}
@@ -835,6 +840,98 @@ end
         hsa_override_gfx_version = hsa_override_gfx_version,
         python_bin = python_bin,
         onnx_path = onnx_path,
+        rccl_block = rccl_block,
+    )
+}
+
+// ===========================================================================
+// Component env contributions — MANAGED by the persistent-env generator.
+// The generator is the SINGLE source of truth for env vars; components must
+// NOT write their own env files (the old rccl `active/env.sh` did an un-guarded
+// `export PYTHONPATH=X${PYTHONPATH:+:$PYTHONPATH}` that accumulated a duplicate
+// entry on every `source ~/.mlstack_env`). Components instead declare state via
+// the filesystem (the `active` symlink + manifest); the generator reads it and
+// emits an idempotent block here.
+// ===========================================================================
+
+/// Path to the sealed RCCL overlay's `active` dir for `home`.
+fn rccl_active_dir(home: &str) -> String {
+    format!("{home}/.mlstack/components/rccl/active")
+}
+
+/// Read the RCCL overlay sha256 from `<active>/manifest` (line `sha256=…`), if
+/// the overlay is installed and the manifest is readable.
+fn rccl_overlay_sha256(active: &str) -> Option<String> {
+    std::fs::read_to_string(format!("{active}/manifest"))
+        .ok()?
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("sha256=")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        })
+        .map(str::to_string)
+}
+
+/// Emit the **idempotent** bash block for the sealed RCCL overlay, or an empty
+/// string when no overlay is installed.
+///
+/// Uses the `$HOME`-relative `active` symlink path in the emitted exports so
+/// the block tracks the current RCCL build without an env refresh. The
+/// PYTHONPATH prepend is guarded (`grep -qF`) so re-sourcing the env never
+/// accumulates duplicates — the generator, not a component-written file, owns
+/// these vars.
+fn rccl_overlay_bash_block(home: &str) -> String {
+    if !std::path::Path::new(&rccl_active_dir(home)).exists() {
+        return String::new();
+    }
+    let sha_line = match rccl_overlay_sha256(&rccl_active_dir(home)) {
+        Some(sha) => format!("  export MLSTACK_RCCL_OVERLAY_SHA256={sha}"),
+        None => "  # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing)".to_string(),
+    };
+    format!(
+        r#"
+# Sealed RCCL overlay — MANAGED by the persistent-env generator (single source of
+# truth for env vars; the generator, not a component file, owns these). Follows
+# the `active` symlink; the PYTHONPATH prepend is guarded so re-sourcing the env
+# never accumulates duplicate entries.
+if [ -r "$HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0" ]; then
+  export MLSTACK_RCCL_OVERLAY_LIB="$HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0"
+{sha_line}
+  export NCCL_P2P_DISABLE=1
+  export RCCL_P2P_DISABLE=1
+  if ! echo "${{PYTHONPATH:-}}" | grep -qF "$HOME/.mlstack/components/rccl/active/python"; then
+    export PYTHONPATH="$HOME/.mlstack/components/rccl/active/python:${{PYTHONPATH:-}}"
+  fi
+fi
+"#
+    )
+}
+
+/// Emit the **idempotent** fish block for the sealed RCCL overlay, or empty.
+/// Fish analogue of [`rccl_overlay_bash_block`]; `contains` is the membership guard.
+fn rccl_overlay_fish_block(home: &str) -> String {
+    if !std::path::Path::new(&rccl_active_dir(home)).exists() {
+        return String::new();
+    }
+    let sha_line = match rccl_overlay_sha256(&rccl_active_dir(home)) {
+        Some(sha) => format!("    set -gx MLSTACK_RCCL_OVERLAY_SHA256 {sha}"),
+        None => "    # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing)".to_string(),
+    };
+    format!(
+        r#"
+# --- Sealed RCCL overlay — MANAGED by the persistent-env generator (single
+# source of truth for env vars). Follows the `active` symlink; idempotent. ---
+if test -r $HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0
+    set -gx MLSTACK_RCCL_OVERLAY_LIB $HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0
+{sha_line}
+    set -gx NCCL_P2P_DISABLE 1
+    set -gx RCCL_P2P_DISABLE 1
+    if not contains -- $HOME/.mlstack/components/rccl/active/python $PYTHONPATH
+        set -gx PYTHONPATH $HOME/.mlstack/components/rccl/active/python $PYTHONPATH
+    end
+end
+"#
     )
 }
 
@@ -1436,8 +1533,10 @@ mod tests {
         assert!(content.contains("UV_PIP_BREAK_SYSTEM_PACKAGES"));
         assert!(content.contains("UV_SYSTEM_PYTHON"));
         assert!(content.contains("FLASH_ATTENTION_TRITON_AMD_ENABLE"));
-        assert!(content.contains("components/rccl/active/env.fish"));
-        assert!(content.contains("and source"));
+        // Centralization: the generator must NOT source a component-written
+        // env.fish — RCCL overlay env is emitted inline + idempotently by the
+        // generator (rccl_overlay_fish_block), the single source of truth.
+        assert!(!content.contains("source $HOME/.mlstack/components/rccl/active/env.fish"));
         assert!(content.contains("0,1"));
     }
 
@@ -1473,8 +1572,50 @@ mod tests {
         assert!(content.contains("export UV_PIP_BREAK_SYSTEM_PACKAGES=1"));
         assert!(content.contains("export UV_SYSTEM_PYTHON=1"));
         assert!(content.contains("export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE"));
-        assert!(content.contains("components/rccl/active/env.sh"));
-        assert!(content.contains(". \"$HOME/.mlstack/components/rccl/active/env.sh\""));
+        // Centralization: the generator must NOT source a component-written
+        // env.sh — RCCL overlay env is emitted inline + idempotently here.
+        assert!(!content.contains(". \"$HOME/.mlstack/components/rccl/active/env.sh\""));
+    }
+
+    #[test]
+    fn test_rccl_overlay_block_is_centralized_and_idempotent() {
+        // No active RCCL overlay → generator emits nothing for it.
+        let tmp = std::env::temp_dir();
+        let home_no_rccl = tmp.join("rusty_rccl_no_active_test");
+        let _ = std::fs::remove_dir_all(&home_no_rccl);
+        assert_eq!(rccl_overlay_bash_block(&home_no_rccl.to_string_lossy()), "");
+        assert_eq!(rccl_overlay_fish_block(&home_no_rccl.to_string_lossy()), "");
+
+        // Active RCCL overlay → generator emits a guarded, idempotent block that
+        // follows the `active` symlink (no component-written env file).
+        let home = tmp.join("rusty_rccl_active_test");
+        let active = home.join(".mlstack/components/rccl/active");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(active.join("python")).unwrap();
+        std::fs::create_dir_all(active.join("lib")).unwrap();
+        std::fs::write(active.join("lib/librccl.so.1.0"), b"").unwrap();
+        std::fs::write(
+            active.join("manifest"),
+            "sha256=abc123
+",
+        )
+        .unwrap();
+
+        let bash = rccl_overlay_bash_block(&home.to_string_lossy());
+        assert!(bash.contains("MLSTACK_RCCL_OVERLAY_LIB"));
+        assert!(bash.contains("MLSTACK_RCCL_OVERLAY_SHA256=abc123"));
+        // Idempotent guard present (no bare un-guarded prepend).
+        assert!(bash.contains("grep -qF"));
+        // Single source of truth: does NOT delegate to a component env file.
+        assert!(!bash.contains("env.sh"));
+
+        let fish = rccl_overlay_fish_block(&home.to_string_lossy());
+        assert!(fish.contains("MLSTACK_RCCL_OVERLAY_LIB"));
+        assert!(fish.contains("contains --"));
+        assert!(!fish.contains("env.fish"));
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&home_no_rccl);
     }
 
     // --- setup_environment integration ---

@@ -427,32 +427,56 @@ fn test_every_native_component_has_installer_module() {
 #[test]
 fn test_native_components_preserve_needs_sudo_flag() {
     let components = default_components();
-    let native_comps: Vec<&Component> = components
-        .iter()
-        .filter(|c| is_native_component(&c.id))
-        .collect();
+    let by_id = |id: &str| -> &Component {
+        components
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("component {id} missing"))
+    };
 
-    // Verify sudo-requiring components still have needs_sudo=true
-    let sudo_components: Vec<&&Component> = native_comps.iter().filter(|c| c.needs_sudo).collect();
+    // Components that genuinely need root: system-package installs (apt/dnf/
+    // pacman), system-dir writes, or repair/verify that may rebuild system
+    // state. These keep needs_sudo=true.
+    for sudo_id in [
+        "permanent-env",
+        "rocm",
+        "rocm-smi",
+        "verify-basic",
+        "verify-enhanced",
+        "verify-build",
+        "repair-stack",
+    ] {
+        assert!(by_id(sudo_id).needs_sudo, "{sudo_id} should need sudo");
+    }
 
-    // Most installers need sudo (ROCm, PyTorch, etc.)
-    assert!(
-        sudo_components.len() >= 15,
-        "At least 15 native components should need sudo, got {}",
-        sudo_components.len()
-    );
-
-    // Some don't need sudo (app installers)
-    let no_sudo: Vec<&&Component> = native_comps.iter().filter(|c| !c.needs_sudo).collect();
-
-    assert!(
-        no_sudo.iter().any(|c| c.id == "vllm-studio"),
-        "vllm-studio should not need sudo"
-    );
-    assert!(
-        no_sudo.iter().any(|c| c.id == "comfyui"),
-        "comfyui should not need sudo"
-    );
+    // pip / git / cmake installs land in the managed venv or user home — they
+    // never write system dirs, so needs_sudo MUST be false. (A `true` here made
+    // `run_installation`'s sudo gate spawn `sudo -n true` and leak
+    // "a password is required" during `update`, even though pip needs no root.)
+    for pip_id in [
+        "pytorch",
+        "megatron",
+        "triton",
+        "mpi4py",
+        "deepspeed",
+        "pytorch-profiler",
+        "flash-attn-triton",
+        "flash-attn-ck",
+        "migraphx",
+        "llama-cpp",
+        "aiter",
+        "vllm",
+        "bitsandbytes",
+        "wandb",
+        "onnx",
+        "vllm-studio",
+        "comfyui",
+    ] {
+        assert!(
+            !by_id(pip_id).needs_sudo,
+            "{pip_id} is pip/git-only and must not need sudo"
+        );
+    }
 }
 
 // ===========================================================================

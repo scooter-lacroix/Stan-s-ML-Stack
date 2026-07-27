@@ -55,6 +55,23 @@ pub fn run_installation(
     sender: Sender<InstallerEvent>,
     input_rx: Receiver<String>,
 ) {
+    run_installation_with_version(components, config, sudo_password, sender, input_rx, None);
+}
+
+/// Run installation with an optional planner-selected target version.
+///
+/// Normal installs keep the historical API and let each installer choose its
+/// bundled compatible default. Update applies can pass the exact manifest
+/// target through this path without changing component selection or package
+/// source logic.
+pub fn run_installation_with_version(
+    components: Vec<Component>,
+    config: InstallerConfig,
+    sudo_password: Option<String>,
+    sender: Sender<InstallerEvent>,
+    input_rx: Receiver<String>,
+    target_version: Option<String>,
+) {
     let scripts_dir = &config.scripts_dir;
     let batch_mode = config.batch_mode;
     let install_method = config.install_method.clone();
@@ -64,7 +81,7 @@ pub fn run_installation(
     let user_home = resolve_mlstack_user_home();
     let input_rx = Arc::new(Mutex::new(input_rx));
 
-    match ensure_mlstack_env(&user_home, &install_method) {
+    match ensure_mlstack_env(&user_home, &install_method, false) {
         Ok(EnvUpdate::Created) => {
             let _ = sender.send(InstallerEvent::Log(
                 format!("Created .mlstack_env in {}", user_home),
@@ -243,6 +260,7 @@ pub fn run_installation(
                 env_exports: &env_exports,
                 vllm_version_lag: config.vllm_version_lag,
                 vllm_version_min_age_days: config.vllm_version_min_age_days,
+                target_version: target_version.clone(),
             };
             // T2: sealed-core no-override gate + registry population.
             match registry_gate(&component, &sender) {
@@ -449,7 +467,7 @@ pub fn run_installation(
     // Re-running here re-derives ROCM_VERSION / GPU_ARCH / HSA_OVERRIDE /
     // HIP_VISIBLE_DEVICES / MLSTACK_PYTHON_BIN from the now-installed reality.
     // Best-effort: never fail the install over an env refresh.
-    match ensure_mlstack_env(&user_home, &install_method) {
+    match ensure_mlstack_env(&user_home, &install_method, false) {
         Ok(EnvUpdate::Created) | Ok(EnvUpdate::Updated) => {
             let _ = sender.send(InstallerEvent::Log(
                 "[post-install] Refreshed ~/.mlstack_env from installed state \
@@ -627,9 +645,13 @@ fn fix_libdrm_amdgpu_ids() {
         }
     }
 
-    // Fallback: try with sudo (non-interactive, uses cached credentials if available)
+    // Fallback: try with sudo. `-n` keeps it strictly non-interactive — fail fast
+    // (no tty password prompt) when there are no cached credentials, then fall
+    // through to the manual suggestion below. `.output()` already captures
+    // stderr so nothing leaks to the terminal; `-n` makes the best-effort intent
+    // explicit and guarantees the install never blocks on a password read.
     let result = Command::new("sudo")
-        .args(["mkdir", "-p", "/opt/amdgpu/share/libdrm/"])
+        .args(["-n", "mkdir", "-p", "/opt/amdgpu/share/libdrm/"])
         .stdin(std::process::Stdio::null())
         .output();
 
@@ -637,6 +659,7 @@ fn fix_libdrm_amdgpu_ids() {
         if out.status.success() {
             let result2 = Command::new("sudo")
                 .args([
+                    "-n",
                     "ln",
                     "-sf",
                     "/usr/share/libdrm/amdgpu.ids",
@@ -680,7 +703,7 @@ fn compute_relative_symlink(link: &Path, target: &Path) -> PathBuf {
     result
 }
 
-fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate> {
+fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Result<EnvUpdate> {
     let env_path = PathBuf::from(user_home).join(".mlstack_env");
     let normalized_install_method = match install_method.trim().to_ascii_lowercase().as_str() {
         "global" => "global",
@@ -730,12 +753,34 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
             primary.pci_device_id
         )
     })?;
-    let discrete_indices = dgpus
-        .iter()
-        .enumerate()
-        .map(|(i, _)| i.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+    // ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES filter by the *original* ROCr
+    // enumeration order (CPU + iGPU + dGPU agents as `rocminfo` prints them),
+    // NOT a re-numbered post-filter sequence. On an APU+dGPU host the iGPU is a
+    // low ROCr agent index, so emitting the compacted filtered-list indices
+    // (0,1,...) would point ROCr at the iGPU/CPU instead of the dGPU — defeating
+    // the iGPU-exclusion hardening. Use the real ROCm agent indices captured by
+    // the gpu detector (from rocminfo) when available; fall back to compacted
+    // indices only when rocminfo is absent (a rocminfo-less host has no separate
+    // CPU/iGPU agent, so there is no index gap to worry about — this matches
+    // bootstrap::env_setup::detect_discrete_gpus's lspci/render-node fallbacks,
+    // which also compact).
+    let discrete_indices = if dgpus.iter().all(|g| g.rocm_index.is_some()) {
+        dgpus
+            .iter()
+            .map(|g| g.rocm_index.expect("checked Some above").to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        dgpus
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    // After filtering, the dGPU is always index 0 of the *visible* (re-numbered)
+    // set, regardless of its original ROCr index. PYTORCH_ROCM_DEVICE selects
+    // within the post-filter visible set, so it stays "0".
     let primary_gpu = "0";
     // Per-GPU identity emitted to the env so the benchmark renders a real GPU
     // inventory from ONE source (~/.mlstack_env) — no ad-hoc detection elsewhere.
@@ -760,7 +805,12 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
     let hsa_override =
         crate::bootstrap::env_setup::GpuArchInfo::from_arch(gpu_arch).hsa_override_gfx_version;
 
-    if env_path.exists() {
+    // `force` (force-reinstall / explicit env rewrite): skip the in-place merge
+    // and fall through to the regenerate path below, which truncates-then-writes
+    // the canonical env from current system state. This purges stale/drifted
+    // content while staying scoped to rusty's own env file (~/.mlstack_env) —
+    // no user files outside rusty's control are touched.
+    if env_path.exists() && !force {
         let contents = fs::read_to_string(&env_path).context("Failed to read .mlstack_env")?;
         let rocm_version = detect_rocm_version();
         let rocm_home = "/opt/rocm";
@@ -2273,6 +2323,8 @@ struct NativeInstallerContext<'a> {
     /// vLLM source-build supply-chain gate (version lag + min age), from config.
     vllm_version_lag: u32,
     vllm_version_min_age_days: u32,
+    /// Exact manifest target for update-driven installs, when provided.
+    target_version: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2356,6 +2408,31 @@ fn is_up_to_date_output(output: &str) -> bool {
         || lower.contains("there is nothing to do")
         || lower.contains("already installed")
         || (lower.contains("warning:") && lower.contains("up to date"))
+}
+
+/// Prepend `/opt/rocm/bin` and `/opt/rocm/hip/bin` to `inherited` (de-duplicated).
+///
+/// `rocm-sdk-core` (pip) installs `rocminfo`/`hipcc`/`hipconfig`/`rocm-smi`
+/// shims into the venv `bin/`; these are frequently non-functional and, because
+/// the venv `bin/` precedes `/opt/rocm/bin` on PATH, they shadow the working
+/// `/opt/rocm/bin` binaries. Tools that resolve these via PATH — e.g. aiter's
+/// `chip_info._detect_native` (rocminfo) during JIT — then fail. This restores
+/// correct resolution.
+///
+/// Returns the inherited `PATH` unchanged when `/opt/rocm/bin` is absent (no
+/// system ROCm install to prefer).
+fn safe_rocm_path(inherited: &str) -> String {
+    const ROCM_BINS: &[&str] = &["/opt/rocm/bin", "/opt/rocm/hip/bin"];
+    if !Path::new("/opt/rocm/bin").exists() {
+        return inherited.to_string();
+    }
+    let mut parts: Vec<&str> = ROCM_BINS.to_vec();
+    for entry in inherited.split(':') {
+        if !entry.is_empty() && !ROCM_BINS.contains(&entry) {
+            parts.push(entry);
+        }
+    }
+    parts.join(":")
 }
 
 ///
@@ -2468,6 +2545,19 @@ fn execute_native_command(
     for (key, value) in &envs {
         command.env(key, value);
     }
+
+    // Guarantee the real ROCm CLI tools precede any pip-installed shims on PATH.
+    // `rocm-sdk-core` (pip) drops shims for rocminfo/hipcc/hipconfig/rocm-smi
+    // into ~/.mlstack/global/bin; on this box its rocminfo shim exits 8
+    // (HSA_STATUS_ERROR_OUT_OF_RESOURCES) while /opt/rocm/bin/rocminfo works.
+    // Because ~/.mlstack/global/bin precedes /opt/rocm/bin on the inherited
+    // PATH, tools that resolve rocminfo via PATH — notably aiter's
+    // chip_info._detect_native at JIT time — hit the broken shim and crash.
+    // Prepend /opt/rocm/bin(+hip/bin) once here so every native command is safe.
+    command.env(
+        "PATH",
+        safe_rocm_path(&std::env::var("PATH").unwrap_or_default()),
+    );
 
     // Set working directory if specified (e.g., for pip install -e .)
     if let Some(ref dir) = working_dir {
@@ -2928,6 +3018,20 @@ fn git_clone_or_pull(
             );
             let _ = execute_native_command(&rm_cmd, sudo_pw, sender, component_name);
         }
+        // Guard against infinite recursion: if the corrupt repo could not be
+        // removed (e.g. root-owned .git left by a prior sudo run while this call
+        // has no sudo_pw), is_existing_git_repo stays true and the recursive
+        // call would re-enter the pull/fetch/reset branch and recurse forever —
+        // hanging the installer thread and risking stack overflow. Bail loudly
+        // instead so the operator sees a clear, actionable failure.
+        if Path::new(target_dir).join(".git").exists() {
+            bail!(
+                "{} — could not remove corrupt repo at '{}' (.git still present); \
+                 aborting re-clone to avoid infinite recursion",
+                component_name,
+                target_dir
+            );
+        }
         git_clone_or_pull(
             repo_url,
             target_dir,
@@ -3162,11 +3266,21 @@ fn registry_gate(component: &Component, sender: &Sender<InstallerEvent>) -> Resu
         return Ok(true);
     }
     if is_force_reinstall() && !unseal_core_requested() {
-        bail!(
-            "{} is a sealed CORE component — force-reinstall refused to prevent override. \
-             Set MLSTACK_UNSEAL_CORE=1 to intentionally reinstall it.",
-            component.name
-        );
+        // A sealed core must never be silently overridden — but a stray
+        // MLSTACK_FORCE_REINSTALL / FORCE env var (note: `FORCE` is a very
+        // generic name) must NOT hard-fail the whole update either. Reuse the
+        // installed core and tell the user how to actually override it. The
+        // previous `bail!` here cascaded into "blocked by dependency" failures
+        // and got wrapped in a misleading pip/network error.
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} is a sealed CORE component — force ignored, reusing the installed copy. \
+                 Set MLSTACK_UNSEAL_CORE=1 to intentionally override it.",
+                component.name
+            ),
+            false,
+        ));
+        return Ok(false);
     }
     if !is_force_reinstall() {
         let _ = sender.send(InstallerEvent::Log(
@@ -3549,7 +3663,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // refreshes at start + post-loop, but the component owns this explicitly
             // so the option does what its name says.) Best-effort: log on error,
             // never fail the component over an env refresh.
-            match ensure_mlstack_env(ctx.user_home, ctx.install_method) {
+            // Force-reinstall (or any explicit permanent-env run) regenerates
+            // ~/.mlstack_env from current state instead of merging — see the
+            // `force` doc on ensure_mlstack_env.
+            match ensure_mlstack_env(ctx.user_home, ctx.install_method, is_force_reinstall()) {
                 Ok(EnvUpdate::Created) | Ok(EnvUpdate::Updated) => {
                     let _ = sender.send(InstallerEvent::Log(
                         "[native] Permanent ROCm Env — regenerated ~/.mlstack_env from current state".into(),
@@ -3772,7 +3889,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // satisfies torchsde's dep so the deps step never pulls CUDA torch.
             // (The original install_pytorch_rocm.sh installed torchsde/sentencepiece
             // AFTER PyTorch — the port had inverted the order.)
-            let install_cmd = inst.build_install_command(&rocm_mm, use_uv);
+            let install_cmd =
+                inst.build_install_command(&rocm_mm, use_uv, ctx.target_version.as_deref());
             execute_native_command(
                 &NativeCommand::Pip {
                     program: install_cmd.program.clone(),
@@ -4963,7 +5081,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── onnx ──────────────────────────────────────────────────────
         "onnx" => {
             use crate::installers::components::onnxruntime::{
-                OnnxInstallMethod, OnnxRuntimeConfig, OnnxRuntimeInstaller,
+                install_method_from_env, prebuilt_version_from_env, OnnxInstallMethod,
+                OnnxRuntimeConfig, OnnxRuntimeInstaller,
             };
 
             let detected_rocm_version = detect_rocm_version();
@@ -4971,6 +5090,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 eprintln!("Warning: no GPU arch detected for ONNX, falling back to gfx1100");
                 "gfx1100".to_string()
             });
+
+            // Install method + version are user-selectable (env vars today; the
+            // TUI options screen will set these). Defaults: PyPI prebuilt
+            // `onnxruntime-migraphx` at PREBUILT_MIGRAPHX_VERSION (1.25.0).
+            let install_method = install_method_from_env();
+            let prebuilt_version = prebuilt_version_from_env();
 
             // Build config with detected hardware info
             let config = OnnxRuntimeConfig {
@@ -4991,7 +5116,9 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 }),
                 gpu_arch: Some(detected_gpu_arch),
                 python_bin: resolve_python_bin(),
-                install_method: OnnxInstallMethod::MigraphxWheel,
+                install_method,
+                runtime_version: ctx.target_version.clone(),
+                prebuilt_version,
                 ..Default::default()
             };
             let inst = OnnxRuntimeInstaller::new(config);
@@ -5010,26 +5137,94 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             );
 
-            // Step 2: Install onnxruntime-migraphx from AMD repo (default)
-            let _ = sender.send(InstallerEvent::Log(
-                format!(
-                    "[native] {} — installing onnxruntime-migraphx from AMD repo (ROCm {})",
-                    component.name, detected_rocm_version
-                ),
-                false,
-            ));
-            let cmd = inst.build_migraphx_install_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &cmd.program,
-                    &cmd.args,
-                    &cmd.env,
-                    cmd.working_dir.clone(),
-                ),
-                None,
-                sender,
-                &component.name,
-            )?;
+            // Step 2: install per the selected method (MLSTACK_ONNX_INSTALL_METHOD).
+            match install_method {
+                OnnxInstallMethod::MigraphxWheel => {
+                    // Default: pinned onnxruntime-migraphx from PyPI. The AMD
+                    // manylinux repo lags (1.23.2 at ROCm 7.2.4) and 404s on
+                    // newer versions. --no-deps honors the No-CUDA hard-prime.
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — installing onnxruntime-migraphx=={} from PyPI (ROCm {})",
+                            component.name,
+                            inst.prebuilt_version(),
+                            detected_rocm_version
+                        ),
+                        false,
+                    ));
+                    let cmd = inst.build_migraphx_install_command();
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir.clone(),
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                OnnxInstallMethod::PrebuiltWheel => {
+                    // Legacy: prebuilt onnxruntime-rocm from PyPI. May be
+                    // ABI-incompatible with the installed ROCm.
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — installing prebuilt onnxruntime-rocm from PyPI \
+                             (legacy; may be ABI-incompatible with ROCm {})",
+                            component.name, detected_rocm_version
+                        ),
+                        false,
+                    ));
+                    let cmd = inst.build_prebuilt_install_command();
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir.clone(),
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                OnnxInstallMethod::SourceBuild => {
+                    // Build from source against /opt/rocm, targeting runtime_version.
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — building from source (target {}, ROCm {}). Heavy build.",
+                            component.name,
+                            inst.runtime_version(),
+                            detected_rocm_version
+                        ),
+                        false,
+                    ));
+                    let rocm_env = crate::installers::common::RocmEnv::from_known(
+                        Some(std::path::PathBuf::from("/opt/rocm")),
+                        detected_rocm_version.clone(),
+                    );
+                    for cmd in [
+                        inst.build_git_clone_command(),
+                        inst.build_git_checkout_command(),
+                        inst.build_git_submodule_command(),
+                        inst.build_build_command(&rocm_env),
+                        inst.build_wheel_install_command(),
+                    ] {
+                        execute_native_command(
+                            &NativeCommand::from_shell_cmd_with_dir(
+                                &cmd.program,
+                                &cmd.args,
+                                &cmd.env,
+                                cmd.working_dir.clone(),
+                            ),
+                            None,
+                            sender,
+                            &component.name,
+                        )?;
+                    }
+                }
+            }
 
             // Step 3: Validate AMD execution provider availability before accepting install
             let cmd = inst.build_provider_validation_command();
@@ -5087,7 +5282,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             }
 
             persist_onnx_install_status(
-                "1.23.2",
+                inst.prebuilt_version(),
                 &["MIGraphXExecutionProvider", "CPUExecutionProvider"],
             );
 
@@ -5316,7 +5511,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── migraphx-python ───────────────────────────────────────────
         "migraphx-python" => {
             use crate::installers::components::migraphx_python::{
-                MigraphxPythonConfig, MigraphxPythonInstaller,
+                build_python_source_requested, source_branch, MigraphxPythonConfig,
+                MigraphxPythonInstaller,
             };
             let inst = MigraphxPythonInstaller::new(MigraphxPythonConfig {
                 python_bin: resolve_python_bin(),
@@ -5326,7 +5522,37 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Check distro availability — skip on Arch (no pip wheel)
             let distro = crate::installers::common::DistroFacade::detect();
             if !inst.is_available_on_distro(&distro) {
-                if let Some(msg) = inst.build_unavailable_message(&distro) {
+                if build_python_source_requested() {
+                    // Opt-in source build (Arch): clone AMDMIGraphX + build the
+                    // standalone python bindings against /opt/rocm. Heavy build.
+                    let _ = sender.send(InstallerEvent::Log(
+                        "[native] MLSTACK_MIGRAPHX_BUILD_PYTHON=1 — building Python \
+                         bindings from source (AMDMIGraphX). Heavy build (~20-40 min)."
+                            .into(),
+                        false,
+                    ));
+                    let workdir = std::env::temp_dir()
+                        .join("rusty-migraphx-python")
+                        .to_string_lossy()
+                        .to_string();
+                    let _ = std::fs::remove_dir_all(&workdir);
+                    let gpu_arch =
+                        std::env::var("GPU_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
+                    let cmds = inst.build_source_commands(
+                        &workdir,
+                        "/opt/rocm",
+                        &gpu_arch,
+                        &source_branch(),
+                    );
+                    for cmd in cmds {
+                        execute_native_command(
+                            &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                            None,
+                            sender,
+                            &component.name,
+                        )?;
+                    }
+                } else if let Some(msg) = inst.build_unavailable_message(&distro) {
                     let _ = sender.send(InstallerEvent::Log(
                         format!("[native] [SKIP] {}", msg),
                         false,
@@ -6964,6 +7190,51 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    // ── safe_rocm_path: real ROCm CLI tools must win over pip shims ────
+    // Regression: rocm-sdk-core's rocminfo shim in ~/.mlstack/global/bin exits
+    // 8 (HSA out of resources) but precedes /opt/rocm/bin on PATH, breaking
+    // aiter's chip_info. safe_rocm_path must put /opt/rocm/bin first.
+
+    #[test]
+    fn test_safe_rocm_path_prepends_rocm_bin() {
+        let p = safe_rocm_path("/home/scooter/.mlstack/global/bin:/usr/bin:/bin");
+        let rocm = p.find("/opt/rocm/bin").unwrap();
+        let shim = p.find("/home/scooter/.mlstack/global/bin").unwrap();
+        assert!(
+            rocm < shim,
+            "/opt/rocm/bin must precede the venv bin: got {p}"
+        );
+        // hip/bin too, and all original entries preserved.
+        assert!(p.contains("/opt/rocm/hip/bin"));
+        assert!(p.contains("/usr/bin") && p.contains("/bin"));
+    }
+
+    #[test]
+    fn test_safe_rocm_path_dedupes_rocm_entries() {
+        let p = safe_rocm_path("/opt/rocm/bin:/usr/bin:/opt/rocm/hip/bin");
+        assert_eq!(
+            p.matches("/opt/rocm/bin").count(),
+            1,
+            "rocm/bin must appear exactly once: got {p}"
+        );
+        assert_eq!(p.matches("/opt/rocm/hip/bin").count(), 1);
+    }
+
+    #[test]
+    fn test_safe_rocm_path_passes_through_when_rocm_absent() {
+        // When /opt/rocm/bin doesn't exist the function must not prepend a
+        // non-existent dir (it would shadow nothing and mislead). It returns
+        // the inherited PATH unchanged. We can't remove /opt/rocm in a test,
+        // so assert the pure property: if rocm/bin IS present it's first,
+        // otherwise identity. Guarded by existence on the host.
+        let inherited = "/usr/local/bin:/usr/bin";
+        if Path::new("/opt/rocm/bin").exists() {
+            assert!(safe_rocm_path(inherited).starts_with("/opt/rocm/bin"));
+        } else {
+            assert_eq!(safe_rocm_path(inherited), inherited);
+        }
+    }
+
     // ── iGPU filtering: parse_rocminfo_for_discrete_gpus (tenet 3) ─────
     // Target topology: 2 dGPU (gfx1100 RX 7900 XTX, gfx1101 RX 7800 XT) +
     // 1 iGPU (gfx1036 Raphael). The iGPU must NEVER appear; dGPUs never missed.
@@ -7109,7 +7380,7 @@ mod tests {
         std::env::set_var("MLSTACK_LOG_DIR", &logs);
 
         persist_onnx_install_status(
-            "1.23.2",
+            "1.27.1",
             &["MIGraphXExecutionProvider", "CPUExecutionProvider"],
         );
 

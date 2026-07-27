@@ -193,23 +193,13 @@ impl RcclInstaller {
                 profile.id, profile.compiler_id, profile.hipify_id
             ),
         )?;
-        let suffix = concat!("$", "{PYTHONPATH:+:$PYTHONPATH}");
-        fs::write(
-            staging.join("env.sh"),
-            format!(
-                "export MLSTACK_RCCL_OVERLAY_LIB={}\nexport MLSTACK_RCCL_OVERLAY_SHA256={sha}\nexport NCCL_P2P_DISABLE=1\nexport RCCL_P2P_DISABLE=1\nexport PYTHONPATH={}{suffix}\n",
-                shell_quote_path(&version_dir.join("lib/librccl.so.1.0")),
-                shell_quote_path(&version_dir.join("python"))
-            ),
-        )?;
-        fs::write(
-            staging.join("env.fish"),
-            format!(
-                "set -gx MLSTACK_RCCL_OVERLAY_LIB {}\nset -gx MLSTACK_RCCL_OVERLAY_SHA256 {sha}\nset -gx NCCL_P2P_DISABLE 1\nset -gx RCCL_P2P_DISABLE 1\nset -gx PYTHONPATH {} $PYTHONPATH\n",
-                fish_quote_path(&version_dir.join("lib/librccl.so.1.0")),
-                fish_quote_path(&version_dir.join("python"))
-            ),
-        )?;
+        // NOTE: RCCL no longer writes its own env.sh/env.fish. The persistent-env
+        // generator (bootstrap::env_setup::rccl_overlay_*_block) is the SINGLE
+        // source of truth for env vars — it reads the `active` symlink (which
+        // points at this `version_dir`) plus the manifest above and emits an
+        // idempotent, guarded block. The old component-written env did an
+        // un-guarded `export PYTHONPATH=X${PYTHONPATH:+:$PYTHONPATH}` that
+        // accumulated a duplicate entry on every `source ~/.mlstack_env`.
 
         set_tree_read_only(&staging)?;
         fs::rename(&staging, &version_dir)?;
@@ -717,10 +707,6 @@ fn shell_quote(value: &str) -> String {
 
 fn shell_quote_path(path: &Path) -> String {
     shell_quote(&path.to_string_lossy())
-}
-
-fn fish_quote_path(path: &Path) -> String {
-    shell_quote_path(path)
 }
 
 const SITECUSTOMIZE_SOURCE: &str = r#"import hashlib
