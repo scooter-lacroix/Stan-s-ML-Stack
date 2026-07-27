@@ -367,6 +367,16 @@ impl UpdatePlanner {
             ));
         }
 
+        // Enforce exclusive groups: components sharing an `exclusive_group`
+        // install conflicting/overlapping artifacts (e.g. Flash Attention's
+        // Triton vs CK backends both install the identical `flash_attn` package,
+        // so only the last-installed remains active). Keep AT MOST ONE per group:
+        // if the user explicitly targeted a member, keep that one; otherwise keep
+        // the first-listed (the manifest's recommended default). This prevents a
+        // blanket `--all-safe` (or `update flash-attn-triton flash-attn-ck`) from
+        // scheduling redundant, order-dependent builds.
+        self.enforce_exclusive_groups(&mut items, &target_set);
+
         // Apply --all-safe: select safe items (and experimental if explicitly included),
         // but never discard explicitly targeted components.
         if options.all_safe {
@@ -512,7 +522,7 @@ impl UpdatePlanner {
 
         let dependencies = self.dependencies_for_component(component);
 
-        PlannerItem {
+        let mut item = PlannerItem {
             plan_item: PlanItem::new(PlanItemInput {
                 component_id: component.id.clone(),
                 current_version: current_version.clone(),
@@ -529,7 +539,12 @@ impl UpdatePlanner {
             classification_reason,
             requires_hardware_check: self.requires_hardware_check(&component.id),
             min_rocm_version: component.min_rocm_version.clone(),
-        }
+        };
+        // Copy the manifest's exclusive_group onto the plan item so
+        // enforce_exclusive_groups can enforce at-most-one-per-group without
+        // re-reading the manifest.
+        item.plan_item.exclusive_group = component.exclusive_group.clone();
+        item
     }
 
     /// Check hardware compatibility for a component.
@@ -892,6 +907,53 @@ impl UpdatePlanner {
 
     /// Enforce dependency rules on the plan items.
     ///
+    /// Enforce mutual-exclusion groups: within each non-empty `exclusive_group`,
+    /// keep at most one component. If the user explicitly targeted a member, keep
+    /// that one (and if multiple were targeted, keep the first-listed and drop the
+    /// rest — targeting two mutually exclusive backends is contradictory). When no
+    /// member was explicitly targeted, keep the first-listed in the manifest (the
+    /// recommended default). Mutates `items` in place, preserving manifest order.
+    fn enforce_exclusive_groups(&self, items: &mut Vec<PlannerItem>, target_set: &HashSet<&str>) {
+        use std::collections::HashMap;
+
+        // Map each exclusive_group -> the component ids in that group, in manifest
+        // (i.e. current items) order. Only non-empty groups participate.
+        let mut group_members: HashMap<String, Vec<String>> = HashMap::new();
+        for item in items.iter() {
+            let group = &item.plan_item.exclusive_group;
+            if !group.is_empty() {
+                group_members
+                    .entry(group.clone())
+                    .or_default()
+                    .push(item.plan_item.component_id.clone());
+            }
+        }
+
+        // For each group, decide which single member survives.
+        let mut survivors: HashSet<String> = HashSet::new();
+        for members in group_members.values() {
+            // Prefer an explicitly-targeted member (first-listed if multiple targeted).
+            let chosen = members
+                .iter()
+                .find(|id| target_set.contains(id.as_str()))
+                .or_else(|| members.first()) // else the manifest's recommended default
+                .cloned();
+            if let Some(id) = chosen {
+                survivors.insert(id);
+            }
+        }
+
+        if survivors.is_empty() {
+            return;
+        }
+
+        // Retain: keep an item iff it has no group OR it is its group's survivor.
+        items.retain(|i| {
+            let group = &i.plan_item.exclusive_group;
+            group.is_empty() || survivors.contains(&i.plan_item.component_id)
+        });
+    }
+
     /// If component A depends on B and both are selected:
     /// - If B is deselected, A must also be deselected (or B re-selected)
     fn enforce_dependency_rules(&self, items: &mut [PlannerItem]) -> Result<(), PlannerError> {
@@ -1083,6 +1145,10 @@ pub struct PlannerItemOutput {
     pub visible: bool,
     pub rationale: String,
     pub dependencies: Vec<String>,
+    /// Mutual-exclusion group (empty = none). Surfaced so JSON consumers can see
+    /// which items were deduped as mutually exclusive backends.
+    #[serde(default)]
+    pub exclusive_group: String,
 }
 
 impl From<&PlannerItem> for PlannerItemOutput {
@@ -1097,6 +1163,7 @@ impl From<&PlannerItem> for PlannerItemOutput {
             visible: item.visible,
             rationale: item.plan_item.rationale.clone(),
             dependencies: item.plan_item.dependencies.clone(),
+            exclusive_group: item.plan_item.exclusive_group.clone(),
         }
     }
 }
@@ -1167,6 +1234,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }
     }
 
@@ -2179,6 +2247,7 @@ mod tests {
                 visible: true,
                 rationale: "patch update".to_string(),
                 dependencies: vec!["rocm".to_string()],
+                exclusive_group: String::new(),
             }],
             summary: PlanSummary {
                 total: 1,
@@ -2373,6 +2442,7 @@ mod tests {
             min_rocm_version: "99.0.0".to_string(), // impossibly high
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2393,6 +2463,7 @@ mod tests {
             min_rocm_version: "7.0.0".to_string(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2418,6 +2489,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string(), "stable".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2439,6 +2511,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string(), "stable".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2460,6 +2533,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }]);
 
         let options = PlannerOptions::default();
@@ -2598,6 +2672,7 @@ mod tests {
             min_rocm_version: "99.0.0".to_string(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let reason =
@@ -2620,6 +2695,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let reason =

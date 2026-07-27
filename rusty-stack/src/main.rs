@@ -1854,6 +1854,7 @@ mod update_selection_tests {
                 visible: true,
                 rationale: String::new(),
                 dependencies: vec![],
+                exclusive_group: String::new(),
             })
             .collect();
         PlanOutput {

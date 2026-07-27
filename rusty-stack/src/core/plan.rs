@@ -59,6 +59,11 @@ pub struct PlanItem {
     pub isolation_safe: bool,
     /// Risk tier (low/medium/high).
     pub risk_tier: RiskTier,
+    /// Mutual-exclusion group (empty = none). Copied from the manifest component
+    /// so the planner can enforce at-most-one-per-group without re-reading the
+    /// manifest. See `ManifestComponent::exclusive_group`.
+    #[serde(default)]
+    pub exclusive_group: String,
 }
 
 impl PlanItem {
@@ -73,7 +78,8 @@ impl PlanItem {
             rationale: input.rationale,
             dependencies: input.dependencies,
             isolation_safe: input.isolation_safe,
-            risk_tier: RiskTier::Medium, // default
+            risk_tier: RiskTier::Medium,    // default
+            exclusive_group: String::new(), // default: no group
         }
     }
 }
@@ -421,6 +427,7 @@ mod tests {
                 dependencies: vec![],
                 isolation_safe: true,
                 risk_tier: RiskTier::Low,
+                exclusive_group: String::new(),
             },
             PlanItem {
                 component_id: "pytorch".to_string(),
@@ -432,6 +439,7 @@ mod tests {
                 dependencies: vec!["rocm".to_string()],
                 isolation_safe: true,
                 risk_tier: RiskTier::Medium,
+                exclusive_group: String::new(),
             },
             PlanItem {
                 component_id: "deepspeed".to_string(),
@@ -443,6 +451,7 @@ mod tests {
                 dependencies: vec!["pytorch".to_string()],
                 isolation_safe: true,
                 risk_tier: RiskTier::High,
+                exclusive_group: String::new(),
             },
         ];
 
@@ -472,6 +481,7 @@ mod tests {
             dependencies: vec!["rocm".to_string()],
             isolation_safe: true,
             risk_tier: RiskTier::Medium,
+            exclusive_group: String::new(),
         };
 
         let json = serde_json::to_string(&item).unwrap();

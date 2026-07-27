@@ -675,6 +675,7 @@ mod tests {
                 min_rocm_version: String::new(),
                 dependencies: vec![],
                 compatible_channels: vec!["latest".to_string()],
+                exclusive_group: String::new(),
             }],
             signature: None,
         };
@@ -702,6 +703,7 @@ mod tests {
                 min_rocm_version: String::new(),
                 dependencies: vec![],
                 compatible_channels: vec!["legacy".to_string()],
+                exclusive_group: String::new(),
             }],
             signature: None,
         };

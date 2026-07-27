@@ -60,6 +60,16 @@ pub struct ManifestComponent {
     /// Component dependencies (empty = none).
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Mutual-exclusion group (empty = none). Components sharing the same
+    /// non-empty `exclusive_group` install conflicting/overlapping artifacts
+    /// (e.g. Flash Attention's Triton vs CK backends both install the identical
+    /// `flash_attn` package, so only the last-installed remains active). The
+    /// planner keeps AT MOST ONE component per group — the first listed in the
+    /// manifest (the recommended default) unless a later one is an explicit
+    /// update target — so a blanket `--all-safe` can never schedule redundant,
+    /// order-dependent builds of mutually exclusive backends.
+    #[serde(default)]
+    pub exclusive_group: String,
 }
 
 fn default_validation_tier() -> ValidationTier {
@@ -416,6 +426,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }
     }
 
@@ -501,6 +512,7 @@ mod tests {
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
                     dependencies: vec![],
+                    exclusive_group: String::new(),
                 },
                 // New component
                 ManifestComponent {
@@ -512,6 +524,7 @@ mod tests {
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
                     dependencies: vec![],
+                    exclusive_group: String::new(),
                 },
             ],
         };
@@ -941,6 +954,7 @@ mod tests {
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
                     dependencies: vec![],
+                    exclusive_group: String::new(),
                 },
             ],
         );
@@ -964,6 +978,7 @@ mod tests {
                     min_rocm_version: String::new(),
                     compatible_channels: vec![],
                     dependencies: vec![],
+                    exclusive_group: String::new(),
                 },
             ],
         };

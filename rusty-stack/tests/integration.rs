@@ -46,6 +46,7 @@ fn make_mc(id: &str, version: &str, tier: ValidationTier) -> ManifestComponent {
         min_rocm_version: String::new(),
         compatible_channels: vec![],
         dependencies: vec![],
+        exclusive_group: String::new(),
     }
 }
 
@@ -453,6 +454,7 @@ fn test_integration_manifest_overlay_merges_cleanly() {
             min_rocm_version: String::new(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }],
     };
 
@@ -1133,6 +1135,7 @@ fn test_integration_manifest_filters_by_platform_context() {
         min_rocm_version: String::new(),
         compatible_channels: vec!["legacy".to_string()],
         dependencies: vec![],
+        exclusive_group: String::new(),
     };
 
     let manifest = make_manifest(vec![
@@ -1388,6 +1391,7 @@ fn test_integration_manifest_roundtrip_preserves_data() {
                 min_rocm_version: "7.0.0".to_string(),
                 compatible_channels: vec!["latest".to_string(), "stable".to_string()],
                 dependencies: vec![],
+                exclusive_group: String::new(),
             },
         ],
         42,
