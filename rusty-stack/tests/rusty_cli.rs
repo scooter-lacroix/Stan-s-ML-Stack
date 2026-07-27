@@ -1,19 +1,19 @@
-//! Integration tests for the unified `rusty` CLI binary.
+//! Integration tests for the unified `rusty-stack` CLI binary.
 //!
 //! Verifies:
-//! - `rusty --help` shows all subcommands (update, upgrade, bench)
-//! - `rusty --version` shows the package version
-//! - `rusty update --help` shows update-specific flags
-//! - `rusty upgrade --help` shows upgrade-specific flags
-//! - `rusty bench --help` shows bench-specific options
-//! - `rusty bench --list` lists available benchmarks
-//! - `rusty` (no args) with TUI feature launches TUI (tested by source inspection)
-//! - `rusty` (no args) without TUI feature shows error (tested by source inspection)
+//! - `rusty-stack --help` shows all subcommands (update, upgrade, bench)
+//! - `rusty-stack --version` shows the package version
+//! - `rusty-stack update --help` shows update-specific flags
+//! - `rusty-stack upgrade --help` shows upgrade-specific flags
+//! - `rusty-stack bench --help` shows bench-specific options
+//! - `rusty-stack bench --list` lists available benchmarks
+//! - `rusty-stack` (no args) with TUI feature launches TUI (tested by source inspection)
+//! - `rusty-stack` (no args) without TUI feature shows error (tested by source inspection)
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-const BIN: &str = "rusty";
+const BIN: &str = "rusty-stack";
 
 // ===========================================================================
 // Top-level help and version

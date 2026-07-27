@@ -1,19 +1,19 @@
-//! Integration tests for `rusty verify` and `rusty bench` subcommands.
+//! Integration tests for `rusty-stack verify` and `rusty-stack bench` subcommands.
 //!
 //! Tests the CLI surface using assert_cmd:
-//! - `rusty verify --help` shows verify subcommand options
-//! - `rusty verify --full` runs full verification
-//! - `rusty verify --enhanced` runs enhanced verification
-//! - `rusty verify --build` runs verify-and-build mode
-//! - `rusty bench <name>` dispatches to correct benchmark
-//! - `rusty bench --all` runs full benchmark suite
-//! - `rusty bench --json` produces parseable JSON
+//! - `rusty-stack verify --help` shows verify subcommand options
+//! - `rusty-stack verify --full` runs full verification
+//! - `rusty-stack verify --enhanced` runs enhanced verification
+//! - `rusty-stack verify --build` runs verify-and-build mode
+//! - `rusty-stack bench <name>` dispatches to correct benchmark
+//! - `rusty-stack bench --all` runs full benchmark suite
+//! - `rusty-stack bench --json` produces parseable JSON
 //! - Unknown benchmark names return error exit code 1
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-const BIN: &str = "rusty";
+const BIN: &str = "rusty-stack";
 
 // ===========================================================================
 // Verify subcommand — help and flags
@@ -166,7 +166,9 @@ fn test_rusty_bench_all_runs() {
     let output = Command::cargo_bin(BIN)
         .unwrap()
         .args(["bench", "--json", "all"])
-        .timeout(std::time::Duration::from_secs(120))
+        // ponytail: full suite runs every bench across BOTH GPUs on dual-GPU HW
+        // (7900 XTX + 7800 XT); needs headroom well past the single-bench case.
+        .timeout(std::time::Duration::from_secs(600))
         .assert()
         .get_output()
         .clone();

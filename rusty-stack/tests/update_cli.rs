@@ -1,12 +1,12 @@
-//! CLI integration tests for `rusty update` subcommand.
+//! CLI integration tests for `rusty-stack update` subcommand.
 //!
 //! Tests the CLI surface using `assert_cmd` to verify:
-//! - `rusty update --help` works
-//! - `rusty --version` works
-//! - `rusty update --scan-only` produces JSON output
-//! - `rusty update --all-safe` applies only safe updates
-//! - `rusty update --include-experimental` includes experimental components
-//! - `rusty update --json` forces JSON output
+//! - `rusty-stack update --help` works
+//! - `rusty-stack --version` works
+//! - `rusty-stack update --scan-only` produces JSON output
+//! - `rusty-stack update --all-safe` applies only safe updates
+//! - `rusty-stack update --include-experimental` includes experimental components
+//! - `rusty-stack update --json` forces JSON output
 //! - Targeted component selection works
 //! - Unknown component produces error
 //! - Non-interactive output is machine-readable JSON
@@ -15,7 +15,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 /// The unified binary name.
-const BIN: &str = "rusty";
+const BIN: &str = "rusty-stack";
 
 // ===========================================================================
 // Help and version tests
