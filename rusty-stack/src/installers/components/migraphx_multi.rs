@@ -366,22 +366,40 @@ pub fn migraphx_driver_version() -> Option<String> {
     extract_driver_semver(&combined)
 }
 
-/// Extract the first `MAJOR.MINOR.PATCH` (with optional pre-release) from the
-/// driver's `--version` output. Mirrors `platform::registry::extract_semver`'s
-/// shape but lives with the migraphx owner module so the registry fallback has
-/// no inline subprocess.
+/// Extract the first version-like token from the driver's `--version` output.
+///
+/// Accepts both three-part `MAJOR.MINOR.PATCH` (the common shape, e.g.
+/// `MIGraphX 2.15.0`) and two-part `MAJOR.MINOR` (some ROCm builds/drivers omit
+/// the patch component). Returns the version unchanged (no normalization) so a
+/// detected `2.12` stays `2.12`. Rejects malformed/non-numeric components.
+/// Mirrors `platform::registry::extract_semver`'s shape but lives with the
+/// migraphx owner module so the registry fallback has no inline subprocess.
 fn extract_driver_semver(s: &str) -> Option<String> {
     for token in s.split_whitespace() {
         let cleaned = token.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
         let mut parts = cleaned.split('.');
-        if let (Some(maj), Some(min), Some(pat)) = (parts.next(), parts.next(), parts.next()) {
-            if maj.chars().all(|c| c.is_ascii_digit())
-                && min.chars().all(|c| c.is_ascii_digit())
-                && pat.chars().all(|c| c.is_ascii_digit())
-            {
+        // `continue` (not `?`) so a non-version token (e.g. "MIGraphX", "Version:",
+        // "dirty") advances to the next token instead of returning None.
+        let Some(maj) = parts.next() else {
+            continue;
+        };
+        let Some(min) = parts.next() else {
+            continue;
+        };
+        if !maj.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if !min.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        // Three-part MAJOR.MINOR.PATCH when a numeric patch is present.
+        if let Some(pat) = parts.next() {
+            if pat.chars().all(|c| c.is_ascii_digit()) {
                 return Some(format!("{maj}.{min}.{pat}"));
             }
         }
+        // Two-part MAJOR.MINOR fallback (preserve as-is, no synthetic patch).
+        return Some(format!("{maj}.{min}"));
     }
     None
 }
@@ -409,6 +427,29 @@ fn migraphx_missing_libs() -> Vec<String> {
 mod tests {
     use super::*;
     use crate::platform::detection::{DistroInfo, PackageManager};
+
+    #[test]
+    fn test_extract_driver_semver_three_and_two_part() {
+        // Common three-part shape (the current driver output).
+        assert_eq!(
+            extract_driver_semver("MIGraphX Version: 2.15.0.20250912-dirty"),
+            Some("2.15.0".to_string())
+        );
+        // Two-part shape (some ROCm builds omit the patch component) — preserved
+        // as-is, no synthetic patch.
+        assert_eq!(
+            extract_driver_semver("MIGraphX 2.12"),
+            Some("2.12".to_string())
+        );
+        // Picks the first version-like token among noise.
+        assert_eq!(
+            extract_driver_semver("build foo 1.2.3 bar"),
+            Some("1.2.3".to_string())
+        );
+        // Rejects non-numeric components.
+        assert_eq!(extract_driver_semver("MIGraphX vX.Y.Z"), None);
+        assert_eq!(extract_driver_semver("no version here"), None);
+    }
 
     // --- VAL-INSTALL-019: MIGraphX correct pip command ---
 

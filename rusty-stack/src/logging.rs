@@ -28,6 +28,19 @@ pub fn log_dir() -> PathBuf {
     crate::platform::environment::mlstack_logs_dir()
 }
 
+/// Fixed WARN ceiling for the stderr/stdout CONSOLE layers.
+///
+/// The console (stderr/stdout) layers must NEVER let `RUST_LOG` lower the
+/// threshold below WARN, because `main.rs` emits a per-line `tracing::info!`
+/// for every installer log line — an INFO threshold floods the console and
+/// corrupts machine-readable JSON/CI output. This builds a FIXED `EnvFilter`
+/// (never reads `RUST_LOG`) so the console ceiling cannot be bypassed by
+/// `RUST_LOG=rusty_stack=info`. The FILE layer keeps env-driven filtering
+/// (full DEBUG/INFO stream for live diagnostics).
+fn console_warn_ceiling() -> EnvFilter {
+    EnvFilter::new("rusty_stack=warn")
+}
+
 /// Initialize the dual-layer logging system.
 ///
 /// Returns a guard that must be kept alive for the file logger to flush on drop.
@@ -51,9 +64,8 @@ pub fn init_logging(context: &str) -> Option<tracing_appender::non_blocking::Wor
             log_path.display(),
             e
         );
-        // Fall back to stdout-only
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn"));
+        // Fall back to stdout-only — fixed WARN ceiling (RUST_LOG cannot bypass).
+        let filter = console_warn_ceiling();
         let stdout_layer = fmt::layer().with_target(false).with_filter(filter);
         tracing_subscriber::registry().with(stdout_layer).init();
         return None;
@@ -76,16 +88,15 @@ pub fn init_logging(context: &str) -> Option<tracing_appender::non_blocking::Wor
                 .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug,info")),
         );
 
-    // Stdout layer — compact human-readable for CLI progress
+    // Stdout layer — compact human-readable for CLI progress. Fixed WARN
+    // ceiling (RUST_LOG cannot bypass) so the per-line installer INFO logs
+    // never flood stdout; the file layer captures the full stream.
     let stdout_layer = fmt::layer()
         .with_target(false)
         .with_timer(fmt::time::LocalTime::new(
             time::format_description::well_known::iso8601::Iso8601::DEFAULT,
         ))
-        .with_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn")),
-        );
+        .with_filter(console_warn_ceiling());
 
     tracing_subscriber::registry()
         .with(file_layer)
@@ -132,18 +143,16 @@ pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blockin
                 .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug")),
         );
 
-    // Stderr layer — warnings and errors only (not stdout). Kept at `warn` (NOT
-    // `info`) deliberately: main.rs emits a per-line `tracing::info!` for every
-    // installer log line, so an `info` threshold floods stderr on JSON/CI runs
-    // and corrupts machine-readable output. The file layer already captures the
-    // full INFO+/DEBUG+ stream for live diagnostics.
+    // Stderr layer — warnings and errors only (not stdout). FIXED WARN ceiling:
+    // main.rs emits a per-line `tracing::info!` for every installer log line, so
+    // an INFO threshold (whether via the default or `RUST_LOG=rusty_stack=info`)
+    // floods stderr on JSON/CI runs and corrupts machine-readable output.
+    // `console_warn_ceiling()` builds a fixed filter that `RUST_LOG` cannot
+    // bypass. The file layer captures the full INFO+/DEBUG+ stream.
     let stderr_layer = fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
-        .with_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn")),
-        );
+        .with_filter(console_warn_ceiling());
 
     tracing_subscriber::registry()
         .with(file_layer)
@@ -196,15 +205,13 @@ pub fn init_interactive_logging(
                 .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug")),
         );
 
-    // Stderr layer — WARN+ only. The terminal is owned by the inline panel; the
-    // torrent of INFO installer-log lines must not bleed onto it.
+    // Stderr layer — WARN+ only (FIXED ceiling: `RUST_LOG` cannot bypass). The
+    // terminal is owned by the inline panel; the torrent of INFO installer-log
+    // lines must not bleed onto it.
     let stderr_layer = fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
-        .with_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn")),
-        );
+        .with_filter(console_warn_ceiling());
 
     tracing_subscriber::registry()
         .with(file_layer)
