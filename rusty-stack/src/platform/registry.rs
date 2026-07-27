@@ -122,6 +122,19 @@ pub fn known_components() -> &'static [ComponentInfo] {
                 clone_dir: None,
             },
             ComponentInfo {
+                // The standalone Python bindings (AMDMIGraphX). Detection maps
+                // onto the SAME `migraphx` import as the C++ core — the python
+                // package re-exports it — so is_component_installed/get_version
+                // are not blind to this component (and the post-install honesty
+                // guard can verify it). Keep in sync with baseline_manifest.json.
+                id: "migraphx-python".into(),
+                display_name: "MIGraphX Python".into(),
+                detection_method: DetectionMethod::PythonModule,
+                installer_script: "install_migraphx_python.sh".into(),
+                python_import: Some("migraphx".into()),
+                clone_dir: None,
+            },
+            ComponentInfo {
                 id: "flash-attn".into(),
                 display_name: "Flash Attention".into(),
                 detection_method: DetectionMethod::PythonModule,
@@ -455,23 +468,14 @@ pub fn get_version_with_home(id: &str, home: &Path) -> String {
     };
     // migraphx: the python-import version fails on Arch/CachyOS (no pip wheel).
     // Fall back to the C++ driver version so the planner sees a real version
-    // (and doesn't propose a downgrade of a newer driver build).
+    // (and doesn't propose a downgrade of a newer driver build). Delegated to
+    // the migraphx_multi owner module — verification logic (and the
+    // migraphx-driver subprocess) belongs in installers/, not platform/.
     if id == "migraphx" && (v == "not installed" || v == "unknown") {
-        if let Ok(out) = Command::new("/opt/rocm/bin/migraphx-driver")
-            .arg("--version")
-            .output()
+        if let Some(driver_version) =
+            crate::installers::components::migraphx_multi::migraphx_driver_version()
         {
-            if out.status.success() {
-                let combined = format!(
-                    "{}\n{}",
-                    String::from_utf8_lossy(&out.stdout),
-                    String::from_utf8_lossy(&out.stderr),
-                );
-                let parsed = extract_semver(combined.trim());
-                if parsed != "unknown" {
-                    return parsed;
-                }
-            }
+            return driver_version;
         }
     }
     v
@@ -908,10 +912,14 @@ mod tests {
     #[test]
     fn test_registry_has_exactly_21_components() {
         let components = known_components();
+        // 22 known components: the 21 historical IDs plus `migraphx-python`
+        // (the standalone AMDMIGraphX Python bindings, mapped onto the migraphx
+        // python import for detection). Update together with the manifest and
+        // the expected-ids list when adding a component.
         assert_eq!(
             components.len(),
-            21,
-            "Registry must contain exactly 21 known components, found {}",
+            22,
+            "Registry must contain exactly 22 known components, found {}",
             components.len()
         );
     }
@@ -929,6 +937,7 @@ mod tests {
             "onnx",
             "bitsandbytes",
             "migraphx",
+            "migraphx-python",
             "flash-attn",
             "flash-attn-triton",
             "flash-attn-ck",
@@ -963,6 +972,7 @@ mod tests {
             "onnx",
             "bitsandbytes",
             "migraphx",
+            "migraphx-python",
             "flash-attn",
             "flash-attn-triton",
             "flash-attn-ck",

@@ -611,6 +611,17 @@ mod update_impl {
                     continue;
                 }
                 match key.code {
+                    // Ctrl+C in raw mode arrives as Char('c') + CONTROL (ISIG is
+                    // cleared by enable_raw_mode, so it is NOT delivered as
+                    // SIGINT). Treat it as an explicit cancel, matching Esc.
+                    KeyCode::Char('c')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        restore_terminal();
+                        return Err("Cancelled by user".to_string());
+                    }
                     KeyCode::Up => {
                         cursor_idx = cursor_idx.saturating_sub(1);
                     }
@@ -713,6 +724,10 @@ mod update_impl {
         }
 
         let mut new_plan = plan.clone();
+        // Dedup selected indices so `1,1,2` reports 2 selected (not 3) and each
+        // item is flagged at most once. Sort first so dedup is stable.
+        selected_indices.sort_unstable();
+        selected_indices.dedup();
         for (idx, item) in new_plan.plan.iter_mut().enumerate() {
             item.selected = selected_indices.contains(&idx);
         }
@@ -1394,9 +1409,21 @@ mod update_impl {
                 }
             }
             fn component_for_id(id: &str) -> Option<rusty_stack::state::Component> {
+                // The bundled manifest/registry still emit the legacy `flash-attn`
+                // id, while default_components() now exposes the split
+                // `flash-attn-triton` / `flash-attn-ck` components. The native
+                // installer treats a generic `flash-attn` as the recommended
+                // Triton backend (installer.rs flash-attn dispatch), so normalize
+                // the legacy id here — otherwise an available `flash-attn` update
+                // fails immediately with "Unknown component ID" before reaching
+                // the installer that supports the alias.
+                let normalized = match id {
+                    "flash-attn" => "flash-attn-triton",
+                    other => other,
+                };
                 rusty_stack::state::default_components()
                     .into_iter()
-                    .find(|c| c.id == id)
+                    .find(|c| c.id == normalized)
                     .map(|mut c| {
                         c.selected = true;
                         c
