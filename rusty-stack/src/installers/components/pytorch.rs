@@ -193,7 +193,19 @@ impl PyTorchInstaller {
     /// - Adds `--index-url` for the correct ROCm wheel index
     /// - Adds `--break-system-packages` for global installs
     /// - Installs torch, torchvision, torchaudio
-    pub fn build_install_command(&self, rocm_mm: &str, use_uv: bool) -> PipCommand {
+    ///
+    /// `target_version` (the planner/manifest target) pins torch to an exact
+    /// version + `--upgrade` for update-driven installs, so pip actually advances
+    /// the installed wheel instead of no-op'ing on an already-satisfied one. A
+    /// `None`/empty target (fresh TUI install) leaves torch unpinned → latest.
+    /// PEP 440: `torch==2.13.0` matches the ROCm wheel `2.13.0+rocm7.2`, so the
+    /// pin resolves on the PyTorch ROCm index.
+    pub fn build_install_command(
+        &self,
+        rocm_mm: &str,
+        use_uv: bool,
+        target_version: Option<&str>,
+    ) -> PipCommand {
         let index_url = self.index_url_for_rocm(rocm_mm);
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
@@ -218,9 +230,21 @@ impl PyTorchInstaller {
         }
 
         args.push("--no-cache".to_string());
+        // Pin to the exact target + upgrade for update-driven installs. Without
+        // this pip sees the installed wheel as already satisfying an unpinned
+        // `torch` and exits 0 with the OLD version still active (the false-success
+        // root cause). torchvision/torchaudio stay unpinned so pip's resolver
+        // picks versions compatible with the pinned torch.
+        let pin = target_version.map(str::trim).filter(|v| !v.is_empty());
+        if pin.is_some() {
+            args.push("--upgrade".to_string());
+        }
         args.push("--index-url".to_string());
         args.push(index_url);
-        args.push("torch".to_string());
+        match pin {
+            Some(v) => args.push(format!("torch=={v}")),
+            None => args.push("torch".to_string()),
+        }
         args.push("torchvision".to_string());
         args.push("torchaudio".to_string());
 
@@ -388,7 +412,7 @@ mod tests {
             method: InstallMethod::Global,
             ..Default::default()
         });
-        let cmd = installer.build_install_command("7.2", true);
+        let cmd = installer.build_install_command("7.2", true, None);
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.contains(&"pip".to_string()));
@@ -397,6 +421,9 @@ mod tests {
         assert!(cmd.args.contains(&"--index-url".to_string()));
         assert!(cmd.args.iter().any(|a| a.contains("rocm7.2")));
         assert!(cmd.args.contains(&"torch".to_string()));
+        // No target → unpinned, no --upgrade.
+        assert!(!cmd.args.contains(&"--upgrade".to_string()));
+        assert!(!cmd.args.iter().any(|a| a.starts_with("torch==")));
     }
 
     #[test]
@@ -406,7 +433,7 @@ mod tests {
             python_bin: "python3".to_string(),
             ..Default::default()
         });
-        let cmd = installer.build_install_command("6.4", false);
+        let cmd = installer.build_install_command("6.4", false, None);
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.contains(&"-m".to_string()));
         assert!(cmd.args.contains(&"pip".to_string()));
@@ -420,9 +447,29 @@ mod tests {
             method: InstallMethod::Venv,
             ..Default::default()
         });
-        let cmd = installer.build_install_command("7.2", true);
+        let cmd = installer.build_install_command("7.2", true, None);
         assert!(!cmd.args.contains(&"--break-system-packages".to_string()));
         assert!(!cmd.args.contains(&"--system".to_string()));
+    }
+
+    #[test]
+    fn test_build_install_command_pins_target_for_update() {
+        // An update-driven install pins torch to the manifest target + adds
+        // --upgrade, so pip advances the wheel instead of no-op'ing on the
+        // already-satisfied old one. torchvision/torchaudio stay unpinned.
+        let installer = PyTorchInstaller::new(PyTorchConfig {
+            method: InstallMethod::Global,
+            ..Default::default()
+        });
+        let cmd = installer.build_install_command("7.2", false, Some("2.13.0"));
+        assert!(cmd.args.contains(&"--upgrade".to_string()));
+        assert!(cmd.args.contains(&"torch==2.13.0".to_string()));
+        assert!(cmd.args.contains(&"torchvision".to_string()));
+        assert!(cmd.args.contains(&"torchaudio".to_string()));
+        // An empty/whitespace target is treated as "no target".
+        let cmd_empty = installer.build_install_command("7.2", false, Some("   "));
+        assert!(!cmd_empty.args.contains(&"--upgrade".to_string()));
+        assert!(cmd_empty.args.contains(&"torch".to_string()));
     }
 
     #[test]

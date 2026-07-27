@@ -304,6 +304,14 @@ impl UpdatePlanner {
                 continue;
             }
 
+            // An update plan must never contain a reinstall or a downgrade.
+            // Keep opaque targets such as `latest` eligible, because their
+            // concrete version is resolved by the component installer.
+            let current_version = context.installed_version(&component.id).unwrap_or("");
+            if is_current_or_newer(current_version, &component.version) {
+                continue;
+            }
+
             // Classify the update
             let classification = self.classify_update(
                 component,
@@ -340,8 +348,12 @@ impl UpdatePlanner {
                 continue;
             }
 
-            // Filter experimental unless flag is set
-            if classification == UpdateClassification::Experimental && !options.include_experimental
+            // Filter experimental unless flag is set — BUT never drop a component
+            // the user explicitly targeted by name (e.g. `update migraphx-python`),
+            // regardless of tier/visibility. Targeting is an explicit opt-in.
+            if classification == UpdateClassification::Experimental
+                && !options.include_experimental
+                && !target_set.contains(component.id.as_str())
             {
                 continue;
             }
@@ -355,7 +367,7 @@ impl UpdatePlanner {
             ));
         }
 
-        // Apply --all-safe: keep safe items (and experimental if explicitly included),
+        // Apply --all-safe: select safe items (and experimental if explicitly included),
         // but never discard explicitly targeted components.
         if options.all_safe {
             if options.include_experimental {
@@ -373,6 +385,10 @@ impl UpdatePlanner {
                     target_set.contains(i.plan_item.component_id.as_str())
                         || i.classification == UpdateClassification::Safe
                 });
+            }
+            // Auto-select retained items
+            for item in &mut items {
+                item.plan_item.selected = true;
             }
         }
 
@@ -927,9 +943,25 @@ enum BumpLevel {
 /// Parse a version string into numeric parts.
 fn parse_version_parts(version: &str) -> Option<Vec<u32>> {
     let base = version.split('-').next()?;
-    base.split('.')
-        .map(|s| s.parse::<u32>().ok())
-        .collect::<Option<Vec<_>>>()
+    // Truncate at the first non-numeric segment instead of failing the whole
+    // parse. PEP 440 dev/local versions like "0.1.19.dev40+g6c48c5fa0" must still
+    // yield [0,1,19] so the caller sees they're newer than "0.1.0". Failing
+    // entirely (the old `collect::<Option>` behaviour) made `is_current_or_newer`
+    // give up and flag a perfectly-current dev build as needing a *downgrade*.
+    // Full `+local` build metadata (e.g. "2.12.1+rocm7.2") is handled by the
+    // semver path in `is_current_or_newer`; this fallback only needs the prefix.
+    let mut parts = Vec::new();
+    for segment in base.split('.') {
+        match segment.parse::<u32>() {
+            Ok(n) => parts.push(n),
+            Err(_) => break,
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
 }
 
 /// Compare two version strings: returns true if `actual >= required`.
@@ -951,6 +983,46 @@ fn version_gte(actual: &str, required: &str) -> bool {
         }
     }
     true // equal
+}
+
+/// Return whether the installed version already satisfies the manifest target.
+///
+/// Semver is preferred so build metadata such as `+rocm7.2` does not make an
+/// otherwise equal version look like an update. Numeric fallback keeps support
+/// for existing two-part component versions. Opaque values (`latest`, git
+/// tags, `installed`) remain eligible because they cannot prove that the target
+/// is already installed.
+fn is_current_or_newer(current: &str, proposed: &str) -> bool {
+    if current.trim().is_empty() || proposed.trim().is_empty() {
+        return false;
+    }
+
+    let current = current.trim().trim_start_matches('v');
+    let proposed = proposed.trim().trim_start_matches('v');
+
+    if let (Ok(current), Ok(proposed)) = (
+        semver::Version::parse(current),
+        semver::Version::parse(proposed),
+    ) {
+        return current >= proposed;
+    }
+
+    let Some(current_parts) = parse_version_parts(current) else {
+        return false;
+    };
+    let Some(proposed_parts) = parse_version_parts(proposed) else {
+        return false;
+    };
+
+    let max_len = current_parts.len().max(proposed_parts.len());
+    for index in 0..max_len {
+        let current_part = current_parts.get(index).copied().unwrap_or(0);
+        let proposed_part = proposed_parts.get(index).copied().unwrap_or(0);
+        if current_part != proposed_part {
+            return current_part > proposed_part;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,6 +1223,72 @@ mod tests {
         let classification =
             planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Safe);
+    }
+
+    #[test]
+    fn test_build_plan_omits_same_version_component() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("rocm".to_string(), "7.2.4".to_string());
+        context.installed_components.insert("rocm".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "rocm",
+            "7.2.4",
+            ValidationTier::Validated,
+        )]);
+
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+        assert!(
+            items.is_empty(),
+            "equal installed and target versions are a no-op"
+        );
+    }
+
+    #[test]
+    fn test_build_plan_omits_lower_target_version() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("triton".to_string(), "3.7.1".to_string());
+        context.installed_components.insert("triton".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "triton",
+            "3.7.0",
+            ValidationTier::Validated,
+        )]);
+
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+        assert!(items.is_empty(), "planner must never propose a downgrade");
+    }
+
+    #[test]
+    fn test_build_plan_compares_rocm_build_metadata() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("pytorch".to_string(), "2.12.1+rocm7.2".to_string());
+        context.installed_components.insert("pytorch".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "pytorch",
+            "2.12.1",
+            ValidationTier::Validated,
+        )]);
+
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+        assert!(
+            items.is_empty(),
+            "ROCm build metadata must not trigger reinstall"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2185,6 +2323,31 @@ mod tests {
         assert!(version_gte("7.2", "7.2.0"));
         assert!(version_gte("7.2.1", "7.2"));
         assert!(!version_gte("7.1", "7.2.0"));
+    }
+
+    #[test]
+    fn test_is_current_or_newer_handles_semver_and_opaque_targets() {
+        assert!(is_current_or_newer("1.27.1", "1.27.1"));
+        assert!(is_current_or_newer("1.28.0", "1.27.1"));
+        assert!(is_current_or_newer("2.12.1+rocm7.2", "2.12.1"));
+        assert!(!is_current_or_newer("1.23.2", "1.27.1"));
+        assert!(!is_current_or_newer("v0.20.1", "latest"));
+        // PEP 440 dev/local build (e.g. aiter 0.1.19.dev40+g6c48c5fa0) is NEWER
+        // than the manifest's pinned 0.1.0 — must NOT be proposed as a downgrade.
+        assert!(is_current_or_newer("0.1.19.dev40+g6c48c5fa0", "0.1.0"));
+    }
+
+    #[test]
+    fn test_parse_version_parts_truncates_dev_suffix() {
+        // Non-numeric segments truncate the prefix instead of nuking the parse.
+        assert_eq!(
+            parse_version_parts("0.1.19.dev40+g6c48c5fa0"),
+            Some(vec![0, 1, 19])
+        );
+        assert_eq!(parse_version_parts("7.2.1"), Some(vec![7, 2, 1]));
+        assert_eq!(parse_version_parts("7.2"), Some(vec![7, 2]));
+        // Fully opaque values still yield None (remain eligible-for-update).
+        assert_eq!(parse_version_parts("latest"), None);
     }
 
     // -----------------------------------------------------------------------
