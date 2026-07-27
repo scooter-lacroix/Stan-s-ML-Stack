@@ -486,9 +486,35 @@ fn test_native_components_preserve_needs_sudo_flag() {
 #[test]
 fn test_default_components_total_count() {
     let components = default_components();
-    // 24 native TUI installers/actions (incl fastvideo + llama-cpp + RCCL repair)
-    // + 3 verification + 11 performance = 38.
-    assert_eq!(components.len(), 38, "Expected 38 total components");
+    // 25 native TUI installers/actions (incl fastvideo + llama-cpp + RCCL repair
+    // + migraphx-python) + 3 verification + 11 performance = 39.
+    assert_eq!(components.len(), 39, "Expected 39 total components");
+}
+
+#[test]
+fn test_chain_referenced_component_ids_are_resolvable() {
+    // Regression (PR #27 third-wave review): components advertised by BOTH the
+    // manifest/registry AND the installer dispatch must also be present in
+    // default_components(), or DirectInstallerExecutor::component_for_id (an
+    // exact .find on default_components()) fails with "Unknown component ID"
+    // before the native installer runs. Not every NATIVE_COMPONENT_ID needs to
+    // be in default_components() (meta/benchmark/env ids are dispatch-only), so
+    // this asserts the specific chain-referenced set: migraphx-python and the
+    // Flash Attention backends (legacy flash-attn normalizes to flash-attn-triton).
+    let components = default_components();
+    let ids: Vec<&str> = components.iter().map(|c| c.id.as_str()).collect();
+    assert!(
+        ids.contains(&"migraphx-python"),
+        "migraphx-python must be in default_components() so update/apply can dispatch it"
+    );
+    assert!(
+        ids.contains(&"flash-attn-triton"),
+        "flash-attn-triton must be present (legacy flash-attn normalizes to it)"
+    );
+    assert!(
+        ids.contains(&"flash-attn-ck"),
+        "flash-attn-ck must be present"
+    );
 }
 
 #[test]

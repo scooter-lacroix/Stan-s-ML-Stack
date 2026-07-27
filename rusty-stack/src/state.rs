@@ -382,6 +382,37 @@ pub fn default_components() -> Vec<Component> {
             note: None,
         },
         Component {
+            // Standalone AMDMIGraphX Python bindings. The C++ core + onnxruntime
+            // MIGraphX EP cover ONNX inference without these bindings, so this is
+            // opt-in (experimental). Must be present in default_components() so
+            // DirectInstallerExecutor::component_for_id can resolve it — the
+            // installer dispatch (installer.rs "migraphx-python" arm) and the
+            // registry/manifest both advertise it; without this entry an explicit
+            // `rusty-stack update migraphx-python` fails with "Unknown component
+            // ID" before reaching the native installer.
+            id: "migraphx-python".into(),
+            name: "MIGraphX Python".into(),
+            description: "AMDMIGraphX Python bindings (source build)".into(),
+            script: String::new(), // Native Rust installer
+            category: Core,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "15-25 min".into(),
+            // cmake build from source into user space — no sudo.
+            needs_sudo: false,
+            experimental: true,
+            note: Some(
+                "Standalone AMDMIGraphX Python bindings built from source \
+                 (MLSTACK_MIGRAPHX_BUILD_PYTHON=1). The C++ core + onnxruntime \
+                 MIGraphX EP already cover ONNX inference, so these bindings are \
+                 only needed for direct Python migraphx API access. Source: \
+                 ROCm/AMDMIGraphX."
+                    .to_string(),
+            ),
+        },
+        Component {
             id: "llama-cpp".into(),
             name: "Rusty Llama (llama.cpp)".into(),
             description: "Rusty Llama — llama.cpp fork with HIP/ROCm GPU acceleration".into(),
