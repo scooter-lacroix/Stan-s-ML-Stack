@@ -33,7 +33,7 @@
     },
     {
       "id": "onnx",
-      "version": "1.20.0",
+      "version": "1.27.1",
       "script": "scripts/install_onnxruntime.sh",
       "category": "Core",
       "validation_tier": "Validated"
@@ -44,6 +44,13 @@
       "script": "scripts/install_migraphx.sh",
       "category": "Core",
       "validation_tier": "Validated"
+    },
+    {
+      "id": "migraphx-python",
+      "version": "2.15.0",
+      "script": "scripts/install_migraphx_python.sh",
+      "category": "Core",
+      "validation_tier": "Experimental"
     },
     {
       "id": "flash-attn",
@@ -61,7 +68,7 @@
     },
     {
       "id": "megatron",
-      "version": "25.1",
+      "version": "latest",
       "script": "scripts/install_megatron.sh",
       "category": "Core",
       "validation_tier": "Candidate"

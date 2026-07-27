@@ -210,7 +210,9 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             command_exists("vllm-studio") || path_exists(home_path(&home, &["vllm-studio"]))
         }
         "onnx" => {
-            python_any(python_candidates, &["onnxruntime"])
+            python_candidates
+                .iter()
+                .any(|python| python_exec(python, onnxruntime_present_snippet()))
                 || path_exists(home_path(&home, &["onnxruntime_build"]))
         }
         "bitsandbytes" => {
@@ -941,6 +943,24 @@ fn python_has_module(python: &str, module: &str) -> bool {
     )
 }
 
+/// Detection snippet for `onnxruntime`: requires a REAL installed package, not
+/// a CWD namespace-package shadow.
+///
+/// `python_has_module`/`find_spec` alone is fooled by a repo-local
+/// `onnxruntime/` source directory (e.g. a clone checked out inside the repo):
+/// it resolves as a namespace package (`find_spec` returns a spec, but
+/// `origin` is `None`), so a bare directory reports "installed" while
+/// `import onnxruntime` yields a hollow module with no `__version__`/providers.
+/// This strips CWD from `sys.path` (so the env package wins) AND requires a
+/// non-`None` `origin` (a real `__init__.py`-backed package). Same footgun
+/// fixed for migraphx in `migraphx_verify_snippet`.
+fn onnxruntime_present_snippet() -> &'static str {
+    "import sys, os, importlib.util; \
+     sys.path = [p for p in sys.path if p and os.path.abspath(p.rstrip('/')) != os.path.abspath(os.getcwd())]; \
+     s = importlib.util.find_spec('onnxruntime'); \
+     sys.exit(0 if (s is not None and s.origin is not None) else 1)"
+}
+
 fn python_exec(python: &str, code: &str) -> bool {
     let mut cmd = Command::new(python);
     cmd.arg("-c")
@@ -1238,14 +1258,49 @@ fn backend_marker_is(name: &str) -> bool {
 
 /// Multi-modal MIGraphX verification snippet (run via `python -c`).
 ///
-/// Tries the Python bindings (`migraphx.parse_onnx`) first — the path that
-/// works on Debian / the ROCm Docker image. On Arch/CachyOS there is no pip
-/// `migraphx`, so `ImportError` falls back to running `migraphx-driver
-/// --version`: if the C++ driver loads, migraphx is functional. This also
-/// catches a broken shared-library state (the driver won't load on a SONAME
-/// desync), so the check can never false-pass.
+/// Two hardening fixes over the naive `import migraphx; hasattr(parse_onnx)`:
+///
+/// 1. **CWD excluded from `sys.path`** — otherwise a repo-local `migraphx`
+///    stub (e.g. `core/migraphx/migraphx/__init__.py`) shadows a real install
+///    when rusty-stack runs from the repo root, importing cleanly but without
+///    `parse_onnx`, producing a false `parse_onnx=False` failure.
+/// 2. **Driver fallback on *any* incomplete python result** — the previous
+///    logic only fell back to `migraphx-driver --version` on `ImportError`. A
+///    stub that imports without `parse_onnx` never reached the fallback. Now
+///    the C++ driver is tried whenever the python bindings are missing OR
+///    incomplete. On Arch/CachyOS (SystemOnly support: no pip `migraphx`
+///    wheel) the driver IS the install target, so a clean driver load = pass.
+///    This still catches a broken shared-library state (SONAME desync): the
+///    driver won't load, so the check can never false-pass.
 fn migraphx_verify_snippet() -> &'static str {
-    "import sys,subprocess\nok=False;ver='ok';via='none'\ntry:\n    import migraphx\n    ok=hasattr(migraphx,'parse_onnx');ver=getattr(migraphx,'__version__','ok');via='python'\nexcept ImportError:\n    r=subprocess.run(['/opt/rocm/bin/migraphx-driver','--version'],capture_output=True)\n    ok=(r.returncode==0);ver='driver';via='driver'\nprint(f'MIGraphX {ver} parse_onnx={ok} via={via}')\nsys.exit(0 if ok else 1)"
+    r#"
+import os, sys, subprocess
+# (1) Drop CWD / '' entries so a repo-local migraphx stub can't shadow a real install.
+sys.path = [p for p in sys.path if p and os.path.abspath(p.rstrip('/')) != os.path.abspath(os.getcwd())]
+ok = False
+ver = 'ok'
+via = 'none'
+try:
+    import migraphx
+    if hasattr(migraphx, 'parse_onnx'):
+        ok = True
+        via = 'python'
+        ver = getattr(migraphx, '__version__', 'ok')
+    else:
+        ver = getattr(migraphx, '__version__', 'stub')
+except ImportError:
+    ver = 'absent'
+# (2) Fall through to the C++ driver whenever python bindings are missing OR
+#     incomplete (no parse_onnx). On Arch/CachyOS the driver is the install target.
+if not ok:
+    r = subprocess.run(['/opt/rocm/bin/migraphx-driver', '--version'], capture_output=True)
+    if r.returncode == 0:
+        ok = True
+        via = 'driver'
+        ver = 'driver'
+print(f'MIGraphX {ver} parse_onnx={ok} via={via}')
+sys.exit(0 if ok else 1)
+"#
 }
 
 /// Flash Attention verification command (run via `python -c`).
@@ -1588,6 +1643,61 @@ mod tests {
         assert_eq!(cmd.args[0], "-c");
         assert!(!cmd.args[1].is_empty());
         assert!(cmd.modules.contains(&"torch".to_string()));
+    }
+
+    #[test]
+    fn test_migraphx_snippet_excludes_cwd_and_falls_back_to_driver() {
+        // Regression: a repo-local `migraphx` stub imported cleanly but had no
+        // parse_onnx, and the old snippet only fell back to the driver on
+        // ImportError — so the stub produced a false failure. The new snippet
+        // must (a) strip CWD from sys.path and (b) run the driver whenever the
+        // python bindings are missing OR incomplete.
+        let s = migraphx_verify_snippet();
+
+        // (a) CWD excluded from sys.path (no repo-stub shadowing).
+        assert!(
+            s.contains("getcwd()"),
+            "snippet must drop CWD from sys.path; got: {s}"
+        );
+        assert!(
+            s.contains("sys.path = [p for p in sys.path"),
+            "snippet must filter sys.path; got: {s}"
+        );
+
+        // (b) Driver fallback is OUTSIDE the try/except — keyed on `if not ok`,
+        // so an incomplete import (stub without parse_onnx) still reaches it.
+        assert!(
+            s.contains("if not ok:"),
+            "snippet must fall back to the driver whenever python bindings are incomplete"
+        );
+        assert!(s.contains("migraphx-driver"));
+        assert!(s.contains("--version"));
+        // parse_onnx is only accepted inside the successful python branch.
+        assert!(s.contains("hasattr(migraphx, 'parse_onnx')"));
+        // Exit reflects final ok state (driver fallback can flip it to pass).
+        assert!(s.contains("sys.exit(0 if ok else 1)"));
+    }
+
+    #[test]
+    fn test_onnx_present_snippet_strips_cwd_and_requires_real_package() {
+        // Regression: a repo-local `onnxruntime/` source directory resolves as a
+        // namespace package (find_spec returns a spec, origin is None), so the
+        // old `python_any(&["onnxruntime"])` reported "installed" while
+        // `import onnxruntime` had no __version__/providers. The snippet must
+        // (a) strip CWD from sys.path and (b) require a real package (origin).
+        let s = onnxruntime_present_snippet();
+        assert!(
+            s.contains("getcwd()"),
+            "snippet must drop CWD from sys.path; got: {s}"
+        );
+        assert!(
+            s.contains("sys.path = [p for p in sys.path"),
+            "snippet must filter sys.path; got: {s}"
+        );
+        assert!(
+            s.contains("origin is not None"),
+            "snippet must require a real package (non-None origin), not a namespace shadow; got: {s}"
+        );
     }
 }
 

@@ -2445,6 +2445,28 @@ impl App {
                     }
                 ),
             ),
+            (
+                ConfigKey::OnnxInstallMethod,
+                format!(
+                    "ONNX install method: {} ({})",
+                    self.config.onnx_install_method,
+                    match self.config.onnx_install_method.as_str() {
+                        "source" => "build from source",
+                        "prebuilt" => "legacy onnxruntime-rocm",
+                        _ => "PyPI onnxruntime-migraphx",
+                    }
+                ),
+            ),
+            (
+                ConfigKey::OnnxVersion,
+                format!(
+                    "ONNX version: {}",
+                    self.config
+                        .onnx_version
+                        .clone()
+                        .unwrap_or_else(|| "default (1.25.0)".into())
+                ),
+            ),
             (ConfigKey::Save, "Save Configuration".into()),
         ]
     }
@@ -2505,6 +2527,17 @@ impl App {
             ConfigKey::VllmVersionAge => vec![
                 Line::from("Supply-chain gate: only adopt vLLM releases at least"),
                 Line::from("this many days old (0=off). Combined with the lag."),
+            ],
+            ConfigKey::OnnxInstallMethod => vec![
+                Line::from("ONNX Runtime install method."),
+                Line::from("migraphx = PyPI onnxruntime-migraphx (default, working)."),
+                Line::from("prebuilt = legacy onnxruntime-rocm (may mismatch ROCm)."),
+                Line::from("source = build from source against /opt/rocm (heavy)."),
+            ],
+            ConfigKey::OnnxVersion => vec![
+                Line::from("ONNX Runtime version override."),
+                Line::from("default = pinned 1.25.0 (1.27.1 gives no benefit: the"),
+                Line::from("`ort` crate's MIGraphX builder lacks model-cache in any release)."),
             ],
             ConfigKey::Save => vec![
                 Line::from("Persist current settings to config.json."),
@@ -2647,6 +2680,27 @@ impl App {
                 self.config.vllm_version_min_age_days = ages[(cur + 1) % ages.len()];
                 self.config_dirty = true;
             }
+            ConfigKey::OnnxInstallMethod => {
+                // cycle migraphx → prebuilt → source → migraphx
+                let methods = ["migraphx", "prebuilt", "source"];
+                let cur = methods
+                    .iter()
+                    .position(|m| *m == self.config.onnx_install_method)
+                    .unwrap_or(0);
+                self.config.onnx_install_method = methods[(cur + 1) % methods.len()].into();
+                self.config_dirty = true;
+            }
+            ConfigKey::OnnxVersion => {
+                // cycle default → 1.25.0 → 1.27.1 → default
+                let cur = self.config.onnx_version.as_deref();
+                let next = match cur {
+                    None => Some("1.25.0"),
+                    Some("1.25.0") => Some("1.27.1"),
+                    _ => None, // back to default (pinned)
+                };
+                self.config.onnx_version = next.map(str::to_string);
+                self.config_dirty = true;
+            }
             ConfigKey::Save => self.save_config(),
             ConfigKey::RocmPath => {} // display-only, no toggle
         }
@@ -2741,6 +2795,19 @@ impl App {
             std::env::remove_var("FORCE");
             std::env::remove_var("PYTORCH_REINSTALL");
             std::env::remove_var("MLSTACK_FORCE_REINSTALL");
+        }
+
+        // ONNX install options (TUI config → env → dispatch). The dispatch reads
+        // MLSTACK_ONNX_INSTALL_METHOD / MLSTACK_ONNX_VERSION. Defaults (migraphx /
+        // pinned 1.25.0) match the dispatch defaults, so this only changes behavior
+        // when the user cycles them on the Configuration screen.
+        std::env::set_var(
+            "MLSTACK_ONNX_INSTALL_METHOD",
+            &self.config.onnx_install_method,
+        );
+        match &self.config.onnx_version {
+            Some(v) => std::env::set_var("MLSTACK_ONNX_VERSION", v),
+            None => std::env::remove_var("MLSTACK_ONNX_VERSION"),
         }
 
         self.stage = Stage::Installing;
@@ -3598,6 +3665,8 @@ enum ConfigKey {
     PerfProfile,
     VllmVersionLag,
     VllmVersionAge,
+    OnnxInstallMethod,
+    OnnxVersion,
     Save,
 }
 
