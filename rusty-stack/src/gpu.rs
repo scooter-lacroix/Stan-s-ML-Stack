@@ -305,6 +305,18 @@ pub struct AmdGpu {
     pub vram_bytes: Option<u64>,
     /// `true` if classified as integrated by [`device_is_integrated`].
     pub is_integrated: bool,
+    /// Real ROCm (HSA) agent index from `rocminfo`, when available.
+    ///
+    /// This is the authoritative device index for `ROCR_VISIBLE_DEVICES` /
+    /// `HIP_VISIBLE_DEVICES`: those vars filter by the *original* enumeration
+    /// order (CPU + iGPU + dGPU agents as `rocminfo` prints them), NOT a
+    /// re-numbered post-filter sequence. On an APU+dGPU host where the iGPU is
+    /// ROCr agent 2 and the dGPU is agent 3, the visibility mask must be `3`,
+    /// not the compacted `0` produced by enumerating the filtered dGPU list.
+    ///
+    /// `None` when rocminfo is unavailable; callers fall back to compacted
+    /// indices (the historical sysfs-only behavior) in that case.
+    pub rocm_index: Option<u32>,
 }
 
 /// Authoritative PCI device ID → gfx arch mapping for AMD discrete GPUs.
@@ -577,9 +589,12 @@ fn rocminfo_available() -> bool {
 
 /// Parse rocminfo agent list for ROCm device ordering (optional enrichment).
 ///
-/// Returns vec of (name, gfx_arch) in ROCm device index order. Cross-verified
-/// against lspci/sysfs devices by the caller.
-fn parse_rocminfo_agents() -> Vec<(String, Option<String>)> {
+/// Returns vec of (index, name, gfx_arch) in ROCm device index order. The
+/// `index` is the literal "Agent N" counter from rocminfo (the same value
+/// `ROCR_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` must use to filter). GPU
+/// agents that lack a numbered "Agent N" header fall back to the running GPU
+/// counter. Cross-verified against lspci/sysfs devices by the caller.
+fn parse_rocminfo_agents() -> Vec<(u32, String, Option<String>)> {
     let output = match std::process::Command::new("rocminfo").output() {
         Ok(o) if o.status.success() => o.stdout,
         _ => return Vec::new(),
@@ -592,9 +607,19 @@ fn parse_rocminfo_agents() -> Vec<(String, Option<String>)> {
     for agent_block in text.split("****") {
         let mut name = None;
         let mut gfx_arch = None;
+        let mut index: Option<u32> = None;
 
         for line in agent_block.lines() {
             let line = line.trim();
+            // Capture the "Agent N" header index — this is the canonical ROCr
+            // agent index that ROCR_VISIBLE_DEVICES filters against.
+            if line.starts_with("Agent ") && index.is_none() {
+                if let Some(rest) = line.strip_prefix("Agent ") {
+                    if let Ok(n) = rest.trim().parse::<u32>() {
+                        index = Some(n);
+                    }
+                }
+            }
             if let Some(rest) = line.strip_prefix("Name:") {
                 name = Some(rest.trim().to_string());
             }
@@ -604,7 +629,11 @@ fn parse_rocminfo_agents() -> Vec<(String, Option<String>)> {
         }
 
         if let Some(n) = name {
-            agents.push((n, gfx_arch));
+            // Fall back to the running agent count if no "Agent N" header parsed
+            // (some rocminfo builds omit the numbered header). The count is still
+            // a real enumeration index, not a compacted post-filter value.
+            let idx = index.unwrap_or(agents.len() as u32);
+            agents.push((idx, n, gfx_arch));
         }
     }
 
@@ -764,6 +793,7 @@ pub fn detect_amd_gpus() -> Vec<AmdGpu> {
             gfx_arch,
             vram_bytes,
             is_integrated,
+            rocm_index: None,
         });
     }
 
@@ -771,13 +801,17 @@ pub fn detect_amd_gpus() -> Vec<AmdGpu> {
     if rocminfo_available() {
         let rocminfo_agents = parse_rocminfo_agents();
         if !rocminfo_agents.is_empty() {
-            // Cross-verify rocminfo agents against detected devices by name/PCI
-            // Enrich gfx arch from rocminfo when available
-            for (rocm_name, rocm_gfx) in rocminfo_agents {
+            // Cross-verify rocminfo agents against detected devices by name/PCI.
+            // Enrich gfx arch AND capture the real ROCm agent index (the value
+            // ROCR_VISIBLE_DEVICES must use). Matching is by name substring
+            // (rocminfo marketing names are usually shorter than lspci strings).
+            for (rocm_idx, rocm_name, rocm_gfx) in rocminfo_agents {
                 for gpu in &mut gpus {
                     if let Some(ref name) = gpu.marketing_name {
-                        // Match by name substring (rocminfo names are shorter)
                         if name.contains(&rocm_name) || rocm_name.contains(name) {
+                            if gpu.rocm_index.is_none() {
+                                gpu.rocm_index = Some(rocm_idx);
+                            }
                             if let Some(ref rg) = rocm_gfx {
                                 gpu.gfx_arch = Some(rg.clone());
                             }
