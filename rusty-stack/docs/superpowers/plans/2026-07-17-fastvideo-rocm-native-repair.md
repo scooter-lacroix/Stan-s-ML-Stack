@@ -6,13 +6,13 @@
 
 **Architecture:** The external FastVideo fork owns a ROCm-only kernel branch and preserves existing Python bindings. Rusty pins the pushed commit, performs read-only prerequisite and source-policy checks, installs local packages with network/dependency resolution disabled, and verifies that no managed distribution changed except FastVideo itself.
 
-**Tech Stack:** Rust, Python 3.12, PyTorch 2.12 ROCm 7.2, C++20, HIP, CMake/scikit-build-core, ATen.
+**Tech Stack:** Rust, Python 3.12, PyTorch 2.12 ROCm 7.2 (historical validation environment; the root `README.md` tracks the current 2.13.0+rocm7.2 baseline), C++20, HIP, CMake/scikit-build-core, ATen.
 
 **Execution status:** Tasks 1-10 are complete. Fork repair is pushed at `22e448771ebf5c81108f1c57b9c7ef4d5c26d182`; Rust code is committed at `5beed1c`; 26 focused tests, formatting, clippy with warnings denied, and the exact staged release build are green. The installed `rusty-stack 0.3.1` checksum is `18007be04bd194b94562220532ac6c983aef1319aacb9b694fe9469099ac2130`. Task 11 FastVideo installation/runtime validation is intentionally reserved for the user.
 
 ---
 
-### Task 1: Establish fork policy and API contract tests
+## Task 1: Establish fork policy and API contract tests
 
 **Files:**
 - Create: `/tmp/FastVideo_ROCm_design_20260717/fastvideo-kernel/tests/test_rocm_source_policy.py`
@@ -45,7 +45,7 @@ Run:
 
 Expected: source policy fails on gitlinks/CUTLASS/TK/CUDA metadata; existing numeric tests may fail because the extension is not installed.
 
-### Task 2: Remove fork metadata and submodules
+## Task 2: Remove fork metadata and submodules
 
 **Files:**
 - Delete: `/tmp/FastVideo_ROCm_design_20260717/.gitmodules`
@@ -70,7 +70,7 @@ Change kernel description/classifier to ROCm/HIP and ensure no package metadata 
 
 Expected: metadata/submodule assertions pass; source CUTLASS assertions remain RED.
 
-### Task 3: Replace common, quantization, and normalization CUTLASS usage
+## Task 3: Replace common, quantization, and normalization CUTLASS usage
 
 **Files:**
 - Create: `/tmp/FastVideo_ROCm_design_20260717/fastvideo-kernel/csrc/hip_native/compat.hpp`
@@ -105,7 +105,7 @@ Replace every active non-GEMM CUTLASS type/macro/include. Replace CUDA runtime c
 
 Expected: no CUTLASS tokens remain outside GEMM; quant/norm compile under hipcc.
 
-### Task 4: Replace CuTe GEMM with managed ATen ROCm implementation
+## Task 4: Replace CuTe GEMM with managed ATen ROCm implementation
 
 **Files:**
 - Create: `/tmp/FastVideo_ROCm_design_20260717/fastvideo-kernel/csrc/hip_native/gemm_rocm.cpp`
@@ -140,7 +140,7 @@ Delete all reachable CuTe/PTX implementation files after the CMake/binding migra
 
 Expected: numeric tests pass within declared tolerances on `ROCR_VISIBLE_DEVICES=0` and `1`.
 
-### Task 5: Make fork build ROCm-only and remove bundled FlashAttention
+## Task 5: Make fork build ROCm-only and remove bundled FlashAttention
 
 **Files:**
 - Modify: `/tmp/FastVideo_ROCm_design_20260717/fastvideo-kernel/CMakeLists.txt`
@@ -167,7 +167,7 @@ The Python VMoBA path remains routed to managed `flash_attn`; no C++ FlashAttent
 
 Expected: all policy tests GREEN.
 
-### Task 6: Build and validate the fork offline
+## Task 6: Build and validate the fork offline
 
 **Files:**
 - Build artifact only; no new source files expected.
@@ -200,7 +200,7 @@ Use `readelf -d` on the extension and inspect wheel contents. Fail on CUDA/NVIDI
 
 Only `fastvideo` and `fastvideo-kernel` may differ.
 
-### Task 7: Commit and push the repaired FastVideo fork
+## Task 7: Commit and push the repaired FastVideo fork
 
 **Files:** all fork changes above.
 
@@ -220,7 +220,7 @@ Push `feature/rocm-native-no-cutlass` to `origin`.
 
 Capture the pushed commit SHA and verify the remote branch resolves to it.
 
-### Task 8: Pin FastVideo SHA and create Rusty work branch
+## Task 8: Pin FastVideo SHA and create Rusty work branch
 
 **Files:**
 - Modify: `rusty-stack/src/installers/components/fastvideo.rs`
@@ -245,7 +245,7 @@ Create `fix/fastvideo-rocm-native-dependency-safety` while preserving all existi
 
 Expected: pin/no-submodule assertions pass.
 
-### Task 9: Replace Rusty dependency mutation with managed preflight and offline install
+## Task 9: Replace Rusty dependency mutation with managed preflight and offline install
 
 **Files:**
 - Modify: `rusty-stack/src/installers/components/fastvideo.rs`
@@ -287,7 +287,7 @@ Add required pip flags/environment and preserve selected managed Python/ROCm vis
 
 Expected: all FastVideo standalone tests pass.
 
-### Task 10: Restore managed environment ownership
+## Task 10: Restore managed environment ownership
 
 **Files:**
 - Create: `rusty-stack/src/installers/common/managed_python_build_tools.rs`
@@ -325,7 +325,7 @@ install or modify Torch, ROCm, Flash Attention, Triton, or any NVIDIA/CUDA packa
 
 Confirm the Torch/setuptools conflict is removed. Report pre-existing vLLM conflicts separately.
 
-### Task 11: Integrate verification, docs, build, and deploy
+## Task 11: Integrate verification, docs, build, and deploy
 
 **Files:**
 - Modify: `rusty-stack/src/component_status.rs`

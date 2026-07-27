@@ -200,8 +200,14 @@ Three drifted env writers (`bootstrap/env_setup.rs`, `permanent_env.rs`,
 ## Outstanding / follow-ups (not in this log's scope)
 
 - **Push the fork `hip.h` gate to `main`** on github — the installer clones
-  `main`; without it the next install re-clones the unfixed repo. (Fix is on
-  `feature/upstream-sync-2026-05`; merge to `main`.)
+  `main` (`DEFAULT_BRANCH` in `installers/components/llama_cpp.rs`); without it
+  the next install re-clones the unfixed repo. (Fix is on
+  `feature/upstream-sync-2026-05`; merge to `main`.) This is a tracked
+  follow-up in the fork repo (`scooter-lacroix/llama.cpp-turboquant-hip`), not
+  a defect in this PR's code: the installer's clone/pin contract is correct,
+  it simply needs the upstream fork's `main` to carry the fix. Until merged,
+  the submodule pin (`Fork/llama.cpp-turboquant-hip @ c39871c9c`) is the
+  authoritative tested SHA.
 - **VerificationCommand execution layer should source `~/.mlstack_env`** (the
   14th shallow-verification instance): FA verify failed on a root-owned
   `~/.triton/cache` because the verify ran without `TRITON_CACHE_DIR`. Symptom

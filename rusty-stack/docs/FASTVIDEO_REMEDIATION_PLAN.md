@@ -34,7 +34,7 @@
 ---
 
 ## Build / deploy
-- [x] Exact staged tree: 23 FastVideo + 3 managed-owner focused tests pass; `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` are clean.
+- [x] Exact staged tree: 23 FastVideo + 3 managed-owner-focused tests pass; `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` are clean.
 - [x] Exact staged tree: `nice -n 19 cargo build --release -j 2` passes.
 - [x] Code commit: `5beed1c` (`fix(rusty-stack): harden FastVideo ROCm install`).
 - [x] Atomic binary replacement complete; source/deployed SHA-256: `18007be04bd194b94562220532ac6c983aef1319aacb9b694fe9469099ac2130` (`rusty-stack 0.3.1`).
