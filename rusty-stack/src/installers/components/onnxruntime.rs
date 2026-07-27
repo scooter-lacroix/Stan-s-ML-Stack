@@ -91,17 +91,27 @@ pub const DEFAULT_ONNXRUNTIME_VERSION: &str = "1.27.1";
 /// the default ([`OnnxInstallMethod::MigraphxWheel`]) path — the primary,
 /// production-proven ROCm build that ships the MIGraphXExecutionProvider.
 ///
-/// Pinned to **1.25.0** (the known-working release), NOT the latest 1.27.1:
-/// the Rust `ort` crate's MIGraphX execution-provider builder exposes no
+/// Tracks the current PyPI release line (1.27.1) and is kept in lock-step with
+/// [`DEFAULT_ONNXRUNTIME_VERSION`] and the manifest's `onnx` target version
+/// (`baseline_manifest.json`). That lock-step is load-bearing: the default
+/// MIGraphX-wheel install path must land on exactly the version the post-install
+/// honesty guard verifies against — otherwise an explicit
+/// `rusty-stack update onnx` would install this pinned wheel but be reported as
+/// failed because the detected version mismatches the manifest target.
+///
+/// The Rust `ort` crate's MIGraphX execution-provider builder exposes no
 /// `with_model_cache_dir` / model-cache API in ANY released version (newest is
 /// `ort 2.0.0-rc.12`), and the v2.0 "arbitrarily configurable" EP change left
-/// MIGraphX out — so 1.27.1 confers no benefit over 1.25.0 here. The
-/// source-build path ([`OnnxInstallMethod::SourceBuild`]) targets
+/// MIGraphX out — so the version choice is driven by manifest/honesty-guard
+/// alignment rather than an `ort` API benefit. The source-build path
+/// ([`OnnxInstallMethod::SourceBuild`]) targets
 /// [`DEFAULT_ONNXRUNTIME_VERSION`] when a custom build is actually required.
 /// The AMD manylinux repo (`repo.radeon.com/rocm-rel-<release>`) is NOT used —
 /// it lags far behind (still 1.23.2 for ROCm 7.2.4) and fabricates 404 URLs for
-/// newer versions. Bump only when a newer wheel is verified to add real value.
-pub const PREBUILT_MIGRAPHX_VERSION: &str = "1.25.0";
+/// newer versions. Bump only when a newer wheel is verified to add real value
+/// (and bump all three in lock-step: this constant,
+/// [`DEFAULT_ONNXRUNTIME_VERSION`], and the manifest target).
+pub const PREBUILT_MIGRAPHX_VERSION: &str = "1.27.1";
 
 /// Env var selecting the ONNX install method
 /// (`migraphx`/`source`/`prebuilt`). Default: [`OnnxInstallMethod::MigraphxWheel`].
@@ -203,10 +213,16 @@ impl OnnxRuntimeConfig {
     }
 
     /// Get the effective ONNX Runtime wheel version.
+    ///
+    /// Filters an empty/whitespace `Some("")` to the default: a stale or
+    /// untrimmed `ctx.target_version` would otherwise produce an invalid
+    /// `git checkout v` (no tag suffix) on the source-build path. Mirrors
+    /// [`prebuilt_version_from_env`]'s empty-filtering.
     pub fn runtime_version(&self) -> &str {
-        self.runtime_version
-            .as_deref()
-            .unwrap_or(DEFAULT_ONNXRUNTIME_VERSION)
+        match self.runtime_version.as_deref() {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => DEFAULT_ONNXRUNTIME_VERSION,
+        }
     }
 
     /// Get the pinned prebuilt `onnxruntime-migraphx` version for the default
@@ -889,6 +905,30 @@ mod tests {
         assert!(cmd.args.contains(&"v1.25.0".to_string()));
     }
 
+    #[test]
+    fn test_runtime_version_filters_empty_to_default() {
+        // An untrimmed/stale ctx.target_version of Some("") must NOT fall through
+        // as the tag — it would produce an invalid `git checkout v` (no suffix).
+        // Empty/whitespace values resolve to DEFAULT_ONNXRUNTIME_VERSION.
+        let empty = OnnxRuntimeInstaller::new(OnnxRuntimeConfig {
+            runtime_version: Some(String::new()),
+            ..Default::default()
+        });
+        assert_eq!(empty.config.runtime_version(), DEFAULT_ONNXRUNTIME_VERSION);
+        assert_ne!(empty.config.runtime_version(), "");
+        let ws = OnnxRuntimeInstaller::new(OnnxRuntimeConfig {
+            runtime_version: Some("   ".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(ws.config.runtime_version(), DEFAULT_ONNXRUNTIME_VERSION);
+        // And a real value is preserved.
+        let real = OnnxRuntimeInstaller::new(OnnxRuntimeConfig {
+            runtime_version: Some("1.25.0".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(real.config.runtime_version(), "1.25.0");
+    }
+
     // --- HipArchs ---
 
     #[test]
@@ -977,7 +1017,11 @@ mod tests {
     fn test_prebuilt_version_defaults_to_pinned() {
         let installer = OnnxRuntimeInstaller::with_defaults();
         assert_eq!(installer.prebuilt_version(), PREBUILT_MIGRAPHX_VERSION);
-        assert_eq!(installer.prebuilt_version(), "1.25.0");
+        // Lock-step invariant: the default wheel version matches the manifest
+        // target + DEFAULT_ONNXRUNTIME_VERSION so the honesty guard verifies the
+        // version the default path actually installs.
+        assert_eq!(installer.prebuilt_version(), DEFAULT_ONNXRUNTIME_VERSION);
+        assert_eq!(installer.prebuilt_version(), "1.27.1");
     }
 
     #[test]

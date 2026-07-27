@@ -2464,7 +2464,7 @@ impl App {
                     self.config
                         .onnx_version
                         .clone()
-                        .unwrap_or_else(|| "default (1.25.0)".into())
+                        .unwrap_or_else(|| "default (1.27.1)".into())
                 ),
             ),
             (ConfigKey::Save, "Save Configuration".into()),
@@ -2536,8 +2536,8 @@ impl App {
             ],
             ConfigKey::OnnxVersion => vec![
                 Line::from("ONNX Runtime version override."),
-                Line::from("default = pinned 1.25.0 (1.27.1 gives no benefit: the"),
-                Line::from("`ort` crate's MIGraphX builder lacks model-cache in any release)."),
+                Line::from("default = pinned 1.27.1 (tracks the PyPI release line;"),
+                Line::from("kept in lock-step with the manifest target)."),
             ],
             ConfigKey::Save => vec![
                 Line::from("Persist current settings to config.json."),
@@ -2691,12 +2691,11 @@ impl App {
                 self.config_dirty = true;
             }
             ConfigKey::OnnxVersion => {
-                // cycle default → 1.25.0 → 1.27.1 → default
+                // cycle default → 1.25.0 (legacy) → default
                 let cur = self.config.onnx_version.as_deref();
                 let next = match cur {
                     None => Some("1.25.0"),
-                    Some("1.25.0") => Some("1.27.1"),
-                    _ => None, // back to default (pinned)
+                    _ => None, // back to default (pinned 1.27.1)
                 };
                 self.config.onnx_version = next.map(str::to_string);
                 self.config_dirty = true;
@@ -2799,7 +2798,7 @@ impl App {
 
         // ONNX install options (TUI config → env → dispatch). The dispatch reads
         // MLSTACK_ONNX_INSTALL_METHOD / MLSTACK_ONNX_VERSION. Defaults (migraphx /
-        // pinned 1.25.0) match the dispatch defaults, so this only changes behavior
+        // pinned 1.27.1) match the dispatch defaults, so this only changes behavior
         // when the user cycles them on the Configuration screen.
         std::env::set_var(
             "MLSTACK_ONNX_INSTALL_METHOD",
