@@ -862,15 +862,24 @@ fn rccl_active_dir(home: &str) -> String {
 /// Read the RCCL overlay sha256 from `<active>/manifest` (line `sha256=…`), if
 /// the overlay is installed and the manifest is readable.
 fn rccl_overlay_sha256(active: &str) -> Option<String> {
-    std::fs::read_to_string(format!("{active}/manifest"))
-        .ok()?
-        .lines()
-        .find_map(|l| {
-            l.strip_prefix("sha256=")
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-        })
-        .map(str::to_string)
+    let manifest = std::fs::read_to_string(format!("{active}/manifest")).ok()?;
+    let raw = manifest.lines().find_map(|l| {
+        l.strip_prefix("sha256=")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    })?;
+    // Defense-in-depth: the SHA is written by the installer (always a 64-char
+    // hex string), but this value is interpolated unquoted into a file that is
+    // sourced on EVERY shell login. A corrupted/tampered manifest containing
+    // shell metacharacters (`;`, backticks, `$()`, …) would execute when the
+    // env file is sourced. Accept ONLY a 64-char lowercase-hex SHA-256; any
+    // other shape is omitted (preserving the missing-manifest behavior).
+    let is_hex64 = raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex64 {
+        Some(raw.to_string())
+    } else {
+        None
+    }
 }
 
 /// Emit the **idempotent** bash block for the sealed RCCL overlay, or an empty
@@ -886,8 +895,11 @@ fn rccl_overlay_bash_block(home: &str) -> String {
         return String::new();
     }
     let sha_line = match rccl_overlay_sha256(&rccl_active_dir(home)) {
-        Some(sha) => format!("  export MLSTACK_RCCL_OVERLAY_SHA256={sha}"),
-        None => "  # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing)".to_string(),
+        // Quoted for defense-in-depth (the value is already validated 64-hex
+        // upstream, so it carries no metacharacters — but quoting keeps the
+        // sourced line robust if the validation contract ever loosens).
+        Some(sha) => format!("  export MLSTACK_RCCL_OVERLAY_SHA256=\"{sha}\""),
+        None => "  # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing or invalid)".to_string(),
     };
     format!(
         r#"
@@ -915,8 +927,10 @@ fn rccl_overlay_fish_block(home: &str) -> String {
         return String::new();
     }
     let sha_line = match rccl_overlay_sha256(&rccl_active_dir(home)) {
-        Some(sha) => format!("    set -gx MLSTACK_RCCL_OVERLAY_SHA256 {sha}"),
-        None => "    # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing)".to_string(),
+        Some(sha) => format!("    set -gx MLSTACK_RCCL_OVERLAY_SHA256 \"{sha}\""),
+        None => {
+            "    # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing or invalid)".to_string()
+        }
     };
     format!(
         r#"
@@ -1594,16 +1608,16 @@ mod tests {
         std::fs::create_dir_all(active.join("python")).unwrap();
         std::fs::create_dir_all(active.join("lib")).unwrap();
         std::fs::write(active.join("lib/librccl.so.1.0"), b"").unwrap();
-        std::fs::write(
-            active.join("manifest"),
-            "sha256=abc123
-",
-        )
-        .unwrap();
+        // A valid SHA-256 (64 lowercase hex chars) — the installer always writes
+        // this shape. The generator validates 64-hex before splicing (defense-
+        // in-depth against a tampered manifest), so use a realistic value here.
+        let valid_sha = "a".repeat(64);
+        std::fs::write(active.join("manifest"), format!("sha256={valid_sha}\n")).unwrap();
 
         let bash = rccl_overlay_bash_block(&home.to_string_lossy());
         assert!(bash.contains("MLSTACK_RCCL_OVERLAY_LIB"));
-        assert!(bash.contains("MLSTACK_RCCL_OVERLAY_SHA256=abc123"));
+        // SHA is quoted + validated (64-hex). An invalid SHA would be omitted.
+        assert!(bash.contains(&format!("MLSTACK_RCCL_OVERLAY_SHA256=\"{valid_sha}\"")));
         // Idempotent guard present (no bare un-guarded prepend).
         assert!(bash.contains("grep -qF"));
         // Single source of truth: does NOT delegate to a component env file.
@@ -1611,8 +1625,19 @@ mod tests {
 
         let fish = rccl_overlay_fish_block(&home.to_string_lossy());
         assert!(fish.contains("MLSTACK_RCCL_OVERLAY_LIB"));
+        assert!(fish.contains(&format!("MLSTACK_RCCL_OVERLAY_SHA256 \"{valid_sha}\"")));
         assert!(fish.contains("contains --"));
         assert!(!fish.contains("env.fish"));
+
+        // Invalid SHA (not 64-hex) → omitted, never spliced into the sourced
+        // block. Guards against a corrupted/tampered manifest injecting shell.
+        std::fs::write(active.join("manifest"), "sha256=NOT-HEX\n").unwrap();
+        let bash_bad = rccl_overlay_bash_block(&home.to_string_lossy());
+        assert!(
+            !bash_bad.contains("MLSTACK_RCCL_OVERLAY_SHA256=\""),
+            "invalid SHA must be omitted, not spliced: {bash_bad}"
+        );
+        assert!(bash_bad.contains("omitted"));
 
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&home_no_rccl);

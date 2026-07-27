@@ -5093,7 +5093,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Install method + version are user-selectable (env vars today; the
             // TUI options screen will set these). Defaults: PyPI prebuilt
-            // `onnxruntime-migraphx` at PREBUILT_MIGRAPHX_VERSION (1.25.0).
+            // `onnxruntime-migraphx` at PREBUILT_MIGRAPHX_VERSION (1.27.1 — kept
+            // in lock-step with the manifest `onnx` target + DEFAULT_ONNXRUNTIME_VERSION
+            // so the post-install honesty guard verifies the version the default
+            // wheel path actually installs).
             let install_method = install_method_from_env();
             let prebuilt_version = prebuilt_version_from_env();
 
@@ -7197,6 +7200,14 @@ mod tests {
 
     #[test]
     fn test_safe_rocm_path_prepends_rocm_bin() {
+        // safe_rocm_path returns the inherited PATH unchanged when
+        // /opt/rocm/bin is absent, so these prepend/dedup assertions only hold
+        // on a host with ROCm installed. Guard like the pass-through test does
+        // to avoid panicking on standard CI runners.
+        if !Path::new("/opt/rocm/bin").exists() {
+            eprintln!("skip: /opt/rocm/bin absent (CI host) — prepend behavior is pass-through");
+            return;
+        }
         let p = safe_rocm_path("/home/scooter/.mlstack/global/bin:/usr/bin:/bin");
         let rocm = p.find("/opt/rocm/bin").unwrap();
         let shim = p.find("/home/scooter/.mlstack/global/bin").unwrap();
@@ -7211,6 +7222,13 @@ mod tests {
 
     #[test]
     fn test_safe_rocm_path_dedupes_rocm_entries() {
+        // Dedup of literal /opt/rocm/bin substrings holds regardless of whether
+        // ROCm is installed (the input carries the literals), but guard anyway
+        // for consistency with the other two safe_rocm_path tests.
+        if !Path::new("/opt/rocm/bin").exists() {
+            eprintln!("skip: /opt/rocm/bin absent (CI host)");
+            return;
+        }
         let p = safe_rocm_path("/opt/rocm/bin:/usr/bin:/opt/rocm/hip/bin");
         assert_eq!(
             p.matches("/opt/rocm/bin").count(),

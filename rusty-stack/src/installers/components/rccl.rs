@@ -263,12 +263,16 @@ impl RcclInstaller {
         if expected.is_empty() || sha256_file(&library)? != expected {
             return Ok(OverlayState::Invalid("SHA-256 mismatch".into()));
         }
-        if !active.join("python/sitecustomize.py").is_file()
-            || !active.join("env.sh").is_file()
-            || !active.join("env.fish").is_file()
-        {
+        if !active.join("python/sitecustomize.py").is_file() {
             return Ok(OverlayState::Invalid("activation files missing".into()));
         }
+        // NOTE: do NOT require env.sh / env.fish here. This component no longer
+        // writes them — the persistent-env generator
+        // (bootstrap::env_setup::rccl_overlay_*_block) is the single source of
+        // truth for env vars and emits the RCCL overlay block inline in
+        // ~/.mlstack_env / activate-global.fish. Requiring the old component-
+        // written files would mark every newly-installed overlay Invalid and
+        // never report Valid.
         Ok(OverlayState::Valid {
             version_dir: active,
             sha: expected.to_string(),

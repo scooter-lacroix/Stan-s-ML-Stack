@@ -132,13 +132,17 @@ pub fn init_batch_logging(context: &str) -> Option<tracing_appender::non_blockin
                 .unwrap_or_else(|_| EnvFilter::new("rusty_stack=debug")),
         );
 
-    // Stderr layer — warnings and errors only (not stdout)
+    // Stderr layer — warnings and errors only (not stdout). Kept at `warn` (NOT
+    // `info`) deliberately: main.rs emits a per-line `tracing::info!` for every
+    // installer log line, so an `info` threshold floods stderr on JSON/CI runs
+    // and corrupts machine-readable output. The file layer already captures the
+    // full INFO+/DEBUG+ stream for live diagnostics.
     let stderr_layer = fmt::layer()
         .with_target(false)
         .with_writer(std::io::stderr)
         .with_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=info,warn")),
+                .unwrap_or_else(|_| EnvFilter::new("rusty_stack=warn")),
         );
 
     tracing_subscriber::registry()

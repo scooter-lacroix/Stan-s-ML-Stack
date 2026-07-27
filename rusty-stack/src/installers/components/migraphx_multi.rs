@@ -339,6 +339,53 @@ pub fn migraphx_driver_functional() -> bool {
     migraphx_driver_status().is_ok()
 }
 
+/// Run `migraphx-driver --version` and return the parsed semantic version, or
+/// `None` if the driver is missing/non-functional/has no parseable version.
+///
+/// This is the version-resolution counterpart to [`migraphx_driver_functional`]
+/// and the single owner of the `migraphx-driver --version` subprocess +
+/// semver parsing (used by `platform::registry::get_version`'s migraphx
+/// fallback). Keeping it here follows the module organization rule: the
+/// installers module owns migraphx verification, not `platform/`.
+pub fn migraphx_driver_version() -> Option<String> {
+    if !migraphx_driver_functional() {
+        return None;
+    }
+    let out = std::process::Command::new("/opt/rocm/bin/migraphx-driver")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    extract_driver_semver(&combined)
+}
+
+/// Extract the first `MAJOR.MINOR.PATCH` (with optional pre-release) from the
+/// driver's `--version` output. Mirrors `platform::registry::extract_semver`'s
+/// shape but lives with the migraphx owner module so the registry fallback has
+/// no inline subprocess.
+fn extract_driver_semver(s: &str) -> Option<String> {
+    for token in s.split_whitespace() {
+        let cleaned = token.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+        let mut parts = cleaned.split('.');
+        if let (Some(maj), Some(min), Some(pat)) = (parts.next(), parts.next(), parts.next()) {
+            if maj.chars().all(|c| c.is_ascii_digit())
+                && min.chars().all(|c| c.is_ascii_digit())
+                && pat.chars().all(|c| c.is_ascii_digit())
+            {
+                return Some(format!("{maj}.{min}.{pat}"));
+            }
+        }
+    }
+    None
+}
+
 /// Collect the `=> not found` shared libraries from `ldd migraphx-driver`.
 fn migraphx_missing_libs() -> Vec<String> {
     match std::process::Command::new("ldd")
