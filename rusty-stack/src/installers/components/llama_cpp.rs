@@ -974,11 +974,16 @@ impl LlamaCppInstaller {
         // Clear any stale clone/build from a prior failed run before re-cloning:
         // git refuses to clone into a non-empty dir, and a partial CMakeCache
         // would shadow the fresh -D flags. Idempotent re-runs need a clean slate.
+        //
+        // Escape the build_dir with the POSIX `'\''` sequence so a path
+        // containing a single quote (or other shell-special char) cannot break
+        // the `sh -c` script or create a command-injection surface.
+        let bd = build_dir.replace('\'', "'\\''");
         ShellCommand {
             program: "sh".to_string(),
             args: vec![
                 "-c".to_string(),
-                format!("rm -rf -- '{bd}' && mkdir -p '{bd}'", bd = build_dir),
+                format!("rm -rf -- '{bd}' && mkdir -p '{bd}'"),
             ],
             env: vec![],
             working_dir: None,
@@ -1494,23 +1499,39 @@ fn run_rocm_tool_with_env(
         .map(|p| p.join("lib"))
         .filter(|d| d.exists())
         .map(|d| {
-            format!(
-                "export LD_LIBRARY_PATH=\"{}:$LD_LIBRARY_PATH\"\n",
-                d.display()
-            )
+            // Single-quote-escape the lib dir: it derives from `home` and is
+            // interpolated into a `bash -c` script, so a home dir containing a
+            // `'` (or other shell-special char) would break the command. Same
+            // escaping strategy already used for args below.
+            let escaped = shell_single_quote(&d.display().to_string());
+            format!("export LD_LIBRARY_PATH={}:$LD_LIBRARY_PATH\n", escaped)
         })
         .unwrap_or_default();
+    // Single-quote every home-derived path interpolated into the bash script
+    // (env_file, program) — they all come from `home`, so a home containing a
+    // `'` would otherwise break the `source`/`exec` and produce a spurious
+    // verification failure (and a static-analysis command-injection flag).
     let mut script = format!(
-        "source '{}' 2>/dev/null\n{}exec '{}'",
-        env_file, lib_export, program
+        "source {} 2>/dev/null\n{}exec {}",
+        shell_single_quote(&env_file),
+        lib_export,
+        shell_single_quote(program)
     );
     for a in args {
-        script.push_str(&format!(" '{}'", a.replace('\'', "'\\''")));
+        script.push_str(&format!(" {}", shell_single_quote(a)));
     }
     std::process::Command::new("bash")
         .arg("-c")
         .arg(script)
         .output()
+}
+
+/// Wrap `s` in POSIX single quotes, escaping any embedded single quote via the
+/// standard `'\''` sequence. Used for values interpolated into `bash -c`
+/// scripts so a value containing shell-special characters (notably `'` in a
+/// home-directory path) cannot break or inject into the script.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 pub fn verify_installed_binary(home: &str, fork_dir: &str) -> PostInstallVerification {

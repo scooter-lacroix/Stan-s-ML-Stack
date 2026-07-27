@@ -1976,93 +1976,6 @@ fn render_onnx_tab(frame: &mut Frame, area: Rect, results: &BenchmarkResults) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn unique_test_home(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("rusty-stack-{name}-{}", std::process::id()))
-    }
-
-    #[test]
-    fn load_benchmark_results_reads_native_benchmark_filenames() {
-        let _global_env = crate::test_support::lock_env();
-        let _guard = ENV_LOCK.lock().unwrap();
-        let old_home = std::env::var("HOME").ok();
-        let old_tmpdir = std::env::var("TMPDIR").ok();
-        let home = unique_test_home("native-benchmark-filenames");
-        let _ = fs::remove_dir_all(&home);
-        let log_dir = home.join(".rusty-stack").join("logs");
-        let tmp_dir = home.join("tmp");
-        fs::create_dir_all(&log_dir).unwrap();
-        fs::create_dir_all(&tmp_dir).unwrap();
-        std::env::set_var("HOME", &home);
-        std::env::set_var("TMPDIR", &tmp_dir);
-
-        let gpu_log = log_dir.join("gpu-capability_benchmarks_1.json");
-        let mem_log = log_dir.join("memory-bandwidth_benchmarks_2.json");
-        fs::write(
-            &gpu_log,
-            r#"{
-              "name": "gpu-capability",
-              "success": true,
-              "execution_time_ms": 1,
-              "results": {
-                "gpus": [{"index": 0, "gpu_model": "AMD Radeon RX 7900 XTX", "vram_gb": 24.0}]
-              },
-              "errors": []
-            }"#,
-        )
-        .unwrap();
-        fs::write(
-            &mem_log,
-            r#"{
-              "name": "memory-bandwidth",
-              "success": true,
-              "execution_time_ms": 1,
-              "results": {
-                "hbm_peak_gb_s": 123.0,
-                "system_peak_gb_s": 45.0,
-                "hbm_ratio": 2.7,
-                "hbm_samples_gbps": [100.0, 123.0],
-                "system_samples_gbps": [40.0, 45.0]
-              },
-              "errors": []
-            }"#,
-        )
-        .unwrap();
-        for path in [&gpu_log, &mem_log] {
-            let _ = std::process::Command::new("touch")
-                .args(["-d", "2100-01-01"])
-                .arg(path)
-                .status();
-        }
-
-        let results = load_benchmark_results();
-
-        if let Some(home) = old_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        if let Some(tmpdir) = old_tmpdir {
-            std::env::set_var("TMPDIR", tmpdir);
-        } else {
-            std::env::remove_var("TMPDIR");
-        }
-        let _ = fs::remove_dir_all(&home);
-
-        assert_eq!(results.gpus[0].model, "AMD Radeon RX 7900 XTX");
-        assert_eq!(
-            results.memory_bandwidth.as_ref().unwrap().hbm_peak_gb_s,
-            123.0
-        );
-    }
-}
-
 fn series_dataset<'a>(name: &'a str, data: &'a [(f64, f64)], color: Color) -> Dataset<'a> {
     Dataset::default()
         .name(name)
@@ -2775,4 +2688,125 @@ fn build_sample_rows(results: &BenchmarkResults) -> Vec<serde_json::Value> {
     }
 
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn unique_test_home(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("rusty-stack-{name}-{}", std::process::id()))
+    }
+
+    /// RAII guard that restores `HOME` and `TMPDIR` and removes a temporary home
+    /// directory on drop — including during unwinding (panic mid-fixture-setup).
+    ///
+    /// Previously the test restored these env vars only on the happy path: a panic
+    /// during fixture setup or `load_benchmark_results()` left `HOME`/`TMPDIR`
+    /// redirected for subsequent tests in the same process. The guard captures the
+    /// originals at construction and restores them (or unsets them) on drop.
+    struct ScopedEnv {
+        home: PathBuf,
+        old_home: Option<String>,
+        old_tmpdir: Option<String>,
+    }
+
+    impl ScopedEnv {
+        /// Redirect `HOME` -> `home` and `TMPDIR` -> `home/tmp`, capturing the
+        /// originals for restoration on drop. Caller is responsible for creating
+        /// the directories.
+        fn new(home: PathBuf) -> Self {
+            let old_home = std::env::var("HOME").ok();
+            let old_tmpdir = std::env::var("TMPDIR").ok();
+            std::env::set_var("HOME", &home);
+            let tmp = home.join("tmp");
+            let _ = fs::create_dir_all(&tmp);
+            std::env::set_var("TMPDIR", &tmp);
+            ScopedEnv {
+                home,
+                old_home,
+                old_tmpdir,
+            }
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            match &self.old_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.old_tmpdir {
+                Some(v) => std::env::set_var("TMPDIR", v),
+                None => std::env::remove_var("TMPDIR"),
+            }
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+
+    #[test]
+    fn load_benchmark_results_reads_native_benchmark_filenames() {
+        let _global_env = crate::test_support::lock_env();
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = unique_test_home("native-benchmark-filenames");
+        let _ = fs::remove_dir_all(&home);
+        let log_dir = home.join(".rusty-stack").join("logs");
+        fs::create_dir_all(&log_dir).unwrap();
+        // ScopedEnv redirects HOME/TMPDIR and restores them (and removes the temp
+        // home) on drop — including on panic during fixture setup or loading, so
+        // a panic here can no longer leak a redirected HOME/TMPDIR to other tests.
+        let _env = ScopedEnv::new(home);
+
+        let gpu_log = log_dir.join("gpu-capability_benchmarks_1.json");
+        let mem_log = log_dir.join("memory-bandwidth_benchmarks_2.json");
+        fs::write(
+            &gpu_log,
+            r#"{
+              "name": "gpu-capability",
+              "success": true,
+              "execution_time_ms": 1,
+              "results": {
+                "gpus": [{"index": 0, "gpu_model": "AMD Radeon RX 7900 XTX", "vram_gb": 24.0}]
+              },
+              "errors": []
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            &mem_log,
+            r#"{
+              "name": "memory-bandwidth",
+              "success": true,
+              "execution_time_ms": 1,
+              "results": {
+                "hbm_peak_gb_s": 123.0,
+                "system_peak_gb_s": 45.0,
+                "hbm_ratio": 2.7,
+                "hbm_samples_gbps": [100.0, 123.0],
+                "system_samples_gbps": [40.0, 45.0]
+              },
+              "errors": []
+            }"#,
+        )
+        .unwrap();
+        for path in [&gpu_log, &mem_log] {
+            let _ = std::process::Command::new("touch")
+                .args(["-d", "2100-01-01"])
+                .arg(path)
+                .status();
+        }
+
+        let results = load_benchmark_results();
+
+        assert_eq!(results.gpus[0].model, "AMD Radeon RX 7900 XTX");
+        assert_eq!(
+            results.memory_bandwidth.as_ref().unwrap().hbm_peak_gb_s,
+            123.0
+        );
+        // `_env` drops here: HOME/TMPDIR restored, temp home removed — even if an
+        // assertion above had panicked.
+    }
 }

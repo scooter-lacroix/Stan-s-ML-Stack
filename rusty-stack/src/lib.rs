@@ -125,7 +125,19 @@ pub fn run_tui() -> anyhow::Result<()> {
     // Hide the cursor for the duration of the TUI — it is never positioned
     // (no text-input cursor), so a visible cursor floats to the last-redrawn
     // cell each frame and shows up as a stray character. Restored on exit.
-    terminal.hide_cursor()?;
+    //
+    // If this fails, clean up the terminal state we already enabled (raw mode +
+    // alternate screen) before propagating the error. The global panic hook
+    // (above) only fires on unwinding, not on an early `?` return, so without
+    // this cleanup a hide_cursor failure would leave the user's terminal in raw
+    // mode inside the alternate screen — visibly broken.
+    if let Err(e) = terminal.hide_cursor() {
+        let _ = disable_raw_mode();
+        if use_alt_screen {
+            let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+        }
+        return Err(e.into());
+    }
 
     let scripts_dir = detect_scripts_dir();
     set_repo_root(&scripts_dir);

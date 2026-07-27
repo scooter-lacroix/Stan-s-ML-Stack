@@ -595,21 +595,33 @@ impl VllmInstaller {
 
     /// Construct the source rebuild command for vLLM.
     ///
-    /// Used as a fallback when wheel install fails.
-    pub fn build_source_rebuild_command(&self) -> ShellCommand {
-        let args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-            "--break-system-packages".to_string(),
+    /// Used as a fallback when wheel install fails. Accepts the
+    /// policy-resolved `version` (the same value `build_source_install_command`
+    /// pins) so the fallback honors the `resolve_version_with_policy`
+    /// version-lag / min-age supply-chain gate instead of silently installing
+    /// the newest bare `vllm` from source. `VLLM_VERSION_OVERRIDE` is set for
+    /// the same reason as the primary source-install path: it suppresses the
+    /// `+rocmNNN` build label that mismatches the sdist filename and forces pip
+    /// to cascade through every release.
+    pub fn build_source_rebuild_command(&self, version: &str) -> ShellCommand {
+        let use_break = self.config.method == InstallMethod::Global
+            || self.config.method == InstallMethod::Auto;
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
+        if use_break {
+            args.push("--break-system-packages".to_string());
+        }
+        // `--no-binary vllm` = build from sdist (NOT the prebuilt CUDA wheel);
+        // the pinned `vllm==<ver>` is the requirement pip installs.
+        let req = format!("vllm=={version}");
+        args.extend([
             "--no-cache-dir".to_string(),
             "--force-reinstall".to_string(),
             "--no-deps".to_string(),
             "--no-build-isolation".to_string(),
             "--no-binary".to_string(),
             "vllm".to_string(),
-            "vllm".to_string(),
-        ];
+            req,
+        ]);
 
         ShellCommand {
             program: self.config.python_bin.clone(),
@@ -618,6 +630,7 @@ impl VllmInstaller {
                 ("VLLM_TARGET_DEVICE".to_string(), "rocm".to_string()),
                 ("VLLM_USE_ROCM".to_string(), "1".to_string()),
                 ("USE_ROCM".to_string(), "1".to_string()),
+                ("VLLM_VERSION_OVERRIDE".to_string(), version.to_string()),
             ],
         }
     }
@@ -794,9 +807,12 @@ mod tests {
     #[test]
     fn test_source_rebuild_command() {
         let installer = VllmInstaller::with_defaults();
-        let cmd = installer.build_source_rebuild_command();
+        let cmd = installer.build_source_rebuild_command("0.25.1");
         assert!(cmd.args.contains(&"--no-build-isolation".to_string()));
         assert!(cmd.args.contains(&"--no-binary".to_string()));
+        // The fallback must pin the resolved version (supply-chain gate honored),
+        // not install bare `vllm`.
+        assert!(cmd.args.contains(&"vllm==0.25.1".to_string()));
         assert!(cmd
             .env
             .iter()
@@ -805,6 +821,12 @@ mod tests {
             .env
             .iter()
             .any(|(k, v)| k == "VLLM_USE_ROCM" && v == "1"));
+        // VLLM_VERSION_OVERRIDE must mirror the pinned version so pip does not
+        // cascade through releases (same contract as the primary source install).
+        assert!(cmd
+            .env
+            .iter()
+            .any(|(k, v)| k == "VLLM_VERSION_OVERRIDE" && v == "0.25.1"));
     }
 
     #[test]

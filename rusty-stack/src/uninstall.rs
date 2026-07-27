@@ -353,6 +353,12 @@ fn matches_rocm_allowlist(pkg: &str, allowlist: &[&str]) -> bool {
 /// Compute the reverse dependency tree for `package` via `pactree -r`. Returns
 /// all packages that depend on `package` (directly or transitively). Empty on
 /// failure (pactree missing, or package not installed).
+///
+/// `--unique` (`-u`) is required: `pactree -r` defaults to a *tree* view with
+/// box-drawing prefixes and indentation, so a naive line-by-line parse would
+/// capture the structural glyphs / duplicated entries and the allowlist would
+/// never see bare package names. `--unique` implies `--linear` (one package per
+/// line, deduplicated) which is exactly the format the caller filters.
 fn reverse_tree_pacman(package: &str) -> Vec<String> {
     if !command_on_path("pactree") {
         // pactree is part of pacman-contrib — assumed present on any ROCm
@@ -364,7 +370,7 @@ fn reverse_tree_pacman(package: &str) -> Vec<String> {
     }
 
     Command::new("pactree")
-        .args(["-r", package])
+        .args(["-r", "-u", package])
         .output()
         .ok()
         .and_then(|o| {

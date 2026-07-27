@@ -978,13 +978,37 @@ mod tests {
         }
     }
 
+    /// Source-policy regression guard: the pinned FastVideo fork carries
+    /// unrelated upstream CUDA workflows, and the source policy must accept the
+    /// pinned fork while still rejecting stale/untracked source.
+    ///
+    /// Historically this test was gated on a hardcoded personal path and silently
+    /// `return`ed when absent — so it never ran in CI or for other contributors.
+    /// It now reads the FastVideo fork location from `FASTVIDEO_POLICY_TEST_REPO`
+    /// and is **skipped** (via an explicit eprintln + return, since cargo has no
+    /// first-class runtime skip without `#[ignore]`) when that var is unset. Set
+    /// the var in CI (or locally) to exercise the policy for real.
     #[test]
     fn source_policy_accepts_pinned_fork_with_unrelated_cuda_workflows() {
         use std::process::Command;
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let repo = Path::new("/home/scooter/Documents/Product/FastVideo_ROCm_repair");
+        let repo_str = match std::env::var("FASTVIDEO_POLICY_TEST_REPO") {
+            Ok(s) if !s.trim().is_empty() => s,
+            _ => {
+                eprintln!(
+                    "skip: FASTVIDEO_POLICY_TEST_REPO unset; set it to a FastVideo fork checkout \
+                     to exercise source_policy_accepts_pinned_fork_with_unrelated_cuda_workflows"
+                );
+                return;
+            }
+        };
+        let repo = Path::new(&repo_str);
         if !repo.is_dir() {
+            eprintln!(
+                "skip: FASTVIDEO_POLICY_TEST_REPO={} is not a directory",
+                repo.display()
+            );
             return;
         }
 
