@@ -1,0 +1,4 @@
+[submodule "Fork/llama.cpp-turboquant-hip"]
+	path = Fork/llama.cpp-turboquant-hip
+	url = https://github.com/scooter-lacroix/llama.cpp-turboquant-hip.git
+	branch = feature/upstream-sync-2026-05
