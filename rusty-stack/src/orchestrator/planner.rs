@@ -386,8 +386,14 @@ impl UpdatePlanner {
                         || i.classification == UpdateClassification::Safe
                 });
             }
-            // Auto-select retained items
+            // Auto-select retained items. Set BOTH the outer `item.selected`
+            // (read by PlannerItemOutput::from and PlanSummary::from_items, and
+            // used by the apply path) AND `item.plan_item.selected` (the
+            // serialized plan field). Setting only plan_item.selected left
+            // experimental items retained+displayed but silently unselected for
+            // apply, contradicting --include-experimental.
             for item in &mut items {
+                item.selected = true;
                 item.plan_item.selected = true;
             }
         }
