@@ -358,18 +358,25 @@ mod dispatch_tests {
 
     #[test]
     fn test_flash_attention_dependencies() {
-        for id in &["flash-attn-triton", "flash-attn-ck"] {
+        // All three ids share pytorch + rocm. The legacy `flash-attn` id is
+        // normalized to `flash-attn-triton` by the executor (and is the default
+        // survivor of the `flash-attn-backend` exclusive group), so it MUST
+        // carry the Triton closure — including aiter. Cover it explicitly so a
+        // regression in the canonical legacy path cannot pass this suite.
+        for id in &["flash-attn", "flash-attn-triton", "flash-attn-ck"] {
             let deps = get_dependencies(id);
             assert!(deps.contains(&"pytorch"), "{id} must depend on pytorch");
             assert!(deps.contains(&"rocm"), "{id} must depend on rocm");
         }
-        // FA-Triton's Triton backend imports aiter.ops.triton at runtime, so it
-        // must pull aiter; CK uses composable_kernel and must not.
-        let triton_deps = get_dependencies("flash-attn-triton");
-        assert!(
-            triton_deps.contains(&"aiter"),
-            "FA-Triton must depend on aiter"
-        );
+        // FA-Triton (and the legacy id normalized to it) imports aiter.ops.triton
+        // at runtime, so both must pull aiter; CK uses composable_kernel and must not.
+        for id in &["flash-attn", "flash-attn-triton"] {
+            let deps = get_dependencies(id);
+            assert!(
+                deps.contains(&"aiter"),
+                "{id} (Triton closure) must depend on aiter"
+            );
+        }
         let ck_deps = get_dependencies("flash-attn-ck");
         assert!(
             !ck_deps.contains(&"aiter"),
