@@ -27,6 +27,44 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+// Post-install HONESTY GUARD helpers.
+//
+// The apply path used to report success purely from the installer's exit code,
+// so a sealed-core skip, a no-op `pip install` (already-satisfied, no `--upgrade`),
+// or an unchanged `git describe` all reported false "Succeeded" because they
+// exit 0. The Ok(()) arm now re-detects the installed version and verifies it
+// reached the target — but only when both sides are concrete versions.
+
+/// Targets that can't be version-verified (no concrete version). Trust the install.
+fn is_opaque_target(proposed: &str) -> bool {
+    let p = proposed.trim();
+    p.is_empty() || p == "latest" || p == "installed"
+}
+
+/// Detected values that aren't a real version (path/command components report
+/// "installed"/"unknown"). Can't compare against a target — trust the install.
+fn is_real_version(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && s != "installed" && s != "unknown" && s != "not installed"
+}
+
+/// Does the re-detected `installed` version indicate the `target` was reached?
+/// Exact match, or a build-metadata suffix (detected "2.13.0+rocm7.2" satisfies
+/// target "2.13.0").
+fn version_reached(installed: &str, target: &str) -> bool {
+    let inst = installed.trim();
+    let tgt = target.trim();
+    if inst == tgt {
+        return true;
+    }
+    // build-metadata suffix: "2.13.0+rocm7.2" starts with "2.13.0" then "+"
+    inst.starts_with(tgt)
+        && inst
+            .get(tgt.len()..)
+            .map(|s| s.starts_with('+'))
+            .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // ApplyStatus
 // ---------------------------------------------------------------------------
@@ -156,7 +194,14 @@ impl ApplyItem {
 ///
 /// Implementations can invoke shell scripts, Rust-native installers,
 /// or be mocked for testing.
-pub trait ApplyExecutor: Send + Sync {
+///
+/// No `Send + Sync` bound: [`ApplyEngine::apply`] runs components **synchronously
+/// on the calling thread** (a sequential `for` loop, no spawn), and the engine is
+/// never moved across threads. Dropping the auto-trait bound lets an executor
+/// hold non-`Send` state that lives for the whole apply — e.g. the inline
+/// ratatui `Terminal` for the animated apply panel, which must be drawn from the
+/// same thread that drives the event loop.
+pub trait ApplyExecutor {
     /// Apply a single component update.
     ///
     /// Returns `Ok(())` on success, `Err` with a descriptive message on failure.
@@ -186,6 +231,11 @@ impl ApplyExecutor for NoOpExecutor {
 pub struct ApplyOptions {
     /// Component IDs that should be forced to fail (for testing).
     pub force_fail: HashSet<String>,
+    /// Post-install HONESTY GUARD: re-detect the installed version and fail items
+    /// whose version didn't advance to the target. Default OFF (mock-executor
+    /// tests don't actually install); the REAL apply path (`main.rs apply_plan`)
+    /// explicitly sets this `true`.
+    pub verify_post_install_version: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -372,14 +422,54 @@ impl ApplyEngine {
 
             match status {
                 Ok(()) => {
-                    let mut apply_item = ApplyItem::new(
-                        &item.plan_item.component_id,
-                        &item.plan_item.current_version,
-                        &item.plan_item.proposed_version,
-                        ApplyStatus::Success,
-                    );
-                    apply_item.dependencies = item.plan_item.dependencies.clone();
-                    summary.success.push(apply_item);
+                    // HONESTY GUARD: re-detect the installed version and verify it
+                    // reached the target. Only when BOTH the target is a concrete
+                    // version AND the detected value is a real version — otherwise
+                    // (opaque target like "latest", or non-version detection like
+                    // "installed") trust the install. This is what stops a sealed-
+                    // core skip / no-op pip / unchanged git-describe from reporting
+                    // false "Succeeded".
+                    let proposed = item.plan_item.proposed_version.as_str();
+                    let verify = options.verify_post_install_version;
+                    let detected = if !verify || is_opaque_target(proposed) {
+                        String::new()
+                    } else {
+                        crate::platform::registry::get_version(&item.plan_item.component_id)
+                    };
+                    let advanced = !verify
+                        || is_opaque_target(proposed)
+                        || !is_real_version(&detected)
+                        || version_reached(&detected, proposed);
+                    if advanced {
+                        let mut apply_item = ApplyItem::new(
+                            &item.plan_item.component_id,
+                            &item.plan_item.current_version,
+                            &item.plan_item.proposed_version,
+                            ApplyStatus::Success,
+                        );
+                        apply_item.dependencies = item.plan_item.dependencies.clone();
+                        summary.success.push(apply_item);
+                    } else {
+                        let mut apply_item = ApplyItem::new(
+                            &item.plan_item.component_id,
+                            &item.plan_item.current_version,
+                            &item.plan_item.proposed_version,
+                            ApplyStatus::Failed,
+                        );
+                        apply_item.error_message = format!(
+                            "install reported success but the version did not advance to \
+                             '{proposed}' (still '{detected}'). The component may be sealed \
+                             (set MLSTACK_UNSEAL_CORE=1 to override) or the installer did not \
+                             pin to the target version."
+                        );
+                        apply_item.dependencies = item.plan_item.dependencies.clone();
+                        summary.failed.push(apply_item);
+                        failed_ids.insert(item.plan_item.component_id.clone());
+                        failure_reasons.insert(
+                            item.plan_item.component_id.clone(),
+                            "install did not advance the version".to_string(),
+                        );
+                    }
                 }
                 Err(err) => {
                     let mut apply_item = ApplyItem::new(
@@ -495,6 +585,31 @@ mod tests {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn honesty_guard_helpers_classify_versions() {
+        // Opaque targets can't be verified — trust the install.
+        assert!(is_opaque_target(""));
+        assert!(is_opaque_target("latest"));
+        assert!(is_opaque_target("installed"));
+        assert!(!is_opaque_target("2.13.0"));
+        assert!(!is_opaque_target("25.1"));
+
+        // Real versions vs non-version detection strings.
+        assert!(is_real_version("2.13.0+rocm7.2"));
+        assert!(is_real_version("core_v0.15.0rc7"));
+        assert!(!is_real_version(""));
+        assert!(!is_real_version("installed"));
+        assert!(!is_real_version("unknown"));
+        assert!(!is_real_version("not installed"));
+
+        // version_reached: exact + build-metadata suffix.
+        assert!(version_reached("2.13.0", "2.13.0"));
+        assert!(version_reached("2.13.0+rocm7.2", "2.13.0"));
+        // The false-success case: old version didn't advance.
+        assert!(!version_reached("2.12.1+rocm7.2", "2.13.0"));
+        assert!(!version_reached("core_v0.15.0rc7", "25.1"));
+    }
 
     fn make_plan_item(id: &str, current: &str, proposed: &str, deps: Vec<&str>) -> PlanItem {
         PlanItem::new(PlanItemInput {
@@ -634,6 +749,7 @@ mod tests {
         let engine = ApplyEngine::new_noop();
         let options = ApplyOptions {
             force_fail: HashSet::from(["b".to_string()]),
+            ..Default::default()
         };
         let summary = engine.apply(&items, &options);
 
@@ -665,6 +781,7 @@ mod tests {
         let engine = ApplyEngine::new_noop();
         let options = ApplyOptions {
             force_fail: HashSet::from(["b".to_string()]),
+            ..Default::default()
         };
         let summary = engine.apply(&items, &options);
 
@@ -781,6 +898,7 @@ mod tests {
         let engine = ApplyEngine::new_noop();
         let options = ApplyOptions {
             force_fail: HashSet::from(["c".to_string()]),
+            ..Default::default()
         };
         let summary = engine.apply(&items, &options);
 
@@ -885,6 +1003,7 @@ mod tests {
         let engine = ApplyEngine::new_noop();
         let options = ApplyOptions {
             force_fail: HashSet::from(["a".to_string()]),
+            ..Default::default()
         };
         let summary = engine.apply(&items, &options);
 
@@ -921,6 +1040,7 @@ mod tests {
         let engine = ApplyEngine::new_noop();
         let options = ApplyOptions {
             force_fail: HashSet::from(["a".to_string()]),
+            ..Default::default()
         };
         let summary = engine.apply(&items, &options);
 
@@ -935,10 +1055,14 @@ mod tests {
 
     #[test]
     fn test_apply_all_succeed() {
+        // Fake component ids: detection returns "unknown" (not real components),
+        // so the post-install honesty guard trusts the NoOp install's success.
+        // Real ids (rocm/pytorch) would be re-detected at their ACTUAL installed
+        // version and correctly fail the version-advance check.
         let items = vec![
-            make_planner_item("rocm", "7.2.0", "7.2.1", vec![], true),
-            make_planner_item("pytorch", "2.4.0", "2.4.1", vec!["rocm"], true),
-            make_planner_item("triton", "3.0.0", "3.0.1", vec!["pytorch"], true),
+            make_planner_item("comp-a", "7.2.0", "7.2.1", vec![], true),
+            make_planner_item("comp-b", "2.4.0", "2.4.1", vec!["comp-a"], true),
+            make_planner_item("comp-c", "3.0.0", "3.0.1", vec!["comp-b"], true),
         ];
 
         let engine = ApplyEngine::new_noop();

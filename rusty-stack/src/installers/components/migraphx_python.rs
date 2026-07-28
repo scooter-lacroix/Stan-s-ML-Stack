@@ -102,6 +102,46 @@ impl Default for MigraphxPythonConfig {
 /// Package name for MIGraphX Python bindings.
 pub const PACKAGE_NAME: &str = "migraphx";
 
+/// Env var that opts into building the MIGraphX Python bindings **from source**
+/// (AMDMIGraphX) — the only path on Arch/CachyOS, where no pip/system wheel
+/// exists. Off by default (the C++ core + onnxruntime MIGraphX EP cover ONNX
+/// inference). Values: `1`/`true`/`yes`/`on`.
+pub const MIGRAPHX_BUILD_PYTHON_ENV: &str = "MLSTACK_MIGRAPHX_BUILD_PYTHON";
+
+/// Optional env var overriding the AMDMIGraphX branch to build. The standalone
+/// python bindings must match the installed C++ core, so the default tracks the
+/// Arch `migraphx` package line.
+pub const MIGRAPHX_SOURCE_BRANCH_ENV: &str = "MLSTACK_MIGRAPHX_SOURCE_BRANCH";
+
+/// Default AMDMIGraphX branch (matches the Arch `migraphx 7.2.3` package).
+pub const AMDMIGRAPHX_DEFAULT_BRANCH: &str = "rocm-7.2.3";
+
+/// Upstream source for the MIGraphX Python bindings.
+pub const AMDMIGRAPHX_REPO: &str = "https://github.com/ROCm/AMDMIGraphX";
+
+/// Whether the user opted into building the Python bindings from source.
+pub fn build_python_source_requested() -> bool {
+    let v = std::env::var(MIGRAPHX_BUILD_PYTHON_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(v.as_str(), "1" | "true" | "yes" | "on")
+}
+
+/// The AMDMIGraphX branch to build: the `MLSTACK_MIGRAPHX_SOURCE_BRANCH` env
+/// override if set, else [`AMDMIGRAPHX_DEFAULT_BRANCH`].
+pub fn source_branch() -> String {
+    let v = std::env::var(MIGRAPHX_SOURCE_BRANCH_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if v.is_empty() {
+        AMDMIGRAPHX_DEFAULT_BRANCH.to_string()
+    } else {
+        v
+    }
+}
+
 /// The MIGraphX Python installer.
 pub struct MigraphxPythonInstaller {
     config: MigraphxPythonConfig,
@@ -165,6 +205,93 @@ impl MigraphxPythonInstaller {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Opt-in source build (Arch/CachyOS — no pip/system wheel)
+    // -----------------------------------------------------------------------
+
+    /// Ordered shell commands to build the MIGraphX Python bindings **from
+    /// source** (AMDMIGraphX) against the installed `/opt/rocm` migraphx core.
+    ///
+    /// This is the only path to the standalone `migraphx` python API
+    /// (`migraphx.parse_onnx`) on Arch/CachyOS, where no pip/system wheel
+    /// exists. Opt-in only via [`MIGRAPHX_BUILD_PYTHON_ENV`] — off by default,
+    /// because the C++ core + onnxruntime `MIGraphXExecutionProvider` already
+    /// cover ONNX inference. Heavy build (~20-40 min).
+    ///
+    /// - `workdir`     — scratch dir for the clone + build (e.g. `/tmp/...`)
+    /// - `rocm_prefix` — `/opt/rocm`
+    /// - `gpu_arch`    — `gfx1100` (or detected `GPU_ARCH`)
+    /// - `branch`      — matching ROCm branch, e.g. `rocm-7.2.3`
+    pub fn build_source_commands(
+        &self,
+        workdir: &str,
+        rocm_prefix: &str,
+        gpu_arch: &str,
+        branch: &str,
+    ) -> Vec<ShellCommand> {
+        let src = format!("{workdir}/AMDMIGraphX");
+        let build = format!("{src}/build");
+        let clang = format!("{rocm_prefix}/llvm/bin/clang");
+        let clangxx = format!("{rocm_prefix}/llvm/bin/clang++");
+        vec![
+            // 1. Shallow clone of the matching ROCm branch.
+            ShellCommand {
+                program: "git".to_string(),
+                args: vec![
+                    "clone".to_string(),
+                    "--depth".to_string(),
+                    "1".to_string(),
+                    "--single-branch".to_string(),
+                    "--branch".to_string(),
+                    branch.to_string(),
+                    AMDMIGRAPHX_REPO.to_string(),
+                    src.clone(),
+                ],
+                env: vec![],
+            },
+            // 2. Configure: python on, against /opt/rocm, ROCm clang, GPU arch.
+            ShellCommand {
+                program: "cmake".to_string(),
+                args: vec![
+                    "-S".to_string(),
+                    src.clone(),
+                    "-B".to_string(),
+                    build.clone(),
+                    "-DMIGRAPHX_ENABLE_PYTHON=On".to_string(),
+                    format!("-DCMAKE_PREFIX_PATH={rocm_prefix}"),
+                    format!("-DGPU_TARGETS={gpu_arch}"),
+                    format!("-DCMAKE_C_COMPILER={clang}"),
+                    format!("-DCMAKE_CXX_COMPILER={clangxx}"),
+                    "-DCMAKE_BUILD_TYPE=Release".to_string(),
+                ],
+                env: vec![],
+            },
+            // 3. Build the python extension target.
+            ShellCommand {
+                program: "cmake".to_string(),
+                args: vec![
+                    "--build".to_string(),
+                    build,
+                    "--target".to_string(),
+                    "migraphx_py".to_string(),
+                    "-j".to_string(),
+                ],
+                env: vec![],
+            },
+            // 4. Install the built python package into the active interpreter.
+            ShellCommand {
+                program: self.config.python_bin.clone(),
+                args: vec![
+                    "-m".to_string(),
+                    "pip".to_string(),
+                    "install".to_string(),
+                    format!("{src}/python"),
+                ],
+                env: vec![],
+            },
+        ]
+    }
+
     /// Construct the command to check if MIGraphX system package is installed.
     pub fn build_migraphx_check_command(&self) -> ShellCommand {
         ShellCommand {
@@ -184,60 +311,6 @@ impl MigraphxPythonInstaller {
             ],
             env: vec![],
         }
-    }
-
-    /// Construct the ROCm environment setup for the install.
-    ///
-    /// Stage 1: never trust inherited `HIP_VISIBLE_DEVICES` verbatim — the
-    /// parent env may carry the iGPU index (the root cause of the LeIndex
-    /// ONNX/MIGraphX worker failure). Re-derive the dGPU list from the
-    /// canonical discrete detector; only honor an inherited value when it is a
-    /// strict subset of the detected dGPUs (preserves intentional narrowing).
-    ///
-    /// A visibility mask is emitted ONLY when at least one discrete GPU is
-    /// confirmed. When no dGPU is detected (iGPU-only / detection failure) the
-    /// `HIP_VISIBLE_DEVICES`/`ROCR_VISIBLE_DEVICES` keys are left unset so the
-    /// process inherits the caller's environment — never leaking a default
-    /// `"0"` (which would make the iGPU the only visible device).
-    pub fn build_rocm_env(&self) -> Vec<(String, String)> {
-        let detected: Vec<String> = crate::installer::detect_discrete_gpus();
-        let detected_set: std::collections::HashSet<&str> =
-            detected.iter().map(|s| s.as_str()).collect();
-
-        let gpu_visible = std::env::var("HIP_VISIBLE_DEVICES")
-            .or_else(|_| std::env::var("CUDA_VISIBLE_DEVICES"))
-            .ok()
-            .and_then(|v| {
-                let inherited: Vec<&str> = v
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                let all_subset = !inherited.is_empty()
-                    && inherited.iter().all(|idx| detected_set.contains(*idx));
-                if all_subset {
-                    Some(inherited.join(","))
-                } else {
-                    None
-                }
-            })
-            .or_else(|| {
-                if detected.is_empty() {
-                    None
-                } else {
-                    Some(detected.join(","))
-                }
-            });
-
-        let mut env = vec![
-            ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
-            ("AMD_LOG_LEVEL".to_string(), "0".to_string()),
-        ];
-        if let Some(visible) = gpu_visible {
-            env.push(("HIP_VISIBLE_DEVICES".to_string(), visible.clone()));
-            env.push(("ROCR_VISIBLE_DEVICES".to_string(), visible));
-        }
-        env
     }
 
     /// Get the package name.
@@ -381,16 +454,6 @@ mod tests {
         assert!(cmd.args.iter().any(|a| a.contains("import migraphx")));
     }
 
-    #[test]
-    fn test_rocm_env() {
-        let installer = MigraphxPythonInstaller::with_defaults();
-        let env = installer.build_rocm_env();
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, v)| k == "AMD_LOG_LEVEL" && v == "0"));
-    }
-
     // --- Arch-specific availability tests ---
 
     #[test]
@@ -496,5 +559,76 @@ mod tests {
             msg.contains("Docker") || msg.contains("source"),
             "Message should suggest alternatives: {msg}"
         );
+    }
+
+    // --- Opt-in source build ---
+
+    #[test]
+    fn test_build_python_source_requested_env_gated() {
+        let _env = crate::test_support::lock_env();
+        std::env::remove_var(MIGRAPHX_BUILD_PYTHON_ENV);
+        assert!(!build_python_source_requested(), "default must be OFF");
+        for v in ["1", "true", "TRUE", "yes", "on"] {
+            std::env::set_var(MIGRAPHX_BUILD_PYTHON_ENV, v);
+            assert!(build_python_source_requested(), "should be ON for {v:?}");
+        }
+        std::env::set_var(MIGRAPHX_BUILD_PYTHON_ENV, "0");
+        assert!(!build_python_source_requested());
+    }
+
+    #[test]
+    fn test_source_branch_default_and_override() {
+        let _env = crate::test_support::lock_env();
+        std::env::remove_var(MIGRAPHX_SOURCE_BRANCH_ENV);
+        assert_eq!(source_branch(), AMDMIGRAPHX_DEFAULT_BRANCH);
+        std::env::set_var(MIGRAPHX_SOURCE_BRANCH_ENV, "rocm-7.2.4");
+        assert_eq!(source_branch(), "rocm-7.2.4");
+    }
+
+    #[test]
+    fn test_build_source_commands_sequence() {
+        let inst = MigraphxPythonInstaller::new(MigraphxPythonConfig {
+            python_bin: "/venv/bin/python".to_string(),
+            ..Default::default()
+        });
+        let cmds = inst.build_source_commands("/tmp/wd", "/opt/rocm", "gfx1100", "rocm-7.2.3");
+        assert_eq!(
+            cmds.len(),
+            4,
+            "expected: clone, configure, build, pip install"
+        );
+
+        // 1. shallow clone of the matching ROCm branch
+        assert_eq!(cmds[0].program, "git");
+        assert!(cmds[0].args.contains(&"clone".to_string()));
+        assert!(cmds[0].args.contains(&"--branch".to_string()));
+        assert!(cmds[0].args.contains(&"rocm-7.2.3".to_string()));
+        assert!(cmds[0].args.contains(&AMDMIGRAPHX_REPO.to_string()));
+
+        // 2. configure: python on, ROCm clang, GPU arch, /opt/rocm prefix
+        assert_eq!(cmds[1].program, "cmake");
+        assert!(cmds[1]
+            .args
+            .contains(&"-DMIGRAPHX_ENABLE_PYTHON=On".to_string()));
+        assert!(cmds[1]
+            .args
+            .contains(&"-DCMAKE_PREFIX_PATH=/opt/rocm".to_string()));
+        assert!(cmds[1].args.contains(&"-DGPU_TARGETS=gfx1100".to_string()));
+        assert!(cmds[1]
+            .args
+            .contains(&"-DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++".to_string()));
+
+        // 3. build the python extension target
+        assert_eq!(cmds[2].program, "cmake");
+        assert!(cmds[2].args.contains(&"--target".to_string()));
+        assert!(cmds[2].args.contains(&"migraphx_py".to_string()));
+
+        // 4. pip install the built package into the configured interpreter
+        assert_eq!(cmds[3].program, "/venv/bin/python");
+        assert!(cmds[3].args.contains(&"install".to_string()));
+        assert!(cmds[3]
+            .args
+            .iter()
+            .any(|a| a.ends_with("/AMDMIGraphX/python")));
     }
 }

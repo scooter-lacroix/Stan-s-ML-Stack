@@ -332,19 +332,6 @@ impl Mpi4PyInstaller {
             env,
         }
     }
-
-    /// Construct the ROCm environment exports for MPI.
-    pub fn rocm_env_exports(&self) -> Vec<(String, String)> {
-        if self.config.rocm_enabled {
-            vec![
-                ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
-                ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
-                ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
-            ]
-        } else {
-            vec![]
-        }
-    }
 }
 
 // ===========================================================================
@@ -475,27 +462,6 @@ mod tests {
         let mpi_path = PathBuf::from("/usr/lib64/openmpi");
         let cmd = installer.build_pip_install_command(&mpi_path);
         assert!(cmd.args.contains(&"--force-reinstall".to_string()));
-    }
-
-    #[test]
-    fn test_rocm_env_exports_enabled() {
-        let installer = Mpi4PyInstaller::new(Mpi4PyConfig {
-            rocm_enabled: true,
-            ..Default::default()
-        });
-        let exports = installer.rocm_env_exports();
-        assert!(exports.iter().any(|(k, _)| k == "HSA_OVERRIDE_GFX_VERSION"));
-        assert!(exports.iter().any(|(k, _)| k == "ROCM_PATH"));
-    }
-
-    #[test]
-    fn test_rocm_env_exports_disabled() {
-        let installer = Mpi4PyInstaller::new(Mpi4PyConfig {
-            rocm_enabled: false,
-            ..Default::default()
-        });
-        let exports = installer.rocm_env_exports();
-        assert!(exports.is_empty());
     }
 
     #[test]

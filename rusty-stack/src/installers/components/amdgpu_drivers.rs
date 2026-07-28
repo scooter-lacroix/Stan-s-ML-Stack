@@ -58,7 +58,6 @@ pub struct AmdgpuConfig {
 
 /// The AMDGPU drivers installer.
 pub struct AmdgpuInstaller {
-    #[allow(dead_code)]
     config: AmdgpuConfig,
 }
 
@@ -152,6 +151,17 @@ impl AmdgpuInstaller {
             base_args.push(pkg.to_string());
         }
 
+        // Honor dry-run: echo the command that would run instead of executing it.
+        if self.config.dry_run {
+            let mut preview = base_args;
+            preview.insert(0, program.clone());
+            return ShellCommand {
+                program: "echo".to_string(),
+                args: preview,
+                env: vec![],
+            };
+        }
+
         ShellCommand {
             program,
             args: base_args,
@@ -219,27 +229,6 @@ impl AmdgpuInstaller {
                     "-y".to_string(),
                     "amdgpu-dkms".to_string(),
                 ],
-                env: vec![],
-            },
-        ]
-    }
-
-    /// Construct environment variable setup commands.
-    pub fn build_env_setup_commands(&self, gpu_arch: &str) -> Vec<ShellCommand> {
-        vec![
-            ShellCommand {
-                program: "export".to_string(),
-                args: vec!["HSA_OVERRIDE_GFX_VERSION=11.0.0".to_string()],
-                env: vec![],
-            },
-            ShellCommand {
-                program: "export".to_string(),
-                args: vec![format!("PYTORCH_ROCM_ARCH={gpu_arch}")],
-                env: vec![],
-            },
-            ShellCommand {
-                program: "export".to_string(),
-                args: vec!["ROCM_PATH=/opt/rocm".to_string()],
                 env: vec![],
             },
         ]
@@ -382,24 +371,6 @@ mod tests {
 
         // Fifth should install amdgpu-dkms
         assert!(cmds[4].args.contains(&"amdgpu-dkms".to_string()));
-    }
-
-    #[test]
-    fn test_env_setup_commands() {
-        let installer = AmdgpuInstaller::with_defaults();
-        let cmds = installer.build_env_setup_commands("gfx1100");
-        assert_eq!(cmds.len(), 3);
-
-        let cmd_strings: Vec<String> = cmds.iter().map(|c| c.to_command_string()).collect();
-        assert!(cmd_strings
-            .iter()
-            .any(|s| s.contains("HSA_OVERRIDE_GFX_VERSION=11.0.0")));
-        assert!(cmd_strings
-            .iter()
-            .any(|s| s.contains("PYTORCH_ROCM_ARCH=gfx1100")));
-        assert!(cmd_strings
-            .iter()
-            .any(|s| s.contains("ROCM_PATH=/opt/rocm")));
     }
 
     #[test]

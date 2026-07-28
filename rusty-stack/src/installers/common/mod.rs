@@ -4,6 +4,7 @@
 //! - **package management**: unified interface for apt/dnf/pacman
 //! - **distro detection**: thin facade over `platform::detection`
 //! - **package mappings**: per-distro package name resolution
+//! - **managed Python packages**: exact, resolver-free central ownership
 //! - **guard**: structured error handling, logging, progress, Python validation
 //! - **utils**: color-aware output, command existence, print helpers
 //! - **env_validation**: `.mlstack_env` checking with sensible defaults
@@ -20,6 +21,7 @@ pub mod benchmark_common;
 pub mod distro;
 pub mod env_validation;
 pub mod guard;
+pub mod managed_python_build_tools;
 pub mod nvidia_blocklist;
 pub mod package_manager;
 pub mod package_mappings;
@@ -40,6 +42,10 @@ pub use guard::{
     detect_python_version, is_python_supported, is_python_supported_for_rocm_torch, log_error,
     log_info, log_warn, InstallerError, LogLevel, ProgressTracker, PythonVersion,
     MAX_ROCM_TORCH_PYTHON, MIN_PYTHON_VERSION,
+};
+pub use managed_python_build_tools::{
+    managed_python_install_command, managed_python_verify_command, ManagedPythonCommand,
+    MANAGED_PYTHON_PACKAGES,
 };
 pub use nvidia_blocklist::{
     contaminated_packages, filter_requirements, filter_requirements_file, is_cuda_nvidia_package,

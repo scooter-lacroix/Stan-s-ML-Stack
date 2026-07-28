@@ -418,38 +418,13 @@ pub fn detect_correct_gpu_arch(marketing_name: Option<&str>) -> GpuArchInfo {
         None => return GpuArchInfo::default(),
     };
 
-    let lower = name.to_lowercase();
-
     // Skip integrated GPUs
     if is_integrated_gpu_name(name) {
         return GpuArchInfo::default();
     }
 
-    // Map marketing names to correct architectures
-    // RDNA3 cards are commonly misreported as gfx1030
-    let arch = if lower.contains("7900 xtx")
-        || lower.contains("7900xtx")
-        || lower.contains("7900 xt")
-        || lower.contains("7900xt")
-        || lower.contains("7900 gre")
-        || lower.contains("7900gre")
-    {
-        "gfx1100"
-    } else if lower.contains("7800 xt")
-        || lower.contains("7800xt")
-        || lower.contains("7800 gre")
-        || lower.contains("7800gre")
-        || lower.contains("7700 xt")
-        || lower.contains("7700xt")
-    {
-        "gfx1101"
-    } else if lower.contains("7600 xt") || lower.contains("7600xt") || lower.contains("7600") {
-        "gfx1102"
-    } else if lower.contains("9070 xt") || lower.contains("9070xt") {
-        "gfx1200"
-    } else {
-        "gfx1100" // default fallback
-    };
+    // Delegate to canonical name→gfx lookup; default to gfx1100 for unknown
+    let arch = crate::gpu::gfx_from_marketing_name(name).unwrap_or("gfx1100");
 
     GpuArchInfo::from_arch(arch)
 }
@@ -621,30 +596,48 @@ pub fn generate_env_file_content(
     python_bin: &str,
 ) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
+    // RCCL overlay env is MANAGED here (the persistent-env generator is the
+    // single source of truth for env vars — components no longer write env files).
+    let rccl_block = rccl_overlay_bash_block(&home);
 
     format!(
         r#"# ML Stack Environment File
 # Created by Enhanced ML Stack Environment Setup (Rust native)
 # Date: {date}
 
-# GPU Selection
-# Only set if not already set
-if [ -z "${{HIP_VISIBLE_DEVICES:-}}" ]; then export HIP_VISIBLE_DEVICES={hip_visible_devices}; fi
-if [ -z "${{CUDA_VISIBLE_DEVICES:-}}" ]; then export CUDA_VISIBLE_DEVICES={hip_visible_devices}; fi
-if [ -z "${{PYTORCH_ROCM_DEVICE:-}}" ]; then export PYTORCH_ROCM_DEVICE={hip_visible_devices}; fi
+# GPU Selection — device filter is MANAGED (unconditional). It must reflect the
+# detected discrete GPUs on every source so a stale override can never re-expose
+# an integrated GPU (the iGPU segfault). ROCR_VISIBLE_DEVICES is the authoritative
+# ROCr (HSA) runtime filter; HIP/CUDA alias it for the HIP + CUDA-compat layers.
+# Discrete GPUs only (iGPUs filtered): {hip_visible_devices}
+export ROCR_VISIBLE_DEVICES={hip_visible_devices}
+export HIP_VISIBLE_DEVICES={hip_visible_devices}
+export CUDA_VISIBLE_DEVICES={hip_visible_devices}
+export PYTORCH_ROCM_DEVICE={hip_visible_devices}
 
 # ROCm Settings
 # Only set if not already set
 if [ -z "${{ROCM_HOME:-}}" ]; then export ROCM_HOME={rocm_path}; fi
+if [ -z "${{ROCM_PATH:-}}" ]; then export ROCM_PATH={rocm_path}; fi
+if [ -z "${{HIP_PATH:-}}" ]; then export HIP_PATH={rocm_path}; fi
 if [ -z "${{CUDA_HOME:-}}" ]; then export CUDA_HOME={rocm_path}; fi
 if [ -z "${{ROCM_VERSION:-}}" ]; then export ROCM_VERSION={rocm_version}; fi
 if [ -z "${{ROCM_CHANNEL:-}}" ]; then export ROCM_CHANNEL={rocm_channel}; fi
-# GPU_ARCH is set based on detected hardware (corrected for rocminfo bugs)
+# GPU arch identity is MANAGED (unconditional): must match detected hardware.
 export GPU_ARCH={gpu_arch}
+export PYTORCH_ROCM_ARCH={gpu_arch}
+export GPU_ARCHS={gpu_arch}
+# libdrm amdgpu ASIC id table (ROCm's amdgpu.ids lookup)
+export AMDGPU_ASIC_ID_TABLE_PATH=/usr/share/libdrm/amdgpu.ids
+export AMDGPU_ASIC_ID_TABLE_PATHS=/usr/share/libdrm
 
-# Path Settings - Hardcoded safe paths to prevent "command not found" errors
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{rocm_path}/bin:{rocm_path}/hip/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{rocm_path}/lib:{rocm_path}/hip/lib:{rocm_path}/opencl/lib:${{LD_LIBRARY_PATH:-}}"
+# Path Settings - Hardcoded safe paths to prevent "command not found" errors.
+# Idempotent: prepend the ROCm bin/lib blocks only if not already on the var, so
+# re-sourcing the env never grows PATH/LD_LIBRARY_PATH (the old un-guarded
+# `:$PATH` form accumulated a duplicate entry per source).
+case ":${{PATH:-}}:" in *:"{rocm_path}/bin":*) ;; *) export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{rocm_path}/bin:{rocm_path}/hip/bin:${{PATH:-}}";; esac
+case ":${{LD_LIBRARY_PATH:-}}:" in *:"{rocm_path}/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{rocm_path}/lib:{rocm_path}/hip/lib:{rocm_path}/opencl/lib:${{LD_LIBRARY_PATH:-}}";; esac
+{rccl_block}
 
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
@@ -664,7 +657,7 @@ if [ -z "${{MIOPEN_FIND_ENFORCE:-}}" ]; then export MIOPEN_FIND_ENFORCE=3; fi
 # Only set if not already set
 # (Stage 2: the CUDA build-arch env var is intentionally NOT exported on a
 # ROCm stack — ROCm uses PYTORCH_ROCM_ARCH. No CUDA env leakage.)
-if [ -z "${{PYTORCH_ALLOC_CONF:-}}" ]; then export PYTORCH_ALLOC_CONF="max_split_size_mb:512"; fi
+if [ -z "${{PYTORCH_CUDA_ALLOC_CONF:-}}" ]; then export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512"; fi
 if [ -z "${{PYTORCH_HIP_ALLOC_CONF:-}}" ]; then export PYTORCH_HIP_ALLOC_CONF="max_split_size_mb:512"; fi
 if [ -z "${{VLLM_WORKER_MULTIPROC_METHOD:-}}" ]; then export VLLM_WORKER_MULTIPROC_METHOD=spawn; fi
 if [ -z "${{VLLM_ROCM_USE_AITER:-}}" ]; then export VLLM_ROCM_USE_AITER=0; fi
@@ -718,6 +711,7 @@ fi
         hsa_override_gfx_version = hsa_override_gfx_version,
         home = home,
         python_bin = python_bin,
+        rccl_block = rccl_block,
     )
 }
 
@@ -740,6 +734,8 @@ pub fn generate_fish_env_file_content(
 
     // Build ONNX Runtime PYTHONPATH check
     let onnx_path = format!("{home}/onnxruntime_build/onnxruntime/build/Linux/Release");
+    // RCCL overlay env is MANAGED here (single source of truth — no component env files).
+    let rccl_block = rccl_overlay_fish_block(&home);
 
     format!(
         r##"# ML Stack Environment File — Fish Shell Native
@@ -748,22 +744,35 @@ pub fn generate_fish_env_file_content(
 #
 # This file is auto-generated. Edit via rusty-stack's env setup, not by hand.
 
-# --- GPU Selection ---
-set -q HIP_VISIBLE_DEVICES; or set -gx HIP_VISIBLE_DEVICES {hip_visible_devices}
-set -q CUDA_VISIBLE_DEVICES; or set -gx CUDA_VISIBLE_DEVICES {hip_visible_devices}
-set -q PYTORCH_ROCM_DEVICE; or set -gx PYTORCH_ROCM_DEVICE {hip_visible_devices}
+# --- GPU Selection — device filter is MANAGED (unconditional) so a stale
+# override can never re-expose an integrated GPU. ROCR_VISIBLE_DEVICES is the
+# authoritative ROCr (HSA) filter. ---
+# Discrete GPUs only (iGPUs filtered): {hip_visible_devices}
+set -gx ROCR_VISIBLE_DEVICES {hip_visible_devices}
+set -gx HIP_VISIBLE_DEVICES {hip_visible_devices}
+set -gx CUDA_VISIBLE_DEVICES {hip_visible_devices}
+set -gx PYTORCH_ROCM_DEVICE {hip_visible_devices}
 
 # --- ROCm Settings ---
 set -q ROCM_HOME; or set -gx ROCM_HOME {rocm_path}
+set -q ROCM_PATH; or set -gx ROCM_PATH {rocm_path}
+set -q HIP_PATH; or set -gx HIP_PATH {rocm_path}
 set -q CUDA_HOME; or set -gx CUDA_HOME {rocm_path}
 set -q ROCM_VERSION; or set -gx ROCM_VERSION {rocm_version}
 set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL {rocm_channel}
-# GPU_ARCH is set based on detected hardware (corrected for rocminfo bugs)
+# GPU arch identity is MANAGED (unconditional): must match detected hardware.
 set -gx GPU_ARCH {gpu_arch}
+set -gx PYTORCH_ROCM_ARCH {gpu_arch}
+set -gx GPU_ARCHS {gpu_arch}
+set -gx AMDGPU_ASIC_ID_TABLE_PATH /usr/share/libdrm/amdgpu.ids
+set -gx AMDGPU_ASIC_ID_TABLE_PATHS /usr/share/libdrm
 
 # --- Path Settings ---
-set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
-set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
+# Idempotent: prepend the ROCm bin/lib blocks only if not already on the var, so
+# re-sourcing never grows PATH/LD_LIBRARY_PATH (no per-source duplicate buildup).
+contains -- {rocm_path}/bin $PATH; or set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
+contains -- {rocm_path}/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
+{rccl_block}
 
 # --- Performance Settings ---
 set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}
@@ -780,7 +789,7 @@ set -q MIOPEN_FIND_ENFORCE; or set -gx MIOPEN_FIND_ENFORCE 3
 # --- PyTorch Settings ---
 # (Stage 2: the CUDA build-arch env var is intentionally NOT set on a ROCm
 # stack — ROCm uses PYTORCH_ROCM_ARCH. No CUDA env leakage.)
-set -q PYTORCH_ALLOC_CONF; or set -gx PYTORCH_ALLOC_CONF "max_split_size_mb:512"
+set -q PYTORCH_CUDA_ALLOC_CONF; or set -gx PYTORCH_CUDA_ALLOC_CONF "max_split_size_mb:512"
 set -q PYTORCH_HIP_ALLOC_CONF; or set -gx PYTORCH_HIP_ALLOC_CONF "max_split_size_mb:512"
 set -q VLLM_WORKER_MULTIPROC_METHOD; or set -gx VLLM_WORKER_MULTIPROC_METHOD spawn
 set -q VLLM_ROCM_USE_AITER; or set -gx VLLM_ROCM_USE_AITER 0
@@ -831,6 +840,112 @@ end
         hsa_override_gfx_version = hsa_override_gfx_version,
         python_bin = python_bin,
         onnx_path = onnx_path,
+        rccl_block = rccl_block,
+    )
+}
+
+// ===========================================================================
+// Component env contributions — MANAGED by the persistent-env generator.
+// The generator is the SINGLE source of truth for env vars; components must
+// NOT write their own env files (the old rccl `active/env.sh` did an un-guarded
+// `export PYTHONPATH=X${PYTHONPATH:+:$PYTHONPATH}` that accumulated a duplicate
+// entry on every `source ~/.mlstack_env`). Components instead declare state via
+// the filesystem (the `active` symlink + manifest); the generator reads it and
+// emits an idempotent block here.
+// ===========================================================================
+
+/// Path to the sealed RCCL overlay's `active` dir for `home`.
+fn rccl_active_dir(home: &str) -> String {
+    format!("{home}/.mlstack/components/rccl/active")
+}
+
+/// Read the RCCL overlay sha256 from `<active>/manifest` (line `sha256=…`), if
+/// the overlay is installed and the manifest is readable.
+fn rccl_overlay_sha256(active: &str) -> Option<String> {
+    let manifest = std::fs::read_to_string(format!("{active}/manifest")).ok()?;
+    let raw = manifest.lines().find_map(|l| {
+        l.strip_prefix("sha256=")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    })?;
+    // Defense-in-depth: the SHA is written by the installer (always a 64-char
+    // hex string), but this value is interpolated unquoted into a file that is
+    // sourced on EVERY shell login. A corrupted/tampered manifest containing
+    // shell metacharacters (`;`, backticks, `$()`, …) would execute when the
+    // env file is sourced. Accept ONLY a 64-char lowercase-hex SHA-256; any
+    // other shape is omitted (preserving the missing-manifest behavior).
+    let is_hex64 = raw.len() == 64 && raw.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex64 {
+        Some(raw.to_string())
+    } else {
+        None
+    }
+}
+
+/// Emit the **idempotent** bash block for the sealed RCCL overlay, or an empty
+/// string when no overlay is installed.
+///
+/// Uses the `$HOME`-relative `active` symlink path in the emitted exports so
+/// the block tracks the current RCCL build without an env refresh. The
+/// PYTHONPATH prepend is guarded (`grep -qF`) so re-sourcing the env never
+/// accumulates duplicates — the generator, not a component-written file, owns
+/// these vars.
+fn rccl_overlay_bash_block(home: &str) -> String {
+    if !std::path::Path::new(&rccl_active_dir(home)).exists() {
+        return String::new();
+    }
+    let sha_line = match rccl_overlay_sha256(&rccl_active_dir(home)) {
+        // Quoted for defense-in-depth (the value is already validated 64-hex
+        // upstream, so it carries no metacharacters — but quoting keeps the
+        // sourced line robust if the validation contract ever loosens).
+        Some(sha) => format!("  export MLSTACK_RCCL_OVERLAY_SHA256=\"{sha}\""),
+        None => "  # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing or invalid)".to_string(),
+    };
+    format!(
+        r#"
+# Sealed RCCL overlay — MANAGED by the persistent-env generator (single source of
+# truth for env vars; the generator, not a component file, owns these). Follows
+# the `active` symlink; the PYTHONPATH prepend is guarded so re-sourcing the env
+# never accumulates duplicate entries.
+if [ -r "$HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0" ]; then
+  export MLSTACK_RCCL_OVERLAY_LIB="$HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0"
+{sha_line}
+  export NCCL_P2P_DISABLE=1
+  export RCCL_P2P_DISABLE=1
+  if ! echo "${{PYTHONPATH:-}}" | grep -qF "$HOME/.mlstack/components/rccl/active/python"; then
+    export PYTHONPATH="$HOME/.mlstack/components/rccl/active/python:${{PYTHONPATH:-}}"
+  fi
+fi
+"#
+    )
+}
+
+/// Emit the **idempotent** fish block for the sealed RCCL overlay, or empty.
+/// Fish analogue of [`rccl_overlay_bash_block`]; `contains` is the membership guard.
+fn rccl_overlay_fish_block(home: &str) -> String {
+    if !std::path::Path::new(&rccl_active_dir(home)).exists() {
+        return String::new();
+    }
+    let sha_line = match rccl_overlay_sha256(&rccl_active_dir(home)) {
+        Some(sha) => format!("    set -gx MLSTACK_RCCL_OVERLAY_SHA256 \"{sha}\""),
+        None => {
+            "    # MLSTACK_RCCL_OVERLAY_SHA256 omitted (manifest missing or invalid)".to_string()
+        }
+    };
+    format!(
+        r#"
+# --- Sealed RCCL overlay — MANAGED by the persistent-env generator (single
+# source of truth for env vars). Follows the `active` symlink; idempotent. ---
+if test -r $HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0
+    set -gx MLSTACK_RCCL_OVERLAY_LIB $HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0
+{sha_line}
+    set -gx NCCL_P2P_DISABLE 1
+    set -gx RCCL_P2P_DISABLE 1
+    if not contains -- $HOME/.mlstack/components/rccl/active/python $PYTHONPATH
+        set -gx PYTHONPATH $HOME/.mlstack/components/rccl/active/python $PYTHONPATH
+    end
+end
+"#
     )
 }
 
@@ -1064,7 +1179,7 @@ mod tests {
     #[test]
     fn test_detect_correct_gpu_arch_9070_xt() {
         let info = detect_correct_gpu_arch(Some("Radeon RX 9070 XT"));
-        assert_eq!(info.gpu_arch, "gfx1200");
+        assert_eq!(info.gpu_arch, "gfx1201");
     }
 
     #[test]
@@ -1237,7 +1352,7 @@ mod tests {
             "python3",
         );
         assert!(!content.contains("TORCH_CUDA_ARCH_LIST"));
-        assert!(content.contains("PYTORCH_ALLOC_CONF"));
+        assert!(content.contains("PYTORCH_CUDA_ALLOC_CONF"));
         assert!(content.contains("PYTORCH_HIP_ALLOC_CONF"));
         assert!(content.contains("VLLM_WORKER_MULTIPROC_METHOD"));
     }
@@ -1304,8 +1419,12 @@ mod tests {
             "11.0.0",
             "python3",
         );
-        // Should use "if [ -z ... ]" guards for conditional exports
-        assert!(content.contains("if [ -z \"${HIP_VISIBLE_DEVICES:-}\" ]"));
+        // Device filter is MANAGED/unconditional (stale override must never
+        // re-expose an iGPU): ROCR/HIP/CUDA_VISIBLE_DEVICES are bare exports.
+        assert!(content.contains("export ROCR_VISIBLE_DEVICES=0"));
+        assert!(content.contains("export HIP_VISIBLE_DEVICES=0"));
+        assert!(!content.contains("if [ -z \"${HIP_VISIBLE_DEVICES:-}\" ]"));
+        // Tuning vars still use "if [ -z ... ]" guards (respect user overrides).
         assert!(content.contains("if [ -z \"${ROCM_HOME:-}\" ]"));
     }
 
@@ -1428,6 +1547,10 @@ mod tests {
         assert!(content.contains("UV_PIP_BREAK_SYSTEM_PACKAGES"));
         assert!(content.contains("UV_SYSTEM_PYTHON"));
         assert!(content.contains("FLASH_ATTENTION_TRITON_AMD_ENABLE"));
+        // Centralization: the generator must NOT source a component-written
+        // env.fish — RCCL overlay env is emitted inline + idempotently by the
+        // generator (rccl_overlay_fish_block), the single source of truth.
+        assert!(!content.contains("source $HOME/.mlstack/components/rccl/active/env.fish"));
         assert!(content.contains("0,1"));
     }
 
@@ -1463,6 +1586,61 @@ mod tests {
         assert!(content.contains("export UV_PIP_BREAK_SYSTEM_PACKAGES=1"));
         assert!(content.contains("export UV_SYSTEM_PYTHON=1"));
         assert!(content.contains("export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE"));
+        // Centralization: the generator must NOT source a component-written
+        // env.sh — RCCL overlay env is emitted inline + idempotently here.
+        assert!(!content.contains(". \"$HOME/.mlstack/components/rccl/active/env.sh\""));
+    }
+
+    #[test]
+    fn test_rccl_overlay_block_is_centralized_and_idempotent() {
+        // No active RCCL overlay → generator emits nothing for it.
+        let tmp = std::env::temp_dir();
+        let home_no_rccl = tmp.join("rusty_rccl_no_active_test");
+        let _ = std::fs::remove_dir_all(&home_no_rccl);
+        assert_eq!(rccl_overlay_bash_block(&home_no_rccl.to_string_lossy()), "");
+        assert_eq!(rccl_overlay_fish_block(&home_no_rccl.to_string_lossy()), "");
+
+        // Active RCCL overlay → generator emits a guarded, idempotent block that
+        // follows the `active` symlink (no component-written env file).
+        let home = tmp.join("rusty_rccl_active_test");
+        let active = home.join(".mlstack/components/rccl/active");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(active.join("python")).unwrap();
+        std::fs::create_dir_all(active.join("lib")).unwrap();
+        std::fs::write(active.join("lib/librccl.so.1.0"), b"").unwrap();
+        // A valid SHA-256 (64 lowercase hex chars) — the installer always writes
+        // this shape. The generator validates 64-hex before splicing (defense-
+        // in-depth against a tampered manifest), so use a realistic value here.
+        let valid_sha = "a".repeat(64);
+        std::fs::write(active.join("manifest"), format!("sha256={valid_sha}\n")).unwrap();
+
+        let bash = rccl_overlay_bash_block(&home.to_string_lossy());
+        assert!(bash.contains("MLSTACK_RCCL_OVERLAY_LIB"));
+        // SHA is quoted + validated (64-hex). An invalid SHA would be omitted.
+        assert!(bash.contains(&format!("MLSTACK_RCCL_OVERLAY_SHA256=\"{valid_sha}\"")));
+        // Idempotent guard present (no bare un-guarded prepend).
+        assert!(bash.contains("grep -qF"));
+        // Single source of truth: does NOT delegate to a component env file.
+        assert!(!bash.contains("env.sh"));
+
+        let fish = rccl_overlay_fish_block(&home.to_string_lossy());
+        assert!(fish.contains("MLSTACK_RCCL_OVERLAY_LIB"));
+        assert!(fish.contains(&format!("MLSTACK_RCCL_OVERLAY_SHA256 \"{valid_sha}\"")));
+        assert!(fish.contains("contains --"));
+        assert!(!fish.contains("env.fish"));
+
+        // Invalid SHA (not 64-hex) → omitted, never spliced into the sourced
+        // block. Guards against a corrupted/tampered manifest injecting shell.
+        std::fs::write(active.join("manifest"), "sha256=NOT-HEX\n").unwrap();
+        let bash_bad = rccl_overlay_bash_block(&home.to_string_lossy());
+        assert!(
+            !bash_bad.contains("MLSTACK_RCCL_OVERLAY_SHA256=\""),
+            "invalid SHA must be omitted, not spliced: {bash_bad}"
+        );
+        assert!(bash_bad.contains("omitted"));
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&home_no_rccl);
     }
 
     // --- setup_environment integration ---

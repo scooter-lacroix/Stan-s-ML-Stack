@@ -94,93 +94,9 @@ pub fn detect_gpu() -> GPUInfo {
 /// assert_eq!(get_correct_gfx_from_marketing_name("Unknown GPU", "999"), "gfx999");
 /// ```
 pub fn get_correct_gfx_from_marketing_name(marketing_name: &str, fallback_gfx: &str) -> String {
-    let name_lower = marketing_name.to_lowercase();
-
-    // RDNA 3 (Navi 3x) — gfx1100/gfx1101/gfx1102
-    // These are commonly misreported as gfx1030 by buggy ROCm versions
-    if name_lower.contains("7900 xtx") || name_lower.contains("7900xtx") {
-        return "gfx1100".to_string();
-    }
-    if name_lower.contains("7900 gre") || name_lower.contains("7900gre") {
-        return "gfx1100".to_string();
-    }
-    if name_lower.contains("7900 xt") || name_lower.contains("7900xt") {
-        return "gfx1100".to_string();
-    }
-    if name_lower.contains("7800 xt") || name_lower.contains("7800xt") {
-        return "gfx1101".to_string();
-    }
-    if name_lower.contains("7800 gre") || name_lower.contains("7800gre") {
-        return "gfx1101".to_string();
-    }
-    if name_lower.contains("7700 xt") || name_lower.contains("7700xt") {
-        return "gfx1101".to_string();
-    }
-    if name_lower.contains("7600 xt")
-        || name_lower.contains("7600xt")
-        || name_lower.contains("7600")
-    {
-        return "gfx1102".to_string();
-    }
-
-    // RDNA 4 (Navi 4x) — gfx1200/gfx1201
-    if name_lower.contains("9070 xt")
-        || name_lower.contains("9070xt")
-        || name_lower.contains("9070 gre")
-        || name_lower.contains("9070gre")
-    {
-        return "gfx1200".to_string();
-    }
-    if name_lower.contains("9060") {
-        return "gfx1201".to_string();
-    }
-
-    // RDNA 2 (Navi 2x) — gfx1030/gfx1031/gfx1032/gfx1034
-    if name_lower.contains("6950 xt")
-        || name_lower.contains("6950xt")
-        || name_lower.contains("6900 xt")
-        || name_lower.contains("6900xt")
-    {
-        return "gfx1030".to_string();
-    }
-    if name_lower.contains("6800 xt")
-        || name_lower.contains("6800xt")
-        || name_lower.contains("6800")
-        || name_lower.contains("6900")
-    {
-        return "gfx1030".to_string();
-    }
-    if name_lower.contains("6700 xt")
-        || name_lower.contains("6700xt")
-        || name_lower.contains("6750 xt")
-        || name_lower.contains("6750xt")
-    {
-        return "gfx1031".to_string();
-    }
-    if name_lower.contains("6600 xt")
-        || name_lower.contains("6600xt")
-        || name_lower.contains("6600")
-        || name_lower.contains("6650")
-    {
-        return "gfx1032".to_string();
-    }
-    if name_lower.contains("6500 xt") || name_lower.contains("6500xt") {
-        return "gfx1034".to_string();
-    }
-
-    // CDNA (MI accelerators) — trust rocminfo for these
-    if name_lower.contains("instinct")
-        || name_lower.contains("mi60")
-        || name_lower.contains("mi100")
-        || name_lower.contains("mi200")
-        || name_lower.contains("mi250")
-        || name_lower.contains("mi300")
-    {
-        return format!("gfx{}", fallback_gfx);
-    }
-
-    // Default: use the fallback value
-    format!("gfx{}", fallback_gfx)
+    crate::gpu::gfx_from_marketing_name(marketing_name)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("gfx{}", fallback_gfx))
 }
 
 /// Detect ROCm installation path by searching common locations in priority order.
@@ -745,7 +661,7 @@ mod tests {
     fn test_gfx_correction_rdna4_9070_xt() {
         assert_eq!(
             get_correct_gfx_from_marketing_name("AMD Radeon RX 9070 XT", "1200"),
-            "gfx1200"
+            "gfx1201"
         );
     }
 
@@ -753,7 +669,7 @@ mod tests {
     fn test_gfx_correction_rdna4_9060() {
         assert_eq!(
             get_correct_gfx_from_marketing_name("AMD Radeon RX 9060", "1201"),
-            "gfx1201"
+            "gfx1200"
         );
     }
 

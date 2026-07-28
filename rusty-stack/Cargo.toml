@@ -1,6 +1,6 @@
 [package]
 name = "rusty-stack"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "A comprehensive ML environment installer and platform toolkit optimized for AMD GPUs with ROCm support"
 repository = "https://github.com/scooter-lacroix/Stan-s-ML-Stack"
@@ -58,6 +58,11 @@ ratatui = { version = "0.30", optional = true }
 
 # Optional: Unix-only (libc for geteuid, etc.)
 libc = { version = "0.2", optional = true }
+
+# No-echo password prompt from /dev/tty (install + uninstall sudo credentials).
+# Robust across terminals; replaces a hand-rolled termios raw-read that
+# corrupted the captured password.
+rpassword = "7"
 
 # Optional: Telemetry HTTPS submission
 reqwest = { version = "0.13", features = ["json"], default-features = false, optional = true }

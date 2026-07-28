@@ -148,24 +148,6 @@ impl PytorchProfilerInstaller {
             env: vec![],
         }
     }
-
-    /// Construct the ROCm environment setup for the profiler.
-    pub fn build_rocm_env(&self) -> Vec<(String, String)> {
-        vec![
-            ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
-            (
-                "PATH".to_string(),
-                "/opt/rocm/bin:".to_string() + &std::env::var("PATH").unwrap_or_default(),
-            ),
-            (
-                "LD_LIBRARY_PATH".to_string(),
-                "/opt/rocm/lib:".to_string()
-                    + &std::env::var("LD_LIBRARY_PATH").unwrap_or_default(),
-            ),
-            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
-            ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
-        ]
-    }
 }
 
 // ===========================================================================
@@ -224,17 +206,5 @@ mod tests {
         let result = installer.validate_dependencies(&[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("pytorch"));
-    }
-
-    #[test]
-    fn test_rocm_env() {
-        let installer = PytorchProfilerInstaller::with_defaults();
-        let env = installer.build_rocm_env();
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
     }
 }

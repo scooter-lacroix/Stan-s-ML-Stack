@@ -81,7 +81,8 @@ pub fn run_preflight_checks(
         check_disk_space(system),
         check_network_connectivity(),
         check_gpu_detection(gpu),
-        check_driver_compatibility(gpu),
+        check_kernel_driver(gpu),
+        check_rocm_userspace(gpu),
         check_cpu_compatibility(system),
         check_memory_requirements(system),
         check_package_manager(),
@@ -307,27 +308,85 @@ fn check_gpu_detection(gpu: &GPUInfo) -> PreflightCheck {
     }
 }
 
-fn check_driver_compatibility(gpu: &GPUInfo) -> PreflightCheck {
-    let ok = !gpu.rocm_version.is_empty();
+fn check_kernel_driver(gpu: &GPUInfo) -> PreflightCheck {
+    // The amdgpu KERNEL driver — the thing that makes the hardware usable at all.
+    // /sys/module/amdgpu exists iff the module is loaded; sysfs GPU detection
+    // (gpu_count > 0) also implies it, since the drm device only appears once the
+    // driver binds. This is DISTINCT from the ROCm userspace (see check_rocm_userspace).
+    let loaded = std::path::Path::new("/sys/module/amdgpu").exists() || gpu.gpu_count > 0;
     PreflightCheck {
-        name: "Driver compatibility".into(),
-        status: if ok {
+        name: "Kernel driver".into(),
+        status: if loaded {
             PreflightStatus::Passed
         } else {
             PreflightStatus::Warning
         },
         check_type: PreflightType::Warning,
-        message: if ok {
-            "ROCm drivers detected".into()
+        message: if loaded {
+            "AMDGPU kernel driver loaded".into()
         } else {
-            "ROCm drivers not detected".into()
+            "AMDGPU kernel driver not loaded".into()
         },
-        details: if ok {
-            format!("ROCm version {}", gpu.rocm_version)
+        details: if loaded {
+            format!("{} AMD GPU(s) visible via sysfs", gpu.gpu_count)
         } else {
-            "Install ROCm drivers for GPU acceleration".into()
+            "Load amdgpu (`modprobe amdgpu`) or install the amdgpu kernel drivers".into()
         },
-        score: if ok { 10 } else { 5 },
+        score: if loaded { 10 } else { 2 },
+    }
+}
+
+fn check_rocm_userspace(gpu: &GPUInfo) -> PreflightCheck {
+    // Require a REAL ROCm binary, not just the version file that `rocm-core` drops
+    // at /opt/rocm/.info/version. rocm-core can be present (pulled in as a dep by
+    // rocm-smi-lib etc.) while the actual compute stack (rocminfo/hipcc) is absent —
+    // keying "ROCm detected" off the version file alone reports a pass for a box that
+    // can't run ROCm. This is exactly the partial-install trap the old check hid.
+    const ROCM_BINARIES: &[&str] = &[
+        "/opt/rocm/bin/rocminfo",
+        "/opt/rocm/bin/hipcc",
+        "/usr/bin/rocminfo",
+        "/usr/bin/hipcc",
+    ];
+    let has_real_binary = ROCM_BINARIES
+        .iter()
+        .any(|p| std::path::Path::new(p).exists());
+    let has_version = !gpu.rocm_version.is_empty();
+
+    let (status, message, details, score) = if has_real_binary {
+        (
+            PreflightStatus::Passed,
+            "ROCm userspace detected".into(),
+            format!("ROCm {} (rocminfo/hipcc present)", gpu.rocm_version),
+            10,
+        )
+    } else if has_version {
+        (
+            PreflightStatus::Warning,
+            "Partial ROCm install".into(),
+            format!(
+                "rocm-core {} version file present but rocminfo/hipcc missing — complete \
+                 the ROCm install (rusty-stack: install the `rocm` component)",
+                gpu.rocm_version
+            ),
+            5,
+        )
+    } else {
+        (
+            PreflightStatus::Warning,
+            "ROCm userspace not installed".into(),
+            "Install ROCm for GPU compute (rusty-stack: install the `rocm` component)".into(),
+            2,
+        )
+    };
+
+    PreflightCheck {
+        name: "ROCm userspace".into(),
+        status,
+        check_type: PreflightType::Warning,
+        message,
+        details,
+        score,
     }
 }
 
@@ -817,96 +876,9 @@ fn validate_rocm_path(path: &Path) -> bool {
 /// Map GPU marketing name to correct gfx architecture.
 /// This corrects rocminfo bugs where RDNA3 cards report gfx1030 instead of gfx1100/gfx1101.
 fn get_correct_gfx_from_marketing_name(marketing_name: &str, rocminfo_gfx: &str) -> String {
-    let name_lower = marketing_name.to_lowercase();
-
-    // RDNA 3 (Navi 3x) - gfx1100/gfx1101
-    // These are commonly misreported as gfx1030 by buggy ROCm versions
-    if name_lower.contains("7900 xtx") || name_lower.contains("7900xtx") {
-        return "gfx1100".to_string();
-    }
-    if name_lower.contains("7900 xt") || name_lower.contains("7900xt") {
-        // Could be XT (not XTX), still gfx1100
-        return "gfx1100".to_string();
-    }
-    if name_lower.contains("7900 gre") || name_lower.contains("7900gre") {
-        return "gfx1100".to_string();
-    }
-    if name_lower.contains("7800 xt") || name_lower.contains("7800xt") {
-        return "gfx1101".to_string();
-    }
-    if name_lower.contains("7800 gre") || name_lower.contains("7800gre") {
-        return "gfx1101".to_string();
-    }
-    if name_lower.contains("7700 xt") || name_lower.contains("7700xt") {
-        return "gfx1101".to_string();
-    }
-    if name_lower.contains("7600 xt")
-        || name_lower.contains("7600xt")
-        || name_lower.contains("7600")
-    {
-        return "gfx1102".to_string();
-    }
-
-    // RDNA 4 (Navi 4x) - gfx1200
-    if name_lower.contains("9070 xt")
-        || name_lower.contains("9070xt")
-        || name_lower.contains("9070 gre")
-        || name_lower.contains("9070gre")
-    {
-        return "gfx1200".to_string();
-    }
-    if name_lower.contains("9060") {
-        return "gfx1201".to_string();
-    }
-
-    // RDNA 2 (Navi 2x) - gfx1030/gfx1031/gfx1032
-    // These are correctly reported by rocminfo, but we verify
-    if name_lower.contains("6900 xt")
-        || name_lower.contains("6900xt")
-        || name_lower.contains("6950 xt")
-        || name_lower.contains("6950xt")
-    {
-        return "gfx1030".to_string();
-    }
-    if name_lower.contains("6800 xt")
-        || name_lower.contains("6800xt")
-        || name_lower.contains("6800")
-        || name_lower.contains("6900")
-    {
-        return "gfx1030".to_string();
-    }
-    if name_lower.contains("6700 xt")
-        || name_lower.contains("6700xt")
-        || name_lower.contains("6750 xt")
-        || name_lower.contains("6750xt")
-    {
-        return "gfx1031".to_string();
-    }
-    if name_lower.contains("6600 xt")
-        || name_lower.contains("6600xt")
-        || name_lower.contains("6600")
-        || name_lower.contains("6650")
-    {
-        return "gfx1032".to_string();
-    }
-    if name_lower.contains("6500 xt") || name_lower.contains("6500xt") {
-        return "gfx1034".to_string();
-    }
-
-    // CDNA (MI accelerators) - trust rocminfo for these
-    if name_lower.contains("instinct")
-        || name_lower.contains("mi60")
-        || name_lower.contains("mi100")
-        || name_lower.contains("mi200")
-        || name_lower.contains("mi250")
-        || name_lower.contains("mi300")
-    {
-        return format!("gfx{}", rocminfo_gfx);
-    }
-
-    // Default: use rocminfo value if it looks valid (gfx10xx, gfx11xx, gfx12xx)
-    // But if it's gfx1030 from a known RDNA3 card, we should have caught it above
-    format!("gfx{}", rocminfo_gfx)
+    crate::gpu::gfx_from_marketing_name(marketing_name)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("gfx{}", rocminfo_gfx))
 }
 
 fn detect_gpu() -> GPUInfo {

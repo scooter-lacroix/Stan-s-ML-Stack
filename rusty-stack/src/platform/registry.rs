@@ -1,7 +1,7 @@
 //! Component registry and installed component detection.
 //!
 //! Provides:
-//! - **Component registry** — 19 known components with display names and installer mappings
+//! - **Component registry** — 21 known components with display names and installer mappings
 //!   (VAL-PLAT-009, VAL-PLAT-010)
 //! - **Installed component detection** — path-based, Python module, and git-based strategies
 //!   (VAL-PLAT-011, VAL-PLAT-012, VAL-PLAT-013)
@@ -65,7 +65,7 @@ pub struct VersionInfo {
 // Component Registry (VAL-PLAT-009, VAL-PLAT-010)
 // ===========================================================================
 
-/// Returns the canonical list of all 19 known components.
+/// Returns the canonical list of all 21 known components.
 pub fn known_components() -> &'static [ComponentInfo] {
     // Built once, reused across calls.
     static COMPONENTS: std::sync::OnceLock<Vec<ComponentInfo>> = std::sync::OnceLock::new();
@@ -122,8 +122,37 @@ pub fn known_components() -> &'static [ComponentInfo] {
                 clone_dir: None,
             },
             ComponentInfo {
+                // The standalone Python bindings (AMDMIGraphX). Detection maps
+                // onto the SAME `migraphx` import as the C++ core — the python
+                // package re-exports it — so is_component_installed/get_version
+                // are not blind to this component (and the post-install honesty
+                // guard can verify it). Keep in sync with baseline_manifest.json.
+                id: "migraphx-python".into(),
+                display_name: "MIGraphX Python".into(),
+                detection_method: DetectionMethod::PythonModule,
+                installer_script: "install_migraphx_python.sh".into(),
+                python_import: Some("migraphx".into()),
+                clone_dir: None,
+            },
+            ComponentInfo {
                 id: "flash-attn".into(),
                 display_name: "Flash Attention".into(),
+                detection_method: DetectionMethod::PythonModule,
+                installer_script: "install_flash_attention_ck.sh".into(),
+                python_import: Some("flash_attn".into()),
+                clone_dir: None,
+            },
+            ComponentInfo {
+                id: "flash-attn-triton".into(),
+                display_name: "Flash Attention (Triton)".into(),
+                detection_method: DetectionMethod::PythonModule,
+                installer_script: "install_flash_attention_triton.sh".into(),
+                python_import: Some("flash_attn".into()),
+                clone_dir: None,
+            },
+            ComponentInfo {
+                id: "flash-attn-ck".into(),
+                display_name: "Flash Attention (CK)".into(),
                 detection_method: DetectionMethod::PythonModule,
                 installer_script: "install_flash_attention_ck.sh".into(),
                 python_import: Some("flash_attn".into()),
@@ -246,7 +275,7 @@ pub fn get_component(id: &str) -> Option<&'static ComponentInfo> {
 /// Return the human-readable display name for a component ID.
 ///
 /// Unknown IDs are returned as-is (passthrough).
-/// VAL-PLAT-010: The mapping must be bijective for all 19 known components.
+/// VAL-PLAT-010: The mapping must be bijective for all 21 known components.
 pub fn display_name(id: &str) -> String {
     get_component(id)
         .map(|c| c.display_name.clone())
@@ -288,12 +317,22 @@ pub fn is_component_installed_with_home(id: &str, home: &Path) -> bool {
         return false;
     };
 
-    match info.detection_method {
+    let detected = match info.detection_method {
         DetectionMethod::PathBased => detect_path_based(info, home),
         DetectionMethod::CommandBased => detect_command_based(info, home),
         DetectionMethod::PythonModule => detect_python_module_single(info),
         DetectionMethod::GitBased => detect_git_based(info, home),
+    };
+    // migraphx: the PythonModule check (`import migraphx`) is insufficient on
+    // Arch/CachyOS, where the `migraphx` pip wheel is unavailable — the C++
+    // driver (from the `migraphx` system package) is the install target. Fall
+    // back to a functional driver, mirroring component_status's migraphx arm.
+    // Without this, `rusty-stack update` reports migraphx as not-installed and
+    // proposes a redundant install despite the driver working.
+    if !detected && id == "migraphx" {
+        return crate::installers::components::migraphx_multi::migraphx_driver_functional();
     }
+    detected
 }
 
 // -----------------------------------------------------------------------
@@ -421,12 +460,25 @@ pub fn get_version_with_home(id: &str, home: &Path) -> String {
         return "unknown".to_string();
     };
 
-    match info.detection_method {
+    let v = match info.detection_method {
         DetectionMethod::PathBased => get_version_path_based(info, home),
         DetectionMethod::CommandBased => get_version_command_based(info, home),
         DetectionMethod::PythonModule => get_version_python_single(info),
         DetectionMethod::GitBased => get_version_git(info, home),
+    };
+    // migraphx: the python-import version fails on Arch/CachyOS (no pip wheel).
+    // Fall back to the C++ driver version so the planner sees a real version
+    // (and doesn't propose a downgrade of a newer driver build). Delegated to
+    // the migraphx_multi owner module — verification logic (and the
+    // migraphx-driver subprocess) belongs in installers/, not platform/.
+    if id == "migraphx" && (v == "not installed" || v == "unknown") {
+        if let Some(driver_version) =
+            crate::installers::components::migraphx_multi::migraphx_driver_version()
+        {
+            return driver_version;
+        }
     }
+    v
 }
 
 /// Get version for path-based components.
@@ -829,6 +881,17 @@ pub fn detect_all_installed_with_home(home: &Path) -> Vec<String> {
         installed.push("permanent-env".to_string());
     }
 
+    // migraphx: the python-module batch (`import migraphx`) is insufficient on
+    // Arch/CachyOS, where the `migraphx` pip wheel is unavailable — the C++
+    // driver (from the `migraphx` system package) is the install target. If the
+    // python check missed it, fall back to a functional driver so `rusty-stack
+    // update` reports it installed (and stops proposing a redundant install).
+    if !installed.iter().any(|id| id == "migraphx")
+        && crate::installers::components::migraphx_multi::migraphx_driver_functional()
+    {
+        installed.push("migraphx".to_string());
+    }
+
     installed.sort();
     installed.dedup();
     installed
@@ -843,16 +906,20 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // VAL-PLAT-009: Component registry contains all 19 known components
+    // VAL-PLAT-009: Component registry contains all 21 known components
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_registry_has_exactly_19_components() {
+    fn test_registry_has_exactly_21_components() {
         let components = known_components();
+        // 22 known components: the 21 historical IDs plus `migraphx-python`
+        // (the standalone AMDMIGraphX Python bindings, mapped onto the migraphx
+        // python import for detection). Update together with the manifest and
+        // the expected-ids list when adding a component.
         assert_eq!(
             components.len(),
-            19,
-            "Registry must contain exactly 19 known components, found {}",
+            22,
+            "Registry must contain exactly 22 known components, found {}",
             components.len()
         );
     }
@@ -870,7 +937,10 @@ mod tests {
             "onnx",
             "bitsandbytes",
             "migraphx",
+            "migraphx-python",
             "flash-attn",
+            "flash-attn-triton",
+            "flash-attn-ck",
             "mpi4py",
             "wandb",
             "comfyui",
@@ -890,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_known_component_accepts_all_19() {
+    fn test_is_known_component_accepts_all_21() {
         let ids = [
             "rocm",
             "pytorch",
@@ -902,7 +972,10 @@ mod tests {
             "onnx",
             "bitsandbytes",
             "migraphx",
+            "migraphx-python",
             "flash-attn",
+            "flash-attn-triton",
+            "flash-attn-ck",
             "mpi4py",
             "wandb",
             "comfyui",
@@ -958,7 +1031,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // VAL-PLAT-010: Display name mapping is bijective for all 19 components
+    // VAL-PLAT-010: Display name mapping is bijective for all known components
     // -----------------------------------------------------------------------
 
     #[test]
@@ -991,8 +1064,8 @@ mod tests {
         let map = display_name_to_id_map();
         assert_eq!(
             map.len(),
-            19,
-            "Display name to ID map must have exactly 19 entries"
+            known_components().len(),
+            "Display name to ID map must cover every known component"
         );
 
         // Verify round-trip: display_name(id) -> display_name -> id == original id
@@ -1353,5 +1426,20 @@ mod tests {
             println!("{}: {}", display_name(&c.id), version);
         }
         // Test passes if we get here without panicking
+    }
+
+    #[test]
+    fn test_extract_semver_parses_migraphx_driver_output() {
+        // The C++ driver prints its project version with a long date/git suffix:
+        // `MIGraphX Version: 2.15.0.20250912-17-220-g07ef4ba4f9-dirty`. The version
+        // fallback in get_version_with_home relies on extract_semver reducing this
+        // to the leading X.Y.Z so the planner sees `2.15.0` (newer than the
+        // manifest's 2.12.0) and does not propose a downgrade.
+        assert_eq!(
+            extract_semver("MIGraphX Version: 2.15.0.20250912-17-220-g07ef4ba4f9-dirty"),
+            "2.15.0"
+        );
+        // Two-part versions (X.Y) are also accepted.
+        assert_eq!(extract_semver("MIGraphX Version: 2.15"), "2.15");
     }
 }

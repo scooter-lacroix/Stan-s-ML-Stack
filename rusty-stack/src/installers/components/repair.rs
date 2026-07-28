@@ -206,21 +206,6 @@ impl RepairStep {
             RepairStep::EnvironmentVariables => "permanent-env",
         }
     }
-
-    /// Legacy script name (kept for documentation/test reference only).
-    #[allow(dead_code)]
-    pub fn legacy_script_name(&self) -> &'static str {
-        match self {
-            RepairStep::Rocm => "install_rocm.sh",
-            RepairStep::AmdgpuDrivers => "install_amdgpu_drivers.sh",
-            RepairStep::PyTorch => "install_pytorch_rocm.sh",
-            RepairStep::MlStackCore => "install_ml_stack.sh",
-            RepairStep::Aiter => "install_aiter.sh",
-            RepairStep::MigraphxPython => "install_migraphx_python.sh",
-            RepairStep::DeepSpeed => "install_deepspeed.sh",
-            RepairStep::EnvironmentVariables => "setup_permanent_rocm_env.sh",
-        }
-    }
 }
 
 /// Configuration for the repair tool.
@@ -246,7 +231,6 @@ impl Default for RepairConfig {
 
 /// The ML Stack repair tool.
 pub struct RepairInstaller {
-    #[allow(dead_code)]
     config: RepairConfig,
 }
 
@@ -292,6 +276,11 @@ impl RepairInstaller {
         let mut result = RepairResult::new();
 
         for step in Self::repair_sequence() {
+            // Honor dry-run: record each step as skipped without invoking the runner.
+            if self.config.dry_run {
+                result.add_step(step.name(), true, Some("dry-run: skipped".to_string()));
+                continue;
+            }
             match step_runner(step) {
                 Ok(()) => result.add_step(step.name(), true, None),
                 Err(msg) => result.add_step(step.name(), false, Some(msg)),

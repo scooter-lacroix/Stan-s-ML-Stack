@@ -23,7 +23,7 @@ pub enum Category {
     Extension,
     UiUx,
     Environment,
-    Verification,
+    Maintenance,
     Performance,
 }
 
@@ -36,7 +36,7 @@ impl Category {
             Category::Extension,
             Category::UiUx,
             Category::Environment,
-            Category::Verification,
+            Category::Maintenance,
             Category::Performance,
         ]
     }
@@ -49,7 +49,7 @@ impl Category {
             Category::Extension => "Extension",
             Category::UiUx => "UiUx",
             Category::Environment => "Environment",
-            Category::Verification => "Verification",
+            Category::Maintenance => "Maintenance",
             Category::Performance => "Performance",
         }
     }
@@ -62,7 +62,7 @@ impl Category {
             "Extension" => Some(Category::Extension),
             "UiUx" => Some(Category::UiUx),
             "Environment" => Some(Category::Environment),
-            "Verification" => Some(Category::Verification),
+            "Maintenance" => Some(Category::Maintenance),
             "Performance" => Some(Category::Performance),
             _ => None,
         }
@@ -99,6 +99,7 @@ pub enum Stage {
     Welcome,
     HardwareDetect,
     Preflight,
+    ComponentDetect,
     ComponentSelect,
     Configuration,
     Confirm,
@@ -115,6 +116,7 @@ impl Stage {
             Stage::Welcome,
             Stage::HardwareDetect,
             Stage::Preflight,
+            Stage::ComponentDetect,
             Stage::ComponentSelect,
             Stage::Configuration,
             Stage::Confirm,
@@ -131,6 +133,7 @@ impl Stage {
             Stage::Welcome => "Welcome",
             Stage::HardwareDetect => "HardwareDetect",
             Stage::Preflight => "Preflight",
+            Stage::ComponentDetect => "ComponentDetect",
             Stage::ComponentSelect => "ComponentSelect",
             Stage::Configuration => "Configuration",
             Stage::Confirm => "Confirm",
@@ -147,6 +150,7 @@ impl Stage {
             "Welcome" => Some(Stage::Welcome),
             "HardwareDetect" => Some(Stage::HardwareDetect),
             "Preflight" => Some(Stage::Preflight),
+            "ComponentDetect" => Some(Stage::ComponentDetect),
             "ComponentSelect" => Some(Stage::ComponentSelect),
             "Configuration" => Some(Stage::Configuration),
             "Confirm" => Some(Stage::Confirm),
@@ -582,6 +586,15 @@ pub struct Component {
     pub progress: f32,
     pub estimate: String,
     pub needs_sudo: bool,
+    /// Experimental / forward-only build (e.g. Flash Attention CK on RDNA3).
+    /// Rendered with an EXPERIMENTAL badge + `note`; still selectable +
+    /// installable — never greyed out or hidden.
+    #[serde(default)]
+    pub experimental: bool,
+    /// Optional detail shown in the component panel (capability caveats).
+    /// Shown only when `experimental` is true.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 // ===========================================================================
@@ -635,8 +648,8 @@ mod tests {
     // ---- Stage tests (VAL-CORE-004) ----
 
     #[test]
-    fn test_stage_has_ten_variants() {
-        assert_eq!(Stage::all().len(), 10);
+    fn test_stage_has_eleven_variants() {
+        assert_eq!(Stage::all().len(), 11);
     }
 
     #[test]
@@ -1083,6 +1096,8 @@ mod tests {
             progress: 0.0,
             estimate: "10-15 min".to_string(),
             needs_sudo: true,
+            experimental: false,
+            note: None,
         };
         let json = serde_json::to_string(&comp).unwrap();
         let back: Component = serde_json::from_str(&json).unwrap();
@@ -1104,6 +1119,8 @@ mod tests {
                 progress: 0.0,
                 estimate: "1 min".to_string(),
                 needs_sudo: false,
+                experimental: false,
+                note: None,
             };
             let json = serde_json::to_string(&comp).unwrap();
             let back: Component = serde_json::from_str(&json).unwrap();

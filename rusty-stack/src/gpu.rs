@@ -284,6 +284,561 @@ pub fn read_vram_bytes(pci_slot: &str) -> Option<u64> {
 }
 
 // ===========================================================================
+// AMD GPU detection from sysfs — PCI class filter, VRAM, gfx arch resolution
+// ===========================================================================
+
+/// AMD discrete GPU discovered via sysfs.
+///
+/// All fields optional except `pci_slot` and `is_integrated`. Detectors
+/// populate from `/sys/class/drm/card*/device` and PCI tables.
+#[derive(Debug, Clone)]
+pub struct AmdGpu {
+    /// PCI slot in `BB:DD.F` form (canonicalized, no `0000:` prefix).
+    pub pci_slot: String,
+    /// PCI device ID (hex string, e.g. `"0x744c"` for Navi 31).
+    pub pci_device_id: String,
+    /// Marketing name from lspci/rocminfo if available.
+    pub marketing_name: Option<String>,
+    /// gfx architecture (e.g. `"gfx1100"` for Navi 31).
+    pub gfx_arch: Option<String>,
+    /// Total VRAM in bytes from `mem_info_vram_total`.
+    pub vram_bytes: Option<u64>,
+    /// `true` if classified as integrated by [`device_is_integrated`].
+    pub is_integrated: bool,
+    /// Real ROCm (HSA) agent index from `rocminfo`, when available.
+    ///
+    /// This is the authoritative device index for `ROCR_VISIBLE_DEVICES` /
+    /// `HIP_VISIBLE_DEVICES`: those vars filter by the *original* enumeration
+    /// order (CPU + iGPU + dGPU agents as `rocminfo` prints them), NOT a
+    /// re-numbered post-filter sequence. On an APU+dGPU host where the iGPU is
+    /// ROCr agent 2 and the dGPU is agent 3, the visibility mask must be `3`,
+    /// not the compacted `0` produced by enumerating the filtered dGPU list.
+    ///
+    /// `None` when rocminfo is unavailable; callers fall back to compacted
+    /// indices (the historical sysfs-only behavior) in that case.
+    pub rocm_index: Option<u32>,
+}
+
+/// Authoritative PCI device ID → gfx arch mapping for AMD discrete GPUs.
+///
+/// Sourced from `/usr/share/hwdata/pci.ids`. ONLY dGPUs — iGPU IDs handled
+/// separately by [`INTEGRATED_PCI_DEVICE_IDS`].
+pub const DISCRETE_PCI_ID_TO_GFX: &[(&str, &str)] = &[
+    // RDNA4
+    ("0x7550", "gfx1201"),
+    ("0x7551", "gfx1201"),
+    ("0x7590", "gfx1200"),
+    // RDNA3 Navi31
+    ("0x744c", "gfx1100"),
+    ("0x7448", "gfx1100"),
+    ("0x7449", "gfx1100"),
+    ("0x744a", "gfx1100"),
+    ("0x744b", "gfx1100"),
+    ("0x745e", "gfx1100"),
+    // RDNA3 Navi32
+    ("0x747e", "gfx1101"),
+    ("0x7470", "gfx1101"),
+    ("0x7460", "gfx1101"),
+    ("0x7461", "gfx1101"),
+    // RDNA3 Navi33
+    ("0x7480", "gfx1102"),
+    ("0x7483", "gfx1102"),
+    ("0x7489", "gfx1102"),
+    ("0x749f", "gfx1102"),
+    ("0x73f0", "gfx1102"),
+    // RDNA2 Navi21
+    ("0x73bf", "gfx1030"),
+    ("0x73af", "gfx1030"),
+    ("0x73a5", "gfx1030"),
+    ("0x73a1", "gfx1030"),
+    ("0x73a2", "gfx1030"),
+    ("0x73a3", "gfx1030"),
+    // RDNA2 Navi22
+    ("0x73df", "gfx1031"),
+    ("0x73c3", "gfx1031"),
+    // RDNA2 Navi23
+    ("0x73ff", "gfx1032"),
+    ("0x73ef", "gfx1032"),
+    ("0x73e0", "gfx1032"),
+    ("0x73e1", "gfx1032"),
+    ("0x73e3", "gfx1032"),
+    // RDNA2 Navi24
+    ("0x743f", "gfx1034"),
+    ("0x7424", "gfx1034"),
+    ("0x7421", "gfx1034"),
+    ("0x7422", "gfx1034"),
+    ("0x7423", "gfx1034"),
+];
+
+/// Normalize PCI device ID (lowercase, strip `0x`).
+fn normalize_pci_id(id: &str) -> String {
+    id.trim()
+        .to_ascii_lowercase()
+        .trim_start_matches("0x")
+        .to_string()
+}
+
+/// Look up gfx arch by PCI device ID (normalized, case-insensitive).
+pub fn pci_id_to_gfx(pci_device_id: &str) -> Option<&'static str> {
+    let normalized = normalize_pci_id(pci_device_id);
+    DISCRETE_PCI_ID_TO_GFX
+        .iter()
+        .find(|(id, _)| normalize_pci_id(id) == normalized)
+        .map(|(_, gfx)| *gfx)
+}
+
+/// Resolve gfx arch from marketing name (canonical fallback).
+///
+/// Copies logic from `platform/linux.rs::get_correct_gfx_from_marketing_name`
+/// and extends with generic "Navi NN" patterns. Returns `None` if unknown.
+pub fn gfx_from_marketing_name(name: &str) -> Option<&'static str> {
+    let name_lower = name.to_lowercase();
+
+    // Generic "Navi NN" patterns
+    if name_lower.contains("navi 48") || name_lower.contains("navi48") {
+        return Some("gfx1201");
+    }
+    if name_lower.contains("navi 44") || name_lower.contains("navi44") {
+        return Some("gfx1200");
+    }
+    if name_lower.contains("navi 31") || name_lower.contains("navi31") {
+        return Some("gfx1100");
+    }
+    if name_lower.contains("navi 32") || name_lower.contains("navi32") {
+        return Some("gfx1101");
+    }
+    if name_lower.contains("navi 33") || name_lower.contains("navi33") {
+        return Some("gfx1102");
+    }
+    if name_lower.contains("navi 21") || name_lower.contains("navi21") {
+        return Some("gfx1030");
+    }
+    if name_lower.contains("navi 22") || name_lower.contains("navi22") {
+        return Some("gfx1031");
+    }
+    if name_lower.contains("navi 23") || name_lower.contains("navi23") {
+        return Some("gfx1032");
+    }
+    if name_lower.contains("navi 24") || name_lower.contains("navi24") {
+        return Some("gfx1034");
+    }
+
+    // RDNA 3 (Navi 3x) — gfx1100/gfx1101/gfx1102
+    if name_lower.contains("7900 xtx") || name_lower.contains("7900xtx") {
+        return Some("gfx1100");
+    }
+    if name_lower.contains("7900 gre") || name_lower.contains("7900gre") {
+        return Some("gfx1100");
+    }
+    if name_lower.contains("7900 xt") || name_lower.contains("7900xt") {
+        return Some("gfx1100");
+    }
+    if name_lower.contains("7800 xt") || name_lower.contains("7800xt") {
+        return Some("gfx1101");
+    }
+    if name_lower.contains("7800 gre") || name_lower.contains("7800gre") {
+        return Some("gfx1101");
+    }
+    if name_lower.contains("7700 xt") || name_lower.contains("7700xt") {
+        return Some("gfx1101");
+    }
+    if name_lower.contains("7600 xt")
+        || name_lower.contains("7600xt")
+        || name_lower.contains("7600")
+    {
+        return Some("gfx1102");
+    }
+
+    // RDNA 4 (Navi 4x) — gfx1200/gfx1201
+    if name_lower.contains("9070 xt")
+        || name_lower.contains("9070xt")
+        || name_lower.contains("9070 gre")
+        || name_lower.contains("9070gre")
+    {
+        return Some("gfx1201");
+    }
+    if name_lower.contains("9060") {
+        return Some("gfx1200");
+    }
+
+    // RDNA 2 (Navi 2x) — gfx1030/gfx1031/gfx1032/gfx1034
+    if name_lower.contains("6950 xt")
+        || name_lower.contains("6950xt")
+        || name_lower.contains("6900 xt")
+        || name_lower.contains("6900xt")
+    {
+        return Some("gfx1030");
+    }
+    if name_lower.contains("6800 xt")
+        || name_lower.contains("6800xt")
+        || name_lower.contains("6800")
+        || name_lower.contains("6900")
+    {
+        return Some("gfx1030");
+    }
+    if name_lower.contains("6700 xt")
+        || name_lower.contains("6700xt")
+        || name_lower.contains("6750 xt")
+        || name_lower.contains("6750xt")
+    {
+        return Some("gfx1031");
+    }
+    if name_lower.contains("6600 xt")
+        || name_lower.contains("6600xt")
+        || name_lower.contains("6600")
+        || name_lower.contains("6650")
+    {
+        return Some("gfx1032");
+    }
+    if name_lower.contains("6500 xt") || name_lower.contains("6500xt") {
+        return Some("gfx1034");
+    }
+
+    // Unknown name → no override
+    None
+}
+
+/// Parsed lspci line: (pci_slot, name, pci_id)
+#[derive(Debug, Clone)]
+struct LspciDevice {
+    pci_slot: String,
+    name: String,
+    pci_id: String,
+}
+
+/// Parse `lspci -nn` for AMD VGA/3D controllers.
+///
+/// Returns vec of (pci_slot, marketing_name, pci_id). lspci output format:
+/// `BB:DD.F VGA compatible controller [0300]: Vendor Name [Device Name] [vvvv:dddd]`
+fn parse_lspci_amd() -> Vec<LspciDevice> {
+    let output = match std::process::Command::new("lspci").arg("-nn").output() {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+
+    let mut devices = Vec::new();
+    let text = String::from_utf8_lossy(&output);
+
+    for line in text.lines() {
+        let line = line.trim();
+        // Must contain AMD and VGA [0300] or 3D [0302]
+        if !line.contains("AMD") && !line.contains("Advanced Micro Devices") {
+            continue;
+        }
+        if !line.contains("[0300]") && !line.contains("[0302]") {
+            continue;
+        }
+
+        // Extract PCI slot (BB:DD.F format, strip domain prefix if present)
+        // lspci format: "0000:BB:DD.F ..." or "BB:DD.F ..."
+        let pci_slot = line
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_start_matches("0000:")
+            .to_string();
+        if pci_slot.is_empty() {
+            continue;
+        }
+
+        // Find PCI ID bracket: [vvvv:dddd]
+        let pci_id = if let Some(bracket_start) = line.rfind('[') {
+            let bracket_content = &line[bracket_start + 1..];
+            let bracket_end = bracket_content.find(']').unwrap_or(bracket_content.len());
+            let id_str = &bracket_content[..bracket_end];
+            id_str
+                .split(':')
+                .nth(1)
+                .map(|id| format!("0x{}", id.to_lowercase()))
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            "unknown".to_string()
+        };
+
+        // Extract device name: between [0300]: and [vvvv:dddd]
+        // Format: "... [0300]: Vendor Name [Device Name] [vvvv:dddd] ..."
+        let name = if let Some(class_end) = line.find("]:") {
+            let after_class = &line[class_end + 2..];
+            if let Some(dev_bracket) = after_class.rfind('[') {
+                after_class[..dev_bracket].trim().to_string()
+            } else {
+                "AMD GPU".to_string()
+            }
+        } else {
+            "AMD GPU".to_string()
+        };
+
+        devices.push(LspciDevice {
+            pci_slot,
+            name,
+            pci_id,
+        });
+    }
+
+    devices
+}
+
+/// Check if rocminfo is available and runnable.
+fn rocminfo_available() -> bool {
+    std::process::Command::new("rocminfo")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Parse rocminfo agent list for ROCm device ordering (optional enrichment).
+///
+/// Returns vec of (index, name, gfx_arch) in ROCm device index order. The
+/// `index` is the literal "Agent N" counter from rocminfo (the same value
+/// `ROCR_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` must use to filter). GPU
+/// agents that lack a numbered "Agent N" header fall back to the running GPU
+/// counter. Cross-verified against lspci/sysfs devices by the caller.
+fn parse_rocminfo_agents() -> Vec<(u32, String, Option<String>)> {
+    let output = match std::process::Command::new("rocminfo").output() {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+
+    let mut agents = Vec::new();
+    let text = String::from_utf8_lossy(&output);
+
+    // rocminfo sections: "Agent 1" ... "Agent 2" ...
+    for agent_block in text.split("****") {
+        let mut name = None;
+        let mut gfx_arch = None;
+        let mut index: Option<u32> = None;
+
+        for line in agent_block.lines() {
+            let line = line.trim();
+            // Capture the "Agent N" header index — this is the canonical ROCr
+            // agent index that ROCR_VISIBLE_DEVICES filters against.
+            if line.starts_with("Agent ") && index.is_none() {
+                if let Some(rest) = line.strip_prefix("Agent ") {
+                    if let Ok(n) = rest.trim().parse::<u32>() {
+                        index = Some(n);
+                    }
+                }
+            }
+            if let Some(rest) = line.strip_prefix("Name:") {
+                name = Some(rest.trim().to_string());
+            }
+            if let Some(rest) = line.strip_prefix("gfx version:") {
+                gfx_arch = Some(rest.trim().to_string());
+            }
+        }
+
+        if let Some(n) = name {
+            // Fall back to the running agent count if no "Agent N" header parsed
+            // (some rocminfo builds omit the numbered header). The count is still
+            // a real enumeration index, not a compacted post-filter value.
+            let idx = index.unwrap_or(agents.len() as u32);
+            agents.push((idx, n, gfx_arch));
+        }
+    }
+
+    agents
+}
+
+/// Detect ALL AMD GPUs via lspci + sysfs (includes iGPU; use
+/// [`detect_discrete_amd_gpus`] to filter).
+///
+/// **Primary source:** `lspci -nn` (universally available, no rocminfo needed).
+/// Parses AMD VGA `[0300]` / 3D `[0302]` lines to extract PCI slot, device NAME,
+/// and PCI ID `[1002:xxxx]`. This provides reliable device names without rocminfo.
+///
+/// **Per-device enrichment:**
+/// - PCI slot: from lspci
+/// - Marketing name: from lspci (e.g. "Navi 31 [Radeon RX 7900 XT/...]")
+/// - PCI ID: from lspci `[1002:xxxx]` format
+/// - VRAM: from sysfs `mem_info_vram_total` via [`read_vram_bytes`]
+/// - gfx arch: from PCI ID table ([`DISCRETE_PCI_ID_TO_GFX`]), or marketing
+///   name fallback ([`gfx_from_marketing_name`]), or None for unknown
+///
+/// **iGPU classification:** Uses name+ID tandem via [`device_is_integrated`]
+/// with BOTH marketing_name (from lspci) AND pci_id. A device is integrated only
+/// if all signals agree (PCI ID, name, gfx arch, VRAM). Verified dGPU iff
+/// `!is_integrated`.
+///
+/// **rocminfo enrichment (optional):** If `rocminfo` is on PATH and runs,
+/// parses its agent list for authoritative ROCm device names + gfx archs and
+/// cross-verifies against lspci/sysfs devices (match by name/PCI). Uses rocminfo's
+/// device ordering to inform `HIP_VISIBLE_DEVICES` when available; else falls
+/// back to verified lspci/sysfs dGPU list in pci-slot order. rocminfo NEVER
+/// required — detection works fully without it.
+///
+/// Returns all AMD GPUs (iGPU + dGPU), each with verified name+PCI_ID+gfx+VRAM.
+pub fn detect_amd_gpus() -> Vec<AmdGpu> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut gpus = Vec::new();
+    let mut seen_slots = HashSet::new();
+
+    // Step 1: Parse lspci for AMD GPU names + PCI IDs (PRIMARY source)
+    let lspci_devices = parse_lspci_amd();
+    let mut lspci_map: HashMap<String, LspciDevice> = HashMap::new();
+    for dev in lspci_devices {
+        lspci_map.insert(dev.pci_slot.clone(), dev);
+    }
+
+    // Step 2: Walk sysfs /sys/class/drm/card*/device for VRAM + cross-verification
+    let entries = match std::fs::read_dir("/sys/class/drm") {
+        Ok(e) => e,
+        Err(_) => return gpus,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+
+        let device_path = entry.path().join("device");
+        let canonical = match device_path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if !seen_slots.insert(canonical.clone()) {
+            continue;
+        }
+
+        // Read vendor (must be AMD 0x1002)
+        let vendor_path = canonical.join("vendor");
+        let vendor = match std::fs::read_to_string(&vendor_path) {
+            Ok(v) => v.trim().to_lowercase(),
+            Err(_) => continue,
+        };
+        if !vendor.starts_with("0x1002") {
+            continue;
+        }
+
+        // Read class — VGA (0x030000) or 3D (0x030200) ONLY
+        let class_path = canonical.join("class");
+        let class = match std::fs::read_to_string(&class_path) {
+            Ok(c) => c.trim().to_lowercase(),
+            Err(_) => continue,
+        };
+        let class_val = match class.strip_prefix("0x") {
+            Some(hex) => match u32::from_str_radix(hex, 16) {
+                Ok(v) => v,
+                Err(_) => continue,
+            },
+            None => continue,
+        };
+        const PCI_CLASS_VGA: u32 = 0x030000;
+        const PCI_CLASS_3D: u32 = 0x030200;
+        const CLASS_MASK: u32 = 0xFFFF00;
+        let masked_class = class_val & CLASS_MASK;
+        if masked_class != PCI_CLASS_VGA && masked_class != PCI_CLASS_3D {
+            continue;
+        }
+
+        // Read PCI device ID from sysfs
+        let device_path_id = canonical.join("device");
+        let sysfs_pci_id = match std::fs::read_to_string(&device_path_id) {
+            Ok(d) => d.trim().to_string(),
+            Err(_) => continue,
+        };
+
+        // Read uevent for PCI_SLOT_NAME
+        let uevent_path = canonical.join("uevent");
+        let pci_slot = match std::fs::read_to_string(&uevent_path) {
+            Ok(content) => content
+                .lines()
+                .find(|line| line.starts_with("PCI_SLOT_NAME="))
+                .and_then(|line| line.split('=').nth(1))
+                .map(|s| s.trim_start_matches("0000:").to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            Err(_) => "unknown".to_string(),
+        };
+
+        // Read VRAM total from sysfs
+        let vram_bytes = read_vram_bytes(&pci_slot);
+
+        // Get marketing name + PCI ID from lspci (primary source)
+        let lspci_dev = lspci_map.get(&pci_slot);
+        let marketing_name = lspci_dev
+            .as_ref()
+            .map(|d| d.name.clone())
+            .filter(|n| !n.is_empty());
+        let lspci_pci_id = lspci_dev
+            .as_ref()
+            .map(|d| d.pci_id.clone())
+            .filter(|i| i != "unknown");
+
+        // Prefer lspci PCI ID (parsed from [1002:xxxx]), fall back to sysfs
+        let pci_device_id = lspci_pci_id.unwrap_or_else(|| sysfs_pci_id.clone());
+
+        // Resolve gfx arch: PCI table first, marketing name fallback
+        let mut gfx_arch = pci_id_to_gfx(&pci_device_id).map(|s| s.to_string());
+        if gfx_arch.is_none() {
+            if let Some(ref name) = marketing_name {
+                gfx_arch = gfx_from_marketing_name(name).map(|s| s.to_string());
+            }
+        }
+
+        // Classify integrated/discrete using NAME + PCI_ID tandem (never ID alone)
+        let is_integrated = device_is_integrated(
+            marketing_name.as_deref(),
+            Some(&pci_device_id),
+            gfx_arch.as_deref(),
+            vram_bytes,
+        );
+
+        gpus.push(AmdGpu {
+            pci_slot,
+            pci_device_id,
+            marketing_name,
+            gfx_arch,
+            vram_bytes,
+            is_integrated,
+            rocm_index: None,
+        });
+    }
+
+    // Step 3 (optional): rocminfo enrichment for gfx arch + ROCm device ordering
+    if rocminfo_available() {
+        let rocminfo_agents = parse_rocminfo_agents();
+        if !rocminfo_agents.is_empty() {
+            // Cross-verify rocminfo agents against detected devices by name/PCI.
+            // Enrich gfx arch AND capture the real ROCm agent index (the value
+            // ROCR_VISIBLE_DEVICES must use). Matching is by name substring
+            // (rocminfo marketing names are usually shorter than lspci strings).
+            for (rocm_idx, rocm_name, rocm_gfx) in rocminfo_agents {
+                for gpu in &mut gpus {
+                    if let Some(ref name) = gpu.marketing_name {
+                        if name.contains(&rocm_name) || rocm_name.contains(name) {
+                            if gpu.rocm_index.is_none() {
+                                gpu.rocm_index = Some(rocm_idx);
+                            }
+                            if let Some(ref rg) = rocm_gfx {
+                                gpu.gfx_arch = Some(rg.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    gpus
+}
+
+/// Detect ONLY discrete AMD GPUs (iGPU filtered out).
+///
+/// Filters [`detect_amd_gpus`] to `!is_integrated`, sorted by `pci_slot` for
+/// stable indexing (e.g. `HIP_VISIBLE_DEVICES` order).
+pub fn detect_discrete_amd_gpus() -> Vec<AmdGpu> {
+    let mut dgpus = detect_amd_gpus()
+        .into_iter()
+        .filter(|gpu| !gpu.is_integrated)
+        .collect::<Vec<_>>();
+    dgpus.sort_by(|a, b| a.pci_slot.cmp(&b.pci_slot));
+    dgpus
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -481,5 +1036,148 @@ mod tests {
         assert!(!is_integrated_by_gfx_arch("gfx1100"));
         assert!(!is_integrated_by_gfx_arch("gfx1101"));
         assert!(!is_integrated_by_gfx_arch("gfx1030"));
+    }
+
+    // ===========================================================================
+    // Detector tests (PCI ID → gfx, name → gfx, class filter)
+    // ===========================================================================
+
+    #[test]
+    fn pci_id_to_gfx_maps_all_table_entries() {
+        // RDNA4
+        assert_eq!(pci_id_to_gfx("0x7550"), Some("gfx1201"));
+        assert_eq!(pci_id_to_gfx("0x7551"), Some("gfx1201"));
+        assert_eq!(pci_id_to_gfx("0x7590"), Some("gfx1200"));
+        // RDNA3 Navi31
+        assert_eq!(pci_id_to_gfx("0x744c"), Some("gfx1100"));
+        assert_eq!(pci_id_to_gfx("0x7448"), Some("gfx1100"));
+        assert_eq!(pci_id_to_gfx("0x745e"), Some("gfx1100"));
+        // RDNA3 Navi32
+        assert_eq!(pci_id_to_gfx("0x747e"), Some("gfx1101"));
+        assert_eq!(pci_id_to_gfx("0x7460"), Some("gfx1101"));
+        // RDNA3 Navi33
+        assert_eq!(pci_id_to_gfx("0x7480"), Some("gfx1102"));
+        assert_eq!(pci_id_to_gfx("0x73f0"), Some("gfx1102"));
+        // RDNA2 Navi21
+        assert_eq!(pci_id_to_gfx("0x73bf"), Some("gfx1030"));
+        assert_eq!(pci_id_to_gfx("0x73a1"), Some("gfx1030"));
+        // RDNA2 Navi22
+        assert_eq!(pci_id_to_gfx("0x73df"), Some("gfx1031"));
+        assert_eq!(pci_id_to_gfx("0x73c3"), Some("gfx1031"));
+        // RDNA2 Navi23
+        assert_eq!(pci_id_to_gfx("0x73ff"), Some("gfx1032"));
+        assert_eq!(pci_id_to_gfx("0x73e3"), Some("gfx1032"));
+        // RDNA2 Navi24
+        assert_eq!(pci_id_to_gfx("0x743f"), Some("gfx1034"));
+        assert_eq!(pci_id_to_gfx("0x7421"), Some("gfx1034"));
+        // Unknown ID → None
+        assert_eq!(pci_id_to_gfx("0x9999"), None);
+        assert_eq!(pci_id_to_gfx("0x164e"), None); // iGPU ID not in dGPU table
+    }
+
+    #[test]
+    fn pci_id_to_gfx_normalizes_case_and_prefix() {
+        assert_eq!(pci_id_to_gfx("0x744c"), Some("gfx1100"));
+        assert_eq!(pci_id_to_gfx("744C"), Some("gfx1100"));
+        assert_eq!(pci_id_to_gfx("744c"), Some("gfx1100"));
+        assert_eq!(pci_id_to_gfx("0X744C"), Some("gfx1100"));
+    }
+
+    #[test]
+    fn gfx_from_marketing_name_handles_navi_patterns() {
+        // Generic "Navi NN"
+        assert_eq!(gfx_from_marketing_name("Navi 48"), Some("gfx1201"));
+        assert_eq!(gfx_from_marketing_name("navi44"), Some("gfx1200"));
+        assert_eq!(gfx_from_marketing_name("Navi 31"), Some("gfx1100"));
+        assert_eq!(gfx_from_marketing_name("Navi 32"), Some("gfx1101"));
+        assert_eq!(gfx_from_marketing_name("Navi 33"), Some("gfx1102"));
+        assert_eq!(gfx_from_marketing_name("Navi 21"), Some("gfx1030"));
+        assert_eq!(gfx_from_marketing_name("Navi 22"), Some("gfx1031"));
+        assert_eq!(gfx_from_marketing_name("Navi 23"), Some("gfx1032"));
+        assert_eq!(gfx_from_marketing_name("Navi 24"), Some("gfx1034"));
+        // Unknown name → None (no fallback)
+        assert_eq!(gfx_from_marketing_name("Generic GPU"), None);
+    }
+
+    #[test]
+    fn gfx_from_marketing_name_handles_rdnax_names() {
+        // RDNA3
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 7900 XTX"),
+            Some("gfx1100")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 7900 GRE"),
+            Some("gfx1100")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 7800 XT"),
+            Some("gfx1101")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 7700 XT"),
+            Some("gfx1101")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 7600 XT"),
+            Some("gfx1102")
+        );
+        // RDNA4
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 9070 XT"),
+            Some("gfx1201")
+        );
+        assert_eq!(gfx_from_marketing_name("Radeon RX 9060"), Some("gfx1200"));
+        // RDNA2
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 6900 XT"),
+            Some("gfx1030")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 6800 XT"),
+            Some("gfx1030")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 6700 XT"),
+            Some("gfx1031")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 6600 XT"),
+            Some("gfx1032")
+        );
+        assert_eq!(
+            gfx_from_marketing_name("Radeon RX 6500 XT"),
+            Some("gfx1034")
+        );
+    }
+
+    #[test]
+    fn class_filter_excludes_non_gpu_classes() {
+        // Mock class strings → should be filtered
+        // Bridge (0x0604) → NOT a GPU
+        let class_bridge = "0x060400";
+        assert_eq!(
+            u32::from_str_radix(class_bridge.strip_prefix("0x").unwrap(), 16).unwrap() & 0xFFFF00,
+            0x060400
+        );
+        // Audio (0x0403) → NOT a GPU
+        let class_audio = "0x040300";
+        assert_eq!(
+            u32::from_str_radix(class_audio.strip_prefix("0x").unwrap(), 16).unwrap() & 0xFFFF00,
+            0x040300
+        );
+        // VGA (0x030000) → IS a GPU
+        let class_vga = "0x030000";
+        assert_eq!(
+            u32::from_str_radix(class_vga.strip_prefix("0x").unwrap(), 16).unwrap() & 0xFFFF00,
+            0x030000
+        );
+        // 3D (0x030200) → IS a GPU
+        let class_3d = "0x030200";
+        assert_eq!(
+            u32::from_str_radix(class_3d.strip_prefix("0x").unwrap(), 16).unwrap() & 0xFFFF00,
+            0x030200
+        );
+        // Detectors ONLY accept VGA/3D — bridge/audio are excluded
     }
 }

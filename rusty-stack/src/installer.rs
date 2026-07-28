@@ -55,6 +55,23 @@ pub fn run_installation(
     sender: Sender<InstallerEvent>,
     input_rx: Receiver<String>,
 ) {
+    run_installation_with_version(components, config, sudo_password, sender, input_rx, None);
+}
+
+/// Run installation with an optional planner-selected target version.
+///
+/// Normal installs keep the historical API and let each installer choose its
+/// bundled compatible default. Update applies can pass the exact manifest
+/// target through this path without changing component selection or package
+/// source logic.
+pub fn run_installation_with_version(
+    components: Vec<Component>,
+    config: InstallerConfig,
+    sudo_password: Option<String>,
+    sender: Sender<InstallerEvent>,
+    input_rx: Receiver<String>,
+    target_version: Option<String>,
+) {
     let scripts_dir = &config.scripts_dir;
     let batch_mode = config.batch_mode;
     let install_method = config.install_method.clone();
@@ -64,7 +81,7 @@ pub fn run_installation(
     let user_home = resolve_mlstack_user_home();
     let input_rx = Arc::new(Mutex::new(input_rx));
 
-    match ensure_mlstack_env(&user_home, &install_method) {
+    match ensure_mlstack_env(&user_home, &install_method, false) {
         Ok(EnvUpdate::Created) => {
             let _ = sender.send(InstallerEvent::Log(
                 format!("Created .mlstack_env in {}", user_home),
@@ -126,7 +143,11 @@ pub fn run_installation(
     let no_explicit_python = std::env::var("MLSTACK_PYTHON_BIN")
         .map(|v| v.trim().is_empty())
         .unwrap_or(true);
-    if no_named_env && no_explicit_python {
+    // A "global" install = no named env requested AND no interpreter pinned.
+    // Captured here (before MLSTACK_PYTHON_BIN is set below) so the post-install
+    // auto-source step can gate on it.
+    let is_global_install = no_named_env && no_explicit_python;
+    if is_global_install {
         let bootstrap = resolve_python_bin();
         if let Ok(global_py) = crate::platform::environment::ensure_global_venv(&bootstrap) {
             std::env::set_var(
@@ -186,7 +207,7 @@ pub fn run_installation(
             name: component.name.clone(),
         });
 
-        if component.category == Category::Verification {
+        if component.category == Category::Maintenance && component.id.starts_with("verify-") {
             let outcome = run_verification(&component, &python_candidates, &sender, &user_home);
             let _ = sender.send(InstallerEvent::VerificationReport {
                 component_id: component.id.clone(),
@@ -235,9 +256,11 @@ pub fn run_installation(
                 batch_mode,
                 install_method: &install_method,
                 sender: &sender,
-                input_rx: Arc::clone(&input_rx),
                 user_home: &user_home,
                 env_exports: &env_exports,
+                vllm_version_lag: config.vllm_version_lag,
+                vllm_version_min_age_days: config.vllm_version_min_age_days,
+                target_version: target_version.clone(),
             };
             // T2: sealed-core no-override gate + registry population.
             match registry_gate(&component, &sender) {
@@ -326,8 +349,29 @@ pub fn run_installation(
             message: format!("{} {}", verify_label, component.name),
         });
 
-        let verification_outcome =
-            run_component_verification(&component, &python_candidates, &sender, &user_home);
+        // Benchmarks are their own verification — run_native_benchmark already
+        // returned a definitive SUCCESS/FAILED. The file-based verification
+        // below checks for benchmark log files, which the native benchmark
+        // runners do not write, so it would spuriously fail a benchmark that
+        // succeeded (e.g. "no benchmark logs found"). Use the benchmark's own
+        // result as the verdict for Performance components.
+        let verification_outcome = if component.category == Category::Performance {
+            VerificationOutcome {
+                success: install_success,
+                report_lines: vec![format!(
+                    "Benchmark {}",
+                    if install_success {
+                        "completed successfully"
+                    } else {
+                        "reported failures"
+                    }
+                )],
+            }
+        } else if is_native_maintenance_action(&component) {
+            native_maintenance_action_outcome(&component, install_success)
+        } else {
+            run_component_verification(&component, &python_candidates, &sender, &user_home)
+        };
         let _ = sender.send(InstallerEvent::VerificationReport {
             component_id: component.id.clone(),
             lines: verification_outcome.report_lines.clone(),
@@ -414,6 +458,46 @@ pub fn run_installation(
                 overall_progress * 100.0
             ),
         });
+    }
+
+    // Refresh ~/.mlstack_env from POST-INSTALL state. ensure_mlstack_env ran once
+    // at the start of the run, but components install the files it derives values
+    // from — e.g. /opt/rocm/.info/version is absent until the ROCm component lands,
+    // so a start-of-run capture would freeze ROCM_VERSION at the fallback (7.2.0).
+    // Re-running here re-derives ROCM_VERSION / GPU_ARCH / HSA_OVERRIDE /
+    // HIP_VISIBLE_DEVICES / MLSTACK_PYTHON_BIN from the now-installed reality.
+    // Best-effort: never fail the install over an env refresh.
+    match ensure_mlstack_env(&user_home, &install_method, false) {
+        Ok(EnvUpdate::Created) | Ok(EnvUpdate::Updated) => {
+            let _ = sender.send(InstallerEvent::Log(
+                "[post-install] Refreshed ~/.mlstack_env from installed state \
+                 (ROCM_VERSION / GPU_ARCH / etc.)"
+                    .into(),
+                false,
+            ));
+        }
+        Ok(EnvUpdate::Unchanged) => {}
+        Err(e) => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!("[post-install] Warning: could not refresh ~/.mlstack_env: {e}"),
+                false,
+            ));
+        }
+    }
+
+    // Auto-source ~/.mlstack_env into bash/zsh (fish auto-loads the conf.d file
+    // written above) on shell launch — but ONLY for a Global install. Named /
+    // env-isolated installs must not mutate the global shell; their env is sourced
+    // manually. Idempotent + uninstall-safe (see offer_mlstack_env_source).
+    if is_global_install {
+        if let Err(e) = crate::platform::environment::offer_mlstack_env_source() {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[post-install] Warning: could not auto-source ~/.mlstack_env into shell rc: {e}"
+                ),
+                false,
+            ));
+        }
     }
 
     if overall_success && config.star_repos {
@@ -561,9 +645,13 @@ fn fix_libdrm_amdgpu_ids() {
         }
     }
 
-    // Fallback: try with sudo (non-interactive, uses cached credentials if available)
+    // Fallback: try with sudo. `-n` keeps it strictly non-interactive — fail fast
+    // (no tty password prompt) when there are no cached credentials, then fall
+    // through to the manual suggestion below. `.output()` already captures
+    // stderr so nothing leaks to the terminal; `-n` makes the best-effort intent
+    // explicit and guarantees the install never blocks on a password read.
     let result = Command::new("sudo")
-        .args(["mkdir", "-p", "/opt/amdgpu/share/libdrm/"])
+        .args(["-n", "mkdir", "-p", "/opt/amdgpu/share/libdrm/"])
         .stdin(std::process::Stdio::null())
         .output();
 
@@ -571,6 +659,7 @@ fn fix_libdrm_amdgpu_ids() {
         if out.status.success() {
             let result2 = Command::new("sudo")
                 .args([
+                    "-n",
                     "ln",
                     "-sf",
                     "/usr/share/libdrm/amdgpu.ids",
@@ -614,7 +703,7 @@ fn compute_relative_symlink(link: &Path, target: &Path) -> PathBuf {
     result
 }
 
-fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate> {
+fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Result<EnvUpdate> {
     let env_path = PathBuf::from(user_home).join(".mlstack_env");
     let normalized_install_method = match install_method.trim().to_ascii_lowercase().as_str() {
         "global" => "global",
@@ -622,15 +711,14 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
         "auto" => "auto",
         _ => "auto",
     };
-    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
-    let env_exports = load_mlstack_env_exports(&user_home);
+    let env_exports = load_mlstack_env_exports(user_home);
     let persistent_python = env_exports
         .get("MLSTACK_PYTHON_BIN")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     // Tenet 1: MLSTACK_ENV_NAME (set by `rusty install --env <name>`) isolates
     // ALL components into ~/.mlstack/envs/<name>/. Falls back to the persisted
-    // target, then discovery.
+    // target, then global managed python, then discovery.
     let python_bin = std::env::var("MLSTACK_ENV_NAME")
         .ok()
         .map(|n| n.trim().to_string())
@@ -643,48 +731,141 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
                 .to_string()
         })
         .or(persistent_python)
-        .unwrap_or_else(resolve_python_bin);
-    if env_path.exists() {
+        .unwrap_or_else(|| {
+            // Prefer managed global python (~/.mlstack/global/bin/python)
+            let global_py = crate::platform::environment::mlstack_global_python();
+            if global_py.exists() {
+                global_py.to_string_lossy().to_string()
+            } else {
+                resolve_python_bin()
+            }
+        });
+
+    // FAIL-LOUD: require discrete AMD GPU via sysfs detector
+    let dgpus = crate::gpu::detect_discrete_amd_gpus();
+    if dgpus.is_empty() {
+        bail!("cannot detect AMD dGPU arch via sysfs — ensure amdgpu driver loaded");
+    }
+    let primary = &dgpus[0];
+    let gpu_arch = primary.gfx_arch.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not resolve gfx arch for PCI device {} — set GPU_ARCH manually",
+            primary.pci_device_id
+        )
+    })?;
+    // ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES filter by the *original* ROCr
+    // enumeration order (CPU + iGPU + dGPU agents as `rocminfo` prints them),
+    // NOT a re-numbered post-filter sequence. On an APU+dGPU host the iGPU is a
+    // low ROCr agent index, so emitting the compacted filtered-list indices
+    // (0,1,...) would point ROCr at the iGPU/CPU instead of the dGPU — defeating
+    // the iGPU-exclusion hardening. Use the real ROCm agent indices captured by
+    // the gpu detector (from rocminfo) when available; fall back to compacted
+    // indices only when rocminfo is absent (a rocminfo-less host has no separate
+    // CPU/iGPU agent, so there is no index gap to worry about — this matches
+    // bootstrap::env_setup::detect_discrete_gpus's lspci/render-node fallbacks,
+    // which also compact).
+    let discrete_indices = if dgpus.iter().all(|g| g.rocm_index.is_some()) {
+        dgpus
+            .iter()
+            .map(|g| g.rocm_index.expect("checked Some above").to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        dgpus
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    // After filtering, the dGPU is always index 0 of the *visible* (re-numbered)
+    // set, regardless of its original ROCr index. PYTORCH_ROCM_DEVICE selects
+    // within the post-filter visible set, so it stays "0".
+    let primary_gpu = "0";
+    // Per-GPU identity emitted to the env so the benchmark renders a real GPU
+    // inventory from ONE source (~/.mlstack_env) — no ad-hoc detection elsewhere.
+    // VRAM from the sysfs detector (dgpus.vram_bytes); clean marketing names +
+    // compute units from rocminfo (crate::gpu's lspci names are ugly PCI strings).
+    let gpu_vram_gb_csv = dgpus
+        .iter()
+        .map(|g| match g.vram_bytes {
+            Some(b) => format!("{:.0}", b as f64 / (1024.0 * 1024.0 * 1024.0)),
+            None => "0".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let (gpu_names_csv, gpu_cus_csv) = gpu_identity_from_rocminfo(&dgpus);
+    let gpu_pairs = [
+        ("MLSTACK_GPU_NAMES", gpu_names_csv.as_str()),
+        ("MLSTACK_GPU_VRAM_GB", gpu_vram_gb_csv.as_str()),
+        ("MLSTACK_GPU_CUS", gpu_cus_csv.as_str()),
+    ];
+
+    // Precise HSA override: use GpuArchInfo mapping for gfx1101→11.0.1 etc.
+    let hsa_override =
+        crate::bootstrap::env_setup::GpuArchInfo::from_arch(gpu_arch).hsa_override_gfx_version;
+
+    // `force` (force-reinstall / explicit env rewrite): skip the in-place merge
+    // and fall through to the regenerate path below, which truncates-then-writes
+    // the canonical env from current system state. This purges stale/drifted
+    // content while staying scoped to rusty's own env file (~/.mlstack_env) —
+    // no user files outside rusty's control are touched.
+    if env_path.exists() && !force {
         let contents = fs::read_to_string(&env_path).context("Failed to read .mlstack_env")?;
         let rocm_version = detect_rocm_version();
-        let gpu_arch = detect_gpu_arch();
-        let gpu_list = detect_gpu_list();
-        let primary_gpu = first_gpu_index(&gpu_list);
         let rocm_home = "/opt/rocm";
         let rocm_lib = "/opt/rocm/lib";
-        // Derive HSA override from detected arch (e.g. gfx1100 → 11.0.0)
-        let hsa_override_val =
-            hsa_override_from_gpu_arch(&gpu_arch).unwrap_or_else(|| "11.0.0".to_string());
         let defaults = [
             ("ROCM_VERSION", rocm_version.as_str()),
             ("ROCM_CHANNEL", "latest"),
-            ("GPU_ARCH", gpu_arch.as_str()),
-            ("PYTORCH_ROCM_ARCH", gpu_arch.as_str()),
-            ("GPU_ARCHS", gpu_arch.as_str()),
+            ("GPU_ARCH", gpu_arch),
+            ("PYTORCH_ROCM_ARCH", gpu_arch),
+            ("GPU_ARCHS", gpu_arch),
             ("ROCM_HOME", rocm_home),
             ("ROCM_PATH", rocm_home),
             ("HIP_PATH", rocm_home),
-            ("HSA_OVERRIDE_GFX_VERSION", hsa_override_val.as_str()),
-            ("HIP_VISIBLE_DEVICES", gpu_list.as_str()),
-            ("CUDA_VISIBLE_DEVICES", gpu_list.as_str()),
-            ("PYTORCH_ROCM_DEVICE", primary_gpu.as_str()),
+            ("HSA_OVERRIDE_GFX_VERSION", hsa_override.as_str()),
+            ("HIP_VISIBLE_DEVICES", discrete_indices.as_str()),
+            ("CUDA_VISIBLE_DEVICES", discrete_indices.as_str()),
+            // ROCR_VISIBLE_DEVICES — the Linux ROCr (HSA) runtime filter, the
+            // lowest level. AMD's guidance: on Linux use ROCR_VISIBLE_DEVICES; it
+            // filters before HIP. CUDA becomes usable on AMD via HIP only when the
+            // device is visible at this layer, so emit all three (HIP/CUDA/ROCR).
+            ("ROCR_VISIBLE_DEVICES", discrete_indices.as_str()),
+            ("PYTORCH_ROCM_DEVICE", primary_gpu),
             ("MLSTACK_PYTHON_BIN", python_bin.as_str()),
             ("UV_PYTHON", python_bin.as_str()),
             ("MLSTACK_INSTALL_METHOD", normalized_install_method),
             ("INSTALL_METHOD", normalized_install_method),
             ("PYTHONPATH", rocm_lib),
+            // PYTORCH_CUDA_ALLOC_CONF — PyTorch's REAL caching-allocator var (the
+            // ROCm backend reads it as-is via the HIP shim; there is no _HIP_ or
+            // bare-ALLOC variant that works). Append-on-missing only — NOT
+            // normalized — so a user's custom allocator config is preserved rather
+            // than clobbered with this default.
+            ("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:512"),
+            // PYTORCH_HIP_ALLOC_CONF — the ROCm/HIP-canonical allocator var
+            // (docs.pytorch.org/.../hip). Emitted alongside the CUDA name so the
+            // config is honored regardless of which a given PyTorch build reads.
+            ("PYTORCH_HIP_ALLOC_CONF", "max_split_size_mb:512"),
+            // libdrm amdgpu ASIC id table (ROCm's amdgpu.ids lookup) — constant path.
+            ("AMDGPU_ASIC_ID_TABLE_PATH", "/usr/share/libdrm/amdgpu.ids"),
+            ("AMDGPU_ASIC_ID_TABLE_PATHS", "/usr/share/libdrm"),
         ];
-        let (updated, changed) = sanitize_mlstack_env(
+        let (sanitized, _changed) = sanitize_mlstack_env(
             &contents,
             &defaults,
-            gpu_list.as_str(),
+            discrete_indices.as_str(),
             rocm_home,
             python_bin.as_str(),
             normalized_install_method,
-            hsa_override_val.as_str(),
+            hsa_override.as_str(),
         );
-        if changed {
-            fs::write(&env_path, updated).context("Failed to update .mlstack_env")?;
+        // Per-GPU metadata (quoted — names contain spaces; the unquoted sanitize
+        // path truncates at the first space). Canonical GPU info source.
+        let updated = ensure_gpu_metadata_exports(&sanitized, &gpu_pairs);
+        if updated != contents {
+            fs::write(&env_path, &updated).context("Failed to update .mlstack_env")?;
             return Ok(EnvUpdate::Updated);
         }
         return Ok(EnvUpdate::Unchanged);
@@ -695,60 +876,46 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str) -> Result<EnvUpdate
     }
 
     let rocm_version = detect_rocm_version();
-    let gpu_arch = detect_gpu_arch();
-    let gpu_list = detect_gpu_list();
-    let primary_gpu = first_gpu_index(&gpu_list);
     let rocm_home = "/opt/rocm";
-    let rocm_lib = "/opt/rocm/lib";
-    let hsa_override =
-        hsa_override_from_gpu_arch(&gpu_arch).unwrap_or_else(|| "11.0.0".to_string());
 
-    let content = format!(
-        "# ML Stack Environment File (generated by Rusty-Stack)\n\
-export ROCM_VERSION={}\n\
-export ROCM_CHANNEL=latest\n\
-export GPU_ARCH={}\n\
-export PYTORCH_ROCM_ARCH={}\n\
-export GPU_ARCHS={}\n\
-export ROCM_HOME={}\n\
-export ROCM_PATH={}\n\
-export HIP_PATH={}\n\
-export HSA_OVERRIDE_GFX_VERSION={}\n\
-export HIP_VISIBLE_DEVICES={}\n\
-export CUDA_VISIBLE_DEVICES={}\n\
-export PYTORCH_ROCM_DEVICE={}\n\
-export MLSTACK_PYTHON_BIN={}\n\
-export UV_PYTHON={}\n\
-export MLSTACK_INSTALL_METHOD={}\n\
-export INSTALL_METHOD={}\n\
-export PYTHONPATH={}:$PYTHONPATH\n\
-export PYTORCH_ALLOC_CONF=\"max_split_size_mb:512\"\n\
-export PATH=\"/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{}/bin:{}/hip/bin:$PATH\"\n\
-export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{}/lib:{}/hip/lib:{}/opencl/lib:$LD_LIBRARY_PATH\"\n",
-        rocm_version,
+    // Single canonical env generator (bash) — shared with the bootstrap path so
+    // there is ONE source of truth for the ROCm env (device filter, arch, paths,
+    // perf/triton/vLLM/MPI). Only rusty-stack install metadata is appended.
+    let mut content = crate::bootstrap::env_setup::generate_env_file_content(
+        &discrete_indices,
+        rocm_home,
+        &rocm_version,
+        "latest",
         gpu_arch,
-        gpu_arch,
-        gpu_arch,
-        rocm_home,
-        rocm_home,
-        rocm_home,
-        hsa_override,
-        gpu_list,
-        gpu_list,
-        primary_gpu,
-        python_bin,
-        python_bin,
-        normalized_install_method,
-        normalized_install_method,
-        rocm_lib,
-        rocm_home,
-        rocm_home,
-        rocm_home,
-        rocm_home,
-        rocm_home
+        &hsa_override,
+        &python_bin,
     );
+    content.push_str(&format!(
+        "\n# Rusty-Stack install metadata\nexport MLSTACK_INSTALL_METHOD={}\nexport INSTALL_METHOD={}\n",
+        normalized_install_method, normalized_install_method,
+    ));
+    // Per-GPU metadata (quoted — names contain spaces). Canonical GPU info source.
+    content = ensure_gpu_metadata_exports(&content, &gpu_pairs);
 
-    fs::write(&env_path, content).context("Failed to create .mlstack_env")?;
+    fs::write(&env_path, &content).context("Failed to create .mlstack_env")?;
+
+    // Fish mirror — auto-loaded from ~/.config/fish/conf.d/mlstack_env.fish so
+    // fish shells get the identical device-filtered ROCm env without sourcing.
+    let fish_dir = PathBuf::from(user_home).join(".config/fish/conf.d");
+    if fs::create_dir_all(&fish_dir).is_ok() {
+        let fish_content = crate::bootstrap::env_setup::generate_fish_env_file_content(
+            &discrete_indices,
+            rocm_home,
+            &rocm_version,
+            "latest",
+            gpu_arch,
+            &hsa_override,
+            &python_bin,
+        );
+        let fish_path = fish_dir.join("mlstack_env.fish");
+        fs::write(&fish_path, fish_content)
+            .context("Failed to write fish conf.d/mlstack_env.fish")?;
+    }
 
     // Fix libdrm amdgpu.ids symlink for ROCm packages that look in /opt/amdgpu
     // The amdgpu.ids file is typically at /usr/share/libdrm/amdgpu.ids but
@@ -756,6 +923,115 @@ export LD_LIBRARY_PATH=\"$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-comp
     fix_libdrm_amdgpu_ids();
 
     Ok(EnvUpdate::Created)
+}
+
+/// Clean GPU marketing names + compute-unit counts from rocminfo, for the
+/// discrete GPUs (Device Type: GPU, iGPUs filtered), ordered to match
+/// ROCR_VISIBLE_DEVICES. lspci descriptions (what crate::gpu's marketing_name
+/// holds) are ugly PCI strings; rocminfo's Marketing Name is the clean product
+/// name + Compute Unit is the CU count. Returns (names_csv, cus_csv). Falls
+/// back to dgpus' lspci name + 0 CUs if rocminfo is unavailable or mismatches.
+fn gpu_identity_from_rocminfo(dgpus: &[crate::gpu::AmdGpu]) -> (String, String) {
+    let count = dgpus.len();
+    let text =
+        match std::process::Command::new(crate::installers::common::utils::resolve_rocminfo_path())
+            .output()
+        {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => return gpu_identity_fallback(dgpus),
+        };
+    let mut entries: Vec<(String, u32)> = Vec::new();
+    let mut name = String::new();
+    let mut cus: u32 = 0;
+    let mut is_gpu = false;
+    let mut started = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("Agent ") && t.contains(char::is_numeric) {
+            if started && is_gpu && !name.is_empty() && !crate::gpu::is_integrated_gpu_name(&name) {
+                entries.push((name.clone(), cus));
+            }
+            name.clear();
+            cus = 0;
+            is_gpu = false;
+            started = false;
+        } else if let Some(v) = t.strip_prefix("Marketing Name:") {
+            name = v.trim().to_string();
+            started = true;
+        } else if let Some(v) = t.strip_prefix("Device Type:") {
+            is_gpu = v.trim().contains("GPU");
+            started = true;
+        } else if let Some(v) = t.strip_prefix("Compute Unit:") {
+            cus = v.trim().parse().unwrap_or(0);
+            started = true;
+        }
+    }
+    if started && is_gpu && !name.is_empty() && !crate::gpu::is_integrated_gpu_name(&name) {
+        entries.push((name, cus));
+    }
+    entries.truncate(count);
+    if entries.len() == count {
+        let names = entries
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect::<Vec<_>>()
+            .join(",");
+        let cus = entries
+            .iter()
+            .map(|(_, c)| c.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        (names, cus)
+    } else {
+        gpu_identity_fallback(dgpus)
+    }
+}
+
+/// Fallback: dgpus' lspci marketing names + 0 CUs (when rocminfo is unavailable
+/// or its GPU-agent count doesn't match the sysfs detector's discrete count).
+fn gpu_identity_fallback(dgpus: &[crate::gpu::AmdGpu]) -> (String, String) {
+    let names = dgpus
+        .iter()
+        .map(|g| {
+            g.marketing_name
+                .clone()
+                .unwrap_or_else(|| format!("AMD GPU {}", g.pci_device_id))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let cus = dgpus
+        .iter()
+        .map(|_| "0".to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    (names, cus)
+}
+
+/// Ensure `MLSTACK_GPU_NAMES` + `MLSTACK_GPU_VRAM_GB` are present as QUOTED
+/// exports. GPU marketing names contain spaces ("AMD Radeon RX 7900 XTX"), and
+/// the sanitize path writes `export KEY=VALUE` unquoted (truncating at the first
+/// space), so these two are emitted/normalized here instead. Values are
+/// comma-separated, ordered to match ROCR_VISIBLE_DEVICES. This is the canonical
+/// GPU info (names + VRAM + arch via GPU_ARCH) that the benchmark + verification
+/// read from the env rather than re-detecting.
+fn ensure_gpu_metadata_exports(contents: &str, pairs: &[(&str, &str)]) -> String {
+    let mut lines: Vec<String> = contents.lines().map(|l| l.to_string()).collect();
+    for (key, value) in pairs {
+        let quoted = format!("export {key}=\"{value}\"");
+        let prefix = format!("export {key}=");
+        match lines
+            .iter()
+            .position(|l| l.trim_start().starts_with(&prefix))
+        {
+            Some(idx) => lines[idx] = quoted,
+            None => lines.push(quoted),
+        }
+    }
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 fn sanitize_mlstack_env(
@@ -770,17 +1046,34 @@ fn sanitize_mlstack_env(
     let mut changed = false;
     let mut lines = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    // Defaults lookup for keys not covered by explicit params (ROCM_VERSION,
+    // GPU_ARCH, PYTORCH_ROCM_ARCH, GPU_ARCHS, ROCM_HOME, PYTORCH_ROCM_DEVICE) so
+    // they are normalized — not preserved verbatim — and the env cannot drift
+    // stale (e.g. ROCM_VERSION=7.2.0 frozen in the file while 7.2.4 is installed).
+    let default_for = |key: &str| -> &str {
+        defaults
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
+            .unwrap_or("")
+    };
 
     for line in contents.lines() {
         let trimmed = line.trim_start();
         if let Some(key) = extract_env_key(trimmed) {
             seen.insert(key.to_string());
         }
-        // Stage 2: strip CUDA-leak vars from existing env files — never emit
-        // TORCH_CUDA_ARCH_LIST (CUDA arch flags) or PYTORCH_CUDA_ALLOC_CONF
-        // (CUDA-named) on a ROCm stack. Drop the line entirely.
+        // Stage 2: strip vars that don't belong on a ROCm stack — decided by
+        // FUNCTION, not name. CUDA-named vars ROCm actually uses are KEPT
+        // (CUDA_VISIBLE_DEVICES, PYTORCH_CUDA_ALLOC_CONF — PyTorch's real caching
+        // allocator var, read as-is by the ROCm backend via the HIP shim). Strip:
+        //   - TORCH_CUDA_ARCH_LIST: CUDA compute-capability BUILD targets — ROCm
+        //     uses PYTORCH_ROCM_ARCH (gfx), so this is meaningless/harmful here.
+        //   - PYTORCH_ALLOC_CONF: a non-standard no-op rename (PyTorch never
+        //     dropped the _CUDA) — strip from legacy files so only the functional
+        //     PYTORCH_CUDA_ALLOC_CONF remains.
         if trimmed.starts_with("export TORCH_CUDA_ARCH_LIST=")
-            || trimmed.starts_with("export PYTORCH_CUDA_ALLOC_CONF=")
+            || trimmed.starts_with("export PYTORCH_ALLOC_CONF=")
         {
             changed = true;
             continue;
@@ -799,6 +1092,26 @@ fn sanitize_mlstack_env(
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
         let (line, changed_cuda_vis) =
             normalize_visible_devices(&line, "CUDA_VISIBLE_DEVICES", gpu_list);
+        let (line, changed_rocr_vis) =
+            normalize_visible_devices(&line, "ROCR_VISIBLE_DEVICES", gpu_list);
+        // Normalize the remaining defaults that were previously preserved verbatim
+        // and could drift stale. ROCM_VERSION was the reported bug; the arch/home
+        // cluster is the same class.
+        let (line, changed_rocm_ver) =
+            normalize_env_value(&line, "ROCM_VERSION", default_for("ROCM_VERSION"));
+        let (line, changed_gpu_arch) =
+            normalize_env_value(&line, "GPU_ARCH", default_for("GPU_ARCH"));
+        let (line, changed_pytorch_arch) =
+            normalize_env_value(&line, "PYTORCH_ROCM_ARCH", default_for("PYTORCH_ROCM_ARCH"));
+        let (line, changed_gpu_archs) =
+            normalize_env_value(&line, "GPU_ARCHS", default_for("GPU_ARCHS"));
+        let (line, changed_rocm_home) =
+            normalize_env_value(&line, "ROCM_HOME", default_for("ROCM_HOME"));
+        let (line, changed_pytorch_dev) = normalize_env_value(
+            &line,
+            "PYTORCH_ROCM_DEVICE",
+            default_for("PYTORCH_ROCM_DEVICE"),
+        );
         let (line, changed_pythonpath) = if line.starts_with("export PYTHONPATH=") {
             let desired = format!("export PYTHONPATH={}/lib:$PYTHONPATH", rocm_home);
             if line.trim() != desired {
@@ -845,6 +1158,13 @@ fn sanitize_mlstack_env(
             || changed_hsa
             || changed_hip_vis
             || changed_cuda_vis
+            || changed_rocr_vis
+            || changed_rocm_ver
+            || changed_gpu_arch
+            || changed_pytorch_arch
+            || changed_gpu_archs
+            || changed_rocm_home
+            || changed_pytorch_dev
             || changed_pythonpath
             || changed_path
             || changed_ld;
@@ -868,28 +1188,6 @@ fn extract_env_key(line: &str) -> Option<&str> {
     let export_idx = line.rfind("export ")?;
     let rest = &line[export_idx + 7..]; // skip "export "
     rest.split('=').next().map(str::trim)
-}
-
-/// Normalize an env-var line's value to a fixed assignment. Currently unused
-/// after Stage 2 (CUDA-leak vars are now stripped rather than fixed in place);
-/// retained as a general env-line utility for future migrations.
-#[allow(dead_code)]
-fn fix_env_assignment(line: &str, key: &str) -> (String, bool) {
-    let marker = format!("{}=", key);
-    let Some(idx) = line.find(&marker) else {
-        return (line.to_string(), false);
-    };
-
-    let before = &line[..idx + marker.len()];
-    let after = &line[idx + marker.len()..];
-
-    if after.starts_with('"') {
-        return (line.to_string(), false);
-    }
-
-    // Strip shell suffixes from the value part before re-quoting
-    let clean_after = strip_shell_suffixes_from_value(after);
-    (format!("{}\"{}\"", before, clean_after), true)
 }
 
 fn normalize_env_value(line: &str, key: &str, desired: &str) -> (String, bool) {
@@ -1208,6 +1506,28 @@ fn run_component_verification(
     }
 }
 
+fn is_native_maintenance_action(component: &Component) -> bool {
+    component.category == Category::Maintenance && !component.id.starts_with("verify-")
+}
+
+fn native_maintenance_action_outcome(
+    component: &Component,
+    install_success: bool,
+) -> VerificationOutcome {
+    VerificationOutcome {
+        success: install_success,
+        report_lines: vec![format!(
+            "{} native action {}",
+            component.name,
+            if install_success {
+                "reported success"
+            } else {
+                "reported failure"
+            }
+        )],
+    }
+}
+
 fn build_component_report(
     component: &Component,
     user_home: &str,
@@ -1253,84 +1573,27 @@ fn extract_benchmark_results(component_id: &str) -> Option<Vec<String>> {
 
     // Map component IDs to log file patterns
     let pattern = match component_id {
-        "mlperf-inference" => "mlperf_inference",
-        "rocm-benchmarks" => "rocm_benchmarks",
-        "gpu-memory-bandwidth" => "gpu_memory_bandwidth",
-        "rocm-smi-bench" => "rocm_smi_benchmarks",
+        "mlperf-inference" => "all_benchmarks",
+        "rocm-benchmarks" => "gpu-capability_benchmarks",
+        "gpu-memory-bandwidth" => "memory-bandwidth_benchmarks",
+        "rocm-smi-bench" => "gpu-capability_benchmarks",
         "pytorch-performance" => "pytorch_performance",
         "vllm-performance" => "vllm_benchmarks",
         "deepspeed-performance" => "deepspeed_benchmarks",
         "megatron-performance" => "megatron_benchmarks",
-        "all-benchmarks" => "full_benchmarks",
+        "onnx-performance" => "onnx_benchmarks",
+        "all-benchmarks" => "all_benchmarks",
         _ => return None,
     };
 
     let log_file = find_latest_log_in_dirs(&log_dirs, pattern)?;
     let contents = std::fs::read_to_string(log_file).ok()?;
 
-    // Initialize result_lines at the beginning
-    let mut result_lines: Vec<String> = Vec::new();
-
     let Some(json) = extract_benchmark_json_value(&contents) else {
-        result_lines.push("  No metrics found in log".to_string());
-        return Some(result_lines);
+        return Some(vec!["  No metrics found in log".to_string()]);
     };
 
-    // Handle nested results object (for "all" benchmarks)
-    if let Some(results) = json.get("results").and_then(|r| r.as_object()) {
-        for (bench_name, bench_data) in results {
-            if bench_data.is_object() {
-                let status = bench_data
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .map(|ok| if ok { "SUCCESS" } else { "FAILED" })
-                    .unwrap_or("UNKNOWN");
-                let time_ms = bench_data
-                    .get("execution_time_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                result_lines.push(format!(
-                    "  === {} ({}, {} ms) ===",
-                    bench_name.replace('_', " ").to_uppercase(),
-                    status,
-                    time_ms
-                ));
-                if let Some(metrics) = bench_data.get("metrics").and_then(|m| m.as_object()) {
-                    for (key, value) in metrics {
-                        let value_str = match value {
-                            serde_json::Value::Number(n) => n.to_string(),
-                            serde_json::Value::String(s) => s.clone(),
-                            serde_json::Value::Bool(b) => b.to_string(),
-                            serde_json::Value::Array(arr) => format!("{} values", arr.len()),
-                            _ => continue,
-                        };
-                        let formatted_key = key.replace('_', " ").to_uppercase();
-                        result_lines.push(format!("    {}: {}", formatted_key, value_str));
-                    }
-                }
-                if let Some(errors) = bench_data.get("errors").and_then(|v| v.as_array()) {
-                    for err in errors.iter().filter_map(|v| v.as_str()).take(3) {
-                        result_lines.push(format!("    ERROR: {}", err));
-                    }
-                }
-                result_lines.push(String::new());
-            }
-        }
-    } else if let Some(metrics) = json.get("metrics").and_then(|m| m.as_object()) {
-        // Handle single benchmark results
-        for (key, value) in metrics {
-            let value_str = match value {
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Bool(b) => b.to_string(),
-                serde_json::Value::Array(arr) => format!("{} values", arr.len()),
-                _ => continue,
-            };
-            let formatted_key = key.replace('_', " ").to_uppercase();
-            result_lines.push(format!("  {}: {}", formatted_key, value_str));
-        }
-    }
-
+    let mut result_lines = benchmark_result_lines_from_json(&json);
     if result_lines.is_empty() {
         result_lines.push("  No metrics found in log".to_string());
     }
@@ -1338,17 +1601,95 @@ fn extract_benchmark_results(component_id: &str) -> Option<Vec<String>> {
     Some(result_lines)
 }
 
+fn benchmark_result_lines_from_json(json: &serde_json::Value) -> Vec<String> {
+    let mut result_lines = Vec::new();
+
+    // Handle nested results object (for "all" benchmarks) or a single
+    // benchmark's scalar metric object persisted under `results`.
+    if let Some(results) = json.get("results").and_then(|r| r.as_object()) {
+        let nested_suite = results.values().any(|value| {
+            value.as_object().is_some_and(|obj| {
+                obj.contains_key("success")
+                    || obj.contains_key("metrics")
+                    || obj.contains_key("execution_time_ms")
+            })
+        });
+        if nested_suite {
+            for (bench_name, bench_data) in results {
+                if bench_data.is_object() {
+                    let status = bench_data
+                        .get("success")
+                        .and_then(|v| v.as_bool())
+                        .map(|ok| if ok { "SUCCESS" } else { "FAILED" })
+                        .unwrap_or("UNKNOWN");
+                    let time_ms = bench_data
+                        .get("execution_time_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    result_lines.push(format!(
+                        "  === {} ({}, {} ms) ===",
+                        bench_name.replace('_', " ").to_uppercase(),
+                        status,
+                        time_ms
+                    ));
+                    if let Some(metrics) = bench_data.get("metrics").and_then(|m| m.as_object()) {
+                        append_benchmark_metric_lines(&mut result_lines, metrics, "    ");
+                    }
+                    append_benchmark_error_lines(&mut result_lines, bench_data, "    ");
+                    result_lines.push(String::new());
+                }
+            }
+        } else {
+            append_benchmark_metric_lines(&mut result_lines, results, "  ");
+            append_benchmark_error_lines(&mut result_lines, json, "  ");
+        }
+    } else if let Some(metrics) = json.get("metrics").and_then(|m| m.as_object()) {
+        // Handle single benchmark results
+        append_benchmark_metric_lines(&mut result_lines, metrics, "  ");
+        append_benchmark_error_lines(&mut result_lines, json, "  ");
+    }
+
+    result_lines
+}
+
+fn append_benchmark_metric_lines(
+    lines: &mut Vec<String>,
+    metrics: &serde_json::Map<String, serde_json::Value>,
+    indent: &str,
+) {
+    for (key, value) in metrics {
+        let value_str = match value {
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Array(arr) => format!("{} values", arr.len()),
+            _ => continue,
+        };
+        let formatted_key = key.replace('_', " ").to_uppercase();
+        lines.push(format!("{}{}: {}", indent, formatted_key, value_str));
+    }
+}
+
+fn append_benchmark_error_lines(lines: &mut Vec<String>, value: &serde_json::Value, indent: &str) {
+    if let Some(errors) = value.get("errors").and_then(|v| v.as_array()) {
+        for err in errors.iter().filter_map(|v| v.as_str()).take(3) {
+            lines.push(format!("{}ERROR: {}", indent, err));
+        }
+    }
+}
+
 fn benchmark_pattern_for_target(target_id: &str) -> Option<&'static str> {
     match target_id {
-        "mlperf-inference" => Some("mlperf_inference"),
-        "rocm-benchmarks" => Some("rocm_benchmarks"),
-        "gpu-memory-bandwidth" => Some("gpu_memory_bandwidth"),
-        "rocm-smi-bench" => Some("rocm_smi_benchmarks"),
+        "mlperf-inference" => Some("all_benchmarks"),
+        "rocm-benchmarks" => Some("gpu-capability_benchmarks"),
+        "gpu-memory-bandwidth" => Some("memory-bandwidth_benchmarks"),
+        "rocm-smi-bench" => Some("gpu-capability_benchmarks"),
         "pytorch-performance" => Some("pytorch_performance"),
         "vllm-performance" => Some("vllm_benchmarks"),
         "deepspeed-performance" => Some("deepspeed_benchmarks"),
         "megatron-performance" => Some("megatron_benchmarks"),
-        "all-benchmarks" => Some("full_benchmarks"),
+        "onnx-performance" => Some("onnx_benchmarks"),
+        "all-benchmarks" => Some("all_benchmarks"),
         _ => None,
     }
 }
@@ -1463,6 +1804,7 @@ fn collect_env_info(user_home: &str) -> Vec<(String, String)> {
         "PYTORCH_ROCM_ARCH",
         "HIP_VISIBLE_DEVICES",
         "CUDA_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
         "PYTORCH_ROCM_DEVICE",
         "HSA_OVERRIDE_GFX_VERSION",
         "ROCM_HOME",
@@ -1726,7 +2068,6 @@ fn run_verification_command(
 ) -> Result<(bool, Vec<String>)> {
     let user_home = resolve_mlstack_user_home();
     let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
 
     let mut command = Command::new(&step.program);
@@ -1772,7 +2113,12 @@ fn run_verification_command(
         .get("GPU_ARCH")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(detect_gpu_arch);
+        .unwrap_or_else(|| {
+            detect_gpu_arch().unwrap_or_else(|| {
+                eprintln!("Warning: no GPU arch detected, falling back to gfx1100");
+                "gfx1100".to_string()
+            })
+        });
     let py_rocm_arch = env_exports
         .get("PYTORCH_ROCM_ARCH")
         .map(|v| v.trim().to_string())
@@ -1800,6 +2146,11 @@ fn run_verification_command(
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .or_else(|| hip_visible.clone());
+    let mut rocr_visible = env_exports
+        .get("ROCR_VISIBLE_DEVICES")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| hip_visible.clone());
     if step.target_id == "aiter" {
         let base_list = hip_visible
             .clone()
@@ -1807,7 +2158,8 @@ fn run_verification_command(
             .unwrap_or_else(detect_gpu_list);
         let ordered = prioritize_gpu_list_for_arch(&base_list, &gpu_archs);
         hip_visible = Some(ordered.clone());
-        cuda_visible = Some(ordered);
+        cuda_visible = Some(ordered.clone());
+        rocr_visible = Some(ordered);
     }
     let hsa_override = env_exports
         .get("HSA_OVERRIDE_GFX_VERSION")
@@ -1836,6 +2188,9 @@ fn run_verification_command(
     }
     if let Some(value) = cuda_visible {
         command.env("CUDA_VISIBLE_DEVICES", value);
+    }
+    if let Some(value) = rocr_visible {
+        command.env("ROCR_VISIBLE_DEVICES", value);
     }
     if let Some(value) = hsa_override {
         command.env("HSA_OVERRIDE_GFX_VERSION", value);
@@ -1917,7 +2272,7 @@ fn sort_components_by_dependencies(components: Vec<Component>) -> Vec<Component>
     let mut other_comps: Vec<Component> = Vec::new();
 
     for comp in components {
-        if comp.category == Category::Verification || comp.category == Category::Performance {
+        if comp.category == Category::Maintenance || comp.category == Category::Performance {
             other_comps.push(comp);
         } else {
             installer_comps.push(comp);
@@ -1963,10 +2318,13 @@ struct NativeInstallerContext<'a> {
     batch_mode: bool,
     install_method: &'a str,
     sender: &'a Sender<InstallerEvent>,
-    #[allow(dead_code)] // Reserved for interactive input forwarding in future use
-    input_rx: Arc<Mutex<Receiver<String>>>,
     user_home: &'a str,
     env_exports: &'a HashMap<String, String>,
+    /// vLLM source-build supply-chain gate (version lag + min age), from config.
+    vllm_version_lag: u32,
+    vllm_version_min_age_days: u32,
+    /// Exact manifest target for update-driven installs, when provided.
+    target_version: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2050,6 +2408,31 @@ fn is_up_to_date_output(output: &str) -> bool {
         || lower.contains("there is nothing to do")
         || lower.contains("already installed")
         || (lower.contains("warning:") && lower.contains("up to date"))
+}
+
+/// Prepend `/opt/rocm/bin` and `/opt/rocm/hip/bin` to `inherited` (de-duplicated).
+///
+/// `rocm-sdk-core` (pip) installs `rocminfo`/`hipcc`/`hipconfig`/`rocm-smi`
+/// shims into the venv `bin/`; these are frequently non-functional and, because
+/// the venv `bin/` precedes `/opt/rocm/bin` on PATH, they shadow the working
+/// `/opt/rocm/bin` binaries. Tools that resolve these via PATH — e.g. aiter's
+/// `chip_info._detect_native` (rocminfo) during JIT — then fail. This restores
+/// correct resolution.
+///
+/// Returns the inherited `PATH` unchanged when `/opt/rocm/bin` is absent (no
+/// system ROCm install to prefer).
+fn safe_rocm_path(inherited: &str) -> String {
+    const ROCM_BINS: &[&str] = &["/opt/rocm/bin", "/opt/rocm/hip/bin"];
+    if !Path::new("/opt/rocm/bin").exists() {
+        return inherited.to_string();
+    }
+    let mut parts: Vec<&str> = ROCM_BINS.to_vec();
+    for entry in inherited.split(':') {
+        if !entry.is_empty() && !ROCM_BINS.contains(&entry) {
+            parts.push(entry);
+        }
+    }
+    parts.join(":")
 }
 
 ///
@@ -2162,6 +2545,19 @@ fn execute_native_command(
     for (key, value) in &envs {
         command.env(key, value);
     }
+
+    // Guarantee the real ROCm CLI tools precede any pip-installed shims on PATH.
+    // `rocm-sdk-core` (pip) drops shims for rocminfo/hipcc/hipconfig/rocm-smi
+    // into ~/.mlstack/global/bin; on this box its rocminfo shim exits 8
+    // (HSA_STATUS_ERROR_OUT_OF_RESOURCES) while /opt/rocm/bin/rocminfo works.
+    // Because ~/.mlstack/global/bin precedes /opt/rocm/bin on the inherited
+    // PATH, tools that resolve rocminfo via PATH — notably aiter's
+    // chip_info._detect_native at JIT time — hit the broken shim and crash.
+    // Prepend /opt/rocm/bin(+hip/bin) once here so every native command is safe.
+    command.env(
+        "PATH",
+        safe_rocm_path(&std::env::var("PATH").unwrap_or_default()),
+    );
 
     // Set working directory if specified (e.g., for pip install -e .)
     if let Some(ref dir) = working_dir {
@@ -2375,23 +2771,6 @@ fn execute_native_command(
     Ok(())
 }
 
-/// Execute a sequence of native commands, stopping on first error.
-///
-/// Multi-step installers call this with their ordered command list.
-/// Each command is executed via `execute_native_command()`.
-#[allow(dead_code)] // Used by multi-step installer sequences
-fn execute_command_sequence(
-    commands: &[NativeCommand],
-    sudo_pw: Option<&str>,
-    sender: &Sender<InstallerEvent>,
-    component_name: &str,
-) -> Result<()> {
-    for cmd in commands {
-        execute_native_command(cmd, sudo_pw, sender, component_name)?;
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Helper: build base env vars shared by all native installers
 // ---------------------------------------------------------------------------
@@ -2430,6 +2809,7 @@ fn build_common_env(ctx: &NativeInstallerContext) -> Vec<(String, String)> {
         "PYTORCH_ROCM_ARCH",
         "HIP_VISIBLE_DEVICES",
         "CUDA_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
         "PYTORCH_ROCM_DEVICE",
         "HSA_OVERRIDE_GFX_VERSION",
         "MLSTACK_PYTHON_BIN",
@@ -2597,22 +2977,69 @@ fn git_clone_or_pull(
             ],
             &[],
         );
-        execute_native_command(&fetch_cmd, sudo_pw, sender, component_name)?;
+        let fetch_ok = execute_native_command(&fetch_cmd, sudo_pw, sender, component_name).is_ok();
 
-        let reset_cmd = NativeCommand::from_shell_cmd(
-            "git",
-            &[
-                "-C".to_string(),
-                target_dir.to_string(),
-                "reset".to_string(),
-                "--hard".to_string(),
-                "origin/HEAD".to_string(),
-            ],
-            &[],
-        );
-        execute_native_command(&reset_cmd, sudo_pw, sender, component_name)?;
+        let reset_ok = if fetch_ok {
+            let reset_cmd = NativeCommand::from_shell_cmd(
+                "git",
+                &[
+                    "-C".to_string(),
+                    target_dir.to_string(),
+                    "reset".to_string(),
+                    "--hard".to_string(),
+                    "origin/HEAD".to_string(),
+                ],
+                &[],
+            );
+            execute_native_command(&reset_cmd, sudo_pw, sender, component_name).is_ok()
+        } else {
+            false
+        };
 
-        Ok(())
+        if fetch_ok && reset_ok {
+            return Ok(());
+        }
+
+        // .git exists but pull + fetch + reset all failed → the repo is corrupt
+        // or unusable (e.g. a purged/empty .git left by a prior run). Remove it
+        // and re-clone fresh: the recursive call sees no .git → clone branch.
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} — existing .git is corrupt/unusable (pull+fetch+reset failed); removing and re-cloning",
+                component_name
+            ),
+            false,
+        ));
+        if std::fs::remove_dir_all(target_dir).is_err() {
+            let rm_cmd = NativeCommand::from_shell_cmd(
+                "rm",
+                &["-rf".to_string(), target_dir.to_string()],
+                &[],
+            );
+            let _ = execute_native_command(&rm_cmd, sudo_pw, sender, component_name);
+        }
+        // Guard against infinite recursion: if the corrupt repo could not be
+        // removed (e.g. root-owned .git left by a prior sudo run while this call
+        // has no sudo_pw), is_existing_git_repo stays true and the recursive
+        // call would re-enter the pull/fetch/reset branch and recurse forever —
+        // hanging the installer thread and risking stack overflow. Bail loudly
+        // instead so the operator sees a clear, actionable failure.
+        if Path::new(target_dir).join(".git").exists() {
+            bail!(
+                "{} — could not remove corrupt repo at '{}' (.git still present); \
+                 aborting re-clone to avoid infinite recursion",
+                component_name,
+                target_dir
+            );
+        }
+        git_clone_or_pull(
+            repo_url,
+            target_dir,
+            extra_clone_args,
+            sudo_pw,
+            sender,
+            component_name,
+        )
     } else {
         // Directory may exist but not be a git repo, or may not exist at all.
         // If a non-empty directory exists without .git, git clone will fail with
@@ -2716,6 +3143,91 @@ fn is_force_reinstall() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// Does the importable `triton` already satisfy the requested `target` version?
+///
+/// The triton dispatch arm skips the heavy from-source build when triton is
+/// already importable (PyTorch bundles `triton-rocm`). But an explicit
+/// `rusty-stack update triton` with a concrete target (e.g. `3.7.0`) must not
+/// be short-circuited by a bare import success if the installed triton is
+/// OLDER than the target — otherwise the post-install honesty guard marks the
+/// update failed because the version didn't advance.
+///
+/// Returns `true` (safe to skip) when:
+///   - `target` is `None`/empty/`latest` (no concrete version to satisfy), OR
+///   - force-reinstall is requested (the caller decides; this returns false so
+///     the build path runs), OR
+///   - the installed triton version is current-or-newer than `target`.
+fn triton_installed_satisfies_target(python_bin: &str, target: Option<&str>) -> bool {
+    let target = match target {
+        Some(t) => t.trim(),
+        None => return true, // no concrete target → bare import success is enough
+    };
+    // Opaque targets ("latest", "installed") → no concrete version to satisfy.
+    if target.is_empty() || target == "latest" || target == "installed" {
+        return true;
+    }
+    // Force-reinstall overrides the skip in the caller; signal "do not skip".
+    if is_force_reinstall() {
+        return false;
+    }
+    // Query the installed triton version and compare against the target.
+    let installed = std::process::Command::new(python_bin)
+        .arg("-c")
+        .arg(
+            "try:\n    import triton, importlib.metadata as im\n    \
+             print(getattr(triton, '__version__', None) or im.version('triton') \
+             or im.version('triton-rocm') or im.version('pytorch-triton'))\n\
+             except Exception:\n    pass",
+        )
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match installed {
+        Some(ver) => version_satisfies(&ver, target),
+        None => false, // can't determine → don't risk skipping a real update
+    }
+}
+
+/// Is `installed` current-or-newer than `target` (loose semver-ish compare)?
+///
+/// Truncates at the first non-numeric segment (PEP 440 dev/local builds like
+/// `3.7.0.dev40+g6c48c5fa0` still compare as `3.7.0`) and compares
+/// major.minor.patch numerically. Returns `true` when installed >= target.
+fn version_satisfies(installed: &str, target: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.split('-')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .filter_map(|s| s.parse::<u64>().ok())
+            .collect()
+    }
+    let a = parts(installed.trim());
+    let b = parts(target.trim());
+    if a.is_empty() || b.is_empty() {
+        // Can't parse → be conservative, treat as NOT satisfying (don't skip).
+        return false;
+    }
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        match ai.cmp(bi) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => continue,
+        }
+    }
+    // All compared equal so far. installed >= target if installed has at least
+    // as many components (e.g. 3.7.0 >= 3.7), else treat equal-length as equal.
+    a.len() >= b.len()
 }
 
 /// Build a pip uninstall command that works with both `uv` and `pip3`.
@@ -2839,11 +3351,21 @@ fn registry_gate(component: &Component, sender: &Sender<InstallerEvent>) -> Resu
         return Ok(true);
     }
     if is_force_reinstall() && !unseal_core_requested() {
-        bail!(
-            "{} is a sealed CORE component — force-reinstall refused to prevent override. \
-             Set MLSTACK_UNSEAL_CORE=1 to intentionally reinstall it.",
-            component.name
-        );
+        // A sealed core must never be silently overridden — but a stray
+        // MLSTACK_FORCE_REINSTALL / FORCE env var (note: `FORCE` is a very
+        // generic name) must NOT hard-fail the whole update either. Reuse the
+        // installed core and tell the user how to actually override it. The
+        // previous `bail!` here cascaded into "blocked by dependency" failures
+        // and got wrapped in a misleading pip/network error.
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {} is a sealed CORE component — force ignored, reusing the installed copy. \
+                 Set MLSTACK_UNSEAL_CORE=1 to intentionally override it.",
+                component.name
+            ),
+            false,
+        ));
+        return Ok(false);
     }
     if !is_force_reinstall() {
         let _ = sender.send(InstallerEvent::Log(
@@ -2895,8 +3417,8 @@ fn component_pip_packages(id: &str) -> Vec<String> {
         "deepspeed" => vec!["deepspeed", "einops"],
         "megatron" => vec!["megatron-core"],
         "bitsandbytes" => vec!["bitsandbytes"],
-        "flash-attn" | "flash_attention" => {
-            vec!["flash-attn", "flash_attn", "flash_attention_amd"]
+        "flash-attn" | "flash-attn-triton" | "flash-attn-ck" | "flash_attention" => {
+            vec!["flash-attn", "flash_attn"]
         }
         "aiter" => vec!["aiter"],
         "onnx" | "onnxruntime" => vec!["onnxruntime", "onnxruntime-rocm"],
@@ -2936,11 +3458,14 @@ fn install_target_location() -> Option<String> {
 }
 
 /// The wheel index / source a component was installed from, where statically
-/// known. PyTorch/Triton come from the Radeon ROCm manylinux index; ROCm lives
-/// at /opt/rocm. `None` for components with no fixed index.
+/// known. PyTorch comes from PyTorch's own ROCm wheel index
+/// (download.pytorch.org/whl/rocmX.Y); triton is the `triton-rocm` wheel bundled
+/// as a PyTorch dependency; ROCm lives at /opt/rocm. `None` for components with
+/// no fixed index.
 fn component_source_index(id: &str) -> Option<String> {
     match id {
-        "pytorch" | "triton" => Some("https://repo.radeon.com/rocm/manylinux/".to_string()),
+        "pytorch" => Some("https://download.pytorch.org/whl/rocm".to_string()),
+        "triton" => Some("triton-rocm (bundled with PyTorch)".to_string()),
         "rocm" => Some("/opt/rocm".to_string()),
         _ => None,
     }
@@ -2963,6 +3488,214 @@ fn component_version(id: &str) -> Option<String> {
     }
 }
 
+/// Ensure the invoking user is a member of the given system groups, adding them
+/// via `sudo usermod -aG` when missing.
+///
+/// Restores a step the original `install_rocm.sh` had (`sudo usermod -aG
+/// render,video "$target_user"`) that the Rust port dropped: without `render`
+/// membership a user cannot open `/dev/kfd` / render nodes on distros that mode
+/// them `0660` (the documented ROCm requirement; works by accident on distros
+/// that mode them `0666`).
+///
+/// System-aware + best-effort:
+/// - Resolves the *real* target user via `SUDO_USER` (then `USER`), so an elevated
+///   `rusty-stack` adds the invoking user, not root.
+/// - Reads the user's *configured* groups (`id -nG <user>` → `/etc/group`), not the
+///   running process's supplemental groups, so it's correct even under sudo.
+/// - Silently skips any group the distro doesn't define (`getent group`).
+/// - Never fails the install: every decision is logged via `sender`.
+fn ensure_user_in_groups(
+    groups: &[&str],
+    sudo_pw: Option<&str>,
+    sender: &Sender<InstallerEvent>,
+    component_name: &str,
+) {
+    use std::process::Command;
+
+    // Prefer SUDO_USER: if rusty-stack is elevated, USER==root but we want the
+    // invoking user added to the groups.
+    let user = std::env::var("SUDO_USER")
+        .ok()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            std::env::var("USER")
+                .ok()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+        });
+    let user = match user {
+        Some(u) => u,
+        None => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] {component_name} — could not determine target user; skipping \
+                     group check. Add yourself manually: sudo usermod -aG {} $USER",
+                    groups.join(",")
+                ),
+                false,
+            ));
+            return;
+        }
+    };
+
+    // The user's configured groups (resolved from /etc/group via `id -nG`), NOT
+    // the running process's supplemental groups — correct even under sudo.
+    let current_groups: Vec<String> = Command::new("id")
+        .args(["-nG", &user])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Keep only groups that EXIST on this system AND that the user lacks.
+    let mut to_add: Vec<&str> = Vec::new();
+    for g in groups {
+        let exists = Command::new("getent")
+            .args(["group", g])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !exists {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] {component_name} — group '{g}' not present on this system; skipping"
+                ),
+                false,
+            ));
+            continue;
+        }
+        if !current_groups.iter().any(|c| c == g) {
+            to_add.push(*g);
+        }
+    }
+
+    if to_add.is_empty() {
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {component_name} — user '{user}' already in all required group(s); nothing to add"
+            ),
+            false,
+        ));
+        return;
+    }
+
+    let csv = to_add.join(",");
+
+    // Add via `sudo usermod -aG`. Needs root → set up askpass so it's non-interactive.
+    let askpass = sudo_pw.filter(|p| !p.is_empty()).and_then(|p| {
+        match crate::installers::common::askpass::Askpass::new(p) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] {component_name} — askpass setup failed ({e}); cannot add \
+                         groups non-interactively"
+                    ),
+                    true,
+                ));
+                None
+            }
+        }
+    });
+
+    let added = if let Some(ap) = askpass {
+        // `sudo -A usermod -aG …` — pass sudo_pw = None so execute_native_command
+        // does not double-wrap in `sudo -S`; SUDO_ASKPASS supplies the password.
+        let args = vec![
+            "-A".to_string(),
+            "usermod".to_string(),
+            "-aG".to_string(),
+            csv.clone(),
+            user.clone(),
+        ];
+        let envs = vec![("SUDO_ASKPASS".to_string(), ap.path().to_string())];
+        let cmd = NativeCommand::from_shell_cmd("sudo", &args, &envs);
+        execute_native_command(&cmd, None, sender, component_name).is_ok()
+    } else {
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {component_name} — no sudo password available; please run: \
+                 sudo usermod -aG {csv} {user}"
+            ),
+            true,
+        ));
+        return;
+    };
+
+    if added {
+        let _ = sender.send(InstallerEvent::Log(
+            format!(
+                "[native] {component_name} — added user '{user}' to group(s): {csv}. \
+                 A re-login (or reboot) is required for the new groups to take effect."
+            ),
+            false,
+        ));
+    }
+}
+
+/// Probe and repair RCCL without installing external dependencies.
+fn run_rccl_remediation(ctx: &NativeInstallerContext, component_name: &str) -> Result<()> {
+    let sender = ctx.sender;
+    let rccl_remediation = crate::installers::components::rccl::RcclInstaller::new(
+        ctx.user_home,
+        resolve_python_bin(),
+        ctx.env_exports
+            .get("ROCM_PATH")
+            .cloned()
+            .unwrap_or_else(|| "/opt/rocm".to_string()),
+        ctx.env_exports
+            .get("ROCM_VERSION")
+            .cloned()
+            .unwrap_or_else(|| "7.2.0".to_string()),
+        ctx.env_exports
+            .get("ROCM_CHANNEL")
+            .cloned()
+            .unwrap_or_else(|| "latest".to_string()),
+        ctx.env_exports
+            .get("ROCR_VISIBLE_DEVICES")
+            .cloned()
+            .or_else(|| ctx.env_exports.get("HIP_VISIBLE_DEVICES").cloned()),
+    );
+
+    let _ = sender.send(InstallerEvent::Log(
+        "[native] Probing RCCL multi-GPU collectives...".into(),
+        false,
+    ));
+    if let Some(build) = rccl_remediation.prepare_remediation()? {
+        let _ = sender.send(InstallerEvent::Log(
+            "[native] Known RCCL collective failure detected; building sealed overlay...".into(),
+            false,
+        ));
+        execute_native_command(
+            &NativeCommand::from_shell_cmd(&build.program, &build.args, &build.env),
+            None,
+            sender,
+            component_name,
+        )?;
+        rccl_remediation.activate_and_verify()?;
+        let _ = sender.send(InstallerEvent::Log(
+            "[native] RCCL sealed overlay activated and validated on both GPUs".into(),
+            false,
+        ));
+    } else {
+        let _ = sender.send(InstallerEvent::Log(
+            "[native] RCCL probe healthy or existing sealed overlay revalidated; no repair needed"
+                .into(),
+            false,
+        ));
+    }
+    Ok(())
+}
+
+/// Execute the native Rust installer dispatch for a ported component.
+///
 /// - **VAL-INSTALL-032**: installer.rs dispatches to correct Rust module per ID
 /// - **VAL-INSTALL-033**: sudo behavior preserved for needs_sudo:true components
 /// - **VAL-INSTALL-034**: Environment variable injection preserved
@@ -3007,40 +3740,44 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
     match component.id.as_str() {
         // ── permanent-env ──────────────────────────────────────────────
         "permanent-env" => {
-            use crate::installers::components::permanent_env::{
-                PermanentEnvConfig, PermanentEnvInstaller,
-            };
-            let detected_gpu_arch = detect_gpu_arch();
-            let detected_gpu_list = detect_gpu_list();
-            let detected_rocm_ver = detect_rocm_version();
-            let hsa_override = hsa_override_from_gpu_arch(&detected_gpu_arch)
-                .unwrap_or_else(|| "11.0.0".to_string());
-            let resolved_python = resolve_python_bin();
-            let inst = PermanentEnvInstaller::new(PermanentEnvConfig {
-                python_bin: resolved_python,
-                gpu_arch: detected_gpu_arch,
-                hsa_override_gfx_version: hsa_override,
-                discrete_gpu_list: detected_gpu_list,
-                rocm_version: detected_rocm_ver,
-                ..PermanentEnvConfig::default()
-            });
+            use crate::installers::components::permanent_env::PermanentEnvInstaller;
+            // REGENERATE ~/.mlstack_env from current system state. This is the
+            // component's namesake job: running it — even after initial creation,
+            // even with force-reinstall — must rewrite the env file so values like
+            // ROCM_VERSION track what is actually installed. (run_installation also
+            // refreshes at start + post-loop, but the component owns this explicitly
+            // so the option does what its name says.) Best-effort: log on error,
+            // never fail the component over an env refresh.
+            // Force-reinstall (or any explicit permanent-env run) regenerates
+            // ~/.mlstack_env from current state instead of merging — see the
+            // `force` doc on ensure_mlstack_env.
+            match ensure_mlstack_env(ctx.user_home, ctx.install_method, is_force_reinstall()) {
+                Ok(EnvUpdate::Created) | Ok(EnvUpdate::Updated) => {
+                    let _ = sender.send(InstallerEvent::Log(
+                        "[native] Permanent ROCm Env — regenerated ~/.mlstack_env from current state".into(),
+                        false,
+                    ));
+                }
+                Ok(EnvUpdate::Unchanged) => {
+                    let _ = sender.send(InstallerEvent::Log(
+                        "[native] Permanent ROCm Env — ~/.mlstack_env already up to date".into(),
+                        false,
+                    ));
+                }
+                Err(e) => {
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] Permanent ROCm Env — could not regenerate ~/.mlstack_env: {e}"
+                        ),
+                        true,
+                    ));
+                }
+            }
+            // Build triton directories, write activate snippets, offer global prepend
+            crate::platform::environment::write_activate_snippets()?;
+            crate::platform::environment::offer_global_prepend(true)?;
+            let inst = PermanentEnvInstaller::default();
             let cmd = inst.build_mkdir_triton_dirs_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
-
-            let cmd = inst.build_rocminfo_gpu_detect_command();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
-
-            let cmd = inst.build_rocm_version_detect_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
                 sudo_pw,
@@ -3191,13 +3928,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     false,
                 ));
             }
+
+            // Ensure the user can actually access GPU compute devices: add to
+            // render/video if missing. The original install_rocm.sh did
+            // `sudo usermod -aG render,video "$target_user"`; the Rust port had
+            // dropped it. Idempotent + system-aware (skips absent groups).
+            ensure_user_in_groups(&["render", "video"], sudo_pw, sender, &component.name);
         }
 
         // ── pytorch ───────────────────────────────────────────────────
         "pytorch" => {
             use crate::installers::components::pytorch::{PyTorchConfig, PyTorchInstaller};
             let force = is_force_reinstall();
+            let python_bin = resolve_python_bin();
             let config = PyTorchConfig {
+                python_bin: python_bin.clone(),
                 force_reinstall: force,
                 ..PyTorchConfig::default()
             };
@@ -3221,7 +3966,30 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 purge_pytorch(sender, &component.name);
             }
 
-            // Step 1: Install common deps
+            // Step 1: Install PyTorch FIRST, from the ROCm wheel index. This MUST
+            // precede the common-deps step: `torchsde` depends on `torch>=1.6.0`,
+            // and if torch isn't already installed, pip resolves that dep from the
+            // DEFAULT PyPI index — which is the CUDA build, dragging in the entire
+            // nvidia-*-cu13 / cuda-toolkit stack. Installing the ROCm torch first
+            // satisfies torchsde's dep so the deps step never pulls CUDA torch.
+            // (The original install_pytorch_rocm.sh installed torchsde/sentencepiece
+            // AFTER PyTorch — the port had inverted the order.)
+            let install_cmd =
+                inst.build_install_command(&rocm_mm, use_uv, ctx.target_version.as_deref());
+            execute_native_command(
+                &NativeCommand::Pip {
+                    program: install_cmd.program.clone(),
+                    args: install_cmd.args.clone(),
+                },
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 2: Install common deps (torchsde, sentencepiece) from PyPI. With
+            // the ROCm torch already installed, torchsde's torch dep is satisfied —
+            // pip (default --upgrade-strategy=only-if-needed) won't replace it with
+            // the CUDA build.
             let deps_cmd = inst.build_common_deps_command(use_uv);
             let _ = common_env.clone(); // Available for future env injection
             execute_native_command(
@@ -3234,13 +4002,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: Install PyTorch
-            let install_cmd = inst.build_install_command(&rocm_mm, use_uv);
+            // Step 3: Rusty centrally owns FastVideo's build/import prerequisites.
+            // Install exact pins without dependency resolution, then verify them
+            // read-only. Component installers may consume these packages but may
+            // never mutate or resolve the managed environment themselves.
+            let managed_python = resolve_python_bin();
+            let managed_install =
+                crate::installers::common::managed_python_install_command(managed_python.clone());
             execute_native_command(
                 &NativeCommand::Pip {
-                    program: install_cmd.program.clone(),
-                    args: install_cmd.args.clone(),
+                    program: managed_install.program,
+                    args: managed_install.args,
                 },
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            let managed_verify =
+                crate::installers::common::managed_python_verify_command(managed_python);
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&managed_verify.program, &managed_verify.args, &[]),
                 None,
                 sender,
                 &component.name,
@@ -3250,8 +4032,48 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── triton ────────────────────────────────────────────────────
         "triton" => {
             use crate::installers::components::triton::{TritonConfig, TritonInstaller};
+
+            // Skip the from-source build if `triton` is already importable AND
+            // the installed version satisfies the requested target.
+            // PyTorch's ROCm wheels bundle `triton-rocm` (the prebuilt ROCm
+            // triton), so once PyTorch is installed `import triton` already works.
+            // The ROCm/triton from-source build is heavy (pulls the NVIDIA
+            // toolchain, builds LLVM) and brittle (permission hazard on
+            // ~/.triton/llvm when prior steps ran under sudo), so it is both
+            // redundant and risky when triton-rocm already provides it.
+            //
+            // BUT: an explicit `rusty-stack update triton` with a pending version
+            // (ctx.target_version = e.g. "3.7.0") must NOT be short-circuited by a
+            // bare `import triton` success — the bundled triton may be older than
+            // the target, and skipping would leave the post-install honesty guard
+            // (apply.rs) to mark the update failed because the version didn't
+            // advance. So: skip only when (a) there is no concrete target, OR
+            // (b) the installed triton version already satisfies the target.
+            let python_bin = resolve_python_bin();
+            let triton_present = std::process::Command::new(&python_bin)
+                .arg("-c")
+                .arg("import triton")
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let triton_satisfies_target = triton_present
+                && triton_installed_satisfies_target(&python_bin, ctx.target_version.as_deref());
+            if triton_satisfies_target {
+                let _ = sender.send(InstallerEvent::Log(
+                    "[native] Triton — already importable (triton-rocm bundled with PyTorch) \
+                     and satisfies the requested target; skipping the redundant from-source \
+                     ROCm/triton build"
+                        .into(),
+                    false,
+                ));
+                return Ok(());
+            }
+
             let triton_force = is_force_reinstall();
-            let inst = TritonInstaller::new(TritonConfig::default());
+            let inst = TritonInstaller::new(TritonConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
             let target_dir = format!("{}/.mlstack/triton", ctx.user_home);
 
             // Force reinstall: thoroughly purge previous Triton (non-fatal)
@@ -3357,6 +4179,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::mpi4py::{Mpi4PyConfig, Mpi4PyInstaller};
             let force = is_force_reinstall();
             let inst = Mpi4PyInstaller::new(Mpi4PyConfig {
+                python_bin: resolve_python_bin(),
                 force_reinstall: force,
                 ..Mpi4PyConfig::default()
             });
@@ -3392,6 +4215,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::deepspeed::{DeepSpeedConfig, DeepSpeedInstaller};
             let force = is_force_reinstall();
             let config = DeepSpeedConfig {
+                python_bin: resolve_python_bin(),
                 force_reinstall: force,
                 ..DeepSpeedConfig::default()
             };
@@ -3430,7 +4254,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── ml-stack-core ─────────────────────────────────────────────
         "ml-stack-core" => {
             use crate::installers::components::ml_stack::{MlStackConfig, MlStackInstaller};
-            let inst = MlStackInstaller::new(MlStackConfig::default());
+            let inst = MlStackInstaller::new(MlStackConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
             let distro = crate::installers::common::DistroFacade::detect();
 
             // Step 1: Install system dependencies
@@ -3456,6 +4283,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
+            // The distro package stays authoritative. Only the exact ROCm#6074
+            // two-GPU failure triggers a sealed, stack-owned RCCL overlay.
+            run_rccl_remediation(ctx, &component.name)?;
+
             let mpi_cmd = inst.build_mpi_install_command(&distro);
             execute_native_command(
                 &NativeCommand::System {
@@ -3467,8 +4298,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: Clone and install Megatron
-            let megatron_clone = inst.build_megatron_clone_command();
+            // Step 2: Clone Megatron into a fixed dir, then `pip install -e .` FROM that
+            // dir. Previously the clone had no destination (landed in the inherited CWD)
+            // and the pip step had no working_dir, so `pip install -e .` would target
+            // whatever dir rusty-stack was launched from — not Megatron-LM.
+            let megatron_dir = format!("{}/.mlstack/src/Megatron-LM", ctx.user_home);
+            let megatron_clone = inst.build_megatron_clone_command(&megatron_dir);
             execute_native_command(
                 &NativeCommand::System {
                     program: megatron_clone.program.clone(),
@@ -3481,206 +4316,178 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             let megatron_install = inst.build_megatron_install_command();
             execute_native_command(
-                &NativeCommand::Pip {
-                    program: megatron_install.program.clone(),
-                    args: megatron_install.args.clone(),
-                },
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &megatron_install.program,
+                    &megatron_install.args,
+                    &[],
+                    Some(PathBuf::from(&megatron_dir)),
+                ),
                 None,
                 sender,
                 &component.name,
             )?;
         }
 
-        // ── flash-attn ────────────────────────────────────────────────
-        "flash-attn" => {
-            use crate::installers::components::flash_attention_ck::{
-                FlashAttentionConfig, FlashAttentionInstaller,
-            };
+        // ── flash-attn-triton / flash-attn-ck ─────────────────────────
+        // Both backends build from the SAME official ROCm/flash-attention repo.
+        // CK is the repo's default backend; Triton is enabled via
+        // FLASH_ATTENTION_TRITON_AMD_ENABLE. They install the identical
+        // `flash_attn` package → mutually exclusive; only the last-installed is
+        // active (tracked by ~/.mlstack/flash-attention/.backend).
+        //   - triton: full forward + backward (recommended for RDNA3)
+        //   - ck:     forward-only on RDNA3 (backward unimplemented —
+        //             ROCm/composable_kernel#1434)
+        "flash-attn" | "flash-attn-triton" | "flash-attn-ck" => {
             let force = is_force_reinstall();
-            let inst = FlashAttentionInstaller::new(FlashAttentionConfig {
-                force_reinstall: force,
-                ..FlashAttentionConfig::default()
-            });
+            // The generic "flash-attn" id (e.g. from migration/update) defaults to
+            // the recommended Triton backend.
+            let is_triton = matches!(component.id.as_str(), "flash-attn" | "flash-attn-triton");
+            let backend_name = if is_triton { "triton" } else { "ck" };
 
             // Force reinstall: thoroughly purge previous Flash Attention (non-fatal)
             if force {
                 purge_flash_attn(sender, &component.name);
             }
 
-            // Determine the ROCm backend from env (default: triton for AMD GPUs)
-            let rocm_backend =
-                std::env::var("ROCM_BACKEND").unwrap_or_else(|_| "triton".to_string());
+            let target_dir = format!("{}/.mlstack/flash-attention", ctx.user_home);
 
-            if rocm_backend == "triton" {
-                // ── Triton backend: pip install from source (proven working approach) ──
-                // Clones the TriDao flash-attention repo and builds with ROCm triton backend.
-                let target_dir = format!("{}/.mlstack/flash-attention", ctx.user_home);
+            git_clone_or_pull(
+                "https://github.com/ROCm/flash-attention.git",
+                &target_dir,
+                &[],
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
-                git_clone_or_pull(
-                    "https://github.com/ROCm/flash-attention.git",
-                    &target_dir,
-                    &[],
-                    sudo_pw,
-                    sender,
-                    &component.name,
-                )?;
+            // Fix ownership if cloned with sudo
+            fix_directory_ownership(&target_dir, sudo_pw, sender);
 
-                // Fix ownership if cloned with sudo
-                fix_directory_ownership(&target_dir, sudo_pw, sender);
+            // Add safe.directory for git operations
+            let safe_dir_cmd = NativeCommand::from_shell_cmd(
+                "git",
+                &[
+                    "config".to_string(),
+                    "--global".to_string(),
+                    "--add".to_string(),
+                    "safe.directory".to_string(),
+                    target_dir.clone(),
+                ],
+                &[],
+            );
+            let _ = execute_native_command(&safe_dir_cmd, None, sender, &component.name);
 
-                // Add safe.directory for git operations
-                let safe_dir_cmd = NativeCommand::from_shell_cmd(
-                    "git",
-                    &[
-                        "config".to_string(),
-                        "--global".to_string(),
-                        "--add".to_string(),
-                        "safe.directory".to_string(),
-                        target_dir.clone(),
-                    ],
-                    &[],
-                );
-                let _ = execute_native_command(&safe_dir_cmd, None, sender, &component.name);
+            // Resolve GPU arch and HSA version from env
+            let gpu_arch = ctx
+                .env_exports
+                .get("GPU_ARCH")
+                .cloned()
+                .unwrap_or_else(|| "gfx1100".to_string());
+            let hsa_version = ctx
+                .env_exports
+                .get("HSA_OVERRIDE_GFX_VERSION")
+                .cloned()
+                .unwrap_or_else(|| "11.0.0".to_string());
 
-                // Resolve GPU arch and HSA version from env
-                let gpu_arch = ctx
-                    .env_exports
-                    .get("GPU_ARCH")
-                    .cloned()
-                    .unwrap_or_else(|| "gfx1100".to_string());
-                let hsa_version = ctx
-                    .env_exports
-                    .get("HSA_OVERRIDE_GFX_VERSION")
-                    .cloned()
-                    .unwrap_or_else(|| "11.0.0".to_string());
+            // Flash Attention's real build/runtime deps — einops, ninja, packaging,
+            // psutil — are NOT guaranteed by the dep graph (get_dependencies =
+            // [pytorch, rocm]; no deepspeed), so install them explicitly first.
+            // None are CUDA runtime packages, and the universal pip chokepoint still
+            // blocks nvidia-*/cuda*. torch itself comes from the pytorch dependency.
+            let fa_deps_args = vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "--break-system-packages".to_string(),
+                "einops".to_string(),
+                "ninja".to_string(),
+                "packaging".to_string(),
+                "psutil".to_string(),
+            ];
+            execute_native_command(
+                &NativeCommand::Shell {
+                    program: resolve_python_bin(),
+                    args: fa_deps_args,
+                    env: vec![],
+                    working_dir: None,
+                },
+                None, // pip runs as user, not sudo
+                sender,
+                &component.name,
+            )?;
 
-                // Run pip install with ROCm triton flags
-                let mut pip_args = vec![
-                    "-m".to_string(),
-                    "pip".to_string(),
-                    "install".to_string(),
-                    "--no-build-isolation".to_string(),
-                    "--no-deps".to_string(),
-                    "--break-system-packages".to_string(),
-                    ".".to_string(),
-                ];
-                // When force reinstalling, tell pip to reinstall even if same version
-                if force {
-                    pip_args.push("--force-reinstall".to_string());
-                }
-                let pip_env = vec![
-                    (
-                        "FLASH_ATTENTION_TRITON_AMD_ENABLE".to_string(),
-                        "TRUE".to_string(),
-                    ),
-                    ("GPU_ARCH".to_string(), gpu_arch.clone()),
-                    ("PYTORCH_ROCM_ARCH".to_string(), gpu_arch),
-                    ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
-                    ("HSA_OVERRIDE_GFX_VERSION".to_string(), hsa_version),
-                ];
-
-                execute_native_command(
-                    &NativeCommand::Shell {
-                        program: "python3".to_string(),
-                        args: pip_args,
-                        env: pip_env,
-                        working_dir: Some(PathBuf::from(&target_dir)),
-                    },
-                    None, // pip must run as user, not sudo
-                    sender,
-                    &component.name,
-                )?;
-            } else {
-                // ── CK backend: cmake + make + pip install (legacy approach) ──
-                // Step 1: git clone
-                let clone_cmd = inst.build_git_clone_command();
-                let target_dir_str = clone_cmd.args.last().cloned().unwrap_or_default();
-                git_clone_or_pull(
-                    "https://github.com/ROCmSoftwarePlatform/flash-attention.git",
-                    &target_dir_str,
-                    &[],
-                    sudo_pw,
-                    sender,
-                    &component.name,
-                )?;
-
-                // Fix ownership if cloned with sudo
-                fix_directory_ownership(&target_dir_str, sudo_pw, sender);
-
-                // Step 2: git checkout
-                let cmd = inst.build_git_checkout_command();
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd_with_dir(
-                        &cmd.program,
-                        &cmd.args,
-                        &cmd.env,
-                        cmd.working_dir.clone(),
-                    ),
-                    None,
-                    sender,
-                    &component.name,
-                )?;
-
-                // Step 3: cmake (clean build dir on force reinstall)
-                if force {
-                    let build_dir = PathBuf::from(&target_dir_str).join("build");
-                    if build_dir.exists() {
-                        let _ = std::fs::remove_dir_all(&build_dir);
-                        let _ = sender.send(InstallerEvent::Log(
-                            format!(
-                                "[native] {} — force reinstall: cleaned build directory",
-                                component.name
-                            ),
-                            false,
-                        ));
-                    }
-                }
-                let rocm_env = crate::installers::common::RocmEnv::detect();
-                let torch_prefix = format!(
-                    "{}/rocm_venv/lib/python3.12/site-packages/torch/share/cmake/Torch",
-                    ctx.user_home
-                );
-                let cmd = inst.build_cmake_command(&rocm_env, &torch_prefix);
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd_with_dir(
-                        &cmd.program,
-                        &cmd.args,
-                        &cmd.env,
-                        cmd.working_dir.clone(),
-                    ),
-                    None,
-                    sender,
-                    &component.name,
-                )?;
-
-                // Step 4: make
-                let cmd = inst.build_make_command();
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd_with_dir(
-                        &cmd.program,
-                        &cmd.args,
-                        &cmd.env,
-                        cmd.working_dir.clone(),
-                    ),
-                    None,
-                    sender,
-                    &component.name,
-                )?;
-
-                // Step 5: pip install from build
-                let cmd = inst.build_setup_install_command();
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd_with_dir(
-                        &cmd.program,
-                        &cmd.args,
-                        &cmd.env,
-                        cmd.working_dir.clone(),
-                    ),
-                    None,
-                    sender,
-                    &component.name,
-                )?;
+            // --no-deps on the FA package itself: with einops/ninja/packaging/psutil
+            // now installed explicitly + torch from pytorch, --no-deps scopes this to
+            // flash_attn and can NEVER pull a CUDA torch to satisfy a torch requirement.
+            // -v surfaces ninja/compiler output (e.g. "[N/M] Compiling …") so the
+            // build log is detailed AND parse_progress can drive the bar with real
+            // per-TU progress instead of pip's opaque "still running…" heartbeat.
+            let mut pip_args = vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "-v".to_string(),
+                "--no-build-isolation".to_string(),
+                "--no-deps".to_string(),
+                "--break-system-packages".to_string(),
+                ".".to_string(),
+            ];
+            if force {
+                pip_args.push("--force-reinstall".to_string());
             }
+
+            let mut pip_env = vec![
+                ("GPU_ARCH".to_string(), gpu_arch.clone()),
+                ("PYTORCH_ROCM_ARCH".to_string(), gpu_arch),
+                ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
+                ("HSA_OVERRIDE_GFX_VERSION".to_string(), hsa_version),
+            ];
+            if is_triton {
+                // Triton backend opt-in (full forward + backward on RDNA3/4).
+                pip_env.push((
+                    "FLASH_ATTENTION_TRITON_AMD_ENABLE".to_string(),
+                    "TRUE".to_string(),
+                ));
+            } else {
+                // CK backend (repo default — Triton flag omitted). The
+                // composable-kernel compile is RAM-heavy; cap parallel jobs so
+                // builds don't OOM on boxes with <96 GB RAM.
+                let jobs = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+                    .min(8);
+                pip_env.push(("MAX_JOBS".to_string(), jobs.to_string()));
+            }
+
+            execute_native_command(
+                &NativeCommand::Shell {
+                    // Managed interpreter (~/.mlstack/global) — same value the
+                    // config was built with. NEVER bare system python3.
+                    program: resolve_python_bin(),
+                    args: pip_args,
+                    env: pip_env,
+                    working_dir: Some(PathBuf::from(&target_dir)),
+                },
+                None, // pip must run as user, not sudo
+                sender,
+                &component.name,
+            )?;
+
+            // Record the active backend so detection is HONEST: "installed" requires
+            // `flash_attn` importable AND a known-backend marker. Only the
+            // last-installed backend reports installed (mutual exclusivity). The
+            // marker is part of the detection contract, so a write failure MUST fail
+            // the install — otherwise the package is installed but untrackable.
+            let marker = PathBuf::from(&target_dir).join(".backend");
+            std::fs::write(&marker, backend_name).map_err(|err| {
+                anyhow::anyhow!(
+                    "{}: failed to write Flash Attention backend marker {}: {} \
+                     — package installed but untrackable; failing install",
+                    component.name,
+                    marker.display(),
+                    err
+                )
+            })?;
         }
 
         // ── repair-stack ──────────────────────────────────────────────
@@ -3710,6 +4517,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     progress: 0.0,
                     estimate: String::new(),
                     needs_sudo: component.needs_sudo,
+                    experimental: false,
+                    note: None,
                 };
 
                 let _ = sender.send(InstallerEvent::Progress {
@@ -3728,11 +4537,16 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             }
         }
 
+        "rccl-repair" => {
+            run_rccl_remediation(ctx, &component.name)?;
+        }
+
         // ── megatron ──────────────────────────────────────────────────
         "megatron" => {
             use crate::installers::components::megatron::{MegatronConfig, MegatronInstaller};
             let force = is_force_reinstall();
             let inst = MegatronInstaller::new(MegatronConfig {
+                python_bin: resolve_python_bin(),
                 force_reinstall: force,
                 ..MegatronConfig::default()
             });
@@ -3764,6 +4578,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Step 2b: Fix ownership — git_clone_or_pull runs with sudo, leaving
+            // the tree root-owned. pip install -e . runs as the user and must
+            // create megatron_core.egg-info in the clone dir; without chown it
+            // fails "could not create 'megatron_core.egg-info': Permission denied".
+            // (Mirrors the aiter installer's post-clone chown.)
+            let run_user = std::env::var("SUDO_USER")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_default();
+            if !run_user.is_empty() {
+                let chown_cmd = NativeCommand::from_shell_cmd(
+                    "chown",
+                    &[
+                        "-R".to_string(),
+                        format!("{run_user}:{run_user}"),
+                        clone_target_str.clone(),
+                    ],
+                    &[],
+                );
+                let _ = execute_native_command(&chown_cmd, sudo_pw, sender, &component.name);
+            }
 
             // Step 3: Remove stale egg-info directories that may be root-owned
             // from a prior sudo install. Without this, `pip install -e .` fails with
@@ -3864,15 +4699,19 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         "vllm" => {
             use crate::installers::components::vllm_multi::{VllmConfig, VllmInstaller};
             let vllm_force = is_force_reinstall();
-            let inst = VllmInstaller::new(VllmConfig::default());
+            let inst = VllmInstaller::new(VllmConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
 
             // Force reinstall: thoroughly purge previous vLLM (non-fatal)
             if vllm_force {
                 purge_vllm(sender, &component.name);
             }
 
-            // Step 1: Install vllm
-            let cmd = inst.build_vllm_install_command();
+            // Step 0: build tools (cmake/ninja/wheel/setuptools/patchelf) for the
+            // source compile of vLLM's C/HIP extensions.
+            let cmd = inst.build_tools_install_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
                 None,
@@ -3880,8 +4719,56 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: Install dependencies
+            // Resolve the vLLM version per the user's supply-chain gate (default:
+            // skip the newest release = lag 1). Queries PyPI for releases + dates,
+            // picks the newest satisfying the version-lag + age policy. Falls back
+            // to a pinned constant if PyPI is unreachable.
+            let vllm_version = inst
+                .resolve_version_with_policy(ctx.vllm_version_lag, ctx.vllm_version_min_age_days);
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] vLLM: selected {vllm_version} (gate: lag={}, min_age_days={}) — \
+                     building from source (ROCm, env torch)",
+                    ctx.vllm_version_lag, ctx.vllm_version_min_age_days
+                ),
+                false,
+            ));
+            // Build vLLM FROM SOURCE against the env's torch (--no-deps so pip
+            // never swaps torch; --no-build-isolation compiles against the
+            // installed torch). Pinned + VLLM_VERSION_OVERRIDE so metadata matches
+            // the sdist filename (no +rocmNNN cascade). Heavy compile.
+            let cmd = inst.build_source_install_command(&vllm_version);
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 2: versioned runtime deps (mistral-common, openai-harmony,
+            // triton-kernels, outlines-core, xgrammar, llguidance) — none pin
+            // torch, so the env torch stays intact.
+            let cmd = inst.build_versioned_deps_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 3: core runtime deps (accelerate, fastapi, transformers, …).
             let cmd = inst.build_deps_install_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 4: fail loud if the explicit --no-deps closure is incomplete.
+            // This is read-only: it prevents a false "vLLM completed" without
+            // letting pip mutate torch/ROCm/NVIDIA/CUDA dependencies.
+            let cmd = inst.build_integrity_check_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
                 None,
@@ -3893,7 +4780,19 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── aiter ─────────────────────────────────────────────────────
         "aiter" => {
             use crate::installers::components::aiter::{AiterConfig, AiterInstaller};
-            let inst = AiterInstaller::new(AiterConfig::default());
+            // Source the build/HSA arch from the detector (env file) — NEVER default to
+            // gfx1100, which would mis-compile the wheel on RDNA2/RDNA4 hardware.
+            let detected_gpu_arch = ctx
+                .env_exports
+                .get("GPU_ARCH")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| detect_gpu_arch().unwrap_or_else(|| "gfx1100".to_string()));
+            let inst = AiterInstaller::new(AiterConfig {
+                python_bin: resolve_python_bin(),
+                gpu_arch: detected_gpu_arch,
+                ..Default::default()
+            });
             let target_dir = format!("{}/.mlstack/aiter", ctx.user_home);
 
             // Force reinstall: thoroughly purge previous AITER (non-fatal)
@@ -4000,7 +4899,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::vllm_studio::{
                 VllmStudioConfig, VllmStudioInstaller,
             };
-            let inst = VllmStudioInstaller::new(VllmStudioConfig::default());
+            let inst = VllmStudioInstaller::new(VllmStudioConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
 
             // Step 1: git clone (idempotent — pulls if already exists)
             let clone_cmd = inst.build_git_clone_command();
@@ -4057,7 +4959,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── comfyui ───────────────────────────────────────────────────
         "comfyui" => {
             use crate::installers::components::comfyui::{ComfyuiConfig, ComfyuiInstaller};
-            let inst = ComfyuiInstaller::new(ComfyuiConfig::default());
+            let inst = ComfyuiInstaller::new(ComfyuiConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
 
             // Step 1: Check PyTorch
             let cmd = inst.build_pytorch_check_command();
@@ -4142,15 +5047,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── textgen ───────────────────────────────────────────────────
         "textgen" => {
             use crate::installers::components::textgen::{TextgenConfig, TextgenInstaller};
-            let textgen_python = ctx
-                .env_exports
-                .get("MLSTACK_PYTHON_BIN")
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "python3".to_string());
+            // Route through the canonical managed interpreter (~/.mlstack/global),
+            // NOT bare system python3 — every installer must respect the created env.
+            let textgen_python = resolve_python_bin();
             // textgen: always use python -m pip --break-system-packages.
-            // uv pip install --system fails on uv-managed Pythons ("externally managed").
-            // The system Python is the correct target for textgen's dependencies.
+            // uv pip install --system fails on uv-managed Pythons ("externally managed");
+            // in the managed venv `python -m pip` works and --break-system-packages is a
+            // harmless no-op.
             let inst = TextgenInstaller::new(TextgenConfig {
                 python_bin: textgen_python.clone(),
                 use_uv: false,
@@ -4276,11 +5179,24 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── onnx ──────────────────────────────────────────────────────
         "onnx" => {
             use crate::installers::components::onnxruntime::{
-                OnnxInstallMethod, OnnxRuntimeConfig, OnnxRuntimeInstaller,
+                install_method_from_env, prebuilt_version_from_env, OnnxInstallMethod,
+                OnnxRuntimeConfig, OnnxRuntimeInstaller,
             };
 
             let detected_rocm_version = detect_rocm_version();
-            let detected_gpu_arch = detect_gpu_arch();
+            let detected_gpu_arch = detect_gpu_arch().unwrap_or_else(|| {
+                eprintln!("Warning: no GPU arch detected for ONNX, falling back to gfx1100");
+                "gfx1100".to_string()
+            });
+
+            // Install method + version are user-selectable (env vars today; the
+            // TUI options screen will set these). Defaults: PyPI prebuilt
+            // `onnxruntime-migraphx` at PREBUILT_MIGRAPHX_VERSION (1.27.1 — kept
+            // in lock-step with the manifest `onnx` target + DEFAULT_ONNXRUNTIME_VERSION
+            // so the post-install honesty guard verifies the version the default
+            // wheel path actually installs).
+            let install_method = install_method_from_env();
+            let prebuilt_version = prebuilt_version_from_env();
 
             // Build config with detected hardware info
             let config = OnnxRuntimeConfig {
@@ -4300,7 +5216,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     }
                 }),
                 gpu_arch: Some(detected_gpu_arch),
-                install_method: OnnxInstallMethod::MigraphxWheel,
+                python_bin: resolve_python_bin(),
+                install_method,
+                runtime_version: ctx.target_version.clone(),
+                prebuilt_version,
                 ..Default::default()
             };
             let inst = OnnxRuntimeInstaller::new(config);
@@ -4319,15 +5238,97 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             );
 
-            // Step 2: Install onnxruntime-migraphx from AMD repo (default)
-            let _ = sender.send(InstallerEvent::Log(
-                format!(
-                    "[native] {} — installing onnxruntime-migraphx from AMD repo (ROCm {})",
-                    component.name, detected_rocm_version
-                ),
-                false,
-            ));
-            let cmd = inst.build_migraphx_install_command();
+            // Step 2: install per the selected method (MLSTACK_ONNX_INSTALL_METHOD).
+            match install_method {
+                OnnxInstallMethod::MigraphxWheel => {
+                    // Default: pinned onnxruntime-migraphx from PyPI. The AMD
+                    // manylinux repo lags (1.23.2 at ROCm 7.2.4) and 404s on
+                    // newer versions. --no-deps honors the No-CUDA hard-prime.
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — installing onnxruntime-migraphx=={} from PyPI (ROCm {})",
+                            component.name,
+                            inst.prebuilt_version(),
+                            detected_rocm_version
+                        ),
+                        false,
+                    ));
+                    let cmd = inst.build_migraphx_install_command();
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir.clone(),
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                OnnxInstallMethod::PrebuiltWheel => {
+                    // Legacy: prebuilt onnxruntime-rocm from PyPI. May be
+                    // ABI-incompatible with the installed ROCm.
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — installing prebuilt onnxruntime-rocm from PyPI \
+                             (legacy; may be ABI-incompatible with ROCm {})",
+                            component.name, detected_rocm_version
+                        ),
+                        false,
+                    ));
+                    let cmd = inst.build_prebuilt_install_command();
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir.clone(),
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                OnnxInstallMethod::SourceBuild => {
+                    // Build from source against /opt/rocm, targeting runtime_version.
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] {} — building from source (target {}, ROCm {}). Heavy build.",
+                            component.name,
+                            inst.runtime_version(),
+                            detected_rocm_version
+                        ),
+                        false,
+                    ));
+                    let rocm_env = crate::installers::common::RocmEnv::from_known(
+                        Some(std::path::PathBuf::from("/opt/rocm")),
+                        detected_rocm_version.clone(),
+                    );
+                    for cmd in [
+                        inst.build_git_clone_command(),
+                        inst.build_git_checkout_command(),
+                        inst.build_git_submodule_command(),
+                        inst.build_build_command(&rocm_env),
+                        inst.build_wheel_install_command(),
+                    ] {
+                        execute_native_command(
+                            &NativeCommand::from_shell_cmd_with_dir(
+                                &cmd.program,
+                                &cmd.args,
+                                &cmd.env,
+                                cmd.working_dir.clone(),
+                            ),
+                            None,
+                            sender,
+                            &component.name,
+                        )?;
+                    }
+                }
+            }
+
+            // Step 3: Validate AMD execution provider availability before accepting install
+            let cmd = inst.build_provider_validation_command();
             execute_native_command(
                 &NativeCommand::from_shell_cmd_with_dir(
                     &cmd.program,
@@ -4340,7 +5341,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 3: Run model optimizer on known .onnx model paths
+            // Step 4: Run model optimizer on known .onnx model paths
             let model_dirs = [
                 dirs::home_dir().map(|h| h.join(".mlstack/models")),
                 dirs::home_dir().map(|h| h.join(".local/share/models")),
@@ -4381,6 +5382,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 }
             }
 
+            persist_onnx_install_status(
+                inst.prebuilt_version(),
+                &["MIGraphXExecutionProvider", "CPUExecutionProvider"],
+            );
+
             let _ = sender.send(InstallerEvent::Log(
                 format!("[native] {} — ONNX Runtime (MIGraphX) installed successfully. \
                     Source build available via OnnxInstallMethod::SourceBuild for ROCMExecutionProvider.",
@@ -4394,7 +5400,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::bitsandbytes_multi::{
                 BitsAndBytesConfig, BitsAndBytesInstaller,
             };
-            let inst = BitsAndBytesInstaller::new(BitsAndBytesConfig::default());
+            let inst = BitsAndBytesInstaller::new(BitsAndBytesConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
             let target_dir = format!("{}/.mlstack/bitsandbytes", ctx.user_home);
 
             // Force reinstall: purge previous bitsandbytes (non-fatal)
@@ -4424,8 +5433,8 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
         // ── rocm-smi ──────────────────────────────────────────────────
         "rocm-smi" => {
-            use crate::installers::components::rocm_smi::{RocmSmiConfig, RocmSmiInstaller};
-            let inst = RocmSmiInstaller::new(RocmSmiConfig::default());
+            use crate::installers::components::rocm_smi::RocmSmiInstaller;
+            let inst = RocmSmiInstaller::new();
             let distro = crate::installers::common::DistroFacade::detect();
             let target_dir = format!("{}/.mlstack/rocm_smi", ctx.user_home);
 
@@ -4459,20 +5468,6 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     false,
                 ));
             }
-
-            // Step 3: pip install
-            let cmd = inst.build_pip_install_command(&target_dir);
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &cmd.program,
-                    &cmd.args,
-                    &cmd.env,
-                    cmd.working_dir.clone(),
-                ),
-                None,
-                sender,
-                &component.name,
-            )?;
         }
 
         // ── migraphx ──────────────────────────────────────────────────
@@ -4480,7 +5475,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::migraphx_multi::{
                 MigraphxConfig, MigraphxInstaller,
             };
-            let inst = MigraphxInstaller::new(MigraphxConfig::default());
+            let inst = MigraphxInstaller::new(MigraphxConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
             let distro = crate::installers::common::DistroFacade::detect();
             let packages = inst.required_packages(&distro);
 
@@ -4510,6 +5508,31 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     &component.name,
                 )?;
             }
+
+            // Step 3: functional check — migraphx must actually LOAD. On Arch a
+            // partial upgrade can leave migraphx installed but unrunnable (e.g.
+            // libprotobuf.so.35.1.0 / libabsl SONAME desync). Surface the missing
+            // libs + the fix instead of a vague "verification errors".
+            match crate::installers::components::migraphx_multi::migraphx_driver_status() {
+                Ok(()) => {}
+                Err(missing) => {
+                    let detail = if missing.is_empty() {
+                        "migraphx-driver would not run".to_string()
+                    } else {
+                        format!("missing shared libraries: {}", missing.join(", "))
+                    };
+                    let _ = sender.send(InstallerEvent::Log(
+                        format!(
+                            "[native] [WARN] {} installed but NOT functional — {detail}. \
+                             This is usually a library version desync from a partial upgrade. \
+                             Run `sudo pacman -Syu` (Arch/CachyOS) or the equivalent system \
+                             update to sync dependencies, then re-verify.",
+                            component.name
+                        ),
+                        true,
+                    ));
+                }
+            }
         }
 
         // ── pytorch-profiler ──────────────────────────────────────────
@@ -4517,7 +5540,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::pytorch_profiler::{
                 PytorchProfilerConfig, PytorchProfilerInstaller,
             };
-            let inst = PytorchProfilerInstaller::new(PytorchProfilerConfig::default());
+            let inst = PytorchProfilerInstaller::new(PytorchProfilerConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
@@ -4532,7 +5558,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── wandb ─────────────────────────────────────────────────────
         "wandb" => {
             use crate::installers::components::wandb::{WandbConfig, WandbInstaller};
-            let inst = WandbInstaller::new(WandbConfig::default());
+            let inst = WandbInstaller::new(WandbConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
@@ -4560,21 +5589,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // Step 2: env setup
-            let gpu_arch = ctx
-                .env_exports
-                .get("GPU_ARCH")
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(detect_gpu_arch);
-            for cmd in inst.build_env_setup_commands(&gpu_arch) {
-                execute_native_command(
-                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
-                    sudo_pw,
-                    sender,
-                    &component.name,
-                )?;
-            }
+            // Step 2: env vars (HSA_OVERRIDE_GFX_VERSION / PYTORCH_ROCM_ARCH) are sourced
+            // from the persistent env file (~/.mlstack_env via ensure_mlstack_env) — they
+            // belong to ROCm RUNTIME, not driver install. The previous per-step `export X=Y`
+            // was doubly broken: a bare `export` run as a subprocess is a no-op (it cannot
+            // mutate the parent shell), and HSA_OVERRIDE was hardcoded to 11.0.0.
 
             // Step 3: verify
             let cmd = inst.build_verify_command();
@@ -4584,19 +5603,57 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Driver access requires render/video group membership on distros that
+            // mode /dev/kfd + render nodes 0660. Idempotent + system-aware.
+            ensure_user_in_groups(&["render", "video"], sudo_pw, sender, &component.name);
         }
 
         // ── migraphx-python ───────────────────────────────────────────
         "migraphx-python" => {
             use crate::installers::components::migraphx_python::{
-                MigraphxPythonConfig, MigraphxPythonInstaller,
+                build_python_source_requested, source_branch, MigraphxPythonConfig,
+                MigraphxPythonInstaller,
             };
-            let inst = MigraphxPythonInstaller::new(MigraphxPythonConfig::default());
+            let inst = MigraphxPythonInstaller::new(MigraphxPythonConfig {
+                python_bin: resolve_python_bin(),
+                ..Default::default()
+            });
 
             // Check distro availability — skip on Arch (no pip wheel)
             let distro = crate::installers::common::DistroFacade::detect();
             if !inst.is_available_on_distro(&distro) {
-                if let Some(msg) = inst.build_unavailable_message(&distro) {
+                if build_python_source_requested() {
+                    // Opt-in source build (Arch): clone AMDMIGraphX + build the
+                    // standalone python bindings against /opt/rocm. Heavy build.
+                    let _ = sender.send(InstallerEvent::Log(
+                        "[native] MLSTACK_MIGRAPHX_BUILD_PYTHON=1 — building Python \
+                         bindings from source (AMDMIGraphX). Heavy build (~20-40 min)."
+                            .into(),
+                        false,
+                    ));
+                    let workdir = std::env::temp_dir()
+                        .join("rusty-migraphx-python")
+                        .to_string_lossy()
+                        .to_string();
+                    let _ = std::fs::remove_dir_all(&workdir);
+                    let gpu_arch =
+                        std::env::var("GPU_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
+                    let cmds = inst.build_source_commands(
+                        &workdir,
+                        "/opt/rocm",
+                        &gpu_arch,
+                        &source_branch(),
+                    );
+                    for cmd in cmds {
+                        execute_native_command(
+                            &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                            None,
+                            sender,
+                            &component.name,
+                        )?;
+                    }
+                } else if let Some(msg) = inst.build_unavailable_message(&distro) {
                     let _ = sender.send(InstallerEvent::Log(
                         format!("[native] [SKIP] {}", msg),
                         false,
@@ -4634,31 +5691,65 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         | "vllm-performance"
         | "deepspeed-performance"
         | "megatron-performance"
+        | "onnx-performance"
+        | "rusty-llama-performance"
+        | "flash-attention-ck-performance"
         | "all-benchmarks" => {
             run_native_benchmark(&component.id, sender)?;
         }
 
         // ── FastVideo ──────────────────────────────────────────────────
         "fastvideo" => {
-            use crate::installers::components::fastvideo::{FastVideoConfig, FastVideoInstaller};
-            let gpu_arch = ctx
-                .env_exports
-                .get("GPU_ARCH")
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(detect_gpu_arch);
+            use crate::installers::components::fastvideo::{
+                detect_discrete_gpu_archs_from_sysfs, fastvideo_build_warning, post_checkout_plan,
+                resolve_gpu_archs, resolve_install_user, select_visible_gpu_archs, FastVideoConfig,
+                FastVideoInstallStep, FastVideoInstaller,
+            };
+            let detected_archs =
+                detect_discrete_gpu_archs_from_sysfs(PathBuf::from("/sys/class/drm").as_path());
+            let selected_archs = select_visible_gpu_archs(
+                &detected_archs,
+                ctx.env_exports
+                    .get("ROCR_VISIBLE_DEVICES")
+                    .map(String::as_str),
+                ctx.env_exports
+                    .get("HIP_VISIBLE_DEVICES")
+                    .map(String::as_str),
+                ctx.env_exports
+                    .get("CUDA_VISIBLE_DEVICES")
+                    .map(String::as_str),
+            );
+            let gpu_archs = resolve_gpu_archs(
+                &selected_archs,
+                ctx.env_exports.get("GPU_ARCHS").map(String::as_str),
+                ctx.env_exports.get("GPU_ARCH").map(String::as_str),
+                None,
+            );
             let python_bin = ctx
                 .env_exports
                 .get("MLSTACK_PYTHON_BIN")
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "python3".to_string());
+                .unwrap_or_else(resolve_python_bin);
             let inst = FastVideoInstaller::new(FastVideoConfig {
-                gpu_arch: gpu_arch.clone(),
+                gpu_archs: gpu_archs.clone(),
                 python_bin: python_bin.clone(),
             });
             let build_dir = PathBuf::from("/tmp/FastVideo_ROCm_build");
-            let kernel_dir = build_dir.join("fastvideo-kernel");
+
+            // Always start from a fresh directory. Reusing a failed build could
+            // execute stale sitecustomize/build files or contaminate the wheel.
+            let initial_cleanup = inst.cleanup();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(
+                    &initial_cleanup.program,
+                    &initial_cleanup.args,
+                    &initial_cleanup.env,
+                ),
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
 
             // mkdir -p build dir
             let mkdir_cmd = inst.mkdir_build_dir();
@@ -4669,11 +5760,15 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // git clone into build dir (idempotent)
-            git_clone_or_pull(
-                "https://github.com/scooter-lacroix/FastVideo.git",
-                &build_dir.to_string_lossy(),
-                &[],
+            // Clone only into the freshly emptied directory.
+            let clone_cmd = inst.git_clone();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &clone_cmd.program,
+                    &clone_cmd.args,
+                    &clone_cmd.env,
+                    clone_cmd.working_dir,
+                ),
                 sudo_pw,
                 sender,
                 &component.name,
@@ -4693,53 +5788,85 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
-            // git submodule update --init --recursive (in fastvideo-kernel)
-            let submod_cmd = inst.git_submodule_init();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &submod_cmd.program,
-                    &submod_cmd.args,
-                    &submod_cmd.env,
-                    Some(kernel_dir.clone()),
-                ),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+            let sudo_user = std::env::var("SUDO_USER").ok();
+            let user = std::env::var("USER").ok();
+            let run_user = resolve_install_user(sudo_user.as_deref(), user.as_deref())
+                .context("FastVideo install user unavailable from SUDO_USER or USER")?;
 
-            // patch CMakeLists.txt: remove flash_attn_rocm.cpp (CK submodule incompatible with current HIP compiler)
-            let patch_cmd = inst.patch_cmake();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &patch_cmd.program,
-                    &patch_cmd.args,
-                    &patch_cmd.env,
-                    Some(kernel_dir.clone()),
-                ),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+            for step in post_checkout_plan() {
+                let step_sudo = if step.requires_sudo() { sudo_pw } else { None };
+                if step == FastVideoInstallStep::KernelInstall {
+                    let snapshot = inst.distribution_snapshot(
+                        "before",
+                        crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES,
+                    );
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd(
+                            &snapshot.program,
+                            &snapshot.args,
+                            &snapshot.env,
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
 
-            // install build deps (scikit-build-core, cmake, ninja)
-            let deps_cmd = inst.install_build_deps();
-            execute_native_command(
-                &NativeCommand::from_shell_cmd(&deps_cmd.program, &deps_cmd.args, &deps_cmd.env),
-                sudo_pw,
-                sender,
-                &component.name,
-            )?;
+                let command = match step {
+                    FastVideoInstallStep::Chown => {
+                        let cmd = inst.chown_build_dir(&run_user);
+                        NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env)
+                    }
+                    FastVideoInstallStep::ManagedDependenciesPreflight => {
+                        let cmd = inst.managed_dependencies_preflight();
+                        NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env)
+                    }
+                    FastVideoInstallStep::FlashAttentionPreflight => {
+                        let cmd = inst.flash_attention_preflight();
+                        NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env)
+                    }
+                    FastVideoInstallStep::SourcePolicyPreflight => {
+                        let cmd = inst.source_policy_preflight();
+                        NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir,
+                        )
+                    }
+                    FastVideoInstallStep::KernelInstall => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            fastvideo_build_warning(&gpu_archs),
+                            false,
+                        ));
+                        let cmd = inst.pip_install_kernel();
+                        NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir,
+                        )
+                    }
+                    FastVideoInstallStep::PackageInstall => {
+                        let cmd = inst.pip_install_package();
+                        NativeCommand::from_shell_cmd_with_dir(
+                            &cmd.program,
+                            &cmd.args,
+                            &cmd.env,
+                            cmd.working_dir,
+                        )
+                    }
+                };
+                execute_native_command(&command, step_sudo, sender, &component.name)?;
+            }
 
-            // pip install fastvideo-kernel with ROCm cmake args
-            let pip_cmd = inst.pip_install_kernel();
+            let snapshot = inst.distribution_snapshot(
+                "after",
+                crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES,
+            );
             execute_native_command(
-                &NativeCommand::from_shell_cmd_with_dir(
-                    &pip_cmd.program,
-                    &pip_cmd.args,
-                    &pip_cmd.env,
-                    Some(kernel_dir),
-                ),
-                sudo_pw,
+                &NativeCommand::from_shell_cmd(&snapshot.program, &snapshot.args, &snapshot.env),
+                None,
                 sender,
                 &component.name,
             )?;
@@ -4765,7 +5892,12 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 .get("GPU_ARCH")
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
-                .unwrap_or_else(detect_gpu_arch);
+                .unwrap_or_else(|| {
+                    detect_gpu_arch().unwrap_or_else(|| {
+                        eprintln!("Warning: no GPU arch detected, falling back to gfx1100");
+                        "gfx1100".to_string()
+                    })
+                });
             let channel = ctx
                 .env_exports
                 .get("ROCM_CHANNEL")
@@ -4820,12 +5952,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             }
 
             // ── Post-install verification (VAL-CROSS-008/009/010/011) ──
-            let fork_dir = format!(
-                "{}/Documents/Product/Stan-s-ML-Stack/Fork/llama.cpp-turboquant-hip",
-                home
-            );
+            // Binaries resolve from the managed install dir inside verify; the
+            // clone dir is only a best-effort search root for a verification model.
+            let clone_dir = inst.build_dir_path().to_string();
             let verification =
-                crate::installers::components::llama_cpp::verify_installed_binary(home, &fork_dir);
+                crate::installers::components::llama_cpp::verify_installed_binary(home, &clone_dir);
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "llama-cpp post-install verification: {}",
@@ -4884,7 +6015,7 @@ fn run_script(
 ) -> Result<()> {
     let user_home = resolve_mlstack_user_home();
     let user_name = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_ENV_NAME,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
+    let preserve_env = "HOME,USER,LOGNAME,PATH,MLSTACK_USER_HOME,MLSTACK_SKIP_TORCH_INSTALL,MLSTACK_PYTHON_BIN,MLSTACK_ENV_NAME,MLSTACK_INSTALL_METHOD,INSTALL_METHOD,PIP_BREAK_SYSTEM_PACKAGES,PIP_ROOT_USER_ACTION,UV_PIP_BREAK_SYSTEM_PACKAGES,UV_SYSTEM_PYTHON,PYTHONPATH,LD_LIBRARY_PATH,ROCM_HOME,ROCM_PATH,ROCM_VERSION,ROCM_CHANNEL,GPU_ARCH,GPU_ARCHS,PYTORCH_ROCM_ARCH,HSA_OVERRIDE_GFX_VERSION,HIP_VISIBLE_DEVICES,CUDA_VISIBLE_DEVICES,ROCR_VISIBLE_DEVICES,AITER_JIT_DIR,HIP_PATH,HIP_ROOT_DIR,ROCM_ROOT,HIPCC_BIN_DIR,VLLM_TARGET_DEVICE,VLLM_USE_ROCM,USE_ROCM,VLLM_VERSION,UV_PYTHON,DS_ACCELERATOR,FORCE,PYTORCH_REINSTALL,MLSTACK_FORCE_REINSTALL,MLSTACK_SUDO_PASSWORD,MLSTACK_TARGET_UID,MLSTACK_TARGET_GID";
 
     let venv_bin = PathBuf::from(&user_home).join("rocm_venv").join("bin");
     let local_bin = PathBuf::from(&user_home).join(".local").join("bin");
@@ -4913,7 +6044,6 @@ fn run_script(
         }
     }
 
-    #[allow(clippy::needless_borrow)] // Function takes &str, not PathBuf
     let env_exports = load_mlstack_env_exports(&user_home);
     let persistent_python = env_exports
         .get("MLSTACK_PYTHON_BIN")
@@ -5000,7 +6130,12 @@ fn run_script(
                 .map(|v| v.split(';').next().unwrap_or("").trim().to_string())
                 .filter(|v| !v.is_empty())
         })
-        .unwrap_or_else(detect_gpu_arch);
+        .unwrap_or_else(|| {
+            detect_gpu_arch().unwrap_or_else(|| {
+                eprintln!("Warning: no GPU arch detected, falling back to gfx1100");
+                "gfx1100".to_string()
+            })
+        });
     let py_rocm_arch = env_exports
         .get("PYTORCH_ROCM_ARCH")
         .map(|v| v.trim().to_string())
@@ -5067,6 +6202,7 @@ fn run_script(
         .env("HIPCC_BIN_DIR", "/opt/rocm/bin")
         .env("HIP_VISIBLE_DEVICES", &gpu_list)
         .env("CUDA_VISIBLE_DEVICES", &gpu_list)
+        .env("ROCR_VISIBLE_DEVICES", &gpu_list)
         .env("MLSTACK_BATCH_MODE", if batch_mode { "1" } else { "0" })
         .env("MLSTACK_INSTALL_METHOD", install_method)
         .env("INSTALL_METHOD", install_method)
@@ -5433,7 +6569,7 @@ fn format_user_friendly_error(component_id: &str, raw_error: &str) -> String {
                 component_id, raw_error
             );
         }
-        "triton" | "flash-attn" | "vllm" | "aiter" => {
+        "triton" | "flash-attn" | "flash-attn-triton" | "flash-attn-ck" | "vllm" | "aiter" => {
             return format!(
                 "{}: Installation failed. \
                  Ensure PyTorch and ROCm are properly installed first \
@@ -5519,31 +6655,14 @@ fn format_user_friendly_error(component_id: &str, raw_error: &str) -> String {
     )
 }
 
-fn detect_gpu_arch() -> String {
-    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
-    if let Ok(output) = Command::new(&rocminfo_path).output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut best_arch = String::new();
-        let mut best_value = 0u32;
-        for token in stdout.split_whitespace() {
-            let cleaned = token.trim_matches(|c: char| !c.is_alphanumeric());
-            if !cleaned.starts_with("gfx") {
-                continue;
-            }
-            let raw = cleaned.trim_start_matches("gfx");
-            if let Ok(value) = raw.parse::<u32>() {
-                if value >= best_value {
-                    best_value = value;
-                    best_arch = cleaned.to_string();
-                }
-            }
-        }
-        if !best_arch.is_empty() {
-            return best_arch;
-        }
-    }
-
-    "gfx000".to_string()
+/// Detect GPU architecture via sysfs (NO rocminfo).
+///
+/// Returns `None` if no discrete AMD GPU is detected or gfx arch cannot be resolved.
+/// Callers MUST handle the Option — NEVER silently default to gfx000.
+pub(crate) fn detect_gpu_arch() -> Option<String> {
+    crate::gpu::detect_discrete_amd_gpus()
+        .first()
+        .and_then(|g| g.gfx_arch.clone())
 }
 
 // NOTE (v0.3.0): iGPU classification is unified in `crate::gpu`. The former
@@ -5585,45 +6704,11 @@ pub(crate) fn detect_gpu_list() -> String {
 /// masks only when a dGPU is actually proven (never leak a default `"0"` onto an
 /// iGPU-only host). The resolution order mirrors [`detect_gpu_list`].
 pub(crate) fn detect_discrete_gpus() -> Vec<String> {
-    let rocminfo_path = crate::installers::common::utils::resolve_rocminfo_path();
-    if let Ok(output) = Command::new(&rocminfo_path).output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let discrete_indices = parse_rocminfo_for_discrete_gpus(&stdout);
-        if !discrete_indices.is_empty() {
-            return discrete_indices;
-        }
-    }
-
-    // Fallback to rocm-smi JSON when rocminfo output is missing/incomplete
-    if let Ok(output) = Command::new("rocm-smi")
-        .args(["--showproductname", "--showbus", "--json"])
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let discrete_indices = parse_rocm_smi_for_discrete_gpus(&stdout);
-        if !discrete_indices.is_empty() {
-            return discrete_indices;
-        }
-    }
-
-    // Fallback to lspci if rocminfo fails
-    if let Ok(output) = Command::new("lspci").output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let discrete_indices = parse_lspci_for_discrete_gpus(&stdout);
-        if !discrete_indices.is_empty() {
-            return discrete_indices;
-        }
-    }
-
-    // Final fallback to sysfs detection
-    if let Some(count) = detect_gpu_count_sysfs() {
-        if count > 0 {
-            return (0..count).map(|idx| idx.to_string()).collect();
-        }
-    }
-
-    // No "0" fallback here — empty means genuinely no confirmed dGPU.
-    Vec::new()
+    crate::gpu::detect_discrete_amd_gpus()
+        .iter()
+        .enumerate()
+        .map(|(i, _)| i.to_string())
+        .collect()
 }
 
 /// Builds a map of ROCm GPU ID -> gfx architecture (e.g., "1" -> "gfx1100").
@@ -5706,392 +6791,11 @@ fn prioritize_gpu_list_for_arch(gpu_list: &str, target_arch: &str) -> String {
     gpu_list.to_string()
 }
 
-/// Parses rocminfo output to find discrete GPU indices.
-/// Returns a vector of GPU indices that are discrete (not integrated).
-fn parse_rocminfo_for_discrete_gpus(rocminfo_output: &str) -> Vec<String> {
-    let mut discrete_indices: Vec<String> = Vec::new();
-    let mut current_gpu_id: Option<usize> = None;
-    let mut current_marketing_name = String::new();
-    let mut current_gfx = String::new();
-    let mut current_device_type = String::new();
-
-    // Commit the just-finished agent. Fields are fully accumulated by the time
-    // the next agent's "GPU ID:" line appears.
-    let commit =
-        |id: Option<usize>, marketing: &str, gfx: &str, dev_type: &str, out: &mut Vec<String>| {
-            let Some(id) = id else {
-                return;
-            };
-            // CPU agents are never GPUs.
-            if dev_type.to_uppercase().contains("CPU") {
-                return;
-            }
-            // Structural iGPU exclusion: marketing name OR gfx-arch (the fallback
-            // when the marketing name is empty). A nameless agent is excluded ONLY
-            // if it has a positive iGPU signal — never silently — so a nameless
-            // dGPU (gfx1100/1101) is always kept (tenet: dGPUs never missed).
-            let integrated =
-                crate::gpu::device_is_integrated(Some(marketing), None, Some(gfx), None);
-            if !integrated {
-                out.push(id.to_string());
-            }
-        };
-
-    for line in rocminfo_output.lines() {
-        let line = line.trim();
-
-        if line.contains("GPU ID:") {
-            // Commit previous agent, then start a new one.
-            commit(
-                current_gpu_id.take(),
-                &current_marketing_name,
-                &current_gfx,
-                &current_device_type,
-                &mut discrete_indices,
-            );
-            if let Some(id_part) = line.split(':').nth(1) {
-                let id_str: String = id_part.chars().filter(|c| c.is_ascii_digit()).collect();
-                current_gpu_id = id_str.parse().ok();
-            }
-            current_marketing_name.clear();
-            current_gfx.clear();
-            current_device_type.clear();
-        } else if line.contains("Marketing Name:") {
-            if let Some(name) = line.split(':').nth(1) {
-                current_marketing_name = name.trim_end_matches('*').trim().to_string();
-            }
-        } else if line.contains("Device Type:") {
-            if let Some(dev_type) = line.split(':').nth(1) {
-                current_device_type = dev_type.trim_end_matches('*').trim().to_string();
-            }
-        } else if line.contains("Name:") {
-            // Track the gfx architecture — the structural iGPU signal when the
-            // marketing name is empty (rocminfo sometimes reports only
-            // `Name: gfxNNNN` for the iGPU agent).
-            if let Some(name) = line.split(':').nth(1) {
-                let name = name.trim();
-                if name.starts_with("gfx") {
-                    current_gfx = name.to_string();
-                }
-            }
-        }
-    }
-
-    // Commit the last agent.
-    commit(
-        current_gpu_id,
-        &current_marketing_name,
-        &current_gfx,
-        &current_device_type,
-        &mut discrete_indices,
-    );
-
-    discrete_indices
-}
-
-/// Parses rocm-smi --json output to find discrete AMD GPU indices.
-/// This keeps ROCm card indices aligned with HIP_VISIBLE_DEVICES.
-fn parse_rocm_smi_for_discrete_gpus(rocm_smi_output: &str) -> Vec<String> {
-    fn card_index(key: &str) -> Option<usize> {
-        let digits_rev: String = key
-            .chars()
-            .rev()
-            .take_while(|c| c.is_ascii_digit())
-            .collect();
-        if digits_rev.is_empty() {
-            return None;
-        }
-        let digits: String = digits_rev.chars().rev().collect();
-        digits.parse().ok()
-    }
-
-    fn value_as_string(value: &serde_json::Value) -> Option<String> {
-        if let Some(s) = value.as_str() {
-            return Some(s.to_string());
-        }
-        if let Some(obj) = value.as_object() {
-            if let Some(v) = obj.get("value").and_then(|v| v.as_str()) {
-                return Some(v.to_string());
-            }
-        }
-        None
-    }
-
-    fn field_is_placeholder(raw: &str) -> bool {
-        matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "" | "n/a" | "na" | "none" | "unknown" | "not available" | "-"
-        )
-    }
-
-    fn meaningful_field(value: Option<String>) -> Option<String> {
-        let value = value?;
-        let trimmed = value.trim();
-        if trimmed.is_empty() || field_is_placeholder(trimmed) {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    }
-
-    fn normalize_bus_id(raw: &str) -> Option<String> {
-        let mut normalized = raw.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return None;
-        }
-        if let Some(idx) = normalized.find(' ') {
-            normalized.truncate(idx);
-        }
-        normalized = normalized.trim_start_matches("0000:").to_string();
-        if normalized.len() == "00:00.0".len() {
-            Some(normalized)
-        } else {
-            None
-        }
-    }
-
-    fn descriptor_from_lspci_bus(bus: &str) -> Option<String> {
-        let bus = normalize_bus_id(bus)?;
-        let output = Command::new("lspci").args(["-s", &bus]).output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if line.is_empty() {
-            None
-        } else {
-            Some(line)
-        }
-    }
-
-    fn bus_looks_integrated(raw: &str) -> bool {
-        let Some(bus) = normalize_bus_id(raw) else {
-            return false;
-        };
-
-        if let Ok(output) = Command::new("lspci").args(["-s", &bus]).output() {
-            let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !line.is_empty() && crate::gpu::is_integrated_gpu_name(&line) {
-                return true;
-            }
-        }
-
-        let sysfs_path = format!("/sys/bus/pci/devices/0000:{}/mem_info_vram_total", bus);
-        if let Ok(value) = fs::read_to_string(sysfs_path) {
-            if let Ok(vram_bytes) = value.trim().parse::<u64>() {
-                return vram_bytes < crate::gpu::DISCRETE_MIN_VRAM_BYTES;
-            }
-        }
-        false
-    }
-
-    fn parse_rocm_smi_json(raw: &str) -> Option<serde_json::Value> {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
-            return Some(parsed);
-        }
-        let start = raw.find('{')?;
-        let end = raw.rfind('}')?;
-        if end <= start {
-            return None;
-        }
-        serde_json::from_str::<serde_json::Value>(&raw[start..=end]).ok()
-    }
-
-    let mut cards: Vec<(usize, String)> = Vec::new();
-    let Some(parsed) = parse_rocm_smi_json(rocm_smi_output) else {
-        return Vec::new();
-    };
-    let Some(obj) = parsed.as_object() else {
-        return Vec::new();
-    };
-
-    for (card_key, payload) in obj {
-        let Some(index) = card_index(card_key) else {
-            continue;
-        };
-        let Some(payload_obj) = payload.as_object() else {
-            continue;
-        };
-
-        let series = meaningful_field(
-            payload_obj
-                .get("Card Series")
-                .and_then(value_as_string)
-                .or_else(|| payload_obj.get("Card series").and_then(value_as_string)),
-        );
-        let model = meaningful_field(
-            payload_obj
-                .get("Card Model")
-                .and_then(value_as_string)
-                .or_else(|| payload_obj.get("Card model").and_then(value_as_string)),
-        );
-        let sku = meaningful_field(
-            payload_obj
-                .get("Card SKU")
-                .and_then(value_as_string)
-                .or_else(|| {
-                    payload_obj
-                        .get("Card Product Name")
-                        .and_then(value_as_string)
-                }),
-        );
-        let bus = payload_obj
-            .get("PCI Bus")
-            .and_then(value_as_string)
-            .or_else(|| payload_obj.get("PCI Bus Address").and_then(value_as_string))
-            .or_else(|| payload_obj.get("PCIe Bus").and_then(value_as_string))
-            .or_else(|| payload_obj.get("Bus").and_then(value_as_string))
-            .unwrap_or_default();
-        let mut descriptor_parts = Vec::new();
-        if let Some(value) = series {
-            descriptor_parts.push(value);
-        }
-        if let Some(value) = model {
-            descriptor_parts.push(value);
-        }
-        if let Some(value) = sku {
-            descriptor_parts.push(value);
-        }
-        if let Some(value) = descriptor_from_lspci_bus(&bus) {
-            if !value.trim().is_empty() {
-                descriptor_parts.push(value);
-            }
-        }
-        let resolved_descriptor = descriptor_parts.join(" ");
-
-        if !resolved_descriptor.trim().is_empty()
-            && !crate::gpu::is_integrated_gpu_name(&resolved_descriptor)
-            && !bus_looks_integrated(&bus)
-        {
-            cards.push((index, index.to_string()));
-        }
-    }
-
-    cards.sort_by_key(|(idx, _)| *idx);
-    cards.into_iter().map(|(_, idx)| idx).collect()
-}
-
-/// Parses lspci output to find discrete AMD GPUs.
-/// This is a fallback when rocminfo is not available.
-fn parse_lspci_for_discrete_gpus(lspci_output: &str) -> Vec<String> {
-    /// Read PCI device id + VRAM (bytes) for an lspci bus id from sysfs.
-    fn sysfs_pci_info(bus_id: &str) -> (Option<String>, Option<u64>) {
-        let bus = bus_id.trim().trim_start_matches("0000:");
-        if bus.len() != "00:00.0".len() {
-            return (None, None);
-        }
-        let base = format!("/sys/bus/pci/devices/0000:{bus}");
-        let pci_id = fs::read_to_string(format!("{base}/device"))
-            .ok()
-            .map(|s| s.trim().to_string());
-        let vram = fs::read_to_string(format!("{base}/mem_info_vram_total"))
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok());
-        (pci_id, vram)
-    }
-
-    let mut discrete_indices: Vec<String> = Vec::new();
-    let mut gpu_index = 0usize;
-
-    for line in lspci_output.lines() {
-        let line_lower = line.to_lowercase();
-        let bus_id = line.split_whitespace().next().unwrap_or_default();
-
-        // Look for AMD/ATI VGA/3D/display devices
-        if (line_lower.contains("amd")
-            || line_lower.contains("radeon")
-            || line_lower.contains("advanced micro devices"))
-            && (line_lower.contains("vga")
-                || line_lower.contains("3d")
-                || line_lower.contains("display"))
-        {
-            // Structural iGPU exclusion via the canonical device_is_integrated
-            // (Tenet 3): name + PCI device id + VRAM. A nameless iGPU whose PCI
-            // id is in the denylist, or with < 4 GiB VRAM, is excluded; a dGPU
-            // is never missed (unreadable VRAM alone never excludes).
-            let (pci_id, vram) = sysfs_pci_info(bus_id);
-            let integrated =
-                crate::gpu::device_is_integrated(Some(line), pci_id.as_deref(), None, vram);
-            if !integrated {
-                discrete_indices.push(gpu_index.to_string());
-            }
-            gpu_index += 1;
-        }
-    }
-
-    discrete_indices
-}
-
-fn detect_gpu_count_sysfs() -> Option<usize> {
-    let entries = fs::read_dir("/sys/class/drm").ok()?;
-    let mut count = 0usize;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("card") || name.contains("render") {
-            continue;
-        }
-        let vendor_path = entry.path().join("device/vendor");
-        let vendor = match fs::read_to_string(&vendor_path) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if !vendor.trim().eq_ignore_ascii_case("0x1002") {
-            continue;
-        }
-        // AMD device — exclude known iGPUs by PCI device id (Stage 1: never
-        // count the integrated GPU, e.g. Raphael 0x164e). This is the
-        // structural gate that keeps the iGPU out of the env-var fallback.
-        if let Ok(dev_id) = fs::read_to_string(entry.path().join("device/device")) {
-            if crate::gpu::is_integrated_by_pci_id(dev_id.trim()) {
-                continue;
-            }
-        }
-        count += 1;
-    }
-    if count > 0 {
-        Some(count)
-    } else {
-        None
-    }
-}
-
-fn first_gpu_index(list: &str) -> String {
-    list.split(',').next().unwrap_or("0").to_string()
-}
-
-/// Derive `HSA_OVERRIDE_GFX_VERSION` from a gfx arch string.
-///
-/// Mapping: `gfxMMNN` → `"MM.0.0"` (major.0.0).
-/// The sub-variant (NN) is ignored because HSA_OVERRIDE_GFX_VERSION is
-/// a coarse-grained override — all gfx11xx cards use 11.0.0.
-/// Only well-known RDNA+ architectures get an override; others return `None`.
-fn hsa_override_from_gpu_arch(gfx: &str) -> Option<String> {
-    let digits: String = gfx
-        .trim_start_matches("gfx")
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    if digits.len() < 3 {
-        return None;
-    }
-    let major: u32 = digits[..2].parse().ok()?;
-    // Only override for gfx10xx (RDNA2) and later
-    if major >= 10 {
-        Some(format!("{}.0.0", major))
-    } else {
-        None
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Warning variant reserved for future diagnostic severity levels
 enum VerificationResult {
     Verified,
     Failed,
     Missing,
-    /// Installed but with informational warnings (e.g., PyTorch installed but HIP not available)
-    Warning,
 }
 
 impl VerificationResult {
@@ -6100,7 +6804,6 @@ impl VerificationResult {
             VerificationResult::Verified => "Verified",
             VerificationResult::Failed => "Failed",
             VerificationResult::Missing => "Missing",
-            VerificationResult::Warning => "Warning",
         }
     }
 }
@@ -6299,6 +7002,25 @@ fn parse_progress(line: &str) -> Option<f32> {
     if lower.contains("progress") && lower.contains("100") {
         return Some(1.0);
     }
+    // ninja/make build progress: "[N/M] action" -> N/M. Surfaced to the bar so
+    // long native compiles (e.g. Flash Attention CK's ~2800 translation units)
+    // show real per-TU progress instead of a frozen wheel-build spinner.
+    if let Some(bracket) = line.find('[') {
+        if let Some(close) = line[bracket..].find(']') {
+            let inside = &line[bracket + 1..bracket + close];
+            if let Some(slash) = inside.find('/') {
+                let (n_str, m_str) = inside.split_at(slash);
+                if let (Ok(n), Ok(m)) = (
+                    n_str.trim().parse::<f32>(),
+                    m_str[1..].trim().parse::<f32>(),
+                ) {
+                    if m > 0.0 && n <= m {
+                        return Some((n / m).min(1.0));
+                    }
+                }
+            }
+        }
+    }
     None
 }
 
@@ -6407,6 +7129,9 @@ fn run_native_benchmark(component_id: &str, sender: &Sender<InstallerEvent>) -> 
         "vllm-performance" => "vllm",
         "deepspeed-performance" => "deepspeed",
         "megatron-performance" => "megatron",
+        "onnx-performance" => "onnx",
+        "rusty-llama-performance" => "llama-cpp",
+        "flash-attention-ck-performance" => "flash-attention-ck",
         "all-benchmarks" => "all",
         _ => bail!("Unknown benchmark component: {}", component_id),
     };
@@ -6433,6 +7158,11 @@ fn run_native_benchmark(component_id: &str, sender: &Sender<InstallerEvent>) -> 
                 ),
                 false,
             ));
+            // Persist the result as JSON to the benchmark log dir so the
+            // Benchmarks page + HTML export pick it up (otherwise the summary
+            // shows "No Data available"). Reshapes metrics into the top-level
+            // "results" object that parse_benchmark_json expects.
+            persist_benchmark_result(bench_name, &output);
             if !output.errors.is_empty() {
                 for err in &output.errors {
                     let _ = sender.send(InstallerEvent::Log(
@@ -6465,380 +7195,165 @@ fn run_native_benchmark(component_id: &str, sender: &Sender<InstallerEvent>) -> 
     }
 }
 
+/// Persist a benchmark result as JSON to the benchmark log dir so the Benchmarks
+/// page (`load_benchmark_results`) and HTML export pick it up.
+///
+/// `convert_result` nests the metrics under `results.metrics`, but
+/// `parse_benchmark_json` looks for the `prefill_*_tps_gpu*` / `decode_*_tps_gpu*`
+/// keys at the `results` level (it does not recurse into `metrics`), so the
+/// payload is reshaped to `{"results": <metrics>, ...}`.
+///
+/// Tries each scanned log dir in turn and writes to the first that succeeds —
+/// `~/.rusty-stack/logs` can be root-owned (from a prior sudo run), so we fall
+/// back through `$TMPDIR/rusty-stack/logs` (also scanned) rather than silently
+/// dropping the result.
+fn persist_onnx_install_status(version: &str, providers: &[&str]) {
+    let provider = providers
+        .iter()
+        .find(|p| matches!(**p, "MIGraphXExecutionProvider" | "ROCMExecutionProvider"))
+        .copied()
+        .unwrap_or("none");
+    persist_benchmark_result(
+        "onnx",
+        &crate::benchmark_runners::BenchmarkOutput {
+            name: "onnx".to_string(),
+            success: true,
+            execution_time_ms: 0,
+            results: serde_json::json!({
+                "ort_version": version,
+                "provider": provider,
+                "providers_available": providers,
+                "provider_priority": ["MIGraphXExecutionProvider", "ROCMExecutionProvider"],
+                "install_status": "provider_ready",
+                "benchmark_status": "not_run",
+                "graph_opt_level": "ORT_ENABLE_ALL",
+                "session_create_ms": 0.0,
+                "inference_latency_p50_ms": 0.0,
+                "inference_latency_p95_ms": 0.0,
+                "inference_latency_p99_ms": 0.0,
+                "throughput_inf_per_sec": 0.0,
+                "peak_rss_mb": 0.0,
+                "quantized_supported": false,
+                "inference_samples": []
+            }),
+            errors: Vec::new(),
+        },
+    );
+}
+
+fn persist_benchmark_result(bench_name: &str, output: &crate::benchmark_runners::BenchmarkOutput) {
+    let metrics = output
+        .results
+        .get("metrics")
+        .cloned()
+        .unwrap_or_else(|| output.results.clone());
+    let payload = serde_json::json!({
+        "name": output.name.clone(),
+        "success": output.success,
+        "execution_time_ms": output.execution_time_ms as u64,
+        "results": metrics,
+        "errors": serde_json::to_value(&output.errors).unwrap_or_default(),
+    });
+    let body = match serde_json::to_string_pretty(&payload) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let fname = format!("{bench_name}_benchmarks_{ts}.json");
+
+    let mut candidates: Vec<std::path::PathBuf> =
+        crate::benchmark_logs::benchmark_log_directories();
+    if let Some(home) = std::env::var("HOME").ok().filter(|s| !s.is_empty()) {
+        candidates.push(
+            std::path::Path::new(&home)
+                .join(".rusty-stack")
+                .join("logs"),
+        );
+    }
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    candidates.push(std::path::Path::new(&tmp).join("rusty-stack").join("logs"));
+
+    for dir in candidates {
+        let _ = std::fs::create_dir_all(&dir);
+        if std::fs::write(dir.join(&fname), &body).is_ok() {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // ── safe_rocm_path: real ROCm CLI tools must win over pip shims ────
+    // Regression: rocm-sdk-core's rocminfo shim in ~/.mlstack/global/bin exits
+    // 8 (HSA out of resources) but precedes /opt/rocm/bin on PATH, breaking
+    // aiter's chip_info. safe_rocm_path must put /opt/rocm/bin first.
+
+    #[test]
+    fn test_safe_rocm_path_prepends_rocm_bin() {
+        // safe_rocm_path returns the inherited PATH unchanged when
+        // /opt/rocm/bin is absent, so these prepend/dedup assertions only hold
+        // on a host with ROCm installed. Guard like the pass-through test does
+        // to avoid panicking on standard CI runners.
+        if !Path::new("/opt/rocm/bin").exists() {
+            eprintln!("skip: /opt/rocm/bin absent (CI host) — prepend behavior is pass-through");
+            return;
+        }
+        let p = safe_rocm_path("/home/scooter/.mlstack/global/bin:/usr/bin:/bin");
+        let rocm = p.find("/opt/rocm/bin").unwrap();
+        let shim = p.find("/home/scooter/.mlstack/global/bin").unwrap();
+        assert!(
+            rocm < shim,
+            "/opt/rocm/bin must precede the venv bin: got {p}"
+        );
+        // hip/bin too, and all original entries preserved.
+        assert!(p.contains("/opt/rocm/hip/bin"));
+        assert!(p.contains("/usr/bin") && p.contains("/bin"));
+    }
+
+    #[test]
+    fn test_safe_rocm_path_dedupes_rocm_entries() {
+        // Dedup of literal /opt/rocm/bin substrings holds regardless of whether
+        // ROCm is installed (the input carries the literals), but guard anyway
+        // for consistency with the other two safe_rocm_path tests.
+        if !Path::new("/opt/rocm/bin").exists() {
+            eprintln!("skip: /opt/rocm/bin absent (CI host)");
+            return;
+        }
+        let p = safe_rocm_path("/opt/rocm/bin:/usr/bin:/opt/rocm/hip/bin");
+        assert_eq!(
+            p.matches("/opt/rocm/bin").count(),
+            1,
+            "rocm/bin must appear exactly once: got {p}"
+        );
+        assert_eq!(p.matches("/opt/rocm/hip/bin").count(), 1);
+    }
+
+    #[test]
+    fn test_safe_rocm_path_passes_through_when_rocm_absent() {
+        // When /opt/rocm/bin doesn't exist the function must not prepend a
+        // non-existent dir (it would shadow nothing and mislead). It returns
+        // the inherited PATH unchanged. We can't remove /opt/rocm in a test,
+        // so assert the pure property: if rocm/bin IS present it's first,
+        // otherwise identity. Guarded by existence on the host.
+        let inherited = "/usr/local/bin:/usr/bin";
+        if Path::new("/opt/rocm/bin").exists() {
+            assert!(safe_rocm_path(inherited).starts_with("/opt/rocm/bin"));
+        } else {
+            assert_eq!(safe_rocm_path(inherited), inherited);
+        }
+    }
 
     // ── iGPU filtering: parse_rocminfo_for_discrete_gpus (tenet 3) ─────
     // Target topology: 2 dGPU (gfx1100 RX 7900 XTX, gfx1101 RX 7800 XT) +
     // 1 iGPU (gfx1036 Raphael). The iGPU must NEVER appear; dGPUs never missed.
-
-    #[test]
-    fn test_parse_rocminfo_excludes_named_igpu() {
-        let rocminfo = "\
-  GPU ID: 0\n  Name: gfx1100\n  Marketing Name: AMD Radeon RX 7900 XTX\n  Device Type: GPU\n\
-  GPU ID: 1\n  Name: gfx1101\n  Marketing Name: AMD Radeon RX 7800 XT\n  Device Type: GPU\n\
-  GPU ID: 2\n  Name: gfx1036\n  Marketing Name: Raphael\n  Device Type: GPU\n";
-        let indices = parse_rocminfo_for_discrete_gpus(rocminfo);
-        assert_eq!(indices, vec!["0".to_string(), "1".to_string()]);
-    }
-
-    #[test]
-    fn test_parse_rocminfo_excludes_nameless_igpu_via_gfx_arch() {
-        // iGPU agent with EMPTY marketing name — excluded by the gfx1036
-        // structural signal, not by an accidental name-empty guard.
-        let rocminfo = "\
-  GPU ID: 0\n  Name: gfx1100\n  Marketing Name: AMD Radeon RX 7900 XTX\n  Device Type: GPU\n\
-  GPU ID: 1\n  Name: gfx1036\n  Device Type: GPU\n";
-        let indices = parse_rocminfo_for_discrete_gpus(rocminfo);
-        assert_eq!(indices, vec!["0".to_string()]);
-    }
-
-    #[test]
-    fn test_parse_rocminfo_never_misses_nameless_dgpu() {
-        // A dGPU with no marketing name must still be emitted (gfx1100).
-        let rocminfo = "\
-  GPU ID: 0\n  Name: gfx1100\n  Device Type: GPU\n";
-        let indices = parse_rocminfo_for_discrete_gpus(rocminfo);
-        assert_eq!(indices, vec!["0".to_string()]);
-    }
-
-    // ── Git clone idempotency tests ──────────────────────────────────
-
-    #[test]
-    fn test_is_existing_git_repo_detects_git_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo_dir = tmp.path().join("my-repo");
-        fs::create_dir_all(repo_dir.join(".git")).unwrap();
-        assert!(is_existing_git_repo(repo_dir.to_str().unwrap()));
-    }
-
-    #[test]
-    fn test_is_existing_git_repo_false_when_no_git() {
-        let tmp = tempfile::tempdir().unwrap();
-        let plain_dir = tmp.path().join("plain-dir");
-        fs::create_dir_all(&plain_dir).unwrap();
-        assert!(!is_existing_git_repo(plain_dir.to_str().unwrap()));
-    }
-
-    #[test]
-    fn test_is_existing_git_repo_false_when_no_dir() {
-        assert!(!is_existing_git_repo(
-            "/nonexistent/path/that/does/not/exist"
-        ));
-    }
-
-    #[test]
-    fn test_git_clone_or_pull_clones_when_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path().join("new-repo");
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        // This will fail (no network/repo) but we can verify it tries to clone
-        let result = git_clone_or_pull(
-            "https://github.com/nonexistent/repo.git",
-            target.to_str().unwrap(),
-            &[],
-            None,
-            &tx,
-            "test-component",
-        );
-        // Should have attempted clone (and failed with network error, which is fine)
-        assert!(result.is_err());
-        // Should have logged cloning intent
-        let mut found_clone_log = false;
-        while let Ok(event) = rx.try_recv() {
-            if let InstallerEvent::Log(msg, _) = event {
-                found_clone_log = found_clone_log || msg.contains("cloning");
-            }
-        }
-        assert!(found_clone_log, "Should log cloning intent");
-    }
-
-    #[test]
-    fn test_git_clone_or_pull_pulls_when_existing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo_dir = tmp.path().join("existing-repo");
-        fs::create_dir_all(repo_dir.join(".git")).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        let _ = git_clone_or_pull(
-            "https://github.com/ROCm/aiter.git",
-            repo_dir.to_str().unwrap(),
-            &["--recursive"],
-            None,
-            &tx,
-            "test-component",
-        );
-        // Should NOT try to clone — should try pull instead
-        let mut found_pull_log = false;
-        while let Ok(event) = rx.try_recv() {
-            if let InstallerEvent::Log(msg, _) = event {
-                found_pull_log = found_pull_log || msg.contains("pulling updates");
-            }
-        }
-        assert!(found_pull_log, "Should log pulling intent, not cloning");
-    }
-
-    #[test]
-    fn test_hsa_override_from_gpu_arch() {
-        assert_eq!(
-            hsa_override_from_gpu_arch("gfx1100"),
-            Some("11.0.0".to_string())
-        );
-        assert_eq!(
-            hsa_override_from_gpu_arch("gfx1101"),
-            Some("11.0.0".to_string())
-        );
-        assert_eq!(
-            hsa_override_from_gpu_arch("gfx1200"),
-            Some("12.0.0".to_string())
-        );
-        assert_eq!(
-            hsa_override_from_gpu_arch("gfx1030"),
-            Some("10.0.0".to_string())
-        );
-        // Too short or unknown
-        assert!(hsa_override_from_gpu_arch("gfx99").is_none());
-        assert!(hsa_override_from_gpu_arch("").is_none());
-    }
-
-    #[test]
-    fn test_is_igpu_name_raphael() {
-        // Raphael iGPU should be detected
-        assert!(crate::gpu::is_integrated_gpu_name(
-            "AMD Radeon Graphics (Raphael)"
-        ));
-        assert!(crate::gpu::is_integrated_gpu_name("Raphael"));
-    }
-
-    #[test]
-    fn test_is_igpu_name_apu_models() {
-        // APU models ending in G should be detected
-        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 5 5600G"));
-        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 7 5700G"));
-        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 7 8700G"));
-        assert!(crate::gpu::is_integrated_gpu_name("Ryzen 5 5600GE"));
-    }
-
-    #[test]
-    fn test_is_igpu_name_codenames() {
-        // APU codenames should be detected
-        assert!(crate::gpu::is_integrated_gpu_name(
-            "AMD Ryzen 9 7945HS with Radeon Graphics (Phoenix)"
-        ));
-        assert!(crate::gpu::is_integrated_gpu_name("Rembrandt"));
-        assert!(crate::gpu::is_integrated_gpu_name("Cezanne"));
-    }
-
-    #[test]
-    fn test_is_igpu_name_discrete_gpus() {
-        // Discrete GPUs should NOT be detected as iGPUs
-        assert!(!crate::gpu::is_integrated_gpu_name("Radeon RX 7900 XTX"));
-        assert!(!crate::gpu::is_integrated_gpu_name("Radeon RX 7800 XT"));
-        assert!(!crate::gpu::is_integrated_gpu_name("Radeon RX 7700 XT"));
-        assert!(!crate::gpu::is_integrated_gpu_name("AMD Radeon RX 6800 XT"));
-    }
-
-    #[test]
-    fn test_is_igpu_name_x3d_processors() {
-        // X3D processors have integrated graphics via Raphael/Phoenix dies
-        assert!(crate::gpu::is_integrated_gpu_name(
-            "AMD Ryzen 7 7800X3D 8-Core Processor"
-        ));
-        assert!(crate::gpu::is_integrated_gpu_name(
-            "AMD Ryzen 9 7950X3D 16-Core Processor"
-        ));
-        assert!(crate::gpu::is_integrated_gpu_name(
-            "AMD Ryzen 9 7900X3D 12-Core Processor"
-        ));
-        // The Ryzen-based heuristic should also catch generic Ryzen without RX
-        assert!(crate::gpu::is_integrated_gpu_name("AMD Ryzen 5 7600X3D"));
-    }
-
-    #[test]
-    fn test_is_igpu_name_ryzen_heuristic() {
-        // Any name with "Ryzen" but without "RX" is an iGPU
-        assert!(crate::gpu::is_integrated_gpu_name(
-            "AMD Ryzen 7 7800X3D 8-Core Processor"
-        ));
-        assert!(crate::gpu::is_integrated_gpu_name("AMD Ryzen 5 8600G"));
-        assert!(crate::gpu::is_integrated_gpu_name("AMD Ryzen 9 7945HS"));
-        // These should NOT match — discrete GPUs
-        assert!(!crate::gpu::is_integrated_gpu_name(
-            "AMD Radeon RX 7900 XTX"
-        ));
-        assert!(!crate::gpu::is_integrated_gpu_name(
-            "AMD Radeon RX 7800 XT Radeon RX 7900 XTX"
-        ));
-    }
-
-    #[test]
-    fn test_parse_rocminfo_mixed_gpus() {
-        // Test parsing rocminfo output with mixed discrete and integrated GPUs
-        // Format matches actual rocminfo output with "GPU ID:" prefix
-        let rocminfo_output = r#"
-            ****!****  The info is not accurate, please use it carefully !****
-
-=====================  ROCm Information =========================
-ROCm Version:          7.2.0
-
-=====================  System Info =======================
-Kernel Version:        6.12.63+deb13-rt-amd64
-...
-
-=====================  ASICs Info =========================
-****  2: Agent  ****
-**  GPU ID:  0 **
-**  Marketing Name:  AMD Radeon RX 7900 XTX **
-**  Device Type:  GPU **
-...
-****  2: Agent  ****
-**  GPU ID:  1 **
-**  Marketing Name:  AMD Radeon RX 7800 XT **
-**  Device Type:  GPU **
-...
-****  2: Agent  ****
-**  GPU ID:  2 **
-**  Marketing Name:  AMD Radeon Graphics (Raphael) **
-**  Device Type:  GPU **
-...
-"#;
-
-        let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
-        assert_eq!(result, vec!["0", "1"]);
-    }
-
-    #[test]
-    fn test_parse_rocminfo_x3d_igpu() {
-        // Test with actual CachyOS/7800X3D rocminfo output format
-        let rocminfo_output = r#"
-Agent 1                  
-*******                  
-  Name:                    AMD Ryzen 7 7800X3D 8-Core Processor
-  Marketing Name:          AMD Ryzen 7 7800X3D 8-Core Processor
-  Device Type:             CPU                                
-Agent 2                  
-*******                  
-**  GPU ID:  0 **
-  Name:                    gfx1100                            
-  Marketing Name:          AMD Radeon RX 7900 XTX             
-  Device Type:             GPU                                
-Agent 3                  
-*******                  
-**  GPU ID:  1 **
-  Name:                    gfx1100                            
-  Marketing Name:          AMD Radeon RX 7800 XT              
-  Device Type:             GPU                                
-Agent 4                  
-*******                  
-**  GPU ID:  2 **
-  Name:                    gfx1100                            
-  Marketing Name:          AMD Ryzen 7 7800X3D 8-Core Processor
-  Device Type:             GPU                                
-"#;
-        let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
-        assert_eq!(result, vec!["0", "1"], "7800X3D iGPU should be excluded");
-    }
-
-    #[test]
-    fn test_parse_rocminfo_only_igpu() {
-        // Test with only iGPU present
-        let rocminfo_output = r#"
-=====================  ASICs Info =========================
-****  2: Agent  ****
-**  GPU ID:  0 **
-**  Marketing Name:  AMD Radeon Graphics (Raphael) **
-**  Device Type:  GPU **
-...
-"#;
-
-        let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_rocminfo_only_discrete() {
-        // Test with only discrete GPUs
-        let rocminfo_output = r#"
-=====================  ASICs Info =========================
-****  2: Agent  ****
-**  GPU ID:  0 **
-**  Marketing Name:  AMD Radeon RX 7900 XTX **
-**  Device Type:  GPU **
-...
-****  2: Agent  ****
-**  GPU ID:  1 **
-**  Marketing Name:  AMD Radeon RX 7800 XT **
-**  Device Type:  GPU **
-...
-"#;
-
-        let result = parse_rocminfo_for_discrete_gpus(rocminfo_output);
-        assert_eq!(result, vec!["0", "1"]);
-    }
-
-    #[test]
-    fn test_parse_rocm_smi_mixed_gpus() {
-        let rocm_smi_output = r#"
-{
-  "card0": {
-    "Card Series": "AMD Radeon RX 7900 XTX",
-    "Card Model": "Navi 31"
-  },
-  "card1": {
-    "Card Series": "AMD Radeon RX 7800 XT",
-    "Card Model": "Navi 32"
-  },
-  "card2": {
-    "Card Series": "AMD Radeon Graphics",
-    "Card Model": "Raphael"
-  }
-}
-"#;
-        let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
-        assert_eq!(result, vec!["0", "1"]);
-    }
-
-    #[test]
-    fn test_parse_rocm_smi_only_igpu() {
-        let rocm_smi_output = r#"
-{
-  "card0": {
-    "Card Series": "AMD Radeon Graphics",
-    "Card Model": "Raphael"
-  }
-}
-"#;
-        let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_rocm_smi_with_prefix_and_na_fields() {
-        let rocm_smi_output = r#"
-****!****  The info is not accurate, please use it carefully !****
-{
-  "card0": {
-    "Card Series": "N/A",
-    "Card Model": "N/A",
-    "Card SKU": "AMD Radeon RX 7900 XTX"
-  },
-  "card1": {
-    "Card Series": "N/A",
-    "Card Model": "Navi 32",
-    "Card SKU": "AMD Radeon RX 7800 XT"
-  },
-  "card2": {
-    "Card Series": "N/A",
-    "Card Model": "N/A",
-    "Card SKU": "Raphael"
-  }
-}
-"#;
-        let result = parse_rocm_smi_for_discrete_gpus(rocm_smi_output);
-        assert_eq!(result, vec!["0", "1"]);
-    }
 
     // -------------------------------------------------------------------
     // Error handling tests (fix-installation-silent-failures)
@@ -6854,6 +7369,243 @@ Agent 4
         assert!(
             msg.contains("elevated privileges"),
             "Should suggest running with sudo"
+        );
+    }
+
+    #[test]
+    fn test_native_maintenance_actions_use_native_verdict() {
+        let repair = Component {
+            id: "rccl-repair".into(),
+            name: "Repair RCCL Multi-GPU".into(),
+            description: String::new(),
+            script: String::new(),
+            category: Category::Maintenance,
+            required: false,
+            selected: true,
+            installed: false,
+            progress: 0.0,
+            estimate: String::new(),
+            needs_sudo: false,
+            experimental: false,
+            note: None,
+        };
+        let verify = Component {
+            id: "verify-basic".into(),
+            name: "Verify Installation".into(),
+            description: String::new(),
+            script: String::new(),
+            category: Category::Maintenance,
+            required: false,
+            selected: true,
+            installed: false,
+            progress: 0.0,
+            estimate: String::new(),
+            needs_sudo: false,
+            experimental: false,
+            note: None,
+        };
+        let normal = Component {
+            id: "pytorch".into(),
+            name: "PyTorch with ROCm".into(),
+            description: String::new(),
+            script: String::new(),
+            category: Category::Foundation,
+            required: true,
+            selected: true,
+            installed: false,
+            progress: 0.0,
+            estimate: String::new(),
+            needs_sudo: false,
+            experimental: false,
+            note: None,
+        };
+
+        assert!(is_native_maintenance_action(&repair));
+        assert!(!is_native_maintenance_action(&verify));
+        assert!(!is_native_maintenance_action(&normal));
+
+        let success = native_maintenance_action_outcome(&repair, true);
+        assert!(success.success);
+        assert!(success.report_lines[0].contains("reported success"));
+
+        let failure = native_maintenance_action_outcome(&repair, false);
+        assert!(!failure.success);
+        assert!(failure.report_lines[0].contains("reported failure"));
+    }
+
+    #[test]
+    fn test_benchmark_patterns_match_native_output_filenames() {
+        assert_eq!(
+            benchmark_pattern_for_target("rocm-benchmarks"),
+            Some("gpu-capability_benchmarks")
+        );
+        assert_eq!(
+            benchmark_pattern_for_target("gpu-memory-bandwidth"),
+            Some("memory-bandwidth_benchmarks")
+        );
+        assert_eq!(
+            benchmark_pattern_for_target("all-benchmarks"),
+            Some("all_benchmarks")
+        );
+        assert_eq!(
+            benchmark_pattern_for_target("onnx-performance"),
+            Some("onnx_benchmarks")
+        );
+    }
+
+    #[test]
+    fn test_single_benchmark_results_render_metrics_and_errors() {
+        let lines = benchmark_result_lines_from_json(&serde_json::json!({
+            "name": "vllm",
+            "success": false,
+            "execution_time_ms": 248842,
+            "results": {
+                "mode": "degraded",
+                "reason": "model timed out",
+                "throughput_tokens_per_sec": 0.0,
+                "visible_devices": "0,1"
+            },
+            "errors": ["model timed out after 240 seconds"]
+        }));
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("MODE: degraded"));
+        assert!(joined.contains("REASON: model timed out"));
+        assert!(joined.contains("THROUGHPUT TOKENS PER SEC: 0"));
+        assert!(joined.contains("ERROR: model timed out after 240 seconds"));
+    }
+
+    #[test]
+    fn test_persist_onnx_install_status_writes_clean_status_artifact() {
+        let _global_env = crate::test_support::lock_env();
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_home = std::env::var("HOME").ok();
+        let old_tmpdir = std::env::var("TMPDIR").ok();
+        let old_log_dir = std::env::var("MLSTACK_LOG_DIR").ok();
+        let root = std::env::temp_dir().join(format!(
+            "rusty-stack-persist-onnx-status-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let logs = root.join("logs");
+        let tmp = root.join("tmp");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("HOME", &root);
+        std::env::set_var("TMPDIR", &tmp);
+        std::env::set_var("MLSTACK_LOG_DIR", &logs);
+
+        persist_onnx_install_status(
+            "1.27.1",
+            &["MIGraphXExecutionProvider", "CPUExecutionProvider"],
+        );
+
+        let written = std::fs::read_dir(&logs)
+            .unwrap()
+            .find_map(|entry| {
+                let path = entry.ok()?.path();
+                (path
+                    .file_name()?
+                    .to_string_lossy()
+                    .starts_with("onnx_benchmarks_"))
+                .then_some(path)
+            })
+            .expect("onnx status log should be written");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(written).unwrap()).unwrap();
+
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(tmpdir) = old_tmpdir {
+            std::env::set_var("TMPDIR", tmpdir);
+        } else {
+            std::env::remove_var("TMPDIR");
+        }
+        if let Some(log_dir) = old_log_dir {
+            std::env::set_var("MLSTACK_LOG_DIR", log_dir);
+        } else {
+            std::env::remove_var("MLSTACK_LOG_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["errors"].as_array().unwrap().len(), 0);
+        assert_eq!(json["results"]["provider"], "MIGraphXExecutionProvider");
+        assert_eq!(json["results"]["benchmark_status"], "not_run");
+    }
+
+    #[test]
+    fn test_persist_full_suite_keeps_nested_results() {
+        let _global_env = crate::test_support::lock_env();
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_home = std::env::var("HOME").ok();
+        let old_tmpdir = std::env::var("TMPDIR").ok();
+        let old_log_dir = std::env::var("MLSTACK_LOG_DIR").ok();
+        let root = std::env::temp_dir().join(format!(
+            "rusty-stack-persist-full-suite-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let logs = root.join("logs");
+        let tmp = root.join("tmp");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("HOME", &root);
+        std::env::set_var("TMPDIR", &tmp);
+        std::env::set_var("MLSTACK_LOG_DIR", &logs);
+
+        let output = crate::benchmark_runners::BenchmarkOutput {
+            name: "all".into(),
+            success: true,
+            execution_time_ms: 1,
+            results: serde_json::json!({
+                "memory_bandwidth": {
+                    "success": true,
+                    "execution_time_ms": 1,
+                    "metrics": {"hbm_peak_gb_s": 123.0}
+                }
+            }),
+            errors: Vec::new(),
+        };
+        persist_benchmark_result("all", &output);
+
+        let written = std::fs::read_dir(&logs)
+            .unwrap()
+            .find_map(|entry| {
+                let path = entry.ok()?.path();
+                (path
+                    .file_name()?
+                    .to_string_lossy()
+                    .starts_with("all_benchmarks_"))
+                .then_some(path)
+            })
+            .expect("all benchmark log should be written");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(written).unwrap()).unwrap();
+
+        if let Some(home) = old_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(tmpdir) = old_tmpdir {
+            std::env::set_var("TMPDIR", tmpdir);
+        } else {
+            std::env::remove_var("TMPDIR");
+        }
+        if let Some(log_dir) = old_log_dir {
+            std::env::set_var("MLSTACK_LOG_DIR", log_dir);
+        } else {
+            std::env::remove_var("MLSTACK_LOG_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(
+            json["results"]["memory_bandwidth"]["metrics"]["hbm_peak_gb_s"],
+            123.0
         );
     }
 
@@ -7273,14 +8025,5 @@ Agent 4
         assert_eq!(VerificationResult::Verified.label(), "Verified");
         assert_eq!(VerificationResult::Failed.label(), "Failed");
         assert_eq!(VerificationResult::Missing.label(), "Missing");
-        assert_eq!(VerificationResult::Warning.label(), "Warning");
-    }
-
-    #[test]
-    fn test_verification_result_warning_is_distinct() {
-        // Warning should be distinct from Failed and Verified
-        assert_ne!(VerificationResult::Warning, VerificationResult::Failed);
-        assert_ne!(VerificationResult::Warning, VerificationResult::Verified);
-        assert_ne!(VerificationResult::Warning, VerificationResult::Missing);
     }
 }

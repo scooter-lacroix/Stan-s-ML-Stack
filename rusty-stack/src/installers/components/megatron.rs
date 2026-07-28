@@ -161,7 +161,7 @@ impl MegatronInstaller {
     /// - PYTORCH_ROCM_ARCH=gfx1100
     /// - ROCM_PATH
     /// - HSA_TOOLS_LIB
-    /// - PYTORCH_ALLOC_CONF=expandable_segments:True
+    /// - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     pub fn rocm_env(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
         let rocm_path = rocm_env
             .path()
@@ -174,7 +174,7 @@ impl MegatronInstaller {
             ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
             ("ROCM_PATH".to_string(), rocm_path.clone()),
             (
-                "PYTORCH_ALLOC_CONF".to_string(),
+                "PYTORCH_CUDA_ALLOC_CONF".to_string(),
                 "expandable_segments:True".to_string(),
             ),
         ];
@@ -243,6 +243,13 @@ impl MegatronInstaller {
     ///
     /// The editable install is done from the cloned directory.
     /// Dependencies are resolved separately (safe requirements filtering).
+    ///
+    /// # Pip Target Directory
+    ///
+    /// The working directory is set to `install_dir()`, which is the git clone
+    /// target directory. The NVIDIA/Megatron-LM repository has `setup.py` at the
+    /// repository root (not in a subdirectory), so `pip install -e .` works
+    /// correctly from the clone root.
     pub fn build_pip_install_command(&self) -> ShellCommand {
         let is_global = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
@@ -514,7 +521,7 @@ mod tests {
             .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
         assert!(env
             .iter()
-            .any(|(k, v)| k == "PYTORCH_ALLOC_CONF" && v == "expandable_segments:True"));
+            .any(|(k, v)| k == "PYTORCH_CUDA_ALLOC_CONF" && v == "expandable_segments:True"));
         assert!(env.iter().any(|(k, _)| k == "HSA_TOOLS_LIB"));
     }
 

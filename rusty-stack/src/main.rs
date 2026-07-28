@@ -32,6 +32,13 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
+use rusty_stack::orchestrator::planner::PlanOutput;
+
+/// Inline, animated apply-phase UI (ratatui `Viewport::Inline`). Pure state
+/// + renderer are tested; the live panel is only constructed on a TTY.
+#[cfg(feature = "tui")]
+mod apply_ui;
+
 // ---------------------------------------------------------------------------
 // CLI definition
 // ---------------------------------------------------------------------------
@@ -59,7 +66,24 @@ enum Subcommands {
     /// classifies updates (safe/guarded/blocked/candidate/experimental), and
     /// applies selected updates.
     ///
-    /// Non-interactive JSON output when not TTY or with --json.
+    /// FLAGS:
+    ///   --scan-only          List available updates without applying
+    ///   --all-safe           Auto-select and apply safe updates (with countdown)
+    ///   --include-experimental Include experimental-tier updates with --all-safe
+    ///   --yes                Skip all prompts (auto-apply immediately)
+    ///   --json               Machine-readable JSON output
+    ///
+    /// INTERACTIVE MODE (no flags):
+    ///   Displays a numbered list of available updates.
+    ///   Use spacebar to toggle selection, Enter to confirm.
+    ///   Press 'a' to select all, 'n' to select none, Esc to cancel.
+    ///
+    /// EXAMPLES:
+    ///   rusty-stack update --scan-only              # List updates only
+    ///   rusty-stack update --all-safe              # Auto-apply safe updates
+    ///   rusty-stack update --all-safe --yes        # Auto-apply safe updates (no countdown)
+    ///   rusty-stack update --include-experimental   # Include experimental in --all-safe
+    ///   rusty-stack update pytorch onnx             # Update specific components
     Update {
         /// Produce plan without applying any changes.
         #[arg(long)]
@@ -262,43 +286,25 @@ mod sudo_creds {
     /// Read a password from TTY without echo. Returns `None` if not a TTY or
     /// reading fails. Uses raw stdin reads (avoids `read_line` buffering).
     pub fn read_password_from_tty() -> Option<String> {
-        use std::io::Read;
         if !std::io::stdin().is_terminal() {
             // Not a TTY — do not consume piped stdin as sudo password.
             return None;
         }
-        // Disable echo + canonical mode via termios, read raw bytes to newline.
-        #[cfg(unix)]
-        {
-            let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-            if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } != 0 {
-                return None;
-            }
-            let original = termios;
-            termios.c_lflag &= !(libc::ECHO | libc::ICANON);
-            if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) } != 0 {
-                return None;
-            }
-            let mut password = Vec::new();
-            let mut byte = [0u8; 1];
-            loop {
-                match std::io::stdin().read(&mut byte) {
-                    Ok(0) => break, // EOF
-                    Ok(_) if byte[0] == b'\n' => break,
-                    Ok(_) if byte[0] == b'\r' => break,
-                    Ok(_) => password.push(byte[0]),
-                    Err(_) => break,
+        // rpassword reads from /dev/tty with echo disabled and restores the
+        // terminal state itself — robust across terminals. This replaces a
+        // hand-rolled termios raw byte-at-a-time read that interacted poorly
+        // with stdin buffering and delivered a corrupted password to sudo's
+        // askpass helper (3 "incorrect password" attempts even though the
+        // user typed it correctly).
+        match rpassword::read_password() {
+            Ok(pw) => {
+                if pw.is_empty() {
+                    None
+                } else {
+                    Some(pw)
                 }
             }
-            unsafe {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original);
-            };
-            eprintln!(); // newline after password input
-            String::from_utf8(password).ok()
-        }
-        #[cfg(not(unix))]
-        {
-            None
+            Err(_) => None,
         }
     }
 
@@ -343,6 +349,473 @@ mod sudo_creds {
 
 mod update_impl {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+
+    /// TTY-only activity indicator for blocking update phases.
+    ///
+    /// Progress never goes to stdout, so JSON mode remains machine-readable.
+    struct ActivityIndicator {
+        active: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl ActivityIndicator {
+        fn start(message: &str) -> Self {
+            let active = Arc::new(AtomicBool::new(true));
+            let thread_active = Arc::clone(&active);
+            let message = message.to_string();
+            let handle = std::thread::spawn(move || {
+                const FRAMES: &[char] = &[
+                    '\u{280b}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283c}', '\u{2834}',
+                    '\u{2826}', '\u{2827}', '\u{2807}', '\u{280f}',
+                ];
+                let mut frame = 0usize;
+                while thread_active.load(Ordering::Relaxed) {
+                    eprint!("\r  {} {}", FRAMES[frame % FRAMES.len()], message);
+                    let _ = io::stderr().flush();
+                    frame = frame.wrapping_add(1);
+                    std::thread::sleep(std::time::Duration::from_millis(90));
+                }
+            });
+            Self {
+                active,
+                handle: Some(handle),
+            }
+        }
+
+        fn finish(mut self, message: &str) {
+            self.active.store(false, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+            // Clear the entire line to remove any spinner artifacts
+            eprint!("\r\x1b[2K");
+            let _ = io::stderr().flush();
+            eprintln!("  ✓ {}", message);
+            let _ = io::stderr().flush();
+        }
+    }
+
+    impl Drop for ActivityIndicator {
+        fn drop(&mut self) {
+            self.active.store(false, Ordering::Relaxed);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+            eprint!("\r\x1b[2K");
+            let _ = io::stderr().flush();
+        }
+    }
+
+    /// Auto-select any unselected, non-blocked dependency of a selected item.
+    ///
+    /// The interactive selection replaces the planner's dependency-closed
+    /// selection with the user's raw picks. Without re-validation, a user can
+    /// select a dependent (e.g. triton) while leaving its pending prerequisite
+    /// (pytorch) unselected — ApplyEngine only ORDERS dependencies that remain
+    /// in the selected set and silently ignores absent ones, so the dependent
+    /// would install without its prerequisite. This mirrors the planner's
+    /// `enforce_dependency_rules` (fix-forward): for each selected item, select
+    /// any of its dependencies that are present in the plan and not blocked.
+    fn enforce_selection_dependency_closure(plan: &mut PlanOutput) {
+        // Collect the dependency ids each selected item declares.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            // Snapshot the deps of currently-selected items (borrowck: collect
+            // owned strings so we can mutate the plan in the same pass).
+            let deps_to_select: Vec<String> = plan
+                .plan
+                .iter()
+                .filter(|i| i.selected)
+                .flat_map(|i| i.dependencies.iter().cloned())
+                .collect();
+            for dep_id in deps_to_select {
+                if let Some(dep_item) = plan.plan.iter_mut().find(|i| i.component_id == dep_id) {
+                    if !dep_item.selected && dep_item.classification != "blocked" {
+                        dep_item.selected = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pure renderer for the interactive selection body.
+    ///
+    /// Returns the full multi-line text (terminated with CRLF) that should be
+    /// written to the terminal for a given selection/cursor state. Extracted so
+    /// the layout can be unit-tested without a live TTY.
+    ///
+    /// Column widths are derived from the longest value in each column so rows
+    /// stay aligned regardless of version-string length.
+    pub(super) fn render_selection_body(
+        plan: &PlanOutput,
+        selected_indices: &[usize],
+        cursor_idx: usize,
+    ) -> String {
+        // Only render SELECTABLE (non-blocked) items as numbered rows. Blocked
+        // items are retained by the planner (visible=false) but must not be
+        // offered for selection — the display numbering must match the
+        // `selectable` plan-index list used by the interactive loop.
+        let rows: Vec<(usize, String, String, String, String)> = plan
+            .plan
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.classification != "blocked")
+            .map(|(plan_idx, item)| {
+                let current = if item.current_version.is_empty() {
+                    "not installed".to_string()
+                } else {
+                    item.current_version.clone()
+                };
+                (
+                    plan_idx,
+                    item.component_id.clone(),
+                    current,
+                    item.proposed_version.clone(),
+                    item.classification.clone(),
+                )
+            })
+            .collect();
+
+        let width_num = rows
+            .iter()
+            .map(|(_, name, _, _, _)| name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(4);
+        let width_name = width_num; // alias for clarity below
+        let width_cur = rows
+            .iter()
+            .map(|(_, _, cur, _, _)| cur.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(5);
+        let width_new = rows
+            .iter()
+            .map(|(_, _, _, prop, _)| prop.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(3);
+        // display number width (1..N)
+        let width_disp = rows.len().to_string().chars().count().max(1);
+
+        let mut out = String::new();
+        out.push_str("Interactive Update Selection\r\n");
+        out.push_str("===========================\r\n\r\n");
+        out.push_str(
+            "Controls: \u{2191}\u{2193} Navigate | Space Toggle | Enter Confirm | a:Select All | n:Select None | Esc:Cancel\r\n\r\n",
+        );
+
+        for (disp_idx, (plan_idx, name, current, proposed, class)) in rows.iter().enumerate() {
+            let is_selected = selected_indices.contains(plan_idx);
+            let is_cursor = disp_idx == cursor_idx;
+            let cursor_marker = if is_cursor { '>' } else { ' ' };
+            let marker = if is_selected { "[x]" } else { "[ ]" };
+            out.push_str(&format!(
+                "{} {} {:<width_disp$}. {:<width_name$} {:>width_cur$} \u{2192} {:>width_new$} ({})\r\n",
+                cursor_marker,
+                marker,
+                disp_idx + 1,
+                name,
+                current,
+                proposed,
+                class,
+                width_disp = width_disp,
+                width_name = width_name,
+                width_cur = width_cur,
+                width_new = width_new,
+            ));
+        }
+
+        out.push_str(&format!(
+            "\r\nSelected: {} of {}\r\n",
+            selected_indices.len(),
+            rows.len()
+        ));
+        out
+    }
+
+    /// Interactive selection UI for update plan items.
+    ///
+    /// Inline redraw model — does NOT take over the terminal:
+    /// - Raw mode is enabled only for single-key input.
+    /// - On each redraw the cursor is moved up N lines and every line is
+    ///   cleared in place (\x1b[2K), so prior output scrolls naturally
+    ///   instead of being wiped by a full-screen clear.
+    /// - The cursor is hidden during the loop and restored on every exit path.
+    /// - A panic hook guarantees raw mode is disabled and the cursor is shown
+    ///   even if a panic (or Ctrl+C abort) interrupts the loop.
+    /// - Column widths are derived from the actual data so version strings of
+    ///   different lengths remain aligned.
+    fn interactive_selection(plan: &PlanOutput) -> Result<PlanOutput, String> {
+        use crossterm::{
+            event::{self, Event, KeyCode, KeyEventKind},
+            execute,
+            terminal::{disable_raw_mode, enable_raw_mode},
+        };
+        use std::io::{self, Write};
+
+        // Blocked items (incompatible hardware/channel/manifest-declared) are
+        // retained by the planner with visible=false but must NOT be selectable —
+        // selecting one and passing it to ApplyEngine would run an incompatible
+        // installer despite the planner's verdict. Build the list of selectable
+        // (non-blocked) PLAN indices; the displayed rows map 1..N to these.
+        let selectable: Vec<usize> = plan
+            .plan
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.classification != "blocked")
+            .map(|(i, _)| i)
+            .collect();
+        let selectable_set: std::collections::HashSet<usize> = selectable.iter().copied().collect();
+        let display_count = selectable.len();
+
+        let mut selected_indices: Vec<usize> = plan
+            .plan
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.selected && item.classification != "blocked")
+            .map(|(i, _)| i)
+            .collect();
+
+        // ---- Non-TTY fallback: one prompt, one read, no raw mode ----
+        if !io::stdin().is_terminal() {
+            return interactive_selection_nontty(plan);
+        }
+
+        // ---- TTY path ----
+        let mut cursor_idx: usize = 0;
+        let mut stdout = io::stdout();
+
+        // Install a panic hook so an unexpected panic restores the terminal.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new({
+            let prev = std::sync::Arc::new(prev_hook);
+            move |info| {
+                let _ = disable_raw_mode();
+                let mut out = io::stdout();
+                let _ = execute!(out, crossterm::cursor::Show);
+                let _ = out.flush();
+                if let Ok(p) = std::sync::Arc::try_unwrap(std::sync::Arc::clone(&prev)) {
+                    p(info);
+                } else {
+                    prev(info);
+                }
+            }
+        }));
+
+        let restore_terminal = || {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), crossterm::cursor::Show);
+            let _ = io::stdout().flush();
+        };
+
+        if let Err(e) = enable_raw_mode() {
+            // Restore the previous panic hook before bailing.
+            let _ = std::panic::take_hook();
+            return Err(format!("Failed to enable raw mode: {e}"));
+        }
+        let _ = execute!(stdout, crossterm::cursor::Hide);
+        let _ = stdout.flush();
+
+        // Render once and remember how many lines we drew, so subsequent
+        // redraws can rewind by exactly that many lines.
+        let mut drawn_lines: usize = 0;
+        let mut first_draw = true;
+
+        // Body text is built by the pure `render_selection_body` helper so it
+        // can be unit-tested without a TTY.
+
+        loop {
+            // Move cursor up `drawn_lines` lines and clear each one, then render.
+            if !first_draw && drawn_lines > 0 {
+                // \x1b[<n>A  = up n lines; \x1b[2K clears the current line.
+                let _ = write!(stdout, "\x1b[{}A", drawn_lines);
+                for _ in 0..drawn_lines {
+                    let _ = write!(stdout, "\r\x1b[2K");
+                }
+                // After clearing, cursor is at the top of our block, col 0.
+                // Move down one line per cleared row is unnecessary because we
+                // write each new line with \r\n which advances as it goes.
+            }
+
+            let body = render_selection_body(plan, &selected_indices, cursor_idx);
+            drawn_lines = body.matches('\n').count();
+            let _ = write!(stdout, "{body}");
+            let _ = stdout.flush();
+            first_draw = false;
+
+            // Block on a single key event.
+            let ev = match event::read() {
+                Ok(ev) => ev,
+                Err(e) => {
+                    restore_terminal();
+                    return Err(format!("Failed to read event: {e}"));
+                }
+            };
+
+            if let Event::Key(key) = ev {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    // Ctrl+C in raw mode arrives as Char('c') + CONTROL (ISIG is
+                    // cleared by enable_raw_mode, so it is NOT delivered as
+                    // SIGINT). Treat it as an explicit cancel, matching Esc.
+                    KeyCode::Char('c')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        restore_terminal();
+                        return Err("Cancelled by user".to_string());
+                    }
+                    KeyCode::Up => {
+                        cursor_idx = cursor_idx.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if cursor_idx + 1 < display_count {
+                            cursor_idx += 1;
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        // cursor_idx is a DISPLAY position; map to the plan index.
+                        if cursor_idx < selectable.len() {
+                            let plan_idx = selectable[cursor_idx];
+                            if selected_indices.contains(&plan_idx) {
+                                selected_indices.retain(|&i| i != plan_idx);
+                            } else {
+                                selected_indices.push(plan_idx);
+                            }
+                        }
+                    }
+                    KeyCode::Char('a') => {
+                        // Select all SELECTABLE (non-blocked) items only.
+                        selected_indices = selectable.clone();
+                    }
+                    KeyCode::Char('n') => {
+                        selected_indices.clear();
+                    }
+                    KeyCode::Enter => {
+                        // The cursor already sits one line below the redrawn
+                        // body (the last written line was "Selected: N of M\r\n"),
+                        // so the apply panel's inline viewport can attach here
+                        // directly. A single newline adds one separator line —
+                        // NOT a full `drawn_lines` cursor-down, which left a
+                        // ~14-line gap between "Selected" and the panel.
+                        let _ = write!(stdout, "\r\n");
+                        let _ = stdout.flush();
+                        break;
+                    }
+                    KeyCode::Esc => {
+                        restore_terminal();
+                        return Err("Cancelled by user".to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        restore_terminal();
+
+        // Build new plan with selections. Blocked items are never selected.
+        let mut new_plan = plan.clone();
+        for (idx, item) in new_plan.plan.iter_mut().enumerate() {
+            item.selected = selected_indices.contains(&idx) && selectable_set.contains(&idx);
+        }
+        // Re-validate the dependency closure after interactive selection: a
+        // user can select a dependent (e.g. triton) while leaving its pending
+        // prerequisite (pytorch) unselected. ApplyEngine only ORDERS
+        // dependencies that remain selected and silently ignores absent ones,
+        // so without this the dependent would install without its prerequisite.
+        // Auto-select any unselected, non-blocked dependency of a selected item
+        // (fix-forward, matching the planner's enforce_dependency_rules).
+        enforce_selection_dependency_closure(&mut new_plan);
+        new_plan.summary.selected = new_plan.plan.iter().filter(|i| i.selected).count();
+
+        Ok(new_plan)
+    }
+
+    /// Non-interactive fallback used when stdin is not a TTY (piped input).
+    ///
+    /// Prints a one-shot numbered list and reads a single line of input to
+    /// determine the selection. No raw mode, no redraw.
+    fn interactive_selection_nontty(plan: &PlanOutput) -> Result<PlanOutput, String> {
+        use std::io::{self, Write};
+
+        let mut selected_indices: Vec<usize> = Vec::new();
+
+        // Selectable indices: non-blocked items only (blocked = incompatible).
+        let selectable: Vec<usize> = plan
+            .plan
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.classification != "blocked")
+            .map(|(i, _)| i)
+            .collect();
+
+        println!("Interactive Update Selection");
+        println!("===========================\n");
+        println!("Controls: enter numbers (comma-separated), or 'all' / 'none'\n");
+
+        // Display only selectable items, numbered 1..N.
+        for (disp, &plan_idx) in selectable.iter().enumerate() {
+            let item = &plan.plan[plan_idx];
+            let current = if item.current_version.is_empty() {
+                "not installed"
+            } else {
+                &item.current_version
+            };
+            println!(
+                "  {}. {} {} \u{2192} {} ({})",
+                disp + 1,
+                item.component_id,
+                current,
+                item.proposed_version,
+                item.classification
+            );
+        }
+
+        print!("\nEnter numbers to select (comma-separated, or 'all'/'none'): ");
+        let _ = io::stdout().flush();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_ok() {
+            match input.trim().to_lowercase().as_str() {
+                "all" => selected_indices = selectable.clone(),
+                "none" => selected_indices.clear(),
+                _ => {
+                    for part in input.split(',') {
+                        if let Ok(num) = part.trim().parse::<usize>() {
+                            // num is a 1-based display number → selectable index.
+                            if num > 0 && num <= selectable.len() {
+                                selected_indices.push(selectable[num - 1]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut new_plan = plan.clone();
+        // Dedup selected indices so `1,1,2` reports 2 selected (not 3) and each
+        // item is flagged at most once. Sort first so dedup is stable.
+        selected_indices.sort_unstable();
+        selected_indices.dedup();
+        let selectable_set: std::collections::HashSet<usize> = selectable.iter().copied().collect();
+        for (idx, item) in new_plan.plan.iter_mut().enumerate() {
+            // Only selectable (non-blocked) items can be selected.
+            item.selected = selected_indices.contains(&idx) && selectable_set.contains(&idx);
+        }
+        // Re-validate the dependency closure (same as the TTY path).
+        enforce_selection_dependency_closure(&mut new_plan);
+        new_plan.summary.selected = new_plan.plan.iter().filter(|i| i.selected).count();
+
+        Ok(new_plan)
+    }
 
     pub fn run(
         scan_only: bool,
@@ -355,11 +828,16 @@ mod update_impl {
         // Determine output mode: JSON if explicitly requested or not a TTY
         let json_mode = json || !io::stdout().is_terminal();
 
-        // Initialize logging for update operations
+        // Initialize logging for update operations.
+        //
+        // Use the interactive (stdout-free) logger even for human-readable
+        // mode so that any `tracing::info!` fired before/during the inline
+        // selection UI cannot corrupt stdout mid-render. Stderr keeps a
+        // compact INFO+ stream for live diagnostics.
         let _log_guard = if json_mode {
             rusty_stack::logging::init_batch_logging("update")
         } else {
-            rusty_stack::logging::init_logging("update")
+            rusty_stack::logging::init_interactive_logging("update")
         };
         tracing::info!(
             scan_only = scan_only,
@@ -380,8 +858,15 @@ mod update_impl {
             json_output: json_mode,
         };
 
-        // Phase 1: Scan
-        let scan = run_scan();
+        // Phase 1: Scan. Keep animated progress off stdout so JSON stays valid.
+        let scan = if json_mode {
+            run_scan()
+        } else {
+            let activity = ActivityIndicator::start("Scanning hardware and installed components");
+            let scan = run_scan();
+            activity.finish("Scan complete");
+            scan
+        };
 
         if json_mode {
             // JSON output mode
@@ -418,7 +903,7 @@ mod update_impl {
                         }
                     } else {
                         // Apply the plan
-                        let apply_result = apply_plan(&plan);
+                        let apply_result = apply_plan(&plan, json_mode);
                         let output = JsonOutput {
                             scan,
                             plan: Some(plan),
@@ -480,15 +965,34 @@ mod update_impl {
             print!("{}", format_scan_human(&scan));
 
             // Phase 2: Plan
-            match build_plan(&scan, &options) {
+            let plan_result = {
+                let activity =
+                    ActivityIndicator::start("Resolving manifest and building update plan");
+                let result = build_plan(&scan, &options);
+                activity.finish(if result.is_ok() {
+                    "Update plan ready"
+                } else {
+                    "Update plan failed"
+                });
+                result
+            };
+
+            match plan_result {
                 Ok(plan) => {
-                    print!("{}", format_plan_output_human(&plan));
+                    // The interactive selection screen renders its own copy of
+                    // the plan; printing the human-readable plan block first
+                    // would leave a stale duplicate above the inline UI. Only
+                    // emit it for the non-interactive branches below.
+                    let going_interactive = !(scan_only || plan.plan.is_empty() || yes || all_safe);
+                    if !going_interactive {
+                        print!("{}", format_plan_output_human(&plan));
+                    }
 
                     if scan_only {
                         println!("\n(scan-only mode: no changes will be applied)");
-                    } else if plan.summary.selected == 0 {
-                        println!("\nNo updates selected.");
-                        tracing::info!("No updates selected");
+                    } else if plan.plan.is_empty() {
+                        println!("\nNo updates available.");
+                        tracing::info!("No updates available");
                     } else if yes || all_safe {
                         // --all-safe or --yes: show countdown unless --yes skips it
                         if yes {
@@ -511,29 +1015,36 @@ mod update_impl {
                         let log_path = rusty_stack::logging::log_dir();
                         println!("  Logging to: {}", log_path.display());
                         println!();
-                        let apply_result = apply_plan(&plan);
+                        let apply_result = apply_plan(&plan, json_mode);
                         print_apply_summary(&apply_result);
                         if apply_result.has_failures() {
                             process::exit(1);
                         }
                     } else {
-                        // Interactive: prompt for confirmation
-                        println!("\nReady to apply {} updates.", plan.summary.selected);
-                        print!("Apply now? [y/N] ");
-                        let _ = io::stdout().flush();
-                        let mut input = String::new();
-                        if io::stdin().read_line(&mut input).is_ok() {
-                            match input.trim().to_lowercase().as_str() {
-                                "y" | "yes" => {
-                                    let apply_result = apply_plan(&plan);
-                                    print_apply_summary(&apply_result);
-                                    if apply_result.has_failures() {
-                                        process::exit(1);
-                                    }
+                        // Interactive selection: allow user to toggle items with spacebar
+                        // Always show interactive UI when there are available updates
+                        tracing::info!(
+                            "Starting interactive selection for {} items",
+                            plan.plan.len()
+                        );
+                        match interactive_selection(&plan) {
+                            Ok(selected_plan) => {
+                                if selected_plan.summary.selected == 0 {
+                                    println!("\nNo updates selected.");
+                                    tracing::info!(
+                                        "No updates selected after interactive selection"
+                                    );
+                                    return;
                                 }
-                                _ => {
-                                    println!("Cancelled.");
+                                let apply_result = apply_plan(&selected_plan, json_mode);
+                                print_apply_summary(&apply_result);
+                                if apply_result.has_failures() {
+                                    process::exit(1);
                                 }
+                            }
+                            Err(e) => {
+                                println!("\nCancelled: {}", e);
+                                tracing::info!("Update cancelled: {}", e);
                             }
                         }
                     }
@@ -578,6 +1089,21 @@ mod update_impl {
 
         // Detect ROCm info
         let (rocm_version, gpu_architecture, rocm_channel) = detect_rocm_info();
+
+        // Hardware detection is authoritative for ROCm. Some installations
+        // have a working ROCm runtime but fail the broader component probe.
+        if !rocm_version.is_empty() {
+            if let Some(rocm) = installed.iter_mut().find(|comp| comp.id == "rocm") {
+                rocm.version = rocm_version.clone();
+                rocm.status = "installed".to_string();
+            } else {
+                installed.push(InstalledComponent {
+                    id: "rocm".to_string(),
+                    version: rocm_version.clone(),
+                    status: "installed".to_string(),
+                });
+            }
+        }
 
         ScanOutput {
             installed,
@@ -812,6 +1338,12 @@ mod update_impl {
                 termios.c_cc[libc::VTIME] = 0;
                 let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios) };
 
+                // Ensure terminal is restored even on panic/ctrl+c
+                let restore_termios = || {
+                    let _ =
+                        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+                };
+
                 let mut confirmed = false;
                 let mut cancelled = false;
 
@@ -848,8 +1380,8 @@ mod update_impl {
                     }
                 }
 
-                // Restore original terminal settings
-                let _ = unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &original) };
+                // Restore original terminal settings (always executed)
+                restore_termios();
 
                 eprint!("\r{}\r", " ".repeat(40));
 
@@ -883,6 +1415,7 @@ mod update_impl {
     /// directly - no subprocess spawning.
     fn apply_plan(
         plan: &rusty_stack::orchestrator::planner::PlanOutput,
+        json_mode: bool,
     ) -> rusty_stack::orchestrator::apply::ApplySummary {
         use rusty_stack::orchestrator::apply::{ApplyEngine, ApplyExecutor, ApplyOptions};
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -894,16 +1427,84 @@ mod update_impl {
         /// Direct installer executor - calls Rust installer functions in-process.
         struct DirectInstallerExecutor {
             cancelled: Arc<AtomicBool>,
+            json_mode: bool,
+            /// Inline animated apply panel. `None` (non-TTY / JSON / no-tui) keeps
+            /// the legacy per-line stdout/stderr output unchanged.
+            #[cfg(feature = "tui")]
+            panel: std::cell::RefCell<Option<apply_ui::ApplyPanel>>,
         }
 
         impl DirectInstallerExecutor {
-            fn new(cancelled: Arc<AtomicBool>) -> Self {
-                Self { cancelled }
+            fn new(cancelled: Arc<AtomicBool>, json_mode: bool) -> Self {
+                Self {
+                    cancelled,
+                    json_mode,
+                    #[cfg(feature = "tui")]
+                    panel: std::cell::RefCell::new(None),
+                }
+            }
+
+            /// Attach the inline apply panel (TTY, non-JSON only) and render its
+            /// initial pending-state frame.
+            #[cfg(feature = "tui")]
+            fn set_panel(&self, panel: apply_ui::ApplyPanel) {
+                let mut guard = self.panel.borrow_mut();
+                *guard = Some(panel);
+                if let Some(p) = guard.as_mut() {
+                    p.draw();
+                }
+            }
+
+            /// Whether the animated panel owns the terminal right now.
+            #[cfg(feature = "tui")]
+            fn panel_active(&self) -> bool {
+                self.panel.borrow().is_some()
+            }
+
+            #[cfg(not(feature = "tui"))]
+            fn panel_active(&self) -> bool {
+                false
+            }
+
+            /// Fold one installer event into the animated panel and redraw it.
+            /// No-op when no panel is attached (non-TTY / JSON / no-tui).
+            #[cfg(feature = "tui")]
+            fn fold_panel_event(
+                &self,
+                ev: &rusty_stack::installer::InstallerEvent,
+                running_id: &str,
+            ) {
+                if let Some(p) = self.panel.borrow_mut().as_mut() {
+                    p.state_mut().apply_event(ev, running_id);
+                    p.draw();
+                }
+            }
+
+            /// Advance the panel's animation frame and redraw (called on each
+            /// `recv_timeout` wake so the spinner/border animate even while the
+            /// installer is silent). No-op when no panel is attached.
+            #[cfg(feature = "tui")]
+            fn tick_panel(&self) {
+                if let Some(p) = self.panel.borrow_mut().as_mut() {
+                    p.tick();
+                }
             }
             fn component_for_id(id: &str) -> Option<rusty_stack::state::Component> {
+                // The bundled manifest/registry still emit the legacy `flash-attn`
+                // id, while default_components() now exposes the split
+                // `flash-attn-triton` / `flash-attn-ck` components. The native
+                // installer treats a generic `flash-attn` as the recommended
+                // Triton backend (installer.rs flash-attn dispatch), so normalize
+                // the legacy id here — otherwise an available `flash-attn` update
+                // fails immediately with "Unknown component ID" before reaching
+                // the installer that supports the alias.
+                let normalized = match id {
+                    "flash-attn" => "flash-attn-triton",
+                    other => other,
+                };
                 rusty_stack::state::default_components()
                     .into_iter()
-                    .find(|c| c.id == id)
+                    .find(|c| c.id == normalized)
                     .map(|mut c| {
                         c.selected = true;
                         c
@@ -991,13 +1592,15 @@ mod update_impl {
                 }
                 let component_name = component.name.clone();
                 let cid = component_id.to_string();
+                let target_version = proposed_version.to_string();
                 let handle = std::thread::spawn(move || {
-                    rusty_stack::installer::run_installation(
+                    rusty_stack::installer::run_installation_with_version(
                         vec![component],
                         config,
                         sudo_password,
                         tx,
                         input_rx,
+                        Some(target_version),
                     );
                 });
                 let mut success = true;
@@ -1007,66 +1610,128 @@ mod update_impl {
                     '\u{2826}', '\u{2827}', '\u{2807}', '\u{280f}',
                 ];
                 let mut si = 0usize;
+                let panel_active = self.panel_active();
                 loop {
                     match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok(rusty_stack::installer::InstallerEvent::Log(line, _)) => {
-                            println!("    | {}", line);
-                            tracing::info!(component = %cid, log = %line);
-                        }
-                        Ok(rusty_stack::installer::InstallerEvent::Progress {
-                            progress,
-                            message,
-                            ..
-                        }) => {
-                            let pct = (progress * 100.0) as u8;
-                            let s = spinner[si % spinner.len()];
-                            si += 1;
-                            eprint!("\r    {} {} [{:>3}%] {}    ", s, cid, pct, message);
-                            let _ = std::io::stderr().flush();
-                        }
-                        Ok(rusty_stack::installer::InstallerEvent::ComponentStart {
-                            name, ..
-                        }) => {
-                            eprint!("\r    ");
-                            println!("    > Installing {}...", name);
-                            tracing::info!(component = %cid, name = %name, "Component started");
-                        }
-                        Ok(rusty_stack::installer::InstallerEvent::ComponentComplete {
-                            success: s,
-                            message,
-                            ..
-                        }) => {
-                            eprint!("\r{}\r", " ".repeat(80));
-                            if s {
-                                println!("    ok {} - {}", component_name, message);
-                                tracing::info!(component = %cid, "Completed successfully");
-                            } else {
-                                println!("    FAIL {} - {}", component_name, message);
-                                tracing::error!(component = %cid, error = %message, "Failed");
-                                success = false;
-                                error_msg = message;
-                            }
-                        }
-                        Ok(rusty_stack::installer::InstallerEvent::VerificationReport {
-                            lines,
-                            ..
-                        }) => {
-                            for line in &lines {
-                                println!("    | {}", line);
-                            }
-                        }
-                        Ok(rusty_stack::installer::InstallerEvent::Finished { success: s }) => {
-                            if !s {
-                                success = false;
-                                if error_msg.is_empty() {
-                                    error_msg = "Finished with errors".into();
+                        Ok(ev) => {
+                            // Drive the animated panel (no-op when none attached).
+                            #[cfg(feature = "tui")]
+                            self.fold_panel_event(&ev, &cid);
+                            match ev {
+                                rusty_stack::installer::InstallerEvent::Log(line, _) => {
+                                    // Raw pip/git chatter is suppressed on the TTY
+                                    // (the panel shows the milestone; full log → file).
+                                    if !panel_active {
+                                        if self.json_mode {
+                                            eprintln!("    | {}", line);
+                                        } else {
+                                            println!("    | {}", line);
+                                        }
+                                    }
+                                    tracing::info!(component = %cid, log = %line);
+                                }
+                                rusty_stack::installer::InstallerEvent::Progress {
+                                    progress,
+                                    message,
+                                    ..
+                                } => {
+                                    if !panel_active {
+                                        let pct = (progress * 100.0) as u8;
+                                        let s = spinner[si % spinner.len()];
+                                        si += 1;
+                                        eprint!(
+                                            "\r    {} {} [{:>3}%] {}    ",
+                                            s, cid, pct, message
+                                        );
+                                        let _ = std::io::stderr().flush();
+                                    }
+                                }
+                                rusty_stack::installer::InstallerEvent::ComponentStart {
+                                    name,
+                                    ..
+                                } => {
+                                    if !panel_active {
+                                        eprint!("\r    ");
+                                        if self.json_mode {
+                                            eprintln!("    > Installing {}...", name);
+                                        } else {
+                                            println!("    > Installing {}...", name);
+                                        }
+                                    }
+                                    tracing::info!(component = %cid, name = %name, "Component started");
+                                }
+                                rusty_stack::installer::InstallerEvent::ComponentComplete {
+                                    success: s,
+                                    message,
+                                    ..
+                                } => {
+                                    if !panel_active {
+                                        eprint!("\r{}\r", " ".repeat(80));
+                                        if s {
+                                            if self.json_mode {
+                                                eprintln!(
+                                                    "    ok {} - {}",
+                                                    component_name, message
+                                                );
+                                            } else {
+                                                println!("    ok {} - {}", component_name, message);
+                                            }
+                                        } else {
+                                            if self.json_mode {
+                                                eprintln!(
+                                                    "    FAIL {} - {}",
+                                                    component_name, message
+                                                );
+                                            } else {
+                                                println!(
+                                                    "    FAIL {} - {}",
+                                                    component_name, message
+                                                );
+                                            }
+                                        }
+                                    }
+                                    if s {
+                                        tracing::info!(component = %cid, "Completed successfully");
+                                    } else {
+                                        tracing::error!(component = %cid, error = %message, "Failed");
+                                        success = false;
+                                        error_msg = message;
+                                    }
+                                }
+                                rusty_stack::installer::InstallerEvent::VerificationReport {
+                                    lines,
+                                    ..
+                                } => {
+                                    if !panel_active {
+                                        for line in &lines {
+                                            if self.json_mode {
+                                                eprintln!("    | {}", line);
+                                            } else {
+                                                println!("    | {}", line);
+                                            }
+                                        }
+                                    }
+                                }
+                                rusty_stack::installer::InstallerEvent::Finished { success: s } => {
+                                    if !s {
+                                        success = false;
+                                        if error_msg.is_empty() {
+                                            error_msg = "Finished with errors".into();
+                                        }
+                                    }
+                                    break;
                                 }
                             }
-                            break;
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             if self.cancelled.load(Ordering::Relaxed) {
                                 return Err(format!("{} cancelled", cid));
+                            }
+                            // Idle wake: advance the spinner/border animation so
+                            // the panel stays live while the installer is silent.
+                            #[cfg(feature = "tui")]
+                            if panel_active {
+                                self.tick_panel();
                             }
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -1074,7 +1739,14 @@ mod update_impl {
                         }
                     }
                 }
-                let _ = handle.join();
+                // Treat join errors as failures
+                match handle.join() {
+                    Ok(_) => {}
+                    Err(_) => {
+                        success = false;
+                        error_msg = "Installer thread panicked or disconnected".into();
+                    }
+                }
                 eprint!("\r{}\r", " ".repeat(80));
                 if success {
                     tracing::info!(component=%cid,"Succeeded");
@@ -1135,8 +1807,37 @@ mod update_impl {
             .collect();
 
         let cancelled = Arc::new(AtomicBool::new(false));
-        let engine = ApplyEngine::new(DirectInstallerExecutor::new(cancelled));
-        engine.apply(&items, &ApplyOptions::default())
+        let executor = DirectInstallerExecutor::new(cancelled.clone(), json_mode);
+        // On a real TTY (non-JSON), attach the inline animated panel. Non-TTY
+        // (piped) and JSON callers keep the legacy per-line output unchanged.
+        #[cfg(feature = "tui")]
+        if !json_mode {
+            let rows: Vec<(&str, &str, &str, &str)> = plan
+                .plan
+                .iter()
+                .filter(|i| i.selected)
+                .map(|i| {
+                    (
+                        i.component_id.as_str(),
+                        i.component_id.as_str(),
+                        i.current_version.as_str(),
+                        i.proposed_version.as_str(),
+                    )
+                })
+                .collect();
+            if let Some(panel) = apply_ui::ApplyPanel::try_new("Rusty Stack Update", rows) {
+                executor.set_panel(panel);
+            }
+        }
+        let engine = ApplyEngine::new(executor);
+        // The real apply opts INTO the post-install honesty guard (verify the
+        // installed version actually advanced to the target). Tests default this
+        // off (mock executors don't install).
+        let apply_opts = ApplyOptions {
+            verify_post_install_version: true,
+            ..ApplyOptions::default()
+        };
+        engine.apply(&items, &apply_opts)
     }
 
     /// Print a human-readable summary of the apply results.
@@ -1202,6 +1903,173 @@ mod update_impl {
         scan_only: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    }
+}
+
+#[cfg(test)]
+mod update_selection_tests {
+    use super::update_impl;
+    use rusty_stack::orchestrator::planner::{PlanOutput, PlanSummary, PlannerItemOutput};
+
+    fn sample_plan() -> PlanOutput {
+        let items = vec![
+            ("pytorch", "2.12.1+rocm7.2", "2.13.0", "guarded"),
+            ("onnx", "1.23.2", "1.27.1", "guarded"),
+            ("migraphx", "", "2.12.0", "candidate"),
+            ("megatron", "core_v0.15.0rc7", "25.1", "guarded"),
+            ("aiter", "0.0.0", "0.1.0", "guarded"),
+            ("comfyui", "v0.20.1", "latest", "guarded"),
+            ("vllm-studio", "v2.1.0", "latest", "guarded"),
+            ("textgen", "v4.7.3", "latest", "guarded"),
+            ("permanent-env", "installed", "1.0.0", "guarded"),
+        ];
+        let plan: Vec<PlannerItemOutput> = items
+            .iter()
+            .map(|(id, cur, prop, class)| PlannerItemOutput {
+                component_id: id.to_string(),
+                current_version: cur.to_string(),
+                proposed_version: prop.to_string(),
+                classification: class.to_string(),
+                risk_tier: "medium".to_string(),
+                selected: false,
+                visible: true,
+                rationale: String::new(),
+                dependencies: vec![],
+                exclusive_group: String::new(),
+            })
+            .collect();
+        PlanOutput {
+            plan,
+            summary: PlanSummary {
+                total: 9,
+                safe: 0,
+                guarded: 8,
+                candidate: 1,
+                experimental: 0,
+                blocked: 0,
+                selected: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn body_has_header_and_controls() {
+        let plan = sample_plan();
+        let body = update_impl::render_selection_body(&plan, &[], 0);
+        assert!(body.starts_with("Interactive Update Selection\r\n"));
+        assert!(body.contains("===========================\r\n\r\n"));
+        assert!(body.contains("Controls:"));
+        assert!(body.contains("\u{2191}\u{2193}".chars().next().unwrap()));
+    }
+
+    #[test]
+    fn body_renders_all_items() {
+        let plan = sample_plan();
+        let body = update_impl::render_selection_body(&plan, &[], 0);
+        for (id, cur, prop, class) in [
+            ("pytorch", "2.12.1+rocm7.2", "2.13.0", "guarded"),
+            ("migraphx", "not installed", "2.12.0", "candidate"),
+            ("permanent-env", "installed", "1.0.0", "guarded"),
+        ] {
+            assert!(body.contains(id), "missing {id}");
+            assert!(body.contains(cur), "missing current '{cur}' for {id}");
+            assert!(body.contains(prop), "missing proposed '{prop}' for {id}");
+            assert!(
+                body.contains(&format!("({})", class)),
+                "missing classification '{class}' for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_current_version_shows_not_installed() {
+        let plan = sample_plan();
+        let body = update_impl::render_selection_body(&plan, &[], 0);
+        assert!(body.contains("not installed"));
+        // Ensure the literal empty string isn't what gets rendered.
+        let migraphx_line = body
+            .lines()
+            .find(|l| l.contains("migraphx"))
+            .expect("migraphx line");
+        assert!(migraphx_line.contains("not installed"));
+        assert!(migraphx_line.contains("2.12.0"));
+        assert!(migraphx_line.contains("(candidate)"));
+    }
+
+    #[test]
+    fn selected_and_cursor_markers_are_correct() {
+        let plan = sample_plan();
+        // Cursor on row 2 (index 1), item 3 (index 2) selected.
+        let body = update_impl::render_selection_body(&plan, &[2], 1);
+        let lines: Vec<&str> = body.lines().collect();
+        // Find the row lines (they start with a cursor marker: '>' or ' ').
+        let rows: Vec<&&str> = lines
+            .iter()
+            .filter(|l| l.contains("[ ]") || l.contains("[x]"))
+            .collect();
+        assert_eq!(rows.len(), 9);
+        // Row index 1 should have the cursor marker.
+        assert!(rows[1].starts_with(">"), "cursor marker wrong: {}", rows[1]);
+        // Row index 2 should be checked.
+        assert!(
+            rows[2].contains("[x]"),
+            "selected marker wrong: {}",
+            rows[2]
+        );
+        // Other rows should be unchecked and not cursor.
+        for (i, r) in rows.iter().enumerate() {
+            if i != 2 {
+                assert!(r.contains("[ ]"), "unexpected checked row {i}: {}", r);
+            }
+            if i != 1 {
+                assert!(r.starts_with(" "), "unexpected cursor row {i}: {}", r);
+            }
+        }
+    }
+
+    #[test]
+    fn selected_count_reflects_input() {
+        let plan = sample_plan();
+        let body = update_impl::render_selection_body(&plan, &[0, 1, 2], 0);
+        assert!(body.contains("Selected: 3 of 9"));
+        let body_none = update_impl::render_selection_body(&plan, &[], 0);
+        assert!(body_none.contains("Selected: 0 of 9"));
+    }
+
+    #[test]
+    fn columns_are_aligned_despite_uneven_versions() {
+        // The longest current-version string sets the column width; shorter
+        // values must be right-padded so the arrow column starts at the same
+        // column on every row.
+        let plan = sample_plan();
+        let body = update_impl::render_selection_body(&plan, &[], 0);
+        let arrow_cols: Vec<usize> = body
+            .lines()
+            .filter(|l| l.contains("\u{2192}".chars().next().unwrap()))
+            .map(|l| l.find("\u{2192}".chars().next().unwrap()).unwrap())
+            .collect();
+        assert!(arrow_cols.len() >= 2, "expected multiple item rows");
+        let first = arrow_cols[0];
+        for col in &arrow_cols {
+            assert_eq!(*col, first, "misaligned arrow column: {} vs {}", col, first);
+        }
+    }
+
+    #[test]
+    fn body_uses_crlf_line_endings() {
+        // Raw mode only moves the cursor down with LF; CR is required to reset
+        // the column. Every line must end with \r\n, never bare \n.
+        let plan = sample_plan();
+        let body = update_impl::render_selection_body(&plan, &[], 0);
+        assert!(!body.contains("\n") || body.contains("\r\n"));
+        // No bare-LF sequences: every \n must be preceded by \r.
+        let mut prev = ' ';
+        for (i, ch) in body.char_indices() {
+            if ch == '\n' && prev != '\r' {
+                panic!("bare LF at byte {i} in body");
+            }
+            prev = ch;
+        }
     }
 }
 

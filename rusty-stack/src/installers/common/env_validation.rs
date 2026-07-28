@@ -185,7 +185,25 @@ pub fn validate_mlstack_env(script_name: Option<&str>) -> EnvValidationResult {
 
     // GPU_ARCH
     if let Some(v) = parsed.get("GPU_ARCH") {
-        vars.gpu_arch = v.clone();
+        let arch = v.trim();
+        if arch == "gfx000" {
+            // Substitute detected arch or flag invalid
+            if let Some(detected) = crate::gpu::detect_discrete_amd_gpus()
+                .first()
+                .and_then(|g| g.gfx_arch.clone())
+            {
+                vars.gpu_arch = detected;
+                warnings
+                    .push("GPU_ARCH was gfx000 (invalid), substituted detected arch".to_string());
+            } else {
+                warnings.push(
+                    "GPU_ARCH is gfx000 and no GPU detected — env file may be invalid".to_string(),
+                );
+                vars.gpu_arch = "gfx1100".to_string();
+            }
+        } else {
+            vars.gpu_arch = v.clone();
+        }
     } else {
         vars.gpu_arch = detect_gpu_arch_or_default();
         defaults_applied = true;

@@ -305,6 +305,129 @@ impl MigraphxInstaller {
 }
 
 // ===========================================================================
+// Functional runtime checks (detection + verification)
+// ===========================================================================
+//
+// On Arch/CachyOS the `migraphx` pip wheel does not exist — only the C++
+// toolchain ships (`/opt/rocm/bin/migraphx-driver` + libs). Detection and
+// verification therefore cannot rely on `import migraphx` alone; they must also
+// confirm the driver actually LOADS. A driver that fails to load its shared
+// libraries is NOT functional — the classic cause on a rolling-release distro
+// is a SONAME desync from a partial upgrade: migraphx is built against
+// libprotobuf.so.35.1.0 / libabsl_*.so.2605.0.0 but the system still has the
+// older libprotobuf.so.35.0.0 / older abseil. `sudo pacman -Syu` resolves it.
+
+/// Run `migraphx-driver --version`. Returns `Ok(())` if it loads, or
+/// `Err(missing_libs)` listing the shared libraries that failed to load (from
+/// `ldd`), so the failure is actionable rather than a vague "verify error".
+pub fn migraphx_driver_status() -> Result<(), Vec<String>> {
+    let driver = std::process::Command::new("/opt/rocm/bin/migraphx-driver")
+        .arg("--version")
+        .output();
+    match driver {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(_) => Err(migraphx_missing_libs()),
+        Err(_) => Err(vec![
+            "/opt/rocm/bin/migraphx-driver not found (is the migraphx package installed?)"
+                .to_string(),
+        ]),
+    }
+}
+
+/// Boolean form of [`migraphx_driver_status`] for detection.
+pub fn migraphx_driver_functional() -> bool {
+    migraphx_driver_status().is_ok()
+}
+
+/// Run `migraphx-driver --version` and return the parsed semantic version, or
+/// `None` if the driver is missing/non-functional/has no parseable version.
+///
+/// This is the version-resolution counterpart to [`migraphx_driver_functional`]
+/// and the single owner of the `migraphx-driver --version` subprocess +
+/// semver parsing (used by `platform::registry::get_version`'s migraphx
+/// fallback). Keeping it here follows the module organization rule: the
+/// installers module owns migraphx verification, not `platform/`.
+pub fn migraphx_driver_version() -> Option<String> {
+    if !migraphx_driver_functional() {
+        return None;
+    }
+    let out = std::process::Command::new("/opt/rocm/bin/migraphx-driver")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    extract_driver_semver(&combined)
+}
+
+/// Extract the first version-like token from the driver's `--version` output.
+///
+/// Accepts both three-part `MAJOR.MINOR.PATCH` (the common shape, e.g.
+/// `MIGraphX 2.15.0`) and two-part `MAJOR.MINOR` (some ROCm builds/drivers omit
+/// the patch component). Returns the version unchanged (no normalization) so a
+/// detected `2.12` stays `2.12`. Rejects malformed/non-numeric components.
+///
+/// A two-part form is accepted ONLY when there is NO third component. A token
+/// like `2.12.x` or `2.12.` HAS a third component that fails numeric validation,
+/// so the whole token is rejected (continue to the next token) rather than
+/// silently truncating to `2.12` — otherwise a malformed driver version would
+/// participate in registry/update comparisons as a legitimate version.
+fn extract_driver_semver(s: &str) -> Option<String> {
+    for token in s.split_whitespace() {
+        let cleaned = token.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+        let mut parts = cleaned.split('.');
+        // `continue` (not `?`) so a non-version token (e.g. "MIGraphX", "Version:",
+        // "dirty") advances to the next token instead of returning None.
+        let Some(maj) = parts.next() else {
+            continue;
+        };
+        let Some(min) = parts.next() else {
+            continue;
+        };
+        if !maj.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if !min.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        match parts.next() {
+            // Three-part MAJOR.MINOR.PATCH — require a NON-EMPTY numeric patch.
+            // (An empty patch from a trailing dot, e.g. "2.12.", is malformed.)
+            Some(pat) if !pat.is_empty() && pat.chars().all(|c| c.is_ascii_digit()) => {
+                return Some(format!("{maj}.{min}.{pat}"));
+            }
+            // A third component exists but is empty/non-numeric (e.g. "2.12.x",
+            // "2.12.") — malformed, do NOT truncate to 2.12; try the next token.
+            Some(_) => continue,
+            // No third component — two-part MAJOR.MINOR (preserve as-is).
+            None => return Some(format!("{maj}.{min}")),
+        }
+    }
+    None
+}
+
+/// Collect the `=> not found` shared libraries from `ldd migraphx-driver`.
+fn migraphx_missing_libs() -> Vec<String> {
+    match std::process::Command::new("ldd")
+        .arg("/opt/rocm/bin/migraphx-driver")
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| l.contains("not found"))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -312,6 +435,49 @@ impl MigraphxInstaller {
 mod tests {
     use super::*;
     use crate::platform::detection::{DistroInfo, PackageManager};
+
+    #[test]
+    fn test_extract_driver_semver_three_and_two_part() {
+        // Common three-part shape (the current driver output).
+        assert_eq!(
+            extract_driver_semver("MIGraphX Version: 2.15.0.20250912-dirty"),
+            Some("2.15.0".to_string())
+        );
+        // Two-part shape (some ROCm builds omit the patch component) — preserved
+        // as-is, no synthetic patch.
+        assert_eq!(
+            extract_driver_semver("MIGraphX 2.12"),
+            Some("2.12".to_string())
+        );
+        // Picks the first version-like token among noise.
+        assert_eq!(
+            extract_driver_semver("build foo 1.2.3 bar"),
+            Some("1.2.3".to_string())
+        );
+        // Rejects non-numeric components.
+        assert_eq!(extract_driver_semver("MIGraphX vX.Y.Z"), None);
+        assert_eq!(extract_driver_semver("no version here"), None);
+
+        // Malformed three-part tokens MUST NOT truncate to a two-part version.
+        // A third component that fails numeric validation rejects the whole token
+        // (continue to the next), so a malformed driver version can't masquerade
+        // as a legitimate 2.12 in registry/update comparisons.
+        assert_eq!(
+            extract_driver_semver("2.12.x"),
+            None,
+            "2.12.x must not become 2.12"
+        );
+        assert_eq!(
+            extract_driver_semver("2.12."),
+            None,
+            "2.12. must not become 2.12"
+        );
+        // But a clean 2.12 (no third component) is still accepted.
+        assert_eq!(
+            extract_driver_semver("driver 2.12 build"),
+            Some("2.12".to_string())
+        );
+    }
 
     // --- VAL-INSTALL-019: MIGraphX correct pip command ---
 

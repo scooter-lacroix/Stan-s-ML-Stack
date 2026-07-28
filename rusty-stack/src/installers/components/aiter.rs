@@ -8,7 +8,6 @@
 //! - **VAL-INSTALL-016**: AITER correct git clone and pip install
 //! - **VAL-INSTALL-046**: AITER declares dependency on PyTorch and ROCm
 
-use crate::installers::common::RocmEnv;
 use std::path::PathBuf;
 
 // ===========================================================================
@@ -217,6 +216,13 @@ impl AiterInstaller {
     /// build) from PyPI, overriding the ROCm torch. Runtime/build deps are
     /// installed explicitly via `build_deps_install_command` (filtered). The
     /// `--break-system-packages` flag is added for global installs.
+    ///
+    /// # Pip Target Directory
+    ///
+    /// The `src_dir` parameter must point to the AITER clone root containing
+    /// `setup.py`. The ROCm/aiter repository has `setup.py` at the repository
+    /// root (not in a subdirectory), so `src_dir` should equal the git clone
+    /// target directory.
     pub fn build_pip_install_command(&self, src_dir: &str) -> ShellCommand {
         let use_break = self.config.method == InstallMethod::Global
             || self.config.method == InstallMethod::Auto;
@@ -262,23 +268,6 @@ impl AiterInstaller {
             working_dir: Some(PathBuf::from(src_dir)),
         }
     }
-    pub fn build_rocm_env(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
-        let rocm_path = rocm_env
-            .path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/opt/rocm".to_string());
-
-        let primary_arch = self.resolve_primary_arch();
-
-        vec![
-            ("GPU_ARCH".to_string(), primary_arch.clone()),
-            ("PYTORCH_ROCM_ARCH".to_string(), primary_arch.clone()),
-            ("GPU_ARCHS".to_string(), primary_arch),
-            ("ROCM_PATH".to_string(), rocm_path),
-            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
-        ]
-    }
-
     /// Construct the AITER JIT directory environment.
     pub fn aiter_jit_env(&self) -> Vec<(String, String)> {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -305,7 +294,6 @@ impl AiterInstaller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     // --- VAL-INSTALL-016: AITER correct git clone and pip install ---
 
@@ -383,23 +371,6 @@ mod tests {
         assert!(cmd.env.iter().any(|(k, _)| k == "PYTORCH_ROCM_ARCH"));
         assert!(cmd.env.iter().any(|(k, _)| k == "ROCM_PATH"));
         assert!(cmd.env.iter().any(|(k, _)| k == "HSA_OVERRIDE_GFX_VERSION"));
-    }
-
-    #[test]
-    fn test_build_rocm_env() {
-        let installer = AiterInstaller::new(AiterConfig {
-            gpu_arch: "gfx1100".to_string(),
-            ..Default::default()
-        });
-        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
-        let env = installer.build_rocm_env(&rocm_env);
-        assert!(env.iter().any(|(k, v)| k == "GPU_ARCH" && v == "gfx1100"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
     }
 
     #[test]

@@ -304,6 +304,14 @@ impl UpdatePlanner {
                 continue;
             }
 
+            // An update plan must never contain a reinstall or a downgrade.
+            // Keep opaque targets such as `latest` eligible, because their
+            // concrete version is resolved by the component installer.
+            let current_version = context.installed_version(&component.id).unwrap_or("");
+            if is_current_or_newer(current_version, &component.version) {
+                continue;
+            }
+
             // Classify the update
             let classification = self.classify_update(
                 component,
@@ -340,8 +348,12 @@ impl UpdatePlanner {
                 continue;
             }
 
-            // Filter experimental unless flag is set
-            if classification == UpdateClassification::Experimental && !options.include_experimental
+            // Filter experimental unless flag is set — BUT never drop a component
+            // the user explicitly targeted by name (e.g. `update migraphx-python`),
+            // regardless of tier/visibility. Targeting is an explicit opt-in.
+            if classification == UpdateClassification::Experimental
+                && !options.include_experimental
+                && !target_set.contains(component.id.as_str())
             {
                 continue;
             }
@@ -355,7 +367,17 @@ impl UpdatePlanner {
             ));
         }
 
-        // Apply --all-safe: keep safe items (and experimental if explicitly included),
+        // Enforce exclusive groups: components sharing an `exclusive_group`
+        // install conflicting/overlapping artifacts (e.g. Flash Attention's
+        // Triton vs CK backends both install the identical `flash_attn` package,
+        // so only the last-installed remains active). Keep AT MOST ONE per group:
+        // if the user explicitly targeted a member, keep that one; otherwise keep
+        // the first-listed (the manifest's recommended default). This prevents a
+        // blanket `--all-safe` (or `update flash-attn-triton flash-attn-ck`) from
+        // scheduling redundant, order-dependent builds.
+        self.enforce_exclusive_groups(&mut items, &target_set);
+
+        // Apply --all-safe: select safe items (and experimental if explicitly included),
         // but never discard explicitly targeted components.
         if options.all_safe {
             if options.include_experimental {
@@ -373,6 +395,16 @@ impl UpdatePlanner {
                     target_set.contains(i.plan_item.component_id.as_str())
                         || i.classification == UpdateClassification::Safe
                 });
+            }
+            // Auto-select retained items. Set BOTH the outer `item.selected`
+            // (read by PlannerItemOutput::from and PlanSummary::from_items, and
+            // used by the apply path) AND `item.plan_item.selected` (the
+            // serialized plan field). Setting only plan_item.selected left
+            // experimental items retained+displayed but silently unselected for
+            // apply, contradicting --include-experimental.
+            for item in &mut items {
+                item.selected = true;
+                item.plan_item.selected = true;
             }
         }
 
@@ -490,7 +522,7 @@ impl UpdatePlanner {
 
         let dependencies = self.dependencies_for_component(component);
 
-        PlannerItem {
+        let mut item = PlannerItem {
             plan_item: PlanItem::new(PlanItemInput {
                 component_id: component.id.clone(),
                 current_version: current_version.clone(),
@@ -507,7 +539,12 @@ impl UpdatePlanner {
             classification_reason,
             requires_hardware_check: self.requires_hardware_check(&component.id),
             min_rocm_version: component.min_rocm_version.clone(),
-        }
+        };
+        // Copy the manifest's exclusive_group onto the plan item so
+        // enforce_exclusive_groups can enforce at-most-one-per-group without
+        // re-reading the manifest.
+        item.plan_item.exclusive_group = component.exclusive_group.clone();
+        item
     }
 
     /// Check hardware compatibility for a component.
@@ -598,6 +635,8 @@ impl UpdatePlanner {
                 | "onnx"
                 | "migraphx"
                 | "flash-attn"
+                | "flash-attn-triton"
+                | "flash-attn-ck"
                 | "rccl"
                 | "vllm"
                 | "aiter"
@@ -730,7 +769,23 @@ impl UpdatePlanner {
         match component_id {
             "pytorch" => vec!["rocm".to_string()],
             "triton" => vec!["pytorch".to_string()],
-            "flash-attn" => vec!["pytorch".to_string()],
+            // FA-Triton's Triton backend imports aiter.ops.triton at runtime —
+            // aiter must be installed first or flash_attn import fails. CK uses
+            // composable_kernel, not aiter. The legacy `flash-attn` id is
+            // normalized to `flash-attn-triton` by the executor (and is the
+            // default survivor of the `flash-attn-backend` exclusive group), so
+            // it MUST share Triton's closure — otherwise the default --all-safe
+            // route installs the Triton backend without its `aiter` prerequisite.
+            "flash-attn" | "flash-attn-triton" => {
+                vec![
+                    "pytorch".to_string(),
+                    "rocm".to_string(),
+                    "aiter".to_string(),
+                ]
+            }
+            "flash-attn-ck" => {
+                vec!["pytorch".to_string(), "rocm".to_string()]
+            }
             "deepspeed" => vec!["pytorch".to_string()],
             "vllm" => vec!["pytorch".to_string()],
             "megatron" => vec!["pytorch".to_string(), "mpi4py".to_string()],
@@ -856,6 +911,53 @@ impl UpdatePlanner {
 
     /// Enforce dependency rules on the plan items.
     ///
+    /// Enforce mutual-exclusion groups: within each non-empty `exclusive_group`,
+    /// keep at most one component. If the user explicitly targeted a member, keep
+    /// that one (and if multiple were targeted, keep the first-listed and drop the
+    /// rest — targeting two mutually exclusive backends is contradictory). When no
+    /// member was explicitly targeted, keep the first-listed in the manifest (the
+    /// recommended default). Mutates `items` in place, preserving manifest order.
+    fn enforce_exclusive_groups(&self, items: &mut Vec<PlannerItem>, target_set: &HashSet<&str>) {
+        use std::collections::HashMap;
+
+        // Map each exclusive_group -> the component ids in that group, in manifest
+        // (i.e. current items) order. Only non-empty groups participate.
+        let mut group_members: HashMap<String, Vec<String>> = HashMap::new();
+        for item in items.iter() {
+            let group = &item.plan_item.exclusive_group;
+            if !group.is_empty() {
+                group_members
+                    .entry(group.clone())
+                    .or_default()
+                    .push(item.plan_item.component_id.clone());
+            }
+        }
+
+        // For each group, decide which single member survives.
+        let mut survivors: HashSet<String> = HashSet::new();
+        for members in group_members.values() {
+            // Prefer an explicitly-targeted member (first-listed if multiple targeted).
+            let chosen = members
+                .iter()
+                .find(|id| target_set.contains(id.as_str()))
+                .or_else(|| members.first()) // else the manifest's recommended default
+                .cloned();
+            if let Some(id) = chosen {
+                survivors.insert(id);
+            }
+        }
+
+        if survivors.is_empty() {
+            return;
+        }
+
+        // Retain: keep an item iff it has no group OR it is its group's survivor.
+        items.retain(|i| {
+            let group = &i.plan_item.exclusive_group;
+            group.is_empty() || survivors.contains(&i.plan_item.component_id)
+        });
+    }
+
     /// If component A depends on B and both are selected:
     /// - If B is deselected, A must also be deselected (or B re-selected)
     fn enforce_dependency_rules(&self, items: &mut [PlannerItem]) -> Result<(), PlannerError> {
@@ -913,9 +1015,25 @@ enum BumpLevel {
 /// Parse a version string into numeric parts.
 fn parse_version_parts(version: &str) -> Option<Vec<u32>> {
     let base = version.split('-').next()?;
-    base.split('.')
-        .map(|s| s.parse::<u32>().ok())
-        .collect::<Option<Vec<_>>>()
+    // Truncate at the first non-numeric segment instead of failing the whole
+    // parse. PEP 440 dev/local versions like "0.1.19.dev40+g6c48c5fa0" must still
+    // yield [0,1,19] so the caller sees they're newer than "0.1.0". Failing
+    // entirely (the old `collect::<Option>` behaviour) made `is_current_or_newer`
+    // give up and flag a perfectly-current dev build as needing a *downgrade*.
+    // Full `+local` build metadata (e.g. "2.12.1+rocm7.2") is handled by the
+    // semver path in `is_current_or_newer`; this fallback only needs the prefix.
+    let mut parts = Vec::new();
+    for segment in base.split('.') {
+        match segment.parse::<u32>() {
+            Ok(n) => parts.push(n),
+            Err(_) => break,
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
 }
 
 /// Compare two version strings: returns true if `actual >= required`.
@@ -937,6 +1055,46 @@ fn version_gte(actual: &str, required: &str) -> bool {
         }
     }
     true // equal
+}
+
+/// Return whether the installed version already satisfies the manifest target.
+///
+/// Semver is preferred so build metadata such as `+rocm7.2` does not make an
+/// otherwise equal version look like an update. Numeric fallback keeps support
+/// for existing two-part component versions. Opaque values (`latest`, git
+/// tags, `installed`) remain eligible because they cannot prove that the target
+/// is already installed.
+fn is_current_or_newer(current: &str, proposed: &str) -> bool {
+    if current.trim().is_empty() || proposed.trim().is_empty() {
+        return false;
+    }
+
+    let current = current.trim().trim_start_matches('v');
+    let proposed = proposed.trim().trim_start_matches('v');
+
+    if let (Ok(current), Ok(proposed)) = (
+        semver::Version::parse(current),
+        semver::Version::parse(proposed),
+    ) {
+        return current >= proposed;
+    }
+
+    let Some(current_parts) = parse_version_parts(current) else {
+        return false;
+    };
+    let Some(proposed_parts) = parse_version_parts(proposed) else {
+        return false;
+    };
+
+    let max_len = current_parts.len().max(proposed_parts.len());
+    for index in 0..max_len {
+        let current_part = current_parts.get(index).copied().unwrap_or(0);
+        let proposed_part = proposed_parts.get(index).copied().unwrap_or(0);
+        if current_part != proposed_part {
+            return current_part > proposed_part;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -991,6 +1149,10 @@ pub struct PlannerItemOutput {
     pub visible: bool,
     pub rationale: String,
     pub dependencies: Vec<String>,
+    /// Mutual-exclusion group (empty = none). Surfaced so JSON consumers can see
+    /// which items were deduped as mutually exclusive backends.
+    #[serde(default)]
+    pub exclusive_group: String,
 }
 
 impl From<&PlannerItem> for PlannerItemOutput {
@@ -1005,6 +1167,7 @@ impl From<&PlannerItem> for PlannerItemOutput {
             visible: item.visible,
             rationale: item.plan_item.rationale.clone(),
             dependencies: item.plan_item.dependencies.clone(),
+            exclusive_group: item.plan_item.exclusive_group.clone(),
         }
     }
 }
@@ -1075,7 +1238,20 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }
+    }
+
+    /// Variant of [`make_component`] that sets the `exclusive_group`.
+    fn make_component_exclusive(
+        id: &str,
+        version: &str,
+        tier: ValidationTier,
+        group: &str,
+    ) -> ManifestComponent {
+        let mut c = make_component(id, version, tier);
+        c.exclusive_group = group.to_string();
+        c
     }
 
     fn make_manifest(components: Vec<ManifestComponent>) -> Manifest {
@@ -1137,6 +1313,72 @@ mod tests {
         let classification =
             planner().classify_update(&component, &context, !context.rocm_version.is_empty(), None);
         assert_eq!(classification, UpdateClassification::Safe);
+    }
+
+    #[test]
+    fn test_build_plan_omits_same_version_component() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("rocm".to_string(), "7.2.4".to_string());
+        context.installed_components.insert("rocm".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "rocm",
+            "7.2.4",
+            ValidationTier::Validated,
+        )]);
+
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+        assert!(
+            items.is_empty(),
+            "equal installed and target versions are a no-op"
+        );
+    }
+
+    #[test]
+    fn test_build_plan_omits_lower_target_version() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("triton".to_string(), "3.7.1".to_string());
+        context.installed_components.insert("triton".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "triton",
+            "3.7.0",
+            ValidationTier::Validated,
+        )]);
+
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+        assert!(items.is_empty(), "planner must never propose a downgrade");
+    }
+
+    #[test]
+    fn test_build_plan_compares_rocm_build_metadata() {
+        let mut context = make_context();
+        context
+            .installed_versions
+            .insert("pytorch".to_string(), "2.12.1+rocm7.2".to_string());
+        context.installed_components.insert("pytorch".to_string());
+
+        let manifest = make_manifest(vec![make_component(
+            "pytorch",
+            "2.12.1",
+            ValidationTier::Validated,
+        )]);
+
+        let items = planner()
+            .build_plan(&manifest, &context, &PlannerOptions::default())
+            .unwrap();
+        assert!(
+            items.is_empty(),
+            "ROCm build metadata must not trigger reinstall"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1512,6 +1754,123 @@ mod tests {
         assert_eq!(items.len(), 1, "Only safe items should remain");
         assert_eq!(items[0].classification, UpdateClassification::Safe);
         assert_eq!(items[0].plan_item.component_id, "pytorch");
+    }
+
+    #[test]
+    fn test_default_flash_attn_group_survivor_carries_aiter_dependency() {
+        // Regression (PR #27 fourth-wave review): enforce_exclusive_groups retains
+        // the first-listed flash-attn-backend entry (legacy `flash-attn`) when no
+        // backend is explicitly targeted. The executor normalizes that id to
+        // `flash-attn-triton`, whose runtime import requires `aiter`. The planner
+        // must therefore give the legacy id the SAME closure as Triton — otherwise
+        // the default --all-safe route installs the Triton backend without `aiter`
+        // and flash_attn is non-functional. Asserts both the survivor selection
+        // AND the dependency closure.
+        let mut context = make_context();
+        // Mark FA backends as installed at an older version so they classify as
+        // plan candidates (not filtered). aiter/pytorch/rocm/triton present so
+        // nothing is blocked on missing prerequisites.
+        for id in &["pytorch", "rocm", "aiter", "triton"] {
+            context.installed_components.insert((*id).to_string());
+            context
+                .installed_versions
+                .insert((*id).to_string(), "1.0.0".to_string());
+        }
+        for id in &["flash-attn", "flash-attn-triton", "flash-attn-ck"] {
+            context.installed_components.insert((*id).to_string());
+            context
+                .installed_versions
+                .insert((*id).to_string(), "2.8.3".to_string());
+        }
+
+        let manifest = make_manifest(vec![
+            make_component_exclusive(
+                "flash-attn",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+            make_component_exclusive(
+                "flash-attn-triton",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+            make_component_exclusive(
+                "flash-attn-ck",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+        ]);
+
+        let options = PlannerOptions::default();
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+
+        // Exactly one backend survives the exclusive group (the first-listed =
+        // legacy flash-attn, the manifest's recommended default).
+        let fa_items: Vec<_> = items
+            .iter()
+            .filter(|i| i.plan_item.exclusive_group == "flash-attn-backend")
+            .collect();
+        assert_eq!(fa_items.len(), 1, "exclusive group must keep one backend");
+        assert_eq!(
+            fa_items[0].plan_item.component_id, "flash-attn",
+            "default survivor is the first-listed (legacy) id"
+        );
+        // The survivor MUST carry aiter (it installs the Triton backend).
+        assert!(
+            fa_items[0]
+                .plan_item
+                .dependencies
+                .contains(&"aiter".to_string()),
+            "legacy flash-attn (normalized to triton) must depend on aiter; got {:?}",
+            fa_items[0].plan_item.dependencies
+        );
+    }
+
+    #[test]
+    fn test_explicit_flash_attn_ck_target_drops_triton_and_uses_ck_closure() {
+        // When CK is explicitly targeted, it becomes the group survivor and must
+        // NOT carry aiter (CK uses composable_kernel, not aiter).
+        let mut context = make_context();
+        for id in &["pytorch", "rocm", "aiter", "triton"] {
+            context.installed_components.insert((*id).to_string());
+            context
+                .installed_versions
+                .insert((*id).to_string(), "1.0.0".to_string());
+        }
+        let manifest = make_manifest(vec![
+            make_component_exclusive(
+                "flash-attn",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+            make_component_exclusive(
+                "flash-attn-ck",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+        ]);
+        let options = PlannerOptions {
+            target_components: vec!["flash-attn-ck".to_string()],
+            ..Default::default()
+        };
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+        let ck = items
+            .iter()
+            .find(|i| i.plan_item.component_id == "flash-attn-ck")
+            .expect("explicitly-targeted CK survives");
+        assert!(
+            !ck.plan_item.dependencies.contains(&"aiter".to_string()),
+            "CK backend must NOT depend on aiter; got {:?}",
+            ck.plan_item.dependencies
+        );
+        assert!(items
+            .iter()
+            .all(|i| i.plan_item.component_id != "flash-attn"));
     }
 
     #[test]
@@ -2021,6 +2380,7 @@ mod tests {
                 visible: true,
                 rationale: "patch update".to_string(),
                 dependencies: vec!["rocm".to_string()],
+                exclusive_group: String::new(),
             }],
             summary: PlanSummary {
                 total: 1,
@@ -2173,6 +2533,31 @@ mod tests {
         assert!(!version_gte("7.1", "7.2.0"));
     }
 
+    #[test]
+    fn test_is_current_or_newer_handles_semver_and_opaque_targets() {
+        assert!(is_current_or_newer("1.27.1", "1.27.1"));
+        assert!(is_current_or_newer("1.28.0", "1.27.1"));
+        assert!(is_current_or_newer("2.12.1+rocm7.2", "2.12.1"));
+        assert!(!is_current_or_newer("1.23.2", "1.27.1"));
+        assert!(!is_current_or_newer("v0.20.1", "latest"));
+        // PEP 440 dev/local build (e.g. aiter 0.1.19.dev40+g6c48c5fa0) is NEWER
+        // than the manifest's pinned 0.1.0 — must NOT be proposed as a downgrade.
+        assert!(is_current_or_newer("0.1.19.dev40+g6c48c5fa0", "0.1.0"));
+    }
+
+    #[test]
+    fn test_parse_version_parts_truncates_dev_suffix() {
+        // Non-numeric segments truncate the prefix instead of nuking the parse.
+        assert_eq!(
+            parse_version_parts("0.1.19.dev40+g6c48c5fa0"),
+            Some(vec![0, 1, 19])
+        );
+        assert_eq!(parse_version_parts("7.2.1"), Some(vec![7, 2, 1]));
+        assert_eq!(parse_version_parts("7.2"), Some(vec![7, 2]));
+        // Fully opaque values still yield None (remain eligible-for-update).
+        assert_eq!(parse_version_parts("latest"), None);
+    }
+
     // -----------------------------------------------------------------------
     // VAL-UPD-004: Blocked by ROCm version requirement
     // -----------------------------------------------------------------------
@@ -2190,6 +2575,7 @@ mod tests {
             min_rocm_version: "99.0.0".to_string(), // impossibly high
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2210,6 +2596,7 @@ mod tests {
             min_rocm_version: "7.0.0".to_string(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2235,6 +2622,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string(), "stable".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2256,6 +2644,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string(), "stable".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let classification =
@@ -2277,6 +2666,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }]);
 
         let options = PlannerOptions::default();
@@ -2415,6 +2805,7 @@ mod tests {
             min_rocm_version: "99.0.0".to_string(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let reason =
@@ -2437,6 +2828,7 @@ mod tests {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".to_string()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         };
 
         let reason =

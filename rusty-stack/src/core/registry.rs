@@ -221,11 +221,16 @@ pub const SEALED_INSTALL_ONCE_IDS: &[&str] = &[
     "aiter",
     "flash-attn",
     "flash_attention",
-    "flash_attention_amd",
     "rccl",
     "migraphx",
     "bitsandbytes",
 ];
+// NOTE: the split Flash Attention backends (flash-attn-triton, flash-attn-ck) are
+// deliberately NOT sealed — installing one over the other is the SUPPORTED backend
+// switch (the ~/.mlstack/flash-attention/.backend marker makes the last-installed
+// active, enforcing mutual exclusivity). The canonical "flash-attn" id stays
+// sealed. "flash_attention_amd" (legacy) was removed from sealing and from
+// component_pip_packages; it remains in uninstall/purge paths only.
 
 /// Is the given id a core component?
 pub fn is_core_component(id: &str) -> bool {

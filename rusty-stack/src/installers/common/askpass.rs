@@ -102,6 +102,7 @@ mod tests {
 
     #[test]
     fn script_cats_password_and_is_secure() {
+        let _env = crate::test_support::lock_env();
         let helper = Askpass::new("s3cr!t'pass").unwrap();
         let script = std::fs::read_to_string(helper.path()).unwrap();
         assert!(script.contains("#!/bin/sh"));
@@ -126,6 +127,7 @@ mod tests {
 
     #[test]
     fn askpass_executes_and_returns_password() {
+        let _env = crate::test_support::lock_env();
         // End-to-end: the script actually prints the password to stdout.
         let helper = Askpass::new("hunter2").unwrap();
         let out = std::process::Command::new(helper.path())

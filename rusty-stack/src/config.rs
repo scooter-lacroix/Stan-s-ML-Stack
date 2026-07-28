@@ -4,6 +4,57 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 
+/// Python backend for managed environments.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PythonBackend {
+    /// uv — fast, deterministic, preferred (default if on PATH)
+    Uv,
+    /// Python — venv module fallback
+    Python,
+}
+
+impl Default for PythonBackend {
+    fn default() -> Self {
+        // Default to Uv if available, else Python
+        if crate::platform::environment::command_on_path("uv") {
+            PythonBackend::Uv
+        } else {
+            PythonBackend::Python
+        }
+    }
+}
+
+/// Resolve [`PythonBackend`] from the `MLSTACK_PYTHON_BACKEND` env override.
+///
+/// Centralizes the `"uv"` / `"python"` / default-fallback match so the two
+/// historical call sites (`apply_from_value`'s env override and
+/// `default_with_paths`'s construction-time read) cannot silently diverge if
+/// the accepted spellings ever change. Unknown / empty values fall back to the
+/// environment-aware default (Uv if installed, else Python).
+fn python_backend_from_env() -> PythonBackend {
+    match std::env::var("MLSTACK_PYTHON_BACKEND")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("uv") => PythonBackend::Uv,
+        Some("python") => PythonBackend::Python,
+        _ => PythonBackend::default(),
+    }
+}
+
+/// Default vLLM source-build version lag — skip the newest release (supply-chain
+/// gate). 1 = second-newest (mild breach/bug buffer). Overridden by user config.
+fn default_vllm_version_lag() -> u32 {
+    1
+}
+
+/// Default ONNX Runtime install method: PyPI prebuilt `onnxruntime-migraphx`.
+fn default_onnx_install_method() -> String {
+    "migraphx".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallerConfig {
     pub scripts_dir: String,
@@ -16,6 +67,26 @@ pub struct InstallerConfig {
     pub force_reinstall: bool,
     pub theme: String,
     pub performance_profile: String,
+    /// vLLM source-build version gate (supply-chain lag): skip this many of the
+    /// newest PyPI releases (0 = latest, 1 = skip newest, …). Default 1.
+    #[serde(default = "default_vllm_version_lag")]
+    pub vllm_version_lag: u32,
+    /// vLLM source-build age gate: only adopt releases at least this many days
+    /// old (0 = off). Combined with `vllm_version_lag` as "newest satisfying both".
+    #[serde(default)]
+    pub vllm_version_min_age_days: u32,
+    /// ONNX Runtime install method (mirrors the vLLM version-lag config-row
+    /// pattern). "migraphx" = PyPI prebuilt onnxruntime-migraphx (default);
+    /// "prebuilt" = legacy onnxruntime-rocm; "source" = build from source.
+    /// The TUI sets `MLSTACK_ONNX_INSTALL_METHOD` from this before install.
+    #[serde(default = "default_onnx_install_method")]
+    pub onnx_install_method: String,
+    /// ONNX Runtime version override. `None` = pinned default (1.25.0). The TUI
+    /// sets `MLSTACK_ONNX_VERSION` from this (when `Some`) before install.
+    #[serde(default)]
+    pub onnx_version: Option<String>,
+    #[serde(default)]
+    pub python_backend: PythonBackend,
     #[serde(skip)]
     pub config_path: PathBuf,
 }
@@ -70,6 +141,11 @@ impl InstallerConfig {
         user_prefs["force_reinstall"] = json!(self.force_reinstall);
         user_prefs["theme"] = json!(self.theme);
         user_prefs["performance_profile"] = json!(self.performance_profile);
+        user_prefs["python_backend"] = json!(self.python_backend);
+        user_prefs["vllm_version_lag"] = json!(self.vllm_version_lag);
+        user_prefs["vllm_version_min_age_days"] = json!(self.vllm_version_min_age_days);
+        user_prefs["onnx_install_method"] = json!(self.onnx_install_method);
+        user_prefs["onnx_version"] = json!(self.onnx_version);
         value["user_preferences"] = user_prefs;
 
         fs::write(&self.config_path, serde_json::to_string_pretty(&value)?)
@@ -114,10 +190,49 @@ impl InstallerConfig {
             if let Some(profile) = prefs.get("performance_profile").and_then(|v| v.as_str()) {
                 self.performance_profile = profile.to_string();
             }
+            if let Some(backend) = prefs.get("python_backend").and_then(|v| v.as_str()) {
+                self.python_backend = match backend.to_lowercase().as_str() {
+                    "uv" => PythonBackend::Uv,
+                    "python" => PythonBackend::Python,
+                    _ => PythonBackend::default(),
+                };
+            }
+            if let Some(lag) = prefs.get("vllm_version_lag").and_then(|v| v.as_u64()) {
+                self.vllm_version_lag = lag as u32;
+            }
+            if let Some(age) = prefs
+                .get("vllm_version_min_age_days")
+                .and_then(|v| v.as_u64())
+            {
+                self.vllm_version_min_age_days = age as u32;
+            }
+            if let Some(method) = prefs.get("onnx_install_method").and_then(|v| v.as_str()) {
+                self.onnx_install_method = method.to_string();
+            }
+            if let Some(v) = prefs.get("onnx_version").and_then(|v| v.as_str()) {
+                let v = v.trim();
+                self.onnx_version = if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                };
+            }
+        }
+
+        // Env override: MLSTACK_PYTHON_BACKEND (highest priority)
+        if std::env::var("MLSTACK_PYTHON_BACKEND").is_ok() {
+            self.python_backend = python_backend_from_env();
         }
     }
 
     pub fn default_with_paths(scripts_dir: &str, log_dir: String, config_path: PathBuf) -> Self {
+        // Apply env override for python_backend at construction time
+        let python_backend = if std::env::var("MLSTACK_PYTHON_BACKEND").is_ok() {
+            python_backend_from_env()
+        } else {
+            PythonBackend::default()
+        };
+
         Self {
             scripts_dir: scripts_dir.to_string(),
             log_dir,
@@ -131,6 +246,15 @@ impl InstallerConfig {
             force_reinstall: false,
             theme: "dark".into(),
             performance_profile: "balanced".into(),
+            vllm_version_lag: 1,
+            vllm_version_min_age_days: 0,
+            onnx_install_method: std::env::var("MLSTACK_ONNX_INSTALL_METHOD")
+                .unwrap_or_else(|_| "migraphx".into()),
+            onnx_version: std::env::var("MLSTACK_ONNX_VERSION")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            python_backend,
             config_path,
         }
     }
@@ -149,4 +273,41 @@ pub fn config_file_path() -> Result<PathBuf> {
     let config_dir = PathBuf::from(home).join(".mlstack").join("config");
     fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
     Ok(config_dir.join("config.json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn onnx_config_defaults_and_apply() {
+        let _env = crate::test_support::lock_env();
+        std::env::remove_var("MLSTACK_ONNX_INSTALL_METHOD");
+        std::env::remove_var("MLSTACK_ONNX_VERSION");
+
+        let mut cfg = InstallerConfig::default_with_paths(
+            "scripts",
+            "logs".into(),
+            PathBuf::from("/tmp/rusty-config-test.json"),
+        );
+        // Defaults: PyPI migraphx wheel, no version override (pinned 1.25.0).
+        assert_eq!(cfg.onnx_install_method, "migraphx");
+        assert_eq!(cfg.onnx_version, None);
+
+        // apply_from_value reads the user_preferences fields the TUI saves.
+        let raw = serde_json::json!({
+            "user_preferences": {
+                "onnx_install_method": "source",
+                "onnx_version": "1.27.1",
+            }
+        });
+        cfg.apply_from_value(&raw);
+        assert_eq!(cfg.onnx_install_method, "source");
+        assert_eq!(cfg.onnx_version.as_deref(), Some("1.27.1"));
+
+        // Empty version string → None (treated as "use default").
+        let raw = serde_json::json!({ "user_preferences": { "onnx_version": "  " } });
+        cfg.apply_from_value(&raw);
+        assert_eq!(cfg.onnx_version, None);
+    }
 }

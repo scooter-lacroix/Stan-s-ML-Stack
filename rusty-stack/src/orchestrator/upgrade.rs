@@ -568,7 +568,6 @@ fn is_release_newer(current: &str, latest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     // ---- Version compatibility tests (VAL-UPGR-002, VAL-UPGR-003) ----
 
@@ -816,20 +815,6 @@ mod tests {
     impl UserInteractor for MockInteractor {
         fn confirm_upgrade(&self, _current: &str, _target: &str) -> bool {
             self.confirmed
-        }
-    }
-
-    /// A smoke tester that records whether it was called.
-    #[allow(dead_code)]
-    struct RecordingSmokeTester {
-        called: AtomicBool,
-        result: std::result::Result<(), UpgradeError>,
-    }
-
-    impl SmokeTester for RecordingSmokeTester {
-        fn test(&self, _binary_path: &Path) -> std::result::Result<(), UpgradeError> {
-            self.called.store(true, Ordering::SeqCst);
-            self.result.clone()
         }
     }
 

@@ -46,6 +46,7 @@ fn make_mc(id: &str, version: &str, tier: ValidationTier) -> ManifestComponent {
         min_rocm_version: String::new(),
         compatible_channels: vec![],
         dependencies: vec![],
+        exclusive_group: String::new(),
     }
 }
 
@@ -241,7 +242,11 @@ fn test_integration_full_lifecycle_scan_plan_apply_verify_report() {
     // Stage 3: APPLY — execute with tracking
     let executor = TrackingExecutor::new();
     let engine = ApplyEngine::new(executor);
-    let apply_summary = engine.apply(&plan_items, &ApplyOptions::default());
+    let _apply_opts = ApplyOptions {
+        verify_post_install_version: false,
+        ..ApplyOptions::default()
+    };
+    let apply_summary = engine.apply(&plan_items, &_apply_opts);
 
     // Verify all succeeded
     assert_eq!(apply_summary.success.len(), 3, "all 3 should succeed");
@@ -449,6 +454,7 @@ fn test_integration_manifest_overlay_merges_cleanly() {
             min_rocm_version: String::new(),
             compatible_channels: vec![],
             dependencies: vec![],
+            exclusive_group: String::new(),
         }],
     };
 
@@ -499,7 +505,11 @@ fn test_integration_validation_tier_identical_across_stages() {
     // Stage 3: APPLY — tier preserved through apply
     let executor = TrackingExecutor::new();
     let engine = ApplyEngine::new(executor);
-    let apply_summary = engine.apply(&plan, &ApplyOptions::default());
+    let _apply_opts = ApplyOptions {
+        verify_post_install_version: false,
+        ..ApplyOptions::default()
+    };
+    let apply_summary = engine.apply(&plan, &_apply_opts);
 
     // Verify wandb was applied (it should be — no dependencies, Candidate classification)
     let wandb_applied = apply_summary
@@ -821,7 +831,11 @@ fn test_integration_dependency_ordering_across_stages() {
     // APPLY — check success list order for dependency ordering
     let executor = TrackingExecutor::new();
     let engine = ApplyEngine::new(executor);
-    let apply_summary = engine.apply(&plan, &ApplyOptions::default());
+    let _apply_opts = ApplyOptions {
+        verify_post_install_version: false,
+        ..ApplyOptions::default()
+    };
+    let apply_summary = engine.apply(&plan, &_apply_opts);
 
     assert_eq!(apply_summary.success.len(), 3);
 
@@ -1088,6 +1102,8 @@ fn test_integration_tui_types_still_functional() {
         progress: 0.0,
         estimate: "10-15 min".to_string(),
         needs_sudo: true,
+        experimental: false,
+        note: None,
     };
 
     // Verify serde still works
@@ -1099,8 +1115,8 @@ fn test_integration_tui_types_still_functional() {
     // Verify Category enum still has all variants
     assert_eq!(Category::all().len(), 7);
 
-    // Verify Stage enum still works
-    assert_eq!(Stage::all().len(), 10);
+    // Verify Stage enum still works (11 variants incl. Recovery).
+    assert_eq!(Stage::all().len(), 11);
 }
 
 // ===========================================================================
@@ -1119,6 +1135,7 @@ fn test_integration_manifest_filters_by_platform_context() {
         min_rocm_version: String::new(),
         compatible_channels: vec!["legacy".to_string()],
         dependencies: vec![],
+        exclusive_group: String::new(),
     };
 
     let manifest = make_manifest(vec![
@@ -1374,6 +1391,7 @@ fn test_integration_manifest_roundtrip_preserves_data() {
                 min_rocm_version: "7.0.0".to_string(),
                 compatible_channels: vec!["latest".to_string(), "stable".to_string()],
                 dependencies: vec![],
+                exclusive_group: String::new(),
             },
         ],
         42,

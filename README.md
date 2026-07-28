@@ -129,6 +129,16 @@ The ML Stack consists of the following core components:
 | **MPI** | Message Passing Interface for distributed computing | Open MPI 5.0.10 |
 | **Megatron-LM** | Framework for training large language models | Latest |
 
+### RCCL multi-GPU safety
+
+Rusty installs the distribution's RCCL package normally. On systems with at least two discrete AMD GPUs, it then runs a real two-process PyTorch `all_reduce` probe across both GPUs. Remediation triggers only when that probe matches known ROCm/RCCL collective failure fingerprints: `operation cannot be performed in present state` ([ROCm issue #6074](https://github.com/ROCm/ROCm/issues/6074)) or the distributed `invalid device pointer`/`ncclUnhandledCudaError` form seen from RCCL 2.27.7. Other failures remain visible instead of being masked.
+
+For the matching failure, Rusty selects a repair profile by ROCm channel and version. The current `latest`/ROCm 7.2.x profile builds a pinned RCCL source commit for every detected `gfx` architecture with checksum-pinned ROCm 7.2.0 compiler and HIPIFY tools extracted into Rusty's cache. This path invokes no `apt`, `dnf`, or other package install and adds no NVIDIA/CUDA dependencies. The result is an immutable, versioned overlay under `~/.mlstack/components/rccl/`, activated with an atomic symlink.
+
+The activation shim dynamically locates PyTorch, verifies the overlay manifest and library hash before torch imports, then uses the glibc loader with inhibited PyTorch RPATHs, not `LD_PRELOAD`. It never modifies or replaces PyTorch or files under `/opt/rocm`. A valid active overlay is sealed against later component installs; replacement requires the explicit `MLSTACK_UNSEAL_CORE=1` recovery override. Installation completes only after the two-process probe passes on both GPUs.
+
+For the 7.2.x repair profile, Rusty also exports `NCCL_P2P_DISABLE=1`/`RCCL_P2P_DISABLE=1` with the overlay. This avoids the broken direct P2P/IPC path seen on mixed consumer RDNA multi-GPU systems while preserving two-GPU collectives through the working shared-memory/socket path.
+
 ### Extension Components
 
 | Component | Description | Version |

@@ -172,75 +172,6 @@ impl FlashAttentionInstaller {
     }
 
     // -----------------------------------------------------------------------
-    // ROCm build environment (VAL-INSTALL-008)
-    // -----------------------------------------------------------------------
-
-    /// Get the ROCm environment variables needed for the build.
-    ///
-    /// The original script sets:
-    /// - HSA_OVERRIDE_GFX_VERSION=11.0.0
-    /// - PYTORCH_ROCM_ARCH=gfx1100 (or detected)
-    /// - ROCM_PATH=/opt/rocm
-    /// - PATH=/opt/rocm/bin:$PATH
-    /// - LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH
-    /// - HSA_TOOLS_LIB (if rocprofiler library exists)
-    pub fn rocm_build_env(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
-        let rocm_path = rocm_env
-            .path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/opt/rocm".to_string());
-
-        let mut env = vec![
-            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
-            (
-                "PYTORCH_ROCM_ARCH".to_string(),
-                self.config.gpu_arch.as_str().to_string(),
-            ),
-            ("ROCM_PATH".to_string(), rocm_path.clone()),
-            (
-                "PATH".to_string(),
-                format!(
-                    "{}/bin:{}",
-                    rocm_path,
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            ),
-            (
-                "LD_LIBRARY_PATH".to_string(),
-                format!(
-                    "{}/lib:{}",
-                    rocm_path,
-                    std::env::var("LD_LIBRARY_PATH").unwrap_or_default()
-                ),
-            ),
-        ];
-
-        // HSA_TOOLS_LIB - check for rocprofiler library
-        // Try the ROCm 7.x layout first (lib/rocprofiler-sdk/), then the old layout (lib/)
-        let profiler_lib = rocm_env.path().and_then(|p| {
-            let new_layout = p.join("lib/rocprofiler-sdk/librocprofiler-sdk-tool.so");
-            let old_layout = p.join("lib/librocprofiler-sdk-tool.so");
-            if new_layout.exists() {
-                Some(new_layout)
-            } else if old_layout.exists() {
-                Some(old_layout)
-            } else {
-                None
-            }
-        });
-        if let Some(lib) = profiler_lib {
-            env.push((
-                "HSA_TOOLS_LIB".to_string(),
-                lib.to_string_lossy().to_string(),
-            ));
-        } else {
-            env.push(("HSA_TOOLS_LIB".to_string(), "0".to_string()));
-        }
-
-        env
-    }
-
-    // -----------------------------------------------------------------------
     // Git clone command
     // -----------------------------------------------------------------------
 
@@ -568,25 +499,6 @@ mod tests {
         assert_eq!(cmd.program, "git");
         assert!(cmd.args.contains(&"checkout".to_string()));
         assert!(cmd.args.contains(&"main".to_string()));
-    }
-
-    // --- ROCm build environment ---
-
-    #[test]
-    fn test_rocm_build_env() {
-        let installer = FlashAttentionInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
-        let env = installer.rocm_build_env(&rocm_env);
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "ROCM_PATH" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, _)| k == "HSA_TOOLS_LIB"));
     }
 
     // --- Setup.py install command ---

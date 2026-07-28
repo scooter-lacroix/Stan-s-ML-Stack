@@ -171,35 +171,6 @@ impl MlStackInstaller {
         ]
     }
 
-    // -----------------------------------------------------------------------
-    // ROCm configuration (VAL-INSTALL-007)
-    // -----------------------------------------------------------------------
-
-    /// Construct the ROCm configuration file content.
-    ///
-    /// Creates a `.rocmrc` file with environment variable exports matching
-    /// the original script's `install_rocm_config()` function.
-    pub fn build_rocm_config_content(&self) -> String {
-        r#"# ROCm Configuration File
-# Created by ML Stack Installation Script
-
-export HSA_OVERRIDE_GFX_VERSION=11.0.0
-export PYTORCH_ROCM_ARCH=gfx1100
-export ROCM_PATH=/opt/rocm
-
-# Performance Settings
-export HSA_ENABLE_SDMA=0
-export GPU_MAX_HEAP_SIZE=100
-export GPU_MAX_ALLOC_PERCENT=100
-
-# MIOpen Settings
-export MIOPEN_DEBUG_CONV_IMPLICIT_GEMM=1
-export MIOPEN_FIND_MODE=3
-export MIOPEN_FIND_ENFORCE=3
-"#
-        .to_string()
-    }
-
     /// Get the ROCm config file path.
     pub fn rocm_config_path(&self) -> String {
         format!(
@@ -377,13 +348,14 @@ export MIOPEN_FIND_ENFORCE=3
     // Megatron-LM install commands
     // -----------------------------------------------------------------------
 
-    /// Construct the Megatron-LM git clone command.
-    pub fn build_megatron_clone_command(&self) -> SystemCommand {
+    /// Construct the Megatron-LM git clone command into `target_dir`.
+    pub fn build_megatron_clone_command(&self, target_dir: &str) -> SystemCommand {
         SystemCommand {
             program: "git".to_string(),
             args: vec![
                 "clone".to_string(),
                 "https://github.com/NVIDIA/Megatron-LM.git".to_string(),
+                target_dir.to_string(),
             ],
             // Note: SystemCommand doesn't have env, but that's fine for git clone
         }
@@ -476,16 +448,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rocm_config_content() {
-        let installer = MlStackInstaller::with_defaults();
-        let content = installer.build_rocm_config_content();
-        assert!(content.contains("HSA_OVERRIDE_GFX_VERSION"));
-        assert!(content.contains("PYTORCH_ROCM_ARCH"));
-        assert!(content.contains("ROCM_PATH"));
-        assert!(content.contains("MIOPEN_DEBUG_CONV_IMPLICIT_GEMM"));
-    }
-
-    #[test]
     fn test_rocm_config_path() {
         let installer = MlStackInstaller::with_defaults();
         let path = installer.rocm_config_path();
@@ -546,10 +508,11 @@ mod tests {
     #[test]
     fn test_megatron_clone_command() {
         let installer = MlStackInstaller::with_defaults();
-        let cmd = installer.build_megatron_clone_command();
+        let cmd = installer.build_megatron_clone_command("/tmp/Megatron-LM");
         assert_eq!(cmd.program, "git");
         assert!(cmd.args.contains(&"clone".to_string()));
         assert!(cmd.args.iter().any(|a| a.contains("NVIDIA/Megatron-LM")));
+        assert!(cmd.args.contains(&"/tmp/Megatron-LM".to_string()));
     }
 
     #[test]

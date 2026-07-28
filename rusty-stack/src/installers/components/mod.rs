@@ -7,7 +7,7 @@
 //!
 //! # Dispatch Architecture (VAL-INSTALL-031, VAL-INSTALL-032, VAL-INSTALL-038)
 //!
-//! `is_native_component(id)` returns `true` for all 35 native components.
+//! `is_native_component(id)` returns `true` for all native components.
 //! `get_dependencies(id)` returns the declared dependency IDs for a component.
 //! `topological_sort(ids)` returns components in dependency order.
 //!
@@ -76,6 +76,7 @@ pub mod onnxruntime;
 pub mod permanent_env;
 pub mod pytorch;
 pub mod pytorch_profiler;
+pub mod rccl;
 pub mod repair;
 pub mod rocm;
 pub mod rocm_smi;
@@ -106,7 +107,7 @@ pub use pytorch::{PyTorchConfig, PyTorchInstaller, TorchChannel};
 pub use pytorch_profiler::{PytorchProfilerConfig, PytorchProfilerInstaller};
 pub use repair::{RepairConfig, RepairInstaller, RepairResult, RepairStep};
 pub use rocm::{RocmChannel, RocmConfig, RocmInstallType, RocmInstaller};
-pub use rocm_smi::{RocmSmiConfig, RocmSmiInstaller};
+pub use rocm_smi::RocmSmiInstaller;
 pub use textgen::{TextgenConfig, TextgenInstaller};
 pub use triton::{TritonBranch, TritonConfig, TritonInstaller};
 pub use vllm_multi::{VllmConfig, VllmInstaller};
@@ -117,7 +118,7 @@ pub use wandb::{WandbConfig, WandbInstaller};
 // Installer Dispatch (VAL-INSTALL-031, VAL-INSTALL-032, VAL-INSTALL-039)
 // ===========================================================================
 
-/// The set of all 35 component IDs that have been ported to native Rust.
+/// The set of all component IDs that have been ported to native Rust.
 ///
 /// These are the installer components that should NOT spawn bash subprocesses.
 /// Verification and performance components are now routed through native Rust modules.
@@ -134,7 +135,10 @@ pub const NATIVE_COMPONENT_IDS: &[&str] = &[
     "deepspeed",
     "ml-stack-core",
     "flash-attn",
+    "flash-attn-triton",
+    "flash-attn-ck",
     "repair-stack",
+    "rccl-repair",
     "megatron",
     "vllm",
     "aiter",
@@ -160,6 +164,9 @@ pub const NATIVE_COMPONENT_IDS: &[&str] = &[
     "vllm-performance",
     "deepspeed-performance",
     "megatron-performance",
+    "onnx-performance",
+    "rusty-llama-performance",
+    "flash-attention-ck-performance",
     "all-benchmarks",
     // FastVideo component
     "fastvideo",
@@ -199,7 +206,13 @@ pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
         "megatron" => &["pytorch", "mpi4py"],
         "vllm" => &["pytorch"],
         "aiter" => &["pytorch", "rocm"],
-        "flash-attn" => &["pytorch", "rocm"],
+        // Flash Attention: "flash-attn" is the legacy/canonical id. The executor
+        // normalizes it to `flash-attn-triton` (the recommended backend), so it
+        // MUST share Triton's closure — including `aiter`, whose ops.triton the
+        // Triton backend imports at runtime. flash-attn-ck is the concrete CK
+        // backend (forward-only on RDNA3; uses composable_kernel, not aiter).
+        "flash-attn" | "flash-attn-triton" => &["pytorch", "rocm", "aiter"],
+        "flash-attn-ck" => &["pytorch", "rocm"],
         "onnx" => &["rocm"],
         "deepspeed" => &["pytorch"],
         "comfyui" => &["pytorch"],
@@ -290,9 +303,9 @@ mod dispatch_tests {
     use super::*;
 
     #[test]
-    fn test_all_24_native_components_listed() {
-        // 24 installer + 9 benchmark + 1 fastvideo + 1 llama-cpp = 35
-        assert_eq!(NATIVE_COMPONENT_IDS.len(), 35);
+    fn test_all_native_components_listed() {
+        // 28 installer/action ids + 11 benchmarks + fastvideo + llama-cpp.
+        assert_eq!(NATIVE_COMPONENT_IDS.len(), 41);
     }
 
     #[test]
@@ -313,6 +326,7 @@ mod dispatch_tests {
     fn test_is_native_component_true_for_performance() {
         assert!(is_native_component("mlperf-inference"));
         assert!(is_native_component("rocm-benchmarks"));
+        assert!(is_native_component("onnx-performance"));
         assert!(is_native_component("all-benchmarks"));
         assert!(is_native_component("fastvideo"));
     }
@@ -344,9 +358,30 @@ mod dispatch_tests {
 
     #[test]
     fn test_flash_attention_dependencies() {
-        let deps = get_dependencies("flash-attn");
-        assert!(deps.contains(&"pytorch"));
-        assert!(deps.contains(&"rocm"));
+        // All three ids share pytorch + rocm. The legacy `flash-attn` id is
+        // normalized to `flash-attn-triton` by the executor (and is the default
+        // survivor of the `flash-attn-backend` exclusive group), so it MUST
+        // carry the Triton closure — including aiter. Cover it explicitly so a
+        // regression in the canonical legacy path cannot pass this suite.
+        for id in &["flash-attn", "flash-attn-triton", "flash-attn-ck"] {
+            let deps = get_dependencies(id);
+            assert!(deps.contains(&"pytorch"), "{id} must depend on pytorch");
+            assert!(deps.contains(&"rocm"), "{id} must depend on rocm");
+        }
+        // FA-Triton (and the legacy id normalized to it) imports aiter.ops.triton
+        // at runtime, so both must pull aiter; CK uses composable_kernel and must not.
+        for id in &["flash-attn", "flash-attn-triton"] {
+            let deps = get_dependencies(id);
+            assert!(
+                deps.contains(&"aiter"),
+                "{id} (Triton closure) must depend on aiter"
+            );
+        }
+        let ck_deps = get_dependencies("flash-attn-ck");
+        assert!(
+            !ck_deps.contains(&"aiter"),
+            "FA-CK must NOT depend on aiter (uses composable_kernel)"
+        );
     }
 
     #[test]
@@ -389,6 +424,7 @@ mod dispatch_tests {
             "vllm-studio",
             "textgen",
             "repair-stack",
+            "rccl-repair",
             "amdgpu-drivers",
             "migraphx-python",
         ] {
@@ -454,7 +490,7 @@ mod dispatch_tests {
     fn test_topological_sort_complex_graph() {
         let ids = vec![
             "megatron".to_string(),
-            "flash-attn".to_string(),
+            "flash-attn-triton".to_string(),
             "deepspeed".to_string(),
             "vllm".to_string(),
             "aiter".to_string(),
@@ -470,14 +506,14 @@ mod dispatch_tests {
 
         // Verify all dependency constraints
         let pos = |id: &str| result.iter().position(|s| s == id).unwrap();
-        assert!(pos("rocm") < pos("flash-attn"));
+        assert!(pos("rocm") < pos("flash-attn-triton"));
         assert!(pos("rocm") < pos("onnx"));
         assert!(pos("rocm") < pos("aiter"));
         assert!(pos("pytorch") < pos("megatron"));
         assert!(pos("mpi4py") < pos("megatron"));
         assert!(pos("pytorch") < pos("vllm"));
         assert!(pos("pytorch") < pos("deepspeed"));
-        assert!(pos("pytorch") < pos("flash-attn"));
+        assert!(pos("pytorch") < pos("flash-attn-triton"));
         assert!(pos("pytorch") < pos("aiter"));
         assert!(pos("pytorch") < pos("comfyui"));
     }

@@ -58,26 +58,12 @@ pub type RustAdapterFn =
 pub struct RustAdapter {
     /// The native Rust executor function.
     executor: RustAdapterFn,
-    /// Component ID this adapter handles (for error messages).
-    #[allow(dead_code)]
-    component_id: String,
 }
 
 impl RustAdapter {
     /// Create a new Rust adapter with the given executor function.
     pub fn new(executor: RustAdapterFn) -> Self {
-        Self {
-            executor,
-            component_id: String::new(),
-        }
-    }
-
-    /// Create a new Rust adapter with a component ID label.
-    pub fn with_id(component_id: impl Into<String>, executor: RustAdapterFn) -> Self {
-        Self {
-            executor,
-            component_id: component_id.into(),
-        }
+        Self { executor }
     }
 
     /// Create a simple Rust adapter that always succeeds with a fixed message.
@@ -253,16 +239,6 @@ mod tests {
         let result = adapter.execute("test", "1.0.0").unwrap();
         assert_eq!(result.exit_code, 42);
         assert_eq!(result.stderr, "always fails");
-    }
-
-    #[test]
-    fn test_rust_adapter_with_id() {
-        let adapter = RustAdapter::with_id(
-            "pytorch",
-            Box::new(|id, v| Ok((format!("{id}:{v}"), String::new()))),
-        );
-        let result = adapter.execute("pytorch", "2.5.0").unwrap();
-        assert!(result.stdout.contains("pytorch"));
     }
 
     // -----------------------------------------------------------------------

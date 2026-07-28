@@ -134,7 +134,7 @@ fn push_python_candidate(candidates: &mut Vec<String>, value: String) {
 }
 
 pub fn is_component_installed(component: &Component, python_candidates: &[String]) -> bool {
-    if component.category == Category::Verification {
+    if component.category == Category::Maintenance {
         return false;
     }
     is_component_installed_by_id(&component.id, python_candidates)
@@ -174,10 +174,25 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         "ml-stack-core" => {
             python_any(python_candidates, &["stans_ml_stack"]) || repo_has_ml_stack_core()
         }
-        "flash-attn" => {
+        // Canonical "flash-attn" id (used by verify/migrate): installed if the
+        // flash_attn package is importable under ANY backend. The concrete TUI
+        // components (flash-attn-triton / flash-attn-ck) below use the stricter
+        // backend-marker check.
+        "flash-attn" => python_any(python_candidates, &["flash_attn", "flash_attn_2"]),
+        // Flash Attention backends install the SAME `flash_attn` package, so
+        // importability alone can't tell them apart. "installed" requires the
+        // module importable AND the backend marker
+        // (~/.mlstack/flash-attention/.backend) to match — this is what stops a
+        // leftover build dir or a manual/unknown install from false-reporting as
+        // installed. Only the last-installed backend (the marker value) reports
+        // installed (mutual exclusivity).
+        "flash-attn-triton" => {
             python_any(python_candidates, &["flash_attn", "flash_attn_2"])
-                || path_exists(home_path(&home, &["ml_stack", "flash_attn_amd"]))
-                || path_exists(home_path(&home, &["ml_stack", "flash_attn_amd_direct"]))
+                && backend_marker_is("triton")
+        }
+        "flash-attn-ck" => {
+            python_any(python_candidates, &["flash_attn", "flash_attn_2"])
+                && backend_marker_is("ck")
         }
         "megatron" => {
             path_exists(home_path(&home, &["megatron", "Megatron-LM"]))
@@ -195,7 +210,9 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             command_exists("vllm-studio") || path_exists(home_path(&home, &["vllm-studio"]))
         }
         "onnx" => {
-            python_any(python_candidates, &["onnxruntime"])
+            python_candidates
+                .iter()
+                .any(|python| python_exec(python, onnxruntime_present_snippet()))
                 || path_exists(home_path(&home, &["onnxruntime_build"]))
         }
         "bitsandbytes" => {
@@ -231,12 +248,22 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             false
         }
         "migraphx" => {
+            // Python bindings (Debian/ROCm image) OR the C++ driver (Arch/CachyOS,
+            // where pip `migraphx` is unavailable). Functional only — a driver that
+            // can't load its shared libs (libprotobuf/libabsl SONAME desync from a
+            // partial upgrade) is NOT installed. The old `migraphx_build` dir check
+            // was a false-positive surface (leftover build dir ≠ functional), removed.
             python_any(python_candidates, &["migraphx"])
-                || path_exists(home_path(&home, &["migraphx_build"]))
+                || crate::installers::components::migraphx_multi::migraphx_driver_functional()
         }
         "pytorch-profiler" => python_any(python_candidates, &["torch"]),
         "wandb" => python_any(python_candidates, &["wandb"]),
-        "fastvideo" => python_any(python_candidates, &["fastvideo"]),
+        "fastvideo" => python_candidates.iter().any(|python| {
+            python_exec(
+                python,
+                crate::installers::components::fastvideo::fastvideo_verification_snippet(),
+            )
+        }),
         "llama-cpp" => {
             // Use the detection contract from llama_cpp.rs: llama-cli --help must succeed
             crate::installers::components::llama_cpp::is_llama_cli_functional(&home)
@@ -319,12 +346,26 @@ pub fn component_verification_commands(
             python_candidates,
             "import stans_ml_stack,sys; import importlib; ok=True\nfor _s in ('core','utils','cli','installers'):\n    try:\n        importlib.import_module(f'stans_ml_stack.{_s}')\n    except Exception:\n        ok=False; break\nver=getattr(stans_ml_stack,'__version__','ok')\nprint(f'ML Stack Core {ver} submodule_loaded={ok}'); sys.exit(0 if ok else 1)",
         )],
-        "flash-attn" => vec![python_command(
+        // Canonical id (verify/migrate): flash_attn importable under ANY backend.
+        "flash-attn" => vec![flash_attention_verification_command(
             "Flash Attention",
             "flash-attn",
-            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
+            None,
             python_candidates,
-            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
+        )],
+        // Split TUI ids: require the backend marker to match, so a successful
+        // install verifies + a stale/manual one does not.
+        "flash-attn-triton" => vec![flash_attention_verification_command(
+            "Flash Attention (Triton)",
+            "flash-attn-triton",
+            Some("triton"),
+            python_candidates,
+        )],
+        "flash-attn-ck" => vec![flash_attention_verification_command(
+            "Flash Attention (CK)",
+            "flash-attn-ck",
+            Some("ck"),
+            python_candidates,
         )],
         "megatron" => vec![python_command(
             "Megatron-LM",
@@ -378,7 +419,7 @@ pub fn component_verification_commands(
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
+            migraphx_verify_snippet(),
         )],
         "pytorch-profiler" => vec![python_command(
             "PyTorch Profiler",
@@ -399,7 +440,7 @@ pub fn component_verification_commands(
             "fastvideo",
             &["fastvideo"],
             python_candidates,
-            "import fastvideo,sys; import importlib; ok=False\nfor _m in ('fastvideo.inference','fastvideo.engine','fastvideo'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nver=getattr(fastvideo,'__version__','?')\nprint(f'FastVideo {ver} module_loaded={ok}'); sys.exit(0 if ok else 1)",
+            crate::installers::components::fastvideo::fastvideo_verification_snippet(),
         )],
         "llama-cpp" => vec![shell_command(
             "llama.cpp",
@@ -589,12 +630,11 @@ fn basic_verification_commands(python_candidates: &[String]) -> Vec<Verification
 fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<VerificationCommand> {
     let mut steps = basic_verification_commands(python_candidates);
     steps.extend(vec![
-        python_command(
+        flash_attention_verification_command(
             "Flash Attention",
             "flash-attn",
-            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
+            None,
             python_candidates,
-            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         ),
         python_command(
             "vLLM",
@@ -630,7 +670,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
+            migraphx_verify_snippet(),
         ),
         python_command(
             "PyTorch Profiler",
@@ -651,7 +691,7 @@ fn enhanced_verification_commands(python_candidates: &[String]) -> Vec<Verificat
             "fastvideo",
             &["fastvideo"],
             python_candidates,
-            "import fastvideo,sys; import importlib; ok=False\nfor _m in ('fastvideo.inference','fastvideo.engine','fastvideo'):\n    try:\n        importlib.import_module(_m); ok=True; break\n    except Exception:\n        pass\nver=getattr(fastvideo,'__version__','?')\nprint(f'FastVideo {ver} module_loaded={ok}'); sys.exit(0 if ok else 1)",
+            crate::installers::components::fastvideo::fastvideo_verification_snippet(),
         ),
         shell_command("vLLM Studio", "vllm-studio", "bun", &["--version"]),
     ]);
@@ -668,19 +708,18 @@ fn build_verification_commands(python_candidates: &[String]) -> Vec<Verification
             python_candidates,
             "import onnxruntime as ort; import pathlib; import os; import sys; print('Version:', ort.__version__); base=pathlib.Path(ort.__file__).parent; libs=list(base.rglob('libonnxruntime_providers_rocm.so')); [os.environ.update({'ORT_ROCM_EP_PROVIDER_PATH': str(l)}) for l in libs[:1]]; providers=ort.get_available_providers(); print('Providers:', providers); sys.exit(0 if 'ROCMExecutionProvider' in providers else 1)",
         ),
-        python_command(
+        flash_attention_verification_command(
             "Flash Attention (build)",
             "flash-attn",
-            &["flash_attn", "flash_attention_amd", "flash_attn_2"],
+            None,
             python_candidates,
-            "import importlib, sys;\nmodules=[('flash_attn','flash_attn.flash_attn_func'),('flash_attention_amd',None),('flash_attn_2',None)];\nfor mod_name, func_path in modules:\n    try:\n        m = importlib.import_module(mod_name);\n        ver = getattr(m, '__version__', 'unknown');\n        if func_path:\n            parts = func_path.split('.');\n            obj = m;\n            [obj := getattr(obj, p) for p in parts[1:]];\n            print(f'{mod_name} {ver} — {func_path} OK');\n        else:\n            print(f'{mod_name} {ver} — imported OK');\n        sys.exit(0);\n    except SystemExit:\n        raise\n    except Exception:\n        continue;\nprint('No flash attention module found'); sys.exit(1)",
         ),
         python_command(
             "MIGraphX",
             "migraphx",
             &["migraphx"],
             python_candidates,
-            "import migraphx,sys; ok=hasattr(migraphx,'parse_onnx')\nver=getattr(migraphx,'__version__','ok')\nprint(f'MIGraphX {ver} parse_onnx={ok}'); sys.exit(0 if ok else 1)",
+            migraphx_verify_snippet(),
         ),
     ]);
     steps
@@ -730,12 +769,16 @@ print(f'torch version: {torch.__version__}')
 hip_version = getattr(torch.version, 'hip', None)
 cuda_version = getattr(torch.version, 'cuda', None)
 print(f'hip: {hip_version}')
-print(f'cuda: {cuda_version}')
+print(f'cuda_build: {cuda_version}')
 
 # Tier 3: Runtime HIP/CUDA availability
 try:
     hip_available = torch.cuda.is_available()
-    print(f'torch.cuda.is_available(): {hip_available}')
+    # 'cuda' here is AVAILABILITY (CUDA-via-HIP on ROCm), NOT torch.version.cuda
+    # (which is None on a ROCm build — that's the CUDA *toolkit* version torch was
+    # built against, not whether CUDA-style code can run). is_available()==True
+    # means CUDA works through HIP, which is the user-facing answer.
+    print(f'cuda: {hip_available}')
     if hip_available:
         device_count = torch.cuda.device_count()
         print(f'device_count: {device_count}')
@@ -774,7 +817,7 @@ if not hip_available:
     if hip_version is None and cuda_version is None:
         print('HINT: torch.version.hip and torch.version.cuda are both None.')
         print('  This torch build may not have GPU support.')
-        print('  Reinstall with ROCm index: pip install torch --index-url https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/')
+        print('  Reinstall with ROCm index: pip install torch --index-url https://download.pytorch.org/whl/rocm7.2/')
     elif hip_version is not None and not hip_available:
         print('HINT: torch.version.hip is set but HIP runtime not available.')
         print('  Possible causes:')
@@ -900,6 +943,24 @@ fn python_has_module(python: &str, module: &str) -> bool {
     )
 }
 
+/// Detection snippet for `onnxruntime`: requires a REAL installed package, not
+/// a CWD namespace-package shadow.
+///
+/// `python_has_module`/`find_spec` alone is fooled by a repo-local
+/// `onnxruntime/` source directory (e.g. a clone checked out inside the repo):
+/// it resolves as a namespace package (`find_spec` returns a spec, but
+/// `origin` is `None`), so a bare directory reports "installed" while
+/// `import onnxruntime` yields a hollow module with no `__version__`/providers.
+/// This strips CWD from `sys.path` (so the env package wins) AND requires a
+/// non-`None` `origin` (a real `__init__.py`-backed package). Same footgun
+/// fixed for migraphx in `migraphx_verify_snippet`.
+fn onnxruntime_present_snippet() -> &'static str {
+    "import sys, os, importlib.util; \
+     sys.path = [p for p in sys.path if p and os.path.abspath(p.rstrip('/')) != os.path.abspath(os.getcwd())]; \
+     s = importlib.util.find_spec('onnxruntime'); \
+     sys.exit(0 if (s is not None and s.origin is not None) else 1)"
+}
+
 fn python_exec(python: &str, code: &str) -> bool {
     let mut cmd = Command::new(python);
     cmd.arg("-c")
@@ -1022,6 +1083,10 @@ fn component_candidate_homes(preferred_home: &str) -> Vec<String> {
 }
 
 fn resolve_component_user_home() -> String {
+    if let Ok(home) = env::var("MLSTACK_USER_HOME") {
+        return home;
+    }
+
     let fallback = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let candidates = component_candidate_homes(&fallback);
 
@@ -1106,16 +1171,6 @@ pub fn python_search_paths() -> Vec<String> {
     let home = resolve_component_user_home();
     let mut paths = vec![
         format!("{}/pytorch", home),
-        format!("{}/ml_stack/flash_attn_amd_direct", home),
-        format!("{}/ml_stack/flash_attn_amd", home),
-        format!(
-            "{}/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-313",
-            home
-        ),
-        format!(
-            "{}/ml_stack/flash_attn_amd/build/lib.linux-x86_64-cpython-312",
-            home
-        ),
         format!("{}/.local/lib/python3.13/site-packages", home),
         format!("{}/.local/lib/python3.12/site-packages", home),
         format!("{}/rocm_venv/lib/python3.13/site-packages", home),
@@ -1187,6 +1242,93 @@ fn home_path(home: &str, parts: &[&str]) -> PathBuf {
     path
 }
 
+/// Read the active Flash Attention backend marker
+/// (`~/.mlstack/flash-attention/.backend`) and return `true` iff it equals
+/// `name`. The installer writes this file on success; detection requires it so
+/// that a leftover build directory or a manual/unknown install can NEVER
+/// false-report Flash Attention as "installed".
+fn backend_marker_is(name: &str) -> bool {
+    let home = resolve_component_user_home();
+    let marker = home_path(&home, &[".mlstack", "flash-attention", ".backend"]);
+    std::fs::read_to_string(&marker)
+        .ok()
+        .map(|s| s.trim() == name)
+        .unwrap_or(false)
+}
+
+/// Multi-modal MIGraphX verification snippet (run via `python -c`).
+///
+/// Two hardening fixes over the naive `import migraphx; hasattr(parse_onnx)`:
+///
+/// 1. **CWD excluded from `sys.path`** — otherwise a repo-local `migraphx`
+///    stub (e.g. `core/migraphx/migraphx/__init__.py`) shadows a real install
+///    when rusty-stack runs from the repo root, importing cleanly but without
+///    `parse_onnx`, producing a false `parse_onnx=False` failure.
+/// 2. **Driver fallback on *any* incomplete python result** — the previous
+///    logic only fell back to `migraphx-driver --version` on `ImportError`. A
+///    stub that imports without `parse_onnx` never reached the fallback. Now
+///    the C++ driver is tried whenever the python bindings are missing OR
+///    incomplete. On Arch/CachyOS (SystemOnly support: no pip `migraphx`
+///    wheel) the driver IS the install target, so a clean driver load = pass.
+///    This still catches a broken shared-library state (SONAME desync): the
+///    driver won't load, so the check can never false-pass.
+fn migraphx_verify_snippet() -> &'static str {
+    r#"
+import os, sys, subprocess
+# (1) Drop CWD / '' entries so a repo-local migraphx stub can't shadow a real install.
+sys.path = [p for p in sys.path if p and os.path.abspath(p.rstrip('/')) != os.path.abspath(os.getcwd())]
+ok = False
+ver = 'ok'
+via = 'none'
+try:
+    import migraphx
+    if hasattr(migraphx, 'parse_onnx'):
+        ok = True
+        via = 'python'
+        ver = getattr(migraphx, '__version__', 'ok')
+    else:
+        ver = getattr(migraphx, '__version__', 'stub')
+except ImportError:
+    ver = 'absent'
+# (2) Fall through to the C++ driver whenever python bindings are missing OR
+#     incomplete (no parse_onnx). On Arch/CachyOS the driver is the install target.
+if not ok:
+    r = subprocess.run(['/opt/rocm/bin/migraphx-driver', '--version'], capture_output=True)
+    if r.returncode == 0:
+        ok = True
+        via = 'driver'
+        ver = 'driver'
+print(f'MIGraphX {ver} parse_onnx={ok} via={via}')
+sys.exit(0 if ok else 1)
+"#
+}
+
+/// Flash Attention verification command (run via `python -c`).
+///
+/// Verifies `flash_attn` importability (the hard minimum — both ROCm backends
+/// install the same `flash_attn` package). When `expected_backend` is `Some`,
+/// ALSO requires the `~/.mlstack/flash-attention/.backend` marker to match, so a
+/// successful `flash-attn-triton`/`flash-attn-ck` install reaches final success
+/// while a stale or manual install cannot. Never accepts the legacy
+/// `flash_attention_amd` module — detection dropped it, so verification must too.
+fn flash_attention_verification_command(
+    label: &str,
+    target_id: &str,
+    expected_backend: Option<&str>,
+    python_candidates: &[String],
+) -> VerificationCommand {
+    let marker_block = match expected_backend {
+        Some(name) => format!(
+            "home=pathlib.Path(os.environ.get('HOME',''))\nmarker=home/'.mlstack'/'flash-attention'/'.backend'\nif not marker.exists() or marker.read_text().strip()!='{name}':\n    print(f'backend marker mismatch (expected {name})');sys.exit(1)\n"
+        ),
+        None => String::new(),
+    };
+    let code = format!(
+        "import importlib,sys,os,pathlib\nm=importlib.import_module('flash_attn')\nver=getattr(m,'__version__','unknown')\nhas_func=hasattr(m,'flash_attn_func') or hasattr(m,'flash_attn_qkvpacked_func')\n{marker_block}print(f'flash_attn {{ver}} func={{has_func}}')"
+    );
+    python_command(label, target_id, &["flash_attn"], python_candidates, &code)
+}
+
 fn env_file_has_enhanced(path: &Path) -> bool {
     if let Ok(contents) = fs::read_to_string(path) {
         return contents.contains("Enhanced ML Stack Environment Setup Script");
@@ -1196,12 +1338,48 @@ fn env_file_has_enhanced(path: &Path) -> bool {
 
 fn env_file_has_permanent(path: &Path) -> bool {
     if let Ok(contents) = fs::read_to_string(path) {
-        return contents.contains("Permanent ROCm Environment")
+        let has_marker = contents.contains("Permanent ROCm Environment")
             || contents.contains("Permanent ROCm Env")
             || (contents.contains("ML Stack Environment File")
                 && contents.contains("MLSTACK_PYTHON_BIN"));
+        if !has_marker {
+            return false;
+        }
+        // Reject gfx000 — invalid placeholder arch
+        // Validate arch pattern: gfx(9|10|11|12)NN
+        let valid_arch_prefixes = ["gfx9", "gfx10", "gfx11", "gfx12"];
+        let mut has_gpu_arch_line = false;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            // The env file is a sourced shell script, so assignments carry an
+            // `export ` prefix (e.g. `export GPU_ARCH=gfx1100`). Strip it before
+            // matching, or the check never finds the arch line and a perfectly
+            // valid env reports "not configured". Note `GPU_ARCHS=` / other
+            // `*_ARCH=` lines do NOT start with `GPU_ARCH=` and are correctly
+            // ignored.
+            let assign = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            if assign.starts_with("GPU_ARCH=") {
+                has_gpu_arch_line = true;
+                if let Some(rest) = assign.split("GPU_ARCH=").nth(1) {
+                    let arch = rest.split_whitespace().next().unwrap_or(rest);
+                    if arch == "gfx000" {
+                        return false;
+                    }
+                    // Check if arch starts with a valid prefix
+                    if !valid_arch_prefixes
+                        .iter()
+                        .any(|prefix| arch.starts_with(prefix))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        // Require a GPU_ARCH= line to be present
+        has_gpu_arch_line
+    } else {
+        false
     }
-    false
 }
 
 fn repo_has_ml_stack_core() -> bool {
@@ -1218,6 +1396,109 @@ fn repo_has_ml_stack_core() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fastvideo_verification_uses_shared_compiled_kernel_smoke_test() {
+        let candidates = vec!["python3".to_string()];
+        let commands = component_verification_commands("fastvideo", &candidates);
+        assert_eq!(commands.len(), 1);
+
+        let command = &commands[0];
+        assert_eq!(command.label, "FastVideo");
+        assert_eq!(command.target_id, "fastvideo");
+        assert_eq!(command.modules, vec!["fastvideo".to_string()]);
+        assert_eq!(
+            command.args,
+            vec![
+                "-c".to_string(),
+                crate::installers::components::fastvideo::fastvideo_verification_snippet()
+                    .to_string(),
+            ]
+        );
+
+        let snippet = &command.args[1];
+        for anchor in [
+            "from fastvideo_kernel import int8_quant",
+            "range(int(discovered.stdout.strip()))",
+            "int8_quant(source)",
+            "torch.cuda.synchronize()",
+            "raise SystemExit",
+        ] {
+            assert!(
+                snippet.contains(anchor),
+                "missing verification anchor: {anchor}"
+            );
+        }
+
+        let enhanced = enhanced_verification_commands(&candidates);
+        let enhanced_fastvideo: Vec<_> = enhanced
+            .iter()
+            .filter(|candidate| candidate.target_id == "fastvideo")
+            .collect();
+        assert_eq!(enhanced_fastvideo.len(), 1);
+        assert_eq!(
+            enhanced_fastvideo[0].args[1],
+            crate::installers::components::fastvideo::fastvideo_verification_snippet()
+        );
+        assert_eq!(enhanced_fastvideo[0].modules, vec!["fastvideo".to_string()]);
+    }
+
+    #[test]
+    fn test_fastvideo_installation_status_requires_compiled_kernel_smoke_test() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after Unix epoch")
+            .as_nanos();
+        let temp_dir = env::temp_dir().join(format!(
+            "rusty-stack-fastvideo-status-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temporary FastVideo status test directory");
+
+        let import_only = temp_dir.join("import-only-python");
+        fs::write(
+            &import_only,
+            "#!/bin/sh\ncase \"$2\" in\n  *\"find_spec\"*\"fastvideo\"*) exit 0 ;;\n  *) exit 1 ;;\nesac\n",
+        )
+        .expect("write import-only fake Python");
+        let mut permissions = fs::metadata(&import_only)
+            .expect("stat import-only fake Python")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&import_only, permissions)
+            .expect("make import-only fake Python executable");
+
+        assert!(
+            !is_component_installed_by_id(
+                "fastvideo",
+                &[import_only.to_string_lossy().into_owned()]
+            ),
+            "an import spec alone must not report FastVideo installed"
+        );
+
+        let functional = temp_dir.join("functional-python");
+        fs::write(
+            &functional,
+            "#!/bin/sh\ncase \"$2\" in\n  *\"import fastvideo\"*\"from fastvideo_kernel import int8_quant\"*\"int8_quant(source)\"*) exit 0 ;;\n  *) exit 1 ;;\nesac\n",
+        )
+        .expect("write functional fake Python");
+        let mut permissions = fs::metadata(&functional)
+            .expect("stat functional fake Python")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&functional, permissions)
+            .expect("make functional fake Python executable");
+
+        assert!(
+            is_component_installed_by_id("fastvideo", &[functional.to_string_lossy().into_owned()]),
+            "the shared compiled-kernel smoke must report FastVideo installed"
+        );
+
+        fs::remove_dir_all(&temp_dir).expect("remove temporary FastVideo status test directory");
+    }
 
     #[test]
     fn test_pytorch_diagnostic_snippet_exits_strict() {
@@ -1362,6 +1643,61 @@ mod tests {
         assert_eq!(cmd.args[0], "-c");
         assert!(!cmd.args[1].is_empty());
         assert!(cmd.modules.contains(&"torch".to_string()));
+    }
+
+    #[test]
+    fn test_migraphx_snippet_excludes_cwd_and_falls_back_to_driver() {
+        // Regression: a repo-local `migraphx` stub imported cleanly but had no
+        // parse_onnx, and the old snippet only fell back to the driver on
+        // ImportError — so the stub produced a false failure. The new snippet
+        // must (a) strip CWD from sys.path and (b) run the driver whenever the
+        // python bindings are missing OR incomplete.
+        let s = migraphx_verify_snippet();
+
+        // (a) CWD excluded from sys.path (no repo-stub shadowing).
+        assert!(
+            s.contains("getcwd()"),
+            "snippet must drop CWD from sys.path; got: {s}"
+        );
+        assert!(
+            s.contains("sys.path = [p for p in sys.path"),
+            "snippet must filter sys.path; got: {s}"
+        );
+
+        // (b) Driver fallback is OUTSIDE the try/except — keyed on `if not ok`,
+        // so an incomplete import (stub without parse_onnx) still reaches it.
+        assert!(
+            s.contains("if not ok:"),
+            "snippet must fall back to the driver whenever python bindings are incomplete"
+        );
+        assert!(s.contains("migraphx-driver"));
+        assert!(s.contains("--version"));
+        // parse_onnx is only accepted inside the successful python branch.
+        assert!(s.contains("hasattr(migraphx, 'parse_onnx')"));
+        // Exit reflects final ok state (driver fallback can flip it to pass).
+        assert!(s.contains("sys.exit(0 if ok else 1)"));
+    }
+
+    #[test]
+    fn test_onnx_present_snippet_strips_cwd_and_requires_real_package() {
+        // Regression: a repo-local `onnxruntime/` source directory resolves as a
+        // namespace package (find_spec returns a spec, origin is None), so the
+        // old `python_any(&["onnxruntime"])` reported "installed" while
+        // `import onnxruntime` had no __version__/providers. The snippet must
+        // (a) strip CWD from sys.path and (b) require a real package (origin).
+        let s = onnxruntime_present_snippet();
+        assert!(
+            s.contains("getcwd()"),
+            "snippet must drop CWD from sys.path; got: {s}"
+        );
+        assert!(
+            s.contains("sys.path = [p for p in sys.path"),
+            "snippet must filter sys.path; got: {s}"
+        );
+        assert!(
+            s.contains("origin is not None"),
+            "snippet must require a real package (non-None origin), not a namespace shadow; got: {s}"
+        );
     }
 }
 

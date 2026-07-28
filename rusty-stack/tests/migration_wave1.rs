@@ -54,6 +54,7 @@ fn make_comp(id: &str, version: &str, tier: ValidationTier) -> ManifestComponent
         min_rocm_version: String::new(),
         compatible_channels: vec![],
         dependencies: vec![],
+        exclusive_group: String::new(),
     }
 }
 
@@ -338,33 +339,40 @@ fn test_integration_selection_plan_produces_ordered_list_with_defaults() {
 
     let plan = build_plan(&manifest, &context, &PlannerOptions::default());
 
-    // Plan must have all 5 items
-    assert_eq!(plan.len(), 5, "plan must include all 5 components");
+    // An update plan never contains a reinstall or a downgrade (planner tenet):
+    // the 4 same-version components (rocm/pytorch/triton/deepspeed) are no-ops
+    // and are OMITTED. Only the new install (flash-attn) remains.
+    assert_eq!(
+        plan.len(),
+        1,
+        "plan must omit same-version no-ops; only the new install (flash-attn) remains"
+    );
 
-    // Same-version Reinstalls → Safe, but NOT preselected (nothing to install)
-    // New install (flash-attn) → Candidate, not preselected
-    for item in &plan {
-        if item.plan_item.component_id == "flash-attn" {
-            assert_eq!(
-                item.classification,
-                UpdateClassification::Candidate,
-                "new install must be classified as Candidate"
-            );
-            assert!(
-                !item.selected,
-                "candidate (new install) must not be preselected"
-            );
-        } else {
-            assert_eq!(
-                item.classification,
-                UpdateClassification::Safe,
-                "validated same-version reinstall must be Safe"
-            );
-            assert!(
-                !item.selected,
-                "same-version safe reinstall must not be preselected (nothing to install)"
-            );
-        }
+    let item = &plan[0];
+    assert_eq!(
+        item.plan_item.component_id, "flash-attn",
+        "the sole plan item must be the new install"
+    );
+    assert_eq!(
+        item.classification,
+        UpdateClassification::Candidate,
+        "new install must be classified as Candidate"
+    );
+    assert!(
+        !item.selected,
+        "candidate (new install) must not be preselected"
+    );
+
+    // The 4 same-version reinstalls must NOT appear (omitted as no-ops).
+    let plan_ids: Vec<&str> = plan
+        .iter()
+        .map(|i| i.plan_item.component_id.as_str())
+        .collect();
+    for omitted in &["rocm", "pytorch", "triton", "deepspeed"] {
+        assert!(
+            !plan_ids.contains(omitted),
+            "same-version reinstall '{omitted}' must be omitted from the plan"
+        );
     }
 }
 
@@ -417,6 +425,7 @@ fn test_integration_channel_switch_regenerates_correct_plan() {
             min_rocm_version: String::new(),
             compatible_channels: vec!["legacy".into()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         },
         ManifestComponent {
             id: "rocm".into(),
@@ -427,6 +436,7 @@ fn test_integration_channel_switch_regenerates_correct_plan() {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".into()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         },
         make_comp("pytorch", "2.5.0", ValidationTier::Validated),
     ]);
@@ -485,6 +495,7 @@ fn test_integration_channel_switch_no_stale_entries() {
             min_rocm_version: String::new(),
             compatible_channels: vec!["latest".into()],
             dependencies: vec![],
+            exclusive_group: String::new(),
         },
         make_comp("pytorch", "2.5.0", ValidationTier::Validated),
     ]);

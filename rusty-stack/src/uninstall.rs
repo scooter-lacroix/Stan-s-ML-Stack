@@ -26,6 +26,7 @@
 //! (with a warning) if not root and sudo is unavailable, so the command never
 //! stalls on a hidden prompt.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -125,6 +126,13 @@ pub fn uninstall_stack(opts: &UninstallOptions) -> anyhow::Result<UninstallRepor
 
     // 1. pip uninstall ML packages via the canonical Python.
     let python = resolve_canonical_python_bin();
+
+    // 1a. Remove pip's corrupted `~`-prefixed leftovers BEFORE the pip
+    // uninstall, so pip's own site-packages scan doesn't emit "Ignoring
+    // invalid distribution ~pkg" warnings. These are frequently root-owned
+    // (interrupted `sudo pip`), so this needs the privileged path.
+    clean_corrupted_pip_distributions(&python, opts.sudo_password.as_deref(), &mut report);
+
     println!("[uninstall] Removing ML pip packages via {python} …");
     // Union the curated list with the installed-component registry's recorded
     // pip packages (Tenet 2: the registry is now populated at install time, so
@@ -139,6 +147,13 @@ pub fn uninstall_stack(opts: &UninstallOptions) -> anyhow::Result<UninstallRepor
         "pip".to_string(),
         "uninstall".to_string(),
         "-y".to_string(),
+        // Rusty manages these ML packages; the resolved interpreter may be a
+        // uv/system Python marked EXTERNALLY-MANAGED (PEP 668) — especially
+        // when the managed ~/.mlstack/global venv is absent and we fall back
+        // to a discovered interpreter holding legacy installs. Override the
+        // guard so the curated ML set is actually removed (mirrors the install
+        // side, which uses PIP_BREAK_SYSTEM_PACKAGES=1).
+        "--break-system-packages".to_string(),
     ];
     pip_args.extend(pkgs);
     let pip_status = Command::new(&python).args(&pip_args).status();
@@ -237,7 +252,18 @@ fn build_system_purge_cmd(packages: &[&str]) -> Option<(String, Vec<String>)> {
             vec!["purge".to_string(), "-y".to_string(), "-qq".to_string()],
         )
     } else if command_on_path("pacman") {
-        ("pacman", vec!["-Rn".to_string(), "--noconfirm".to_string()])
+        // `-Rcn` cascade is unsafe — it removes ALL dependents, including
+        // non-ROCm packages that happen to depend on ROCm libs. Instead,
+        // enumerate the full ROCm package set explicitly and use `-Rn` (no
+        // cascade) to guarantee only ROCm is removed.
+        let full_set = enumerate_rocm_explicit_purge_set(packages);
+        if full_set.is_empty() {
+            // Nothing to purge (or enumeration failed — logged inside).
+            return None;
+        }
+        let mut args = vec!["-Rn".to_string(), "--noconfirm".to_string()];
+        args.extend(full_set.into_iter().map(|s| s.to_string()));
+        return Some(("pacman".to_string(), args));
     } else if command_on_path("dnf") {
         ("dnf", vec!["remove".to_string(), "-y".to_string()])
     } else if command_on_path("zypper") {
@@ -250,6 +276,123 @@ fn build_system_purge_cmd(packages: &[&str]) -> Option<(String, Vec<String>)> {
     let mut args = verb;
     args.extend(packages.iter().map(|s| s.to_string()));
     Some((pm.to_string(), args))
+}
+
+/// Enumerate the full set of ROCm packages to remove explicitly (targets +
+/// their ROCm-internal dependents). Returns a sorted Vec of package names to
+/// pass to `pacman -Rn`. Only includes packages matching the ROCm allowlist.
+/// Non-ROCm dependents are excluded (logged to stderr).
+fn enumerate_rocm_explicit_purge_set(targets: &[&str]) -> Vec<String> {
+    let allowlist = rocm_allowlist_patterns();
+    let mut to_remove: HashSet<String> = targets.iter().map(|s| s.to_string()).collect();
+    let mut skipped_non_rocm: Vec<String> = Vec::new();
+
+    for target in targets {
+        let dependents = reverse_tree_pacman(target);
+        for dep in dependents {
+            if matches_rocm_allowlist(&dep, &allowlist) {
+                to_remove.insert(dep);
+            } else {
+                skipped_non_rocm.push(dep);
+            }
+        }
+    }
+
+    if !skipped_non_rocm.is_empty() {
+        eprintln!(
+            "[uninstall] Skipping {} non-ROCm dependent(s) that would be caught by cascade: {:?}. Only ROCm packages are removed.",
+            skipped_non_rocm.len(),
+            skipped_non_rocm
+        );
+    }
+
+    let mut sorted: Vec<_> = to_remove.into_iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    sorted
+}
+
+/// ROCm package name patterns — any package matching these prefixes/names is
+/// considered part of the ROCm stack. This covers the full ROCm package
+/// namespace on Arch (rocm-core, hip-*-, roc-*-, comgr, migraphx, miopen-hip,
+/// rccl, rocwmma, hsa-*, amdgpu-*, libdrm_amd, etc.).
+fn rocm_allowlist_patterns() -> Vec<&'static str> {
+    vec![
+        "rocm-",
+        "hip",
+        "roc",
+        "hsa",
+        "comgr",
+        "migraphx",
+        "miopen",
+        "rccl",
+        "amdgpu",
+        "libdrm_amd",
+        "rocwmma",
+        "amd-comgr",
+        "hsakmt",
+        "hipfft",
+        "hipsparse",
+        "hipcub",
+        "hiprand",
+        "rocsolver",
+        "rocprim",
+        "rocrand",
+        "rocfft",
+        "llvm-libs",
+    ]
+}
+
+/// True if pkg matches any ROCm allowlist pattern (prefix or exact match).
+fn matches_rocm_allowlist(pkg: &str, allowlist: &[&str]) -> bool {
+    allowlist
+        .iter()
+        .any(|pat| pkg.starts_with(pat) || pkg == pat.trim_end_matches('-'))
+}
+
+/// Compute the reverse dependency tree for `package` via `pactree -r`. Returns
+/// all packages that depend on `package` (directly or transitively). Empty on
+/// failure (pactree missing, or package not installed).
+///
+/// `--unique` (`-u`) is required: `pactree -r` defaults to a *tree* view with
+/// box-drawing prefixes and indentation, so a naive line-by-line parse would
+/// capture the structural glyphs / duplicated entries and the allowlist would
+/// never see bare package names. `--unique` implies `--linear` (one package per
+/// line, deduplicated) which is exactly the format the caller filters.
+fn reverse_tree_pacman(package: &str) -> Vec<String> {
+    if !command_on_path("pactree") {
+        // pactree is part of pacman-contrib — assumed present on any ROCm
+        // system (Arch installs the contrib package with base-devel).
+        // If absent, we can't compute dependents safely — return empty to
+        // avoid partial removal.
+        eprintln!("[uninstall] pactree not found — cannot enumerate ROCm dependents for {package}. Skipping dependent enumeration.");
+        return Vec::new();
+    }
+
+    Command::new("pactree")
+        .args(["-r", "-u", package])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| {
+            s.lines()
+                .filter_map(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Filter `candidates` to only those that are actually installed, using the
@@ -386,6 +529,88 @@ fn is_root() -> bool {
 #[cfg(not(unix))]
 fn is_root() -> bool {
     false
+}
+
+/// Remove pip's corrupted `~`-prefixed leftovers from interrupted uninstalls.
+///
+/// pip renames a package dir to `~pkg` (and `~pkg-VERSION.dist-info`) just
+/// before deleting it; if the delete is interrupted (OOM, signal, a file
+/// locked under a managed uv Python), those `~` entries survive and pip emits
+/// "Ignoring invalid distribution ~pkg" warnings on every later invocation.
+///
+/// These leftovers are frequently **root-owned** (the interrupted uninstall
+/// ran under `sudo pip`), so a user-level `remove_dir_all` silently fails. We
+/// try the user-level removal first and fall back to a single privileged
+/// `sudo rm -rf` (via askpass) for any that remain — typically all of them on
+/// a stack that was ever installed with sudo.
+fn clean_corrupted_pip_distributions(
+    python: &str,
+    sudo_password: Option<&str>,
+    report: &mut UninstallReport,
+) {
+    // Ask the interpreter for its site-packages dirs (global + user).
+    let sites_out = Command::new(python)
+        .args([
+            "-c",
+            "import site,sys; sys.stdout.write('\\n'.join(site.getsitepackages()+[site.getusersitepackages()]))",
+        ])
+        .output();
+    let sites: Vec<String> = match sites_out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => return,
+    };
+    let mut needs_sudo: Vec<String> = Vec::new();
+    for site_dir in &sites {
+        let Ok(entries) = std::fs::read_dir(site_dir) else {
+            continue;
+        };
+        for ent in entries.flatten() {
+            let file_name = ent.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if !name.starts_with('~') {
+                continue;
+            }
+            let path = ent.path();
+            // Try user-level removal first (covers user-owned leftovers).
+            let user_removed = match std::fs::metadata(&path) {
+                Ok(m) if m.is_dir() => std::fs::remove_dir_all(&path).is_ok(),
+                Ok(_) => std::fs::remove_file(&path).is_ok(),
+                Err(_) => false,
+            };
+            if user_removed {
+                report
+                    .env_files_removed
+                    .push(format!("(corrupted pip dist) {site_dir}/{name}"));
+            } else if let Some(p) = path.to_str() {
+                // User-level failed (likely root-owned) — defer to a privileged rm.
+                needs_sudo.push(p.to_string());
+            }
+        }
+    }
+    if needs_sudo.is_empty() {
+        return;
+    }
+    // Batch-remove the root-owned leftovers in one privileged transaction.
+    let count = needs_sudo.len();
+    let mut args = vec!["-rf".to_string()];
+    args.extend(needs_sudo.iter().cloned());
+    if run_privileged("rm", &args, sudo_password, report) {
+        for p in &needs_sudo {
+            report
+                .env_files_removed
+                .push(format!("(corrupted pip dist, sudo) {p}"));
+        }
+    } else {
+        report.note(format!(
+            "failed to remove {count} root-owned corrupted pip dist dir(s) — sudo required"
+        ));
+    }
 }
 
 /// Remove the env files Rusty wrote.

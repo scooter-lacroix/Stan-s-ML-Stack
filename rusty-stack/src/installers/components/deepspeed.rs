@@ -7,7 +7,6 @@
 //!
 //! - **VAL-INSTALL-006**: DeepSpeed installer correct pip command
 
-use crate::installers::common::RocmEnv;
 use std::fmt;
 
 // ===========================================================================
@@ -109,32 +108,6 @@ impl DeepSpeedInstaller {
     }
 
     // -----------------------------------------------------------------------
-    // ROCm build environment (VAL-INSTALL-006)
-    // -----------------------------------------------------------------------
-
-    /// Get the ROCm environment variables needed for DeepSpeed build.
-    ///
-    /// DeepSpeed auto-detects ROCm when ROCM_HOME is set.
-    /// The original script sets:
-    /// - ROCM_HOME=/opt/rocm
-    /// - HIP_PATH=/opt/rocm
-    /// - HSA_OVERRIDE_GFX_VERSION
-    /// - PYTORCH_ROCM_ARCH
-    pub fn rocm_build_env(&self, rocm_env: &RocmEnv) -> Vec<(String, String)> {
-        let rocm_path = rocm_env
-            .path()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/opt/rocm".to_string());
-
-        vec![
-            ("ROCM_HOME".to_string(), rocm_path.clone()),
-            ("HIP_PATH".to_string(), rocm_path),
-            ("HSA_OVERRIDE_GFX_VERSION".to_string(), "11.0.0".to_string()),
-            ("PYTORCH_ROCM_ARCH".to_string(), "gfx1100".to_string()),
-        ]
-    }
-
-    // -----------------------------------------------------------------------
     // Command construction
     // -----------------------------------------------------------------------
 
@@ -177,15 +150,21 @@ impl DeepSpeedInstaller {
         if is_global {
             args.push("--break-system-packages".to_string());
         }
-        // --no-deps: DeepSpeed's metadata depends on `torch`; without this pip
-        // resolves/upgrade torch from PyPI (a CUDA build), overriding the ROCm
-        // torch Rusty installed — violating "never override a core component".
-        // Runtime deps are installed explicitly via build_deps_install_command.
-        // (Stage 3: single-source deps / no-override.)
-        args.push("--no-deps".to_string());
         if self.config.force_reinstall {
+            // --force-reinstall would reinstall ALL deps including torch, pulling
+            // a CUDA torch from PyPI and overriding the ROCm build. --no-deps
+            // scopes the reinstall to deepspeed itself (deps are already present
+            // from the initial non-force install).
             args.push("--force-reinstall".to_string());
+            args.push("--no-deps".to_string());
         }
+        // NOTE: the normal (non-force) path deliberately does NOT use --no-deps.
+        // PyTorch (ROCm torch) is guaranteed pre-installed by install order
+        // (pytorch runs before deepspeed), so pip sees torch satisfied and will
+        // NOT pull a CUDA torch. Previously --no-deps was always set to block the
+        // CUDA-torch pull, but it ALSO skipped deepspeed's real runtime deps
+        // (py-cpuinfo → the `cpuinfo` module), so `import deepspeed` failed with
+        // "No module named 'cpuinfo'".
         args.push("deepspeed".to_string());
         args.push("einops".to_string());
 
@@ -258,7 +237,6 @@ impl DeepSpeedInstaller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     // --- VAL-INSTALL-006: DeepSpeed installer correct pip command ---
 
@@ -325,33 +303,6 @@ mod tests {
         let cmd = installer.build_force_reinstall_command();
         assert!(cmd.args.contains(&"--force-reinstall".to_string()));
         assert!(cmd.args.contains(&"deepspeed".to_string()));
-    }
-
-    #[test]
-    fn test_rocm_build_env() {
-        let installer = DeepSpeedInstaller::with_defaults();
-        let rocm_env = RocmEnv::from_known(Some(PathBuf::from("/opt/rocm")), "7.2.0".to_string());
-        let env = installer.rocm_build_env(&rocm_env);
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
-        assert!(env.iter().any(|(k, v)| k == "HIP_PATH" && v == "/opt/rocm"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "HSA_OVERRIDE_GFX_VERSION" && v == "11.0.0"));
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "PYTORCH_ROCM_ARCH" && v == "gfx1100"));
-    }
-
-    #[test]
-    fn test_rocm_build_env_no_rocm() {
-        let installer = DeepSpeedInstaller::with_defaults();
-        let rocm_env = RocmEnv::none();
-        let env = installer.rocm_build_env(&rocm_env);
-        assert!(env
-            .iter()
-            .any(|(k, v)| k == "ROCM_HOME" && v == "/opt/rocm"));
     }
 
     #[test]

@@ -22,16 +22,16 @@ use rusty_stack::installers::components::{
 use rusty_stack::state::{default_components, Category, Component};
 
 // ===========================================================================
-// VAL-INSTALL-031 + VAL-INSTALL-039: All 35 ported components are native
+// VAL-INSTALL-031 + VAL-INSTALL-039: All ported components are native
 // ===========================================================================
 
 #[test]
-fn test_all_35_native_components_recognized() {
-    // 24 installer + 9 benchmark + 1 fastvideo + 1 llama-cpp = 35
+fn test_all_native_components_recognized() {
+    // 28 installer/action ids + 11 benchmarks + fastvideo + llama-cpp.
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),
-        35,
-        "Must have exactly 35 native components (24 installers + 9 benchmarks + 1 fastvideo + 1 llama-cpp)"
+        41,
+        "Must have exactly 41 native component/action IDs"
     );
 
     for id in NATIVE_COMPONENT_IDS {
@@ -50,7 +50,7 @@ fn test_no_bash_dispatch_for_native_components() {
     let components = default_components();
     let native_installers: Vec<&Component> = components
         .iter()
-        .filter(|c| c.category != Category::Verification && c.category != Category::Performance)
+        .filter(|c| c.category != Category::Maintenance && c.category != Category::Performance)
         .collect();
 
     for comp in &native_installers {
@@ -125,9 +125,11 @@ fn test_component_is_native_method() {
 #[test]
 fn test_verification_components_use_native_rust() {
     let components = default_components();
+    // verify-* live in the Maintenance category alongside repair-stack; filter
+    // by id prefix to isolate the three verification components.
     let verification: Vec<&Component> = components
         .iter()
-        .filter(|c| c.category == Category::Verification)
+        .filter(|c| c.id.starts_with("verify-"))
         .collect();
 
     assert_eq!(verification.len(), 3, "Must have 3 verification components");
@@ -150,7 +152,7 @@ fn test_performance_components_use_native_rust() {
         .filter(|c| c.category == Category::Performance)
         .collect();
 
-    assert_eq!(performance.len(), 8, "Must have 8 performance components");
+    assert_eq!(performance.len(), 11, "Must have 11 performance components");
 
     for comp in &performance {
         assert!(
@@ -195,15 +197,11 @@ fn test_deepspeed_depends_on_pytorch() {
 
 #[test]
 fn test_flash_attention_depends_on_pytorch_and_rocm() {
-    let deps = get_dependencies("flash-attn");
-    assert!(
-        deps.contains(&"pytorch"),
-        "Flash Attention must depend on pytorch"
-    );
-    assert!(
-        deps.contains(&"rocm"),
-        "Flash Attention must depend on rocm"
-    );
+    for id in &["flash-attn-triton", "flash-attn-ck"] {
+        let deps = get_dependencies(id);
+        assert!(deps.contains(&"pytorch"), "{id} must depend on pytorch");
+        assert!(deps.contains(&"rocm"), "{id} must depend on rocm");
+    }
 }
 
 #[test]
@@ -266,7 +264,7 @@ fn test_topological_sort_orders_dependencies_before_dependents() {
 fn test_topological_sort_complex_dependency_chain() {
     let ids = vec![
         "megatron".to_string(),
-        "flash-attn".to_string(),
+        "flash-attn-triton".to_string(),
         "vllm".to_string(),
         "aiter".to_string(),
         "onnx".to_string(),
@@ -282,7 +280,7 @@ fn test_topological_sort_complex_dependency_chain() {
 
     // Verify declared dependency constraints
     // rocm -> flash-attn, onnx, aiter
-    assert!(pos("rocm") < pos("flash-attn"));
+    assert!(pos("rocm") < pos("flash-attn-triton"));
     assert!(pos("rocm") < pos("onnx"));
     assert!(pos("rocm") < pos("aiter"));
     // pytorch -> megatron, vllm, deepspeed, flash-attn, aiter, comfyui
@@ -326,7 +324,7 @@ fn test_every_native_component_has_installer_module() {
             "ml-stack-core" => {
                 let _ = MlStackInstaller::with_defaults();
             }
-            "flash-attn" => {
+            "flash-attn" | "flash-attn-triton" | "flash-attn-ck" => {
                 let _ = FlashAttentionInstaller::with_defaults();
             }
             "megatron" => {
@@ -354,7 +352,7 @@ fn test_every_native_component_has_installer_module() {
                 let _ = BitsAndBytesInstaller::with_defaults();
             }
             "rocm-smi" => {
-                let _ = RocmSmiInstaller::with_defaults();
+                let _ = RocmSmiInstaller::new();
             }
             "migraphx" => {
                 let _ = MigraphxInstaller::with_defaults();
@@ -377,6 +375,16 @@ fn test_every_native_component_has_installer_module() {
             "repair-stack" => {
                 let _ = RepairInstaller::with_defaults();
             }
+            "rccl-repair" => {
+                let _ = rccl::RcclInstaller::new(
+                    "/tmp",
+                    "python3",
+                    "/opt/rocm",
+                    "7.2.1",
+                    "latest",
+                    None,
+                );
+            }
             "enhanced-env" => {} // env setup module (no dedicated installer struct yet)
             // Benchmark components — dispatched via benchmark_runners module
             "mlperf-inference"
@@ -387,6 +395,9 @@ fn test_every_native_component_has_installer_module() {
             | "vllm-performance"
             | "deepspeed-performance"
             | "megatron-performance"
+            | "onnx-performance"
+            | "rusty-llama-performance"
+            | "flash-attention-ck-performance"
             | "all-benchmarks" => {
                 // Benchmarks are dispatched via benchmark_runners::run_benchmark()
             }
@@ -416,32 +427,56 @@ fn test_every_native_component_has_installer_module() {
 #[test]
 fn test_native_components_preserve_needs_sudo_flag() {
     let components = default_components();
-    let native_comps: Vec<&Component> = components
-        .iter()
-        .filter(|c| is_native_component(&c.id))
-        .collect();
+    let by_id = |id: &str| -> &Component {
+        components
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("component {id} missing"))
+    };
 
-    // Verify sudo-requiring components still have needs_sudo=true
-    let sudo_components: Vec<&&Component> = native_comps.iter().filter(|c| c.needs_sudo).collect();
+    // Components that genuinely need root: system-package installs (apt/dnf/
+    // pacman), system-dir writes, or repair/verify that may rebuild system
+    // state. These keep needs_sudo=true.
+    for sudo_id in [
+        "permanent-env",
+        "rocm",
+        "rocm-smi",
+        "verify-basic",
+        "verify-enhanced",
+        "verify-build",
+        "repair-stack",
+    ] {
+        assert!(by_id(sudo_id).needs_sudo, "{sudo_id} should need sudo");
+    }
 
-    // Most installers need sudo (ROCm, PyTorch, etc.)
-    assert!(
-        sudo_components.len() >= 15,
-        "At least 15 native components should need sudo, got {}",
-        sudo_components.len()
-    );
-
-    // Some don't need sudo (app installers)
-    let no_sudo: Vec<&&Component> = native_comps.iter().filter(|c| !c.needs_sudo).collect();
-
-    assert!(
-        no_sudo.iter().any(|c| c.id == "vllm-studio"),
-        "vllm-studio should not need sudo"
-    );
-    assert!(
-        no_sudo.iter().any(|c| c.id == "comfyui"),
-        "comfyui should not need sudo"
-    );
+    // pip / git / cmake installs land in the managed venv or user home — they
+    // never write system dirs, so needs_sudo MUST be false. (A `true` here made
+    // `run_installation`'s sudo gate spawn `sudo -n true` and leak
+    // "a password is required" during `update`, even though pip needs no root.)
+    for pip_id in [
+        "pytorch",
+        "megatron",
+        "triton",
+        "mpi4py",
+        "deepspeed",
+        "pytorch-profiler",
+        "flash-attn-triton",
+        "flash-attn-ck",
+        "migraphx",
+        "llama-cpp",
+        "aiter",
+        "vllm",
+        "bitsandbytes",
+        "wandb",
+        "onnx",
+        "vllm-studio",
+        "comfyui",
+    ] {
+        assert!(
+            !by_id(pip_id).needs_sudo,
+            "{pip_id} is pip/git-only and must not need sudo"
+        );
+    }
 }
 
 // ===========================================================================
@@ -451,8 +486,35 @@ fn test_native_components_preserve_needs_sudo_flag() {
 #[test]
 fn test_default_components_total_count() {
     let components = default_components();
-    // 23 native TUI installers (incl fastvideo + llama-cpp) + 3 verification + 8 performance = 34
-    assert_eq!(components.len(), 34, "Expected 34 total components");
+    // 25 native TUI installers/actions (incl fastvideo + llama-cpp + RCCL repair
+    // + migraphx-python) + 3 verification + 11 performance = 39.
+    assert_eq!(components.len(), 39, "Expected 39 total components");
+}
+
+#[test]
+fn test_chain_referenced_component_ids_are_resolvable() {
+    // Regression (PR #27 third-wave review): components advertised by BOTH the
+    // manifest/registry AND the installer dispatch must also be present in
+    // default_components(), or DirectInstallerExecutor::component_for_id (an
+    // exact .find on default_components()) fails with "Unknown component ID"
+    // before the native installer runs. Not every NATIVE_COMPONENT_ID needs to
+    // be in default_components() (meta/benchmark/env ids are dispatch-only), so
+    // this asserts the specific chain-referenced set: migraphx-python and the
+    // Flash Attention backends (legacy flash-attn normalizes to flash-attn-triton).
+    let components = default_components();
+    let ids: Vec<&str> = components.iter().map(|c| c.id.as_str()).collect();
+    assert!(
+        ids.contains(&"migraphx-python"),
+        "migraphx-python must be in default_components() so update/apply can dispatch it"
+    );
+    assert!(
+        ids.contains(&"flash-attn-triton"),
+        "flash-attn-triton must be present (legacy flash-attn normalizes to it)"
+    );
+    assert!(
+        ids.contains(&"flash-attn-ck"),
+        "flash-attn-ck must be present"
+    );
 }
 
 #[test]
