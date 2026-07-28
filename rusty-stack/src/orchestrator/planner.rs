@@ -771,15 +771,19 @@ impl UpdatePlanner {
             "triton" => vec!["pytorch".to_string()],
             // FA-Triton's Triton backend imports aiter.ops.triton at runtime —
             // aiter must be installed first or flash_attn import fails. CK uses
-            // composable_kernel, not aiter.
-            "flash-attn-triton" => {
+            // composable_kernel, not aiter. The legacy `flash-attn` id is
+            // normalized to `flash-attn-triton` by the executor (and is the
+            // default survivor of the `flash-attn-backend` exclusive group), so
+            // it MUST share Triton's closure — otherwise the default --all-safe
+            // route installs the Triton backend without its `aiter` prerequisite.
+            "flash-attn" | "flash-attn-triton" => {
                 vec![
                     "pytorch".to_string(),
                     "rocm".to_string(),
                     "aiter".to_string(),
                 ]
             }
-            "flash-attn" | "flash-attn-ck" => {
+            "flash-attn-ck" => {
                 vec!["pytorch".to_string(), "rocm".to_string()]
             }
             "deepspeed" => vec!["pytorch".to_string()],
@@ -1236,6 +1240,18 @@ mod tests {
             dependencies: vec![],
             exclusive_group: String::new(),
         }
+    }
+
+    /// Variant of [`make_component`] that sets the `exclusive_group`.
+    fn make_component_exclusive(
+        id: &str,
+        version: &str,
+        tier: ValidationTier,
+        group: &str,
+    ) -> ManifestComponent {
+        let mut c = make_component(id, version, tier);
+        c.exclusive_group = group.to_string();
+        c
     }
 
     fn make_manifest(components: Vec<ManifestComponent>) -> Manifest {
@@ -1738,6 +1754,123 @@ mod tests {
         assert_eq!(items.len(), 1, "Only safe items should remain");
         assert_eq!(items[0].classification, UpdateClassification::Safe);
         assert_eq!(items[0].plan_item.component_id, "pytorch");
+    }
+
+    #[test]
+    fn test_default_flash_attn_group_survivor_carries_aiter_dependency() {
+        // Regression (PR #27 fourth-wave review): enforce_exclusive_groups retains
+        // the first-listed flash-attn-backend entry (legacy `flash-attn`) when no
+        // backend is explicitly targeted. The executor normalizes that id to
+        // `flash-attn-triton`, whose runtime import requires `aiter`. The planner
+        // must therefore give the legacy id the SAME closure as Triton — otherwise
+        // the default --all-safe route installs the Triton backend without `aiter`
+        // and flash_attn is non-functional. Asserts both the survivor selection
+        // AND the dependency closure.
+        let mut context = make_context();
+        // Mark FA backends as installed at an older version so they classify as
+        // plan candidates (not filtered). aiter/pytorch/rocm/triton present so
+        // nothing is blocked on missing prerequisites.
+        for id in &["pytorch", "rocm", "aiter", "triton"] {
+            context.installed_components.insert((*id).to_string());
+            context
+                .installed_versions
+                .insert((*id).to_string(), "1.0.0".to_string());
+        }
+        for id in &["flash-attn", "flash-attn-triton", "flash-attn-ck"] {
+            context.installed_components.insert((*id).to_string());
+            context
+                .installed_versions
+                .insert((*id).to_string(), "2.8.3".to_string());
+        }
+
+        let manifest = make_manifest(vec![
+            make_component_exclusive(
+                "flash-attn",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+            make_component_exclusive(
+                "flash-attn-triton",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+            make_component_exclusive(
+                "flash-attn-ck",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+        ]);
+
+        let options = PlannerOptions::default();
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+
+        // Exactly one backend survives the exclusive group (the first-listed =
+        // legacy flash-attn, the manifest's recommended default).
+        let fa_items: Vec<_> = items
+            .iter()
+            .filter(|i| i.plan_item.exclusive_group == "flash-attn-backend")
+            .collect();
+        assert_eq!(fa_items.len(), 1, "exclusive group must keep one backend");
+        assert_eq!(
+            fa_items[0].plan_item.component_id, "flash-attn",
+            "default survivor is the first-listed (legacy) id"
+        );
+        // The survivor MUST carry aiter (it installs the Triton backend).
+        assert!(
+            fa_items[0]
+                .plan_item
+                .dependencies
+                .contains(&"aiter".to_string()),
+            "legacy flash-attn (normalized to triton) must depend on aiter; got {:?}",
+            fa_items[0].plan_item.dependencies
+        );
+    }
+
+    #[test]
+    fn test_explicit_flash_attn_ck_target_drops_triton_and_uses_ck_closure() {
+        // When CK is explicitly targeted, it becomes the group survivor and must
+        // NOT carry aiter (CK uses composable_kernel, not aiter).
+        let mut context = make_context();
+        for id in &["pytorch", "rocm", "aiter", "triton"] {
+            context.installed_components.insert((*id).to_string());
+            context
+                .installed_versions
+                .insert((*id).to_string(), "1.0.0".to_string());
+        }
+        let manifest = make_manifest(vec![
+            make_component_exclusive(
+                "flash-attn",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+            make_component_exclusive(
+                "flash-attn-ck",
+                "2.8.4",
+                ValidationTier::Validated,
+                "flash-attn-backend",
+            ),
+        ]);
+        let options = PlannerOptions {
+            target_components: vec!["flash-attn-ck".to_string()],
+            ..Default::default()
+        };
+        let items = planner().build_plan(&manifest, &context, &options).unwrap();
+        let ck = items
+            .iter()
+            .find(|i| i.plan_item.component_id == "flash-attn-ck")
+            .expect("explicitly-targeted CK survives");
+        assert!(
+            !ck.plan_item.dependencies.contains(&"aiter".to_string()),
+            "CK backend must NOT depend on aiter; got {:?}",
+            ck.plan_item.dependencies
+        );
+        assert!(items
+            .iter()
+            .all(|i| i.plan_item.component_id != "flash-attn"));
     }
 
     #[test]

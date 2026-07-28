@@ -206,18 +206,13 @@ pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
         "megatron" => &["pytorch", "mpi4py"],
         "vllm" => &["pytorch"],
         "aiter" => &["pytorch", "rocm"],
-        // Flash Attention: "flash-attn" is the canonical/verify id (any backend);
-        // flash-attn-triton / flash-attn-ck are the concrete TUI backends. All
-        // build from ROCm/flash-attention and need PyTorch + ROCm. The two
-        // backends install the same `flash_attn` package (mutually exclusive);
-        // Triton = full fwd+bwd, CK = forward-only on RDNA3.
-        //
-        // FA-Triton's Triton backend imports aiter.ops.triton at runtime
-        // (flash_attn_triton_amd) — without aiter installed its import fails — so
-        // it declares aiter as a dependency (the planner installs it first). CK
-        // uses composable_kernel, not aiter, so CK does not.
-        "flash-attn-triton" => &["pytorch", "rocm", "aiter"],
-        "flash-attn" | "flash-attn-ck" => &["pytorch", "rocm"],
+        // Flash Attention: "flash-attn" is the legacy/canonical id. The executor
+        // normalizes it to `flash-attn-triton` (the recommended backend), so it
+        // MUST share Triton's closure — including `aiter`, whose ops.triton the
+        // Triton backend imports at runtime. flash-attn-ck is the concrete CK
+        // backend (forward-only on RDNA3; uses composable_kernel, not aiter).
+        "flash-attn" | "flash-attn-triton" => &["pytorch", "rocm", "aiter"],
+        "flash-attn-ck" => &["pytorch", "rocm"],
         "onnx" => &["rocm"],
         "deepspeed" => &["pytorch"],
         "comfyui" => &["pytorch"],
