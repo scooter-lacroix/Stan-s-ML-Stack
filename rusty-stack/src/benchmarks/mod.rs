@@ -570,6 +570,15 @@ def _llama_cpp():
         # ROCR_VISIBLE_DEVICES (the ROCr runtime filter) — NOT the nonexistent
         # ROCM_VISIBLE_DEVICES — isolates one discrete GPU per llama-bench run.
         env["ROCR_VISIBLE_DEVICES"] = str(gpu_idx)
+        # Clear the alias masks so the inherited physical mask (e.g. "1,2" set
+        # by the sourced ~/.mlstack_env on an APU+dGPU host) can't re-filter the
+        # already-isolated GPU. ROCR renumbers the single visible GPU to logical
+        # 0, but a stale HIP_VISIBLE_DEVICES="1,2" / CUDA_VISIBLE_DEVICES="1,2"
+        # would then hide device 0 and the run reports no GPU. Same clearing the
+        # FastVideo per-device probe applies.
+        env.pop("HIP_VISIBLE_DEVICES", None)
+        env.pop("CUDA_VISIBLE_DEVICES", None)
+        env.pop("GPU_DEVICE_ORDINAL", None)
         try:
             proc = subprocess.run(
                 [bench, "-m", model, "-p", "512", "-p", "2048", "-p", "8192", "-p", "16384", "-p", "32768", "-n", "128", "-o", "json", "-r", "3"],

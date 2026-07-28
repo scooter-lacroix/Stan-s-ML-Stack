@@ -3145,6 +3145,91 @@ fn is_force_reinstall() -> bool {
         .unwrap_or(false)
 }
 
+/// Does the importable `triton` already satisfy the requested `target` version?
+///
+/// The triton dispatch arm skips the heavy from-source build when triton is
+/// already importable (PyTorch bundles `triton-rocm`). But an explicit
+/// `rusty-stack update triton` with a concrete target (e.g. `3.7.0`) must not
+/// be short-circuited by a bare import success if the installed triton is
+/// OLDER than the target — otherwise the post-install honesty guard marks the
+/// update failed because the version didn't advance.
+///
+/// Returns `true` (safe to skip) when:
+///   - `target` is `None`/empty/`latest` (no concrete version to satisfy), OR
+///   - force-reinstall is requested (the caller decides; this returns false so
+///     the build path runs), OR
+///   - the installed triton version is current-or-newer than `target`.
+fn triton_installed_satisfies_target(python_bin: &str, target: Option<&str>) -> bool {
+    let target = match target {
+        Some(t) => t.trim(),
+        None => return true, // no concrete target → bare import success is enough
+    };
+    // Opaque targets ("latest", "installed") → no concrete version to satisfy.
+    if target.is_empty() || target == "latest" || target == "installed" {
+        return true;
+    }
+    // Force-reinstall overrides the skip in the caller; signal "do not skip".
+    if is_force_reinstall() {
+        return false;
+    }
+    // Query the installed triton version and compare against the target.
+    let installed = std::process::Command::new(python_bin)
+        .arg("-c")
+        .arg(
+            "try:\n    import triton, importlib.metadata as im\n    \
+             print(getattr(triton, '__version__', None) or im.version('triton') \
+             or im.version('triton-rocm') or im.version('pytorch-triton'))\n\
+             except Exception:\n    pass",
+        )
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match installed {
+        Some(ver) => version_satisfies(&ver, target),
+        None => false, // can't determine → don't risk skipping a real update
+    }
+}
+
+/// Is `installed` current-or-newer than `target` (loose semver-ish compare)?
+///
+/// Truncates at the first non-numeric segment (PEP 440 dev/local builds like
+/// `3.7.0.dev40+g6c48c5fa0` still compare as `3.7.0`) and compares
+/// major.minor.patch numerically. Returns `true` when installed >= target.
+fn version_satisfies(installed: &str, target: &str) -> bool {
+    fn parts(v: &str) -> Vec<u64> {
+        v.split('-')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .filter_map(|s| s.parse::<u64>().ok())
+            .collect()
+    }
+    let a = parts(installed.trim());
+    let b = parts(target.trim());
+    if a.is_empty() || b.is_empty() {
+        // Can't parse → be conservative, treat as NOT satisfying (don't skip).
+        return false;
+    }
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        match ai.cmp(bi) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => continue,
+        }
+    }
+    // All compared equal so far. installed >= target if installed has at least
+    // as many components (e.g. 3.7.0 >= 3.7), else treat equal-length as equal.
+    a.len() >= b.len()
+}
+
 /// Build a pip uninstall command that works with both `uv` and `pip3`.
 ///
 /// `uv` requires `uv pip uninstall` (not `uv uninstall` which doesn't exist).
@@ -3948,23 +4033,36 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         "triton" => {
             use crate::installers::components::triton::{TritonConfig, TritonInstaller};
 
-            // Skip the from-source build if `triton` is already importable.
+            // Skip the from-source build if `triton` is already importable AND
+            // the installed version satisfies the requested target.
             // PyTorch's ROCm wheels bundle `triton-rocm` (the prebuilt ROCm
             // triton), so once PyTorch is installed `import triton` already works.
             // The ROCm/triton from-source build is heavy (pulls the NVIDIA
             // toolchain, builds LLVM) and brittle (permission hazard on
             // ~/.triton/llvm when prior steps ran under sudo), so it is both
             // redundant and risky when triton-rocm already provides it.
-            let triton_present = std::process::Command::new(resolve_python_bin())
+            //
+            // BUT: an explicit `rusty-stack update triton` with a pending version
+            // (ctx.target_version = e.g. "3.7.0") must NOT be short-circuited by a
+            // bare `import triton` success — the bundled triton may be older than
+            // the target, and skipping would leave the post-install honesty guard
+            // (apply.rs) to mark the update failed because the version didn't
+            // advance. So: skip only when (a) there is no concrete target, OR
+            // (b) the installed triton version already satisfies the target.
+            let python_bin = resolve_python_bin();
+            let triton_present = std::process::Command::new(&python_bin)
                 .arg("-c")
                 .arg("import triton")
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);
-            if triton_present {
+            let triton_satisfies_target = triton_present
+                && triton_installed_satisfies_target(&python_bin, ctx.target_version.as_deref());
+            if triton_satisfies_target {
                 let _ = sender.send(InstallerEvent::Log(
-                    "[native] Triton — already importable (triton-rocm bundled with PyTorch); \
-                     skipping the redundant from-source ROCm/triton build"
+                    "[native] Triton — already importable (triton-rocm bundled with PyTorch) \
+                     and satisfies the requested target; skipping the redundant from-source \
+                     ROCm/triton build"
                         .into(),
                     false,
                 ));
