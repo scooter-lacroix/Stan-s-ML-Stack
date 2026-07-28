@@ -483,7 +483,13 @@ def _gpu_info_from_env():
         if part.isdigit():
             indices.append(int(part))
     if not indices:
-        indices = [0]
+        # Fail closed: do NOT invent device 0. On an APU+dGPU host where the env
+        # was not sourced (or lacks a valid ROCR_VISIBLE_DEVICES), guessing 0 can
+        # benchmark the unsupported iGPU, and on an unconfigured multi-dGPU host
+        # it silently benchmarks only one card while reporting incomplete
+        # results. Return empty so the benchmark's existing error path reports
+        # "no GPUs in ROCR_VISIBLE_DEVICES" instead of running on a wrong device.
+        return [], [], [], [], ""
     names = [s.strip() for s in os.environ.get("MLSTACK_GPU_NAMES", "").split(",") if s.strip()]
     vram = [s.strip() for s in os.environ.get("MLSTACK_GPU_VRAM_GB", "").split(",") if s.strip()]
     cus = [s.strip() for s in os.environ.get("MLSTACK_GPU_CUS", "").split(",") if s.strip()]

@@ -409,6 +409,40 @@ mod update_impl {
         }
     }
 
+    /// Auto-select any unselected, non-blocked dependency of a selected item.
+    ///
+    /// The interactive selection replaces the planner's dependency-closed
+    /// selection with the user's raw picks. Without re-validation, a user can
+    /// select a dependent (e.g. triton) while leaving its pending prerequisite
+    /// (pytorch) unselected — ApplyEngine only ORDERS dependencies that remain
+    /// in the selected set and silently ignores absent ones, so the dependent
+    /// would install without its prerequisite. This mirrors the planner's
+    /// `enforce_dependency_rules` (fix-forward): for each selected item, select
+    /// any of its dependencies that are present in the plan and not blocked.
+    fn enforce_selection_dependency_closure(plan: &mut PlanOutput) {
+        // Collect the dependency ids each selected item declares.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            // Snapshot the deps of currently-selected items (borrowck: collect
+            // owned strings so we can mutate the plan in the same pass).
+            let deps_to_select: Vec<String> = plan
+                .plan
+                .iter()
+                .filter(|i| i.selected)
+                .flat_map(|i| i.dependencies.iter().cloned())
+                .collect();
+            for dep_id in deps_to_select {
+                if let Some(dep_item) = plan.plan.iter_mut().find(|i| i.component_id == dep_id) {
+                    if !dep_item.selected && dep_item.classification != "blocked" {
+                        dep_item.selected = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
     /// Pure renderer for the interactive selection body.
     ///
     /// Returns the full multi-line text (terminated with CRLF) that should be
@@ -422,46 +456,52 @@ mod update_impl {
         selected_indices: &[usize],
         cursor_idx: usize,
     ) -> String {
-        let total = plan.plan.len();
-
-        let rows: Vec<(String, String, String, String)> = plan
+        // Only render SELECTABLE (non-blocked) items as numbered rows. Blocked
+        // items are retained by the planner (visible=false) but must not be
+        // offered for selection — the display numbering must match the
+        // `selectable` plan-index list used by the interactive loop.
+        let rows: Vec<(usize, String, String, String, String)> = plan
             .plan
             .iter()
             .enumerate()
-            .map(|(idx, item)| {
+            .filter(|(_, item)| item.classification != "blocked")
+            .map(|(plan_idx, item)| {
                 let current = if item.current_version.is_empty() {
                     "not installed".to_string()
                 } else {
                     item.current_version.clone()
                 };
                 (
-                    format!("{}.", idx + 1),
+                    plan_idx,
                     item.component_id.clone(),
                     current,
                     item.proposed_version.clone(),
+                    item.classification.clone(),
                 )
             })
             .collect();
 
-        let width_num = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(1);
-        let width_name = rows
+        let width_num = rows
             .iter()
-            .map(|r| r.1.chars().count())
+            .map(|(_, name, _, _, _)| name.chars().count())
             .max()
             .unwrap_or(0)
             .max(4);
+        let width_name = width_num; // alias for clarity below
         let width_cur = rows
             .iter()
-            .map(|r| r.2.chars().count())
+            .map(|(_, _, cur, _, _)| cur.chars().count())
             .max()
             .unwrap_or(0)
             .max(5);
         let width_new = rows
             .iter()
-            .map(|r| r.3.chars().count())
+            .map(|(_, _, _, prop, _)| prop.chars().count())
             .max()
             .unwrap_or(0)
             .max(3);
+        // display number width (1..N)
+        let width_disp = rows.len().to_string().chars().count().max(1);
 
         let mut out = String::new();
         out.push_str("Interactive Update Selection\r\n");
@@ -470,22 +510,21 @@ mod update_impl {
             "Controls: \u{2191}\u{2193} Navigate | Space Toggle | Enter Confirm | a:Select All | n:Select None | Esc:Cancel\r\n\r\n",
         );
 
-        for (idx, (num, name, current, proposed)) in rows.iter().enumerate() {
-            let is_selected = selected_indices.contains(&idx);
-            let is_cursor = idx == cursor_idx;
+        for (disp_idx, (plan_idx, name, current, proposed, class)) in rows.iter().enumerate() {
+            let is_selected = selected_indices.contains(plan_idx);
+            let is_cursor = disp_idx == cursor_idx;
             let cursor_marker = if is_cursor { '>' } else { ' ' };
             let marker = if is_selected { "[x]" } else { "[ ]" };
-            let class = &plan.plan[idx].classification;
             out.push_str(&format!(
-                "{} {} {:<width_num$} {:<width_name$} {:>width_cur$} \u{2192} {:>width_new$} ({})\r\n",
+                "{} {} {:<width_disp$}. {:<width_name$} {:>width_cur$} \u{2192} {:>width_new$} ({})\r\n",
                 cursor_marker,
                 marker,
-                num,
+                disp_idx + 1,
                 name,
                 current,
                 proposed,
                 class,
-                width_num = width_num,
+                width_disp = width_disp,
                 width_name = width_name,
                 width_cur = width_cur,
                 width_new = width_new,
@@ -495,7 +534,7 @@ mod update_impl {
         out.push_str(&format!(
             "\r\nSelected: {} of {}\r\n",
             selected_indices.len(),
-            total
+            rows.len()
         ));
         out
     }
@@ -520,13 +559,26 @@ mod update_impl {
         };
         use std::io::{self, Write};
 
-        let total = plan.plan.len();
+        // Blocked items (incompatible hardware/channel/manifest-declared) are
+        // retained by the planner with visible=false but must NOT be selectable —
+        // selecting one and passing it to ApplyEngine would run an incompatible
+        // installer despite the planner's verdict. Build the list of selectable
+        // (non-blocked) PLAN indices; the displayed rows map 1..N to these.
+        let selectable: Vec<usize> = plan
+            .plan
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.classification != "blocked")
+            .map(|(i, _)| i)
+            .collect();
+        let selectable_set: std::collections::HashSet<usize> = selectable.iter().copied().collect();
+        let display_count = selectable.len();
 
         let mut selected_indices: Vec<usize> = plan
             .plan
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.selected)
+            .filter(|(_, item)| item.selected && item.classification != "blocked")
             .map(|(i, _)| i)
             .collect();
 
@@ -626,19 +678,24 @@ mod update_impl {
                         cursor_idx = cursor_idx.saturating_sub(1);
                     }
                     KeyCode::Down => {
-                        if cursor_idx + 1 < total {
+                        if cursor_idx + 1 < display_count {
                             cursor_idx += 1;
                         }
                     }
                     KeyCode::Char(' ') => {
-                        if selected_indices.contains(&cursor_idx) {
-                            selected_indices.retain(|&i| i != cursor_idx);
-                        } else {
-                            selected_indices.push(cursor_idx);
+                        // cursor_idx is a DISPLAY position; map to the plan index.
+                        if cursor_idx < selectable.len() {
+                            let plan_idx = selectable[cursor_idx];
+                            if selected_indices.contains(&plan_idx) {
+                                selected_indices.retain(|&i| i != plan_idx);
+                            } else {
+                                selected_indices.push(plan_idx);
+                            }
                         }
                     }
                     KeyCode::Char('a') => {
-                        selected_indices = (0..total).collect();
+                        // Select all SELECTABLE (non-blocked) items only.
+                        selected_indices = selectable.clone();
                     }
                     KeyCode::Char('n') => {
                         selected_indices.clear();
@@ -665,12 +722,20 @@ mod update_impl {
 
         restore_terminal();
 
-        // Build new plan with selections
+        // Build new plan with selections. Blocked items are never selected.
         let mut new_plan = plan.clone();
         for (idx, item) in new_plan.plan.iter_mut().enumerate() {
-            item.selected = selected_indices.contains(&idx);
+            item.selected = selected_indices.contains(&idx) && selectable_set.contains(&idx);
         }
-        new_plan.summary.selected = selected_indices.len();
+        // Re-validate the dependency closure after interactive selection: a
+        // user can select a dependent (e.g. triton) while leaving its pending
+        // prerequisite (pytorch) unselected. ApplyEngine only ORDERS
+        // dependencies that remain selected and silently ignores absent ones,
+        // so without this the dependent would install without its prerequisite.
+        // Auto-select any unselected, non-blocked dependency of a selected item
+        // (fix-forward, matching the planner's enforce_dependency_rules).
+        enforce_selection_dependency_closure(&mut new_plan);
+        new_plan.summary.selected = new_plan.plan.iter().filter(|i| i.selected).count();
 
         Ok(new_plan)
     }
@@ -684,11 +749,22 @@ mod update_impl {
 
         let mut selected_indices: Vec<usize> = Vec::new();
 
+        // Selectable indices: non-blocked items only (blocked = incompatible).
+        let selectable: Vec<usize> = plan
+            .plan
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.classification != "blocked")
+            .map(|(i, _)| i)
+            .collect();
+
         println!("Interactive Update Selection");
         println!("===========================\n");
         println!("Controls: enter numbers (comma-separated), or 'all' / 'none'\n");
 
-        for (idx, item) in plan.plan.iter().enumerate() {
+        // Display only selectable items, numbered 1..N.
+        for (disp, &plan_idx) in selectable.iter().enumerate() {
+            let item = &plan.plan[plan_idx];
             let current = if item.current_version.is_empty() {
                 "not installed"
             } else {
@@ -696,7 +772,7 @@ mod update_impl {
             };
             println!(
                 "  {}. {} {} \u{2192} {} ({})",
-                idx + 1,
+                disp + 1,
                 item.component_id,
                 current,
                 item.proposed_version,
@@ -709,13 +785,14 @@ mod update_impl {
         let mut input = String::new();
         if io::stdin().read_line(&mut input).is_ok() {
             match input.trim().to_lowercase().as_str() {
-                "all" => selected_indices = (0..plan.plan.len()).collect(),
+                "all" => selected_indices = selectable.clone(),
                 "none" => selected_indices.clear(),
                 _ => {
                     for part in input.split(',') {
                         if let Ok(num) = part.trim().parse::<usize>() {
-                            if num > 0 && num <= plan.plan.len() {
-                                selected_indices.push(num - 1);
+                            // num is a 1-based display number → selectable index.
+                            if num > 0 && num <= selectable.len() {
+                                selected_indices.push(selectable[num - 1]);
                             }
                         }
                     }
@@ -728,10 +805,14 @@ mod update_impl {
         // item is flagged at most once. Sort first so dedup is stable.
         selected_indices.sort_unstable();
         selected_indices.dedup();
+        let selectable_set: std::collections::HashSet<usize> = selectable.iter().copied().collect();
         for (idx, item) in new_plan.plan.iter_mut().enumerate() {
-            item.selected = selected_indices.contains(&idx);
+            // Only selectable (non-blocked) items can be selected.
+            item.selected = selected_indices.contains(&idx) && selectable_set.contains(&idx);
         }
-        new_plan.summary.selected = selected_indices.len();
+        // Re-validate the dependency closure (same as the TTY path).
+        enforce_selection_dependency_closure(&mut new_plan);
+        new_plan.summary.selected = new_plan.plan.iter().filter(|i| i.selected).count();
 
         Ok(new_plan)
     }
