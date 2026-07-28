@@ -4,6 +4,8 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+2026-07-28 - Prepare Rusty Stack 0.3.2 ROCm installer hardening (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/27
+
 2026-07-21 - fix(rusty-stack): v0.3.1 — ROCm Arch install + non-interactive sudo hotfix (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/22
 
 2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
