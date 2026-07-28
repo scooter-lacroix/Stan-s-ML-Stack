@@ -372,8 +372,12 @@ pub fn migraphx_driver_version() -> Option<String> {
 /// `MIGraphX 2.15.0`) and two-part `MAJOR.MINOR` (some ROCm builds/drivers omit
 /// the patch component). Returns the version unchanged (no normalization) so a
 /// detected `2.12` stays `2.12`. Rejects malformed/non-numeric components.
-/// Mirrors `platform::registry::extract_semver`'s shape but lives with the
-/// migraphx owner module so the registry fallback has no inline subprocess.
+///
+/// A two-part form is accepted ONLY when there is NO third component. A token
+/// like `2.12.x` or `2.12.` HAS a third component that fails numeric validation,
+/// so the whole token is rejected (continue to the next token) rather than
+/// silently truncating to `2.12` — otherwise a malformed driver version would
+/// participate in registry/update comparisons as a legitimate version.
 fn extract_driver_semver(s: &str) -> Option<String> {
     for token in s.split_whitespace() {
         let cleaned = token.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
@@ -392,14 +396,18 @@ fn extract_driver_semver(s: &str) -> Option<String> {
         if !min.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        // Three-part MAJOR.MINOR.PATCH when a numeric patch is present.
-        if let Some(pat) = parts.next() {
-            if pat.chars().all(|c| c.is_ascii_digit()) {
+        match parts.next() {
+            // Three-part MAJOR.MINOR.PATCH — require a NON-EMPTY numeric patch.
+            // (An empty patch from a trailing dot, e.g. "2.12.", is malformed.)
+            Some(pat) if !pat.is_empty() && pat.chars().all(|c| c.is_ascii_digit()) => {
                 return Some(format!("{maj}.{min}.{pat}"));
             }
+            // A third component exists but is empty/non-numeric (e.g. "2.12.x",
+            // "2.12.") — malformed, do NOT truncate to 2.12; try the next token.
+            Some(_) => continue,
+            // No third component — two-part MAJOR.MINOR (preserve as-is).
+            None => return Some(format!("{maj}.{min}")),
         }
-        // Two-part MAJOR.MINOR fallback (preserve as-is, no synthetic patch).
-        return Some(format!("{maj}.{min}"));
     }
     None
 }
@@ -449,6 +457,26 @@ mod tests {
         // Rejects non-numeric components.
         assert_eq!(extract_driver_semver("MIGraphX vX.Y.Z"), None);
         assert_eq!(extract_driver_semver("no version here"), None);
+
+        // Malformed three-part tokens MUST NOT truncate to a two-part version.
+        // A third component that fails numeric validation rejects the whole token
+        // (continue to the next), so a malformed driver version can't masquerade
+        // as a legitimate 2.12 in registry/update comparisons.
+        assert_eq!(
+            extract_driver_semver("2.12.x"),
+            None,
+            "2.12.x must not become 2.12"
+        );
+        assert_eq!(
+            extract_driver_semver("2.12."),
+            None,
+            "2.12. must not become 2.12"
+        );
+        // But a clean 2.12 (no third component) is still accepted.
+        assert_eq!(
+            extract_driver_semver("driver 2.12 build"),
+            Some("2.12".to_string())
+        );
     }
 
     // --- VAL-INSTALL-019: MIGraphX correct pip command ---
