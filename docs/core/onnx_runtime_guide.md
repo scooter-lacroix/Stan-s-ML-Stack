@@ -372,7 +372,7 @@ ONNX Runtime includes integration with MIGraphX, AMD's graph optimization librar
        providers=["MIGraphXExecutionProvider", "CPUExecutionProvider"],
    )
    ```
-   Worst case, run on `CPUExecutionProvider`, or apply the library-level fix: `MLSTACK_MIGRAPHX_CORE_FIX=1` in rusty-stack builds the patched MIGraphX core (AMDMIGraphX `rocm-7.2.3` + vendored upstream PR #5106 backport "Fix find_concat_transpose with non-transposed inputs", commit `b90f58a7e63a`), installed to `~/.mlstack/migraphx-fixed` and picked up automatically via `LD_LIBRARY_PATH` (RUNPATH-after-LD_LIBRARY_PATH precedence; `/opt/rocm` untouched). This removes the `assert(s.transposed())` crash AND the `repeat_while_changes` non-convergence — the actual defect, which lives in MIGraphX 2.15.0, not in ORT or app code.
+   Worst case, run on `CPUExecutionProvider`, or apply the library-level fix: `MLSTACK_MIGRAPHX_CORE_FIX=1` in rusty-stack builds the patched MIGraphX core (AMDMIGraphX `rocm-7.2.3` + vendored upstream PR #5106 backport "Fix find_concat_transpose with non-transposed inputs", commit `b90f58a7e63a`), installed to `~/.mlstack/migraphx` and picked up automatically via `LD_LIBRARY_PATH` (RUNPATH-after-LD_LIBRARY_PATH precedence; `/opt/rocm` untouched). This removes the `assert(s.transposed())` crash AND the `repeat_while_changes` non-convergence — the actual defect, which lives in MIGraphX 2.15.0, not in ORT or app code.
 
 ## Troubleshooting
 

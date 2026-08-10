@@ -966,13 +966,13 @@ end
 ///
 /// The ORT MIGraphX EP provider resolves `libmigraphx.so.2015000` from
 /// `<rocm>/lib/migraphx/lib` (its RUNPATH), so the fixed core must be laid out
-/// at the mirror subpath `~/.mlstack/migraphx-fixed/lib/migraphx/lib` — that is
+/// at the mirror subpath `~/.mlstack/migraphx/lib/migraphx/lib` — that is
 /// the directory we prepend to `LD_LIBRARY_PATH`, not the bare `lib`. Emitted
 /// blocks reference `$HOME` at source-time (never the literal interpolated
 /// `home`), matching the RCCL overlay precedent so a home containing spaces or
 /// glob metacharacters can never break the sourced env file.
 fn migraphx_fixed_core_lib_dir(home: &str) -> String {
-    format!("{home}/.mlstack/migraphx-fixed/lib/migraphx/lib")
+    format!("{home}/.mlstack/migraphx/lib/migraphx/lib")
 }
 
 /// Emit the **idempotent** bash block that prepends the patched MIGraphX core
@@ -1000,8 +1000,8 @@ fn migraphx_fixed_core_bash_block(home: &str) -> String {
 # so the loader resolves the patched libmigraphx over the distro one via the
 # RUNPATH-after-LD_LIBRARY_PATH precedence rule; /opt/rocm is untouched.
 # Paths are $HOME-relative (resolved at source-time; never a literal home).
-if [ -r "$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib/libmigraphx.so.2015000" ]; then
-  case ":${{LD_LIBRARY_PATH:-}}:" in *:"$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib:$HOME/.mlstack/migraphx-fixed/lib:${{LD_LIBRARY_PATH:-}}";; esac
+if [ -r "$HOME/.mlstack/migraphx/lib/migraphx/lib/libmigraphx.so.2015000" ]; then
+  case ":${{LD_LIBRARY_PATH:-}}:" in *:"$HOME/.mlstack/migraphx/lib/migraphx/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/migraphx/lib/migraphx/lib:$HOME/.mlstack/migraphx/lib:${{LD_LIBRARY_PATH:-}}";; esac
 fi
 "#
     )
@@ -1021,8 +1021,8 @@ fn migraphx_fixed_core_fish_block(home: &str) -> String {
 # --- Patched MIGraphX core (PR #5106 find_concat_transpose fix) — MANAGED by
 # the persistent-env generator; prepended to LD_LIBRARY_PATH; idempotent.
 # Paths are $HOME-relative (resolved at source-time; never a literal home). ---
-if test -r $HOME/.mlstack/migraphx-fixed/lib/migraphx/lib/libmigraphx.so.2015000
-    contains -- $HOME/.mlstack/migraphx-fixed/lib/migraphx/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/migraphx-fixed/lib/migraphx/lib $HOME/.mlstack/migraphx-fixed/lib $LD_LIBRARY_PATH
+if test -r $HOME/.mlstack/migraphx/lib/migraphx/lib/libmigraphx.so.2015000
+    contains -- $HOME/.mlstack/migraphx/lib/migraphx/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/migraphx/lib/migraphx/lib $HOME/.mlstack/migraphx/lib $LD_LIBRARY_PATH
 end
 "#
     )
@@ -1741,8 +1741,8 @@ mod tests {
         // prepend gated on the SONAME-matching lib file, at the `lib/migraphx/lib`
         // subpath the ORT provider's RUNPATH resolves (not the bare `lib`).
         let home = tmp.join("rusty_migx_core_test");
-        let lib = home.join(".mlstack/migraphx-fixed/lib/migraphx/lib");
-        let lib_c = home.join(".mlstack/migraphx-fixed/lib");
+        let lib = home.join(".mlstack/migraphx/lib/migraphx/lib");
+        let lib_c = home.join(".mlstack/migraphx/lib");
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&lib).unwrap();
         std::fs::write(lib.join("libmigraphx.so.2015000"), b"").unwrap();
@@ -1759,16 +1759,16 @@ mod tests {
         // RUNPATH-after-LD_LIBRARY_PATH rule), with the bare lib dir second.
         // Paths are $HOME-relative at source-time — never the literal `home`
         // (a home with spaces/glob metacharacters must not break sourcing).
-        assert!(bash.contains("$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib"));
-        assert!(bash.contains("$HOME/.mlstack/migraphx-fixed/lib:"));
+        assert!(bash.contains("$HOME/.mlstack/migraphx/lib/migraphx/lib"));
+        assert!(bash.contains("$HOME/.mlstack/migraphx/lib:"));
         assert!(!bash.contains(&lib.to_string_lossy().as_ref().to_string()));
         assert!(!bash.contains(&lib_c.to_string_lossy().as_ref().to_string()));
 
         let fish = migraphx_fixed_core_fish_block(&home.to_string_lossy());
         assert!(fish.contains("libmigraphx.so.2015000"));
         assert!(fish.contains("contains --"));
-        assert!(fish.contains("$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib"));
-        assert!(fish.contains("$HOME/.mlstack/migraphx-fixed/lib"));
+        assert!(fish.contains("$HOME/.mlstack/migraphx/lib/migraphx/lib"));
+        assert!(fish.contains("$HOME/.mlstack/migraphx/lib"));
         assert!(!fish.contains(&lib.to_string_lossy().as_ref().to_string()));
 
         let _ = std::fs::remove_dir_all(&home);

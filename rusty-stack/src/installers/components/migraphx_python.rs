@@ -115,7 +115,7 @@ pub const MIGRAPHX_BUILD_PYTHON_ENV: &str = "MLSTACK_MIGRAPHX_BUILD_PYTHON";
 /// `simplify_reshapes.cpp:845 find_concat_transpose: Assertion s.transposed()
 /// failed` crash — the same defect the offline pre-opt workaround dodges.
 ///
-/// The patched core is installed into `~/.mlstack/migraphx-fixed` (same SONAME
+/// The patched core is installed into `~/.mlstack/migraphx` (same SONAME
 /// `2015000` as the distro package, so ORT's provider loads it unchanged); the
 /// caller must prepend its `lib` dir to `LD_LIBRARY_PATH` (the ORT provider
 /// uses RUNPATH, which is searched AFTER `LD_LIBRARY_PATH`, so the fixed lib
@@ -135,9 +135,10 @@ pub const AMDMIGRAPHX_DEFAULT_BRANCH: &str = "rocm-7.2.3";
 /// Upstream source for the MIGraphX Python bindings.
 pub const AMDMIGRAPHX_REPO: &str = "https://github.com/ROCm/AMDMIGraphX";
 
-/// Install prefix for the patched MIGraphX core (`~/.mlstack/migraphx-fixed`).
-/// Kept version-agnostic so a future branch bump does not strand old builds.
-pub const MIGRAPHX_FIXED_PREFIX: &str = ".mlstack/migraphx-fixed";
+/// Install prefix for the patched MIGraphX core — the canonical `~/.mlstack/migraphx`
+/// directory (the sole MIGraphX install managed by the stack). Kept
+/// version-agnostic so a future branch bump does not strand old builds.
+pub const MIGRAPHX_FIXED_PREFIX: &str = ".mlstack/migraphx";
 
 /// Whether the user opted into building the patched MIGraphX core from source.
 pub fn core_fix_requested() -> bool {
@@ -844,13 +845,13 @@ mod tests {
             .args
             .iter()
             .any(|a| a.contains("-Dnlohmann_json_DIR=")
-                && a.contains("migraphx-fixed")));
+                && a.contains("migraphx")));
         assert!(cmds[3]
             .args
             .iter()
             .any(|a| a.contains("-DCMAKE_INSTALL_PREFIX=")
                 && a.contains("/home/user/")
-                && a.contains("migraphx-fixed")));
+                && a.contains("migraphx")));
 
         // 4. build + 5. install
         assert_eq!(cmds[4].program, "cmake");

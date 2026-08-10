@@ -5642,7 +5642,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // Library-level compile-hang fix (MLSTACK_MIGRAPHX_CORE_FIX=1):
             // build the PATCHED MIGraphX C++ core (AMDMIGraphX rocm-7.2.3 +
             // vendored PR #5106 find_concat_transpose backport) into
-            // ~/.mlstack/migraphx-fixed. Heavy build (~30-90 min); the env
+            // ~/.mlstack/migraphx. Heavy build (~30-90 min); the env
             // generator picks it up via LD_LIBRARY_PATH (RUNPATH-after-
             // LD_LIBRARY_PATH precedence — /opt/rocm untouched). Runs FIRST,
             // independent of the python bindings below.
@@ -5650,7 +5650,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 let _ = sender.send(InstallerEvent::Log(
                     "[native] MLSTACK_MIGRAPHX_CORE_FIX=1 — building patched MIGraphX \
                      core (rocm-7.2.3 + PR #5106 find_concat_transpose backport) into \
-                     ~/.mlstack/migraphx-fixed. Heavy build (~30-90 min)."
+                     ~/.mlstack/migraphx. Heavy build (~30-90 min)."
                         .into(),
                     false,
                 ));
