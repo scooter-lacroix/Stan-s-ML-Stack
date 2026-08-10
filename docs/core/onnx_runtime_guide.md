@@ -352,6 +352,7 @@ ONNX Runtime includes integration with MIGraphX, AMD's graph optimization librar
 2. **Custom Operators**: Custom CUDA operators require manual hipification
 3. **Memory Usage**: Some models may require more memory on AMD GPUs than on NVIDIA GPUs
 4. **Dynamic Shapes**: Models with dynamic shapes may have reduced performance
+5. **Compile Hangs (MIGraphX `repeat_while_changes`)**: On MIGraphX 2.15.0 / ROCm 7.2.4, certain dynamic graphs fail in MIGraphX's optimization passes — either a non-convergent pass loop (hang) or a native reshape-pass assertion (`simplify_reshapes.cpp:845 find_concat_transpose`). Compile is LAZY inside `MIGraphXExecutionProvider::Compile`, so session build succeeds but the FIRST `session.run()` hangs/crashes. See `docs/guides/troubleshooting_guide.md` for the fix ladder; the verified workaround is offline ORT pre-optimization (below) — the `ORT_MIGRAPHX_*` levers alone do NOT dodge this defect.
 
 ### Workarounds
 
@@ -359,6 +360,19 @@ ONNX Runtime includes integration with MIGraphX, AMD's graph optimization librar
 2. **Memory Usage**: Reduce batch size or use model optimization techniques
 3. **Dynamic Shapes**: Use fixed shapes when possible or optimize for specific shapes
 4. **Performance**: Use MIGraphX provider for best performance on AMD GPUs
+5. **Compile Hangs**: Pre-optimize the model offline with ORT on CPU, then load the optimized artifact with the MIGraphX provider (verified working on `qwen3-embed-0.6b-dynamic-uint8`; the `ORT_MIGRAPHX_*` levers alone do NOT dodge this MIGraphX 2.15.0 reshape-pass defect):
+   ```python
+   pre = ort.SessionOptions()
+   pre.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+   pre.optimized_model_filepath = "model.opt.onnx"
+   ort.InferenceSession("model.onnx", pre, providers=["CPUExecutionProvider"])  # CPU only!
+   sess_opts = ort.SessionOptions()
+   sess = ort.InferenceSession(
+       "model.opt.onnx", sess_opts,
+       providers=["MIGraphXExecutionProvider", "CPUExecutionProvider"],
+   )
+   ```
+   Worst case, run on `CPUExecutionProvider` or upgrade/patch MIGraphX (the reshape-simplification guard fix in AMDMIGraphX `develop`).
 
 ## Troubleshooting
 

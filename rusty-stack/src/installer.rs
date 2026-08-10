@@ -5341,6 +5341,25 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
+            // Step 3b: MIGraphX lazy-compile smoke test. Session build succeeds
+            // even when the FIRST inference would hang inside MIGraphX's
+            // program::compile -> repeat_while_changes pass loop (compile runs
+            // lazily in MIGraphXExecutionProvider::Compile on first run()). A
+            // 90s SIGALRM turns a non-converging compile into a failed install
+            // instead of a silent hang. Skips on legacy ROCMExecutionProvider.
+            let cmd = inst.build_migraphx_compile_smoke_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &cmd.program,
+                    &cmd.args,
+                    &cmd.env,
+                    cmd.working_dir.clone(),
+                ),
+                None,
+                sender,
+                &component.name,
+            )?;
+
             // Step 4: Run model optimizer on known .onnx model paths
             let model_dirs = [
                 dirs::home_dir().map(|h| h.join(".mlstack/models")),

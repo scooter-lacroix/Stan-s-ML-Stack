@@ -336,6 +336,49 @@ If you encounter an issue not covered in this guide, please check the [GitHub Is
 
 5. **Use appropriate input shapes**:
    Avoid dynamic shapes when possible, as they can reduce optimization opportunities.
+
+### MIGraphX Hangs on First Inference (repeat_while_changes)
+
+**Symptoms**:
+- Session build succeeds in seconds, but the first `session.run()` never returns.
+- Stack trace shows `migraphx_program_compile -> migraphx::program::compile -> repeat_while_changes` — MIGraphX's optimization pass loop re-running passes that never converge. Compile is LAZY: it runs inside `MIGraphXExecutionProvider::Compile` on first `run()`, which is why session build looks fine.
+
+**Root cause**:
+- A MIGraphX 2.15.0 (ROCm 7.2.4) compiler pass non-convergence defect class on certain dynamic graphs. Upstream context: the reshape-simplification guard relaxation (AMDMIGraphX PR #4858) caused compile hangs and was reverted (PR #5052).
+
+**Fix ladder**:
+
+> **Verified 2026-08-09 on `qwen3-embed-0.6b-dynamic-uint8` (LeIndex, ORT 1.27.1 / ROCm 7.2.4):** the env levers alone do NOT dodge this defect — L1/L3 (graph-opt levels) hang at `Model Compile: Begin`, L4/L5 (`exhaustive_tune=0` / `fp16_enable=0`) also hang, and L2 (`ORT_DISABLE_ALL`) crashes MIGraphX with a native assertion (`simplify_reshapes.cpp:845 find_concat_transpose::apply: Assertion s.transposed() failed`). The configuration that compiles and runs (1.6s build / 0.3s run, stable at batch 1 and 2) is **offline ORT pre-optimization** below.
+
+1. **Pre-optimize the model offline with ORT (CPU) first** — the verified working workaround. This rewrites the graph so the non-converging/asserting reshape passes have nothing to trip on:
+   ```python
+   import onnxruntime as ort
+   opts = ort.SessionOptions()
+   opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+   opts.optimized_model_filepath = "model.opt.onnx"  # CPU pre-opt; do NOT run an EP here
+   ort.InferenceSession("model.onnx", opts, providers=["CPUExecutionProvider"])
+   # Then load model.opt.onnx with the MIGraphX provider as usual.
+   ```
+   (LeIndex: set `model_name` to the `.opt.onnx` artifact. One-time cost; cache the result.)
+
+2. **Bisect a working configuration** against the real model — every lever runs under a hard timeout, so a hang is reported as TIMEOUT, never a stall. The probe feeds ALL model inputs, so multi-input models (`input_ids` + `attention_mask`) no longer error:
+   ```bash
+   timeout 900 python3 scripts/probe_migraphx_compile_hang.py --model model.onnx --timeout 120
+   ```
+
+3. **Secondary levers** (rusty-stack writes these to `~/.mlstack_env`; harmless, but NOT sufficient on their own for this defect class):
+   ```bash
+   export ORT_MIGRAPHX_FP16_ENABLE=0
+   export ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0
+   export ORT_MIGRAPHX_MODEL_CACHE_PATH="$HOME/.mlstack/migraphx_cache"
+   ```
+
+4. **Fallbacks**: `providers=['CPUExecutionProvider']` (baseline unblock, verified PASS), or static/fixed input shapes / smaller batch+seq.
+
+5. **Library-level fix** (the REAL fix — still outstanding): upgrade/patch MIGraphX within ROCm 7.2.4 (`apt-cache policy migraphx`), or build AMDMIGraphX `develop` (contains the reshape-simplification guard fix) and point ORT at it via the source-build path (`--use_migraphx --migraphx_home`). The native assertion proves the defect lives in `migraphx::version_2_15_0` itself, not in ORT or any application code.
+
+> rusty-stack also runs an install-time MIGraphX compile smoke test (90s SIGALRM + GNU `timeout` hard kill) during ONNX verification, so a non-converging compile fails the install with a clear message instead of hanging.
+
 ## Environment Variable Issues
 
 ### Environment Variables Not Persisting After Reboot

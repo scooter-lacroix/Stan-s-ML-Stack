@@ -381,6 +381,112 @@ print(f"ONNX Runtime AMD provider ready: {selected}; available={available}")
     }
 
     // -----------------------------------------------------------------------
+    // MIGraphX compile smoke test (repeat_while_changes hang detection)
+    // -----------------------------------------------------------------------
+
+    /// Construct a Python compile-smoke command for the MIGraphX EP.
+    ///
+    /// Builds a small dynamic-batch ONNX model in memory, creates a session with
+    /// `MIGraphXExecutionProvider`, and runs ONE inference — the exact point
+    /// where MIGraphX's `program::compile` pass loop runs lazily (session build
+    /// succeeds in seconds; the first `run()` never returns when a pass suite
+    /// fails to converge). A non-converging `repeat_while_changes` loop
+    /// (MIGraphX 2.15.0 defect class, e.g. simplify_reshapes oscillating) fails
+    /// the install with a clear message instead of hanging.
+    ///
+    /// **Two-layer hang protection** (a Python SIGALRM alone cannot preempt a
+    /// hang inside MIGraphX's C++ compile — the handler only runs between
+    /// bytecodes): (1) the embedded script arms a 90s `SIGALRM` for
+    /// Python-level stalls and to produce a precise error, and (2) the whole
+    /// command is wrapped in GNU `timeout 120` as an external hard kill that
+    /// terminates the process even when the interpreter is blocked in native
+    /// code. rusty-stack targets Linux/ROCm, where coreutils `timeout` is
+    /// guaranteed.
+    pub fn build_migraphx_compile_smoke_command(&self) -> ShellCommand {
+        let script = r#"
+import signal
+
+class CompileTimeout(Exception):
+    pass
+
+def _handler(signum, frame):
+    raise CompileTimeout("MIGraphX compile/run exceeded 90s "
+                         "(repeat_while_changes non-convergence)")
+
+# SIGALRM is POSIX-only; rusty-stack targets Linux/ROCm so this is fine.
+signal.signal(signal.SIGALRM, _handler)
+signal.setitimer(signal.ITIMER_REAL, 90.0)
+
+try:
+    import numpy as np
+    import onnxruntime as ort
+    from onnx import TensorProto, helper, numpy_helper
+except ImportError as exc:
+    # onnx/numpy are optional for this smoke check: skip (do not fail) the
+    # install when they are absent — MIGraphX itself may be perfectly fine.
+    print(f"MIGraphX compile smoke test SKIPPED (missing module: {exc})")
+    raise SystemExit(0)
+
+try:
+    if "MIGraphXExecutionProvider" not in ort.get_available_providers():
+        # Legacy/prebuilt ORT exposes ROCMExecutionProvider instead; the
+        # MIGraphX lazy-compile hang cannot occur there, so skip rather than
+        # fail (provider validation already enforced an AMD EP).
+        print("MIGraphX compile smoke test SKIPPED (no MIGraphXExecutionProvider; "
+              "legacy ROCMExecutionProvider path)")
+        raise SystemExit(0)
+
+    x = helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 16, 32])
+    y = helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 32])
+    w = numpy_helper.from_array(np.random.randn(32, 32).astype(np.float32), "W")
+    b = numpy_helper.from_array(np.random.randn(32).astype(np.float32), "B")
+    idx = numpy_helper.from_array(np.array([0], dtype=np.int64), "IDX")
+    # Opset 13 removed Squeeze's `axes` ATTRIBUTE; it is now an optional
+    # second INPUT tensor. Emitting axes=[1] as an attribute fails ORT model
+    # load with INVALID_GRAPH on every system.
+    axes = numpy_helper.from_array(np.array([1], dtype=np.int64), "AXES")
+    nodes = [
+        helper.make_node("Gather", ["input", "IDX"], ["g"], axis=1),
+        helper.make_node("Squeeze", ["g", "AXES"], ["s"]),
+        helper.make_node("MatMul", ["s", "W"], ["mm"]),
+        helper.make_node("Add", ["mm", "B"], ["output"]),
+    ]
+    graph = helper.make_graph(nodes, "smoke", [x], [y], initializer=[w, b, idx, axes])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    sess = ort.InferenceSession(
+        model.SerializeToString(),
+        opts,
+        providers=[
+            ("MIGraphXExecutionProvider", {"migraphx_exhaustive_tune": "0"}),
+            "CPUExecutionProvider",
+        ],
+    )
+    sess.run(None, {"input": np.random.randn(1, 16, 32).astype(np.float32)})
+    print("MIGraphX compile smoke test OK")
+finally:
+    signal.setitimer(signal.ITIMER_REAL, 0)
+"#;
+
+        ShellCommand {
+            program: "timeout".to_string(),
+            // External hard kill (see doc comment): 120s wall clock, generous
+            // vs the script's internal 90s SIGALRM.
+            args: vec![
+                "120".to_string(),
+                self.config.python_bin.clone(),
+                "-c".to_string(),
+                script.trim().to_string(),
+            ],
+            env: vec![],
+            working_dir: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Model optimizer (ORT graph optimization for quantized models)
     // -----------------------------------------------------------------------
 
@@ -1105,6 +1211,29 @@ mod tests {
         assert!(script.contains("ROCMExecutionProvider"));
         assert!(script.contains("ctypes.CDLL"));
         assert!(script.contains("loader_errors"));
+        assert!(cmd.env.is_empty());
+    }
+
+    #[test]
+    fn test_migraphx_compile_smoke_command() {
+        let installer = OnnxRuntimeInstaller::with_defaults();
+        let cmd = installer.build_migraphx_compile_smoke_command();
+        // External hard kill first: GNU timeout wraps python -c script. A bare
+        // SIGALRM cannot preempt a hang inside MIGraphX's C++ compile.
+        assert_eq!(cmd.program, "timeout");
+        assert_eq!(cmd.args[0], "120");
+        assert_eq!(cmd.args[1], "python3");
+        assert!(cmd.args.contains(&"-c".to_string()));
+        let script = &cmd.args[3];
+        assert!(script.contains("signal.SIGALRM")); // in-process guard
+        assert!(script.contains("MIGraphXExecutionProvider"));
+        assert!(script.contains("migraphx_exhaustive_tune"));
+        assert!(script.contains("sess.run")); // exercises lazy Compile()
+        assert!(script.contains("CPUExecutionProvider"));
+        // Skip semantics: missing onnx/numpy AND legacy ROCM-EP installs exit
+        // 0 (never fail a healthy install), so the PrebuiltWheel path is safe.
+        assert!(script.contains("SystemExit(0)"));
+        assert!(script.contains("SKIPPED"));
         assert!(cmd.env.is_empty());
     }
 

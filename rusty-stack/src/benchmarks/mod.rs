@@ -2243,6 +2243,12 @@ def _onnx():
         return model.SerializeToString()
 
     import tempfile
+    import os
+    # MIGraphX compile-hang levers (repeat_while_changes non-convergence,
+    # MIGraphX 2.15.0 / ROCm 7.2.4): exhaustive tune off reduces compiler work;
+    # fp16 off keeps FP32 numerics. See docs/superpowers/plans/2026-08-09-*
+    os.environ.setdefault("ORT_MIGRAPHX_EXHAUSTIVE_TUNE", "0")
+    os.environ.setdefault("ORT_MIGRAPHX_FP16_ENABLE", "0")
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     sess_opts.log_severity_level = 3

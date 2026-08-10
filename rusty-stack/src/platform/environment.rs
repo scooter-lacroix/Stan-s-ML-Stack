@@ -993,6 +993,22 @@ pub fn normalize_env_contents(
             "ORT_MIGRAPHX_FP16_ENABLE",
             "export ORT_MIGRAPHX_FP16_ENABLE=0".to_string(),
         ),
+        // MIGraphX compile-hang levers (repeat_while_changes non-convergence,
+        // MIGraphX 2.15.0 / ROCm 7.2.4): disabling exhaustive tuning removes
+        // compiler work and a persisted compiled-model cache lets ORT load a
+        // previously compiled program instead of recompiling on every process.
+        // See docs/superpowers/plans/2026-08-09-migraphx-compile-hang-fix.md.
+        (
+            "ORT_MIGRAPHX_EXHAUSTIVE_TUNE",
+            "export ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0".to_string(),
+        ),
+        (
+            "ORT_MIGRAPHX_MODEL_CACHE_PATH",
+            format!(
+                "export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"{}/.mlstack/migraphx_cache\"",
+                user_home
+            ),
+        ),
     ];
 
     for (key, line) in &required {
@@ -1026,7 +1042,9 @@ export HIP_PATH={rocm_home}\n\
 export PYTHONPATH={rocm_lib}:$PYTHONPATH\n\
 export PATH=\"{rocm_home}/bin:{rocm_home}/hip/bin:$PATH\"\n\
 export LD_LIBRARY_PATH=\"{rocm_home}/lib:{rocm_home}/hip/lib:{rocm_home}/opencl/lib:{user_home}/.mlstack/lib-compat:$LD_LIBRARY_PATH\"\n\
-export ORT_MIGRAPHX_FP16_ENABLE=0\n"
+export ORT_MIGRAPHX_FP16_ENABLE=0\n\
+export ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0\n\
+export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"{user_home}/.mlstack/migraphx_cache\"\n"
     )
 }
 
@@ -1095,6 +1113,30 @@ fn normalize_env_line(
             let desired = format!(
                 "export LD_LIBRARY_PATH=\"{}/lib:{}/hip/lib:{}/opencl/lib:{}/.mlstack/lib-compat:$LD_LIBRARY_PATH\"",
                 rocm_home, rocm_home, rocm_home, user_home
+            );
+            let trimmed = line.trim();
+            if trimmed != desired {
+                (desired, true)
+            } else {
+                (line.to_string(), false)
+            }
+        }
+        // MIGraphX compile-hang levers: pin the VALUE, not just presence, so a
+        // stale user value (e.g. ORT_MIGRAPHX_EXHAUSTIVE_TUNE=1) is corrected
+        // on normalize rather than silently left in place.
+        "ORT_MIGRAPHX_FP16_ENABLE" | "ORT_MIGRAPHX_EXHAUSTIVE_TUNE" => {
+            let desired = format!("export {}={}", key, "0");
+            let trimmed = line.trim();
+            if trimmed != desired {
+                (desired, true)
+            } else {
+                (line.to_string(), false)
+            }
+        }
+        "ORT_MIGRAPHX_MODEL_CACHE_PATH" => {
+            let desired = format!(
+                "export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"{}/.mlstack/migraphx_cache\"",
+                user_home
             );
             let trimmed = line.trim();
             if trimmed != desired {
@@ -1475,12 +1517,19 @@ export LD_LIBRARY_PATH=\"/opt/rocm-6.0/lib:/opt/rocm-6.0/hip/lib:/opt/rocm-6.0/o
             "LD_LIBRARY_PATH must use the passed user_home: {content}"
         );
         assert!(content.contains("export ORT_MIGRAPHX_FP16_ENABLE=0"));
+        assert!(content.contains("export ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0"));
+        assert!(
+            content.contains(
+                "export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"/home/test/.mlstack/migraphx_cache\""
+            ),
+            "model cache path must use the passed user_home: {content}"
+        );
     }
 
     #[test]
     fn test_normalize_env_contents_no_change() {
         let contents =
-            "# ML Stack Environment File\nexport MLSTACK_PYTHON_BIN=/usr/bin/python3\nexport ROCM_PATH=/opt/rocm\nexport ORT_MIGRAPHX_FP16_ENABLE=0\n";
+            "# ML Stack Environment File\nexport MLSTACK_PYTHON_BIN=/usr/bin/python3\nexport ROCM_PATH=/opt/rocm\nexport ORT_MIGRAPHX_FP16_ENABLE=0\nexport ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0\nexport ORT_MIGRAPHX_MODEL_CACHE_PATH=\"/home/test/.mlstack/migraphx_cache\"\n";
         let (result, changed) = normalize_env_contents(
             contents,
             "/usr/bin/python3",
@@ -1495,6 +1544,12 @@ export LD_LIBRARY_PATH=\"/opt/rocm-6.0/lib:/opt/rocm-6.0/hip/lib:/opt/rocm-6.0/o
         assert!(result.contains("export MLSTACK_PYTHON_BIN=/usr/bin/python3"));
         assert!(result.contains("export ROCM_PATH=/opt/rocm"));
         assert!(result.contains("export ORT_MIGRAPHX_FP16_ENABLE=0"));
+        assert!(result.contains("export ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0"));
+        assert!(
+            result.contains(
+                "export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"/home/test/.mlstack/migraphx_cache\""
+            )
+        );
     }
 
     #[test]

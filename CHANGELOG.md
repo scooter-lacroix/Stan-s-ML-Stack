@@ -4,6 +4,8 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+2026-08-09 - fix(onnx,env,bench): MIGraphX compile-hang hardening + verified workaround (repeat_while_changes non-convergence / simplify_reshapes assertion, MIGraphX 2.15.0 / ROCm 7.2.4) — install-time MIGraphX compile smoke test (90s SIGALRM + GNU `timeout` hard kill) wired into ONNX verification (skips on legacy ROCMExecutionProvider); ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0 + ORT_MIGRAPHX_MODEL_CACHE_PATH exported in ~/.mlstack_env (value-normalized, quoted cache path) as SECONDARY levers — real-model bisect (qwen3-embed-0.6b-dynamic-uint8) proved the levers alone do NOT dodge the defect, the working config is offline ORT pre-optimization (see docs/guides/troubleshooting_guide.md); ONNX benchmark sets the levers before session creation; onnxruntime-migraphx pinned to 1.27.1; new scripts/probe_migraphx_compile_hang.py timeout-guarded, multi-input-aware bisect harness (L8 pre-opt PASS, L2 crashes MIGraphX at simplify_reshapes.cpp:845).
+
 2026-07-21 - fix(rusty-stack): v0.3.1 — ROCm Arch install + non-interactive sudo hotfix (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/22
 
 2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
