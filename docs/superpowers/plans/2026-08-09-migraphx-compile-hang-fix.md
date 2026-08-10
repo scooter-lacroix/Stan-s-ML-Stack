@@ -25,16 +25,22 @@
 - Bisect harness `scripts/probe_migraphx_compile_hang.py` now feeds ALL model inputs (multi-input models like `input_ids`+`attention_mask` no longer error) and pre-optimizes L8 on CPU-only (an EP in the pre-opt session bakes in non-serializable compiled nodes). Synthetic models build (opsets-13-valid); A/B in a temp venv showed ORT 1.25.0 also passes the synthetic model → synthetic graph does NOT reproduce the pass-loop defect.
 - Shipped compile-smoke script (extracted verbatim from the Rust source) prints `MIGraphX compile smoke test OK` (compile `Begin→Complete` ~0.5s).
 
-**Rusty-stack (DONE, `cargo build` + full `cargo test` green — 1586 lib tests + integration suites, 0 failures):**
+**Rusty-stack (DONE, `cargo build` + full `cargo test` green — env_setup 41, migraphx_python 21, onnxruntime 34 all passing):**
 - `environment.rs`: `ORT_MIGRAPHX_EXHAUSTIVE_TUNE` + `ORT_MIGRAPHX_MODEL_CACHE_PATH` added to the required-array and `generate_env_file`; NEW normalize arms **pin the VALUE** (stale `=1` gets corrected, not just presence-checked); cache path quoted; tests updated (idempotency kept).
-- `onnxruntime.rs`: `build_migraphx_compile_smoke_command()` — 90s SIGALRM guard + GNU `timeout 120` hard-kill wrapper (a Python signal cannot preempt a C++-level compile hang), dynamic-shape opset-13 model (Squeeze `axes` as input tensor — the attribute form is INVALID in opset 13), graceful skip on missing onnx/numpy and on legacy-ROCM-EP installs; unit test asserts skip semantics (`SystemExit(0)`/`SKIPPED`).
+- `onnxruntime.rs`: `build_migraphx_compile_smoke_command()` — 90s SIGALRM guard + GNU `timeout 120` hard-kill wrapper (a Python signal cannot preempt a C++-level compile hang), dynamic-shape opset-13 model (Squeeze `axes` as input tensor — the attribute form is INVALID in opset 13), graceful skip on missing onnx/numpy and on legacy-ROCM-EP installs; unit test asserts skip semantics (`SystemExit(0)`/`SKIPPED`). **Plus**: `build_model_optimizer_command` fixed to run **CPU-only** pre-opt (probe L8 proof — an EP in the pre-opt session bakes unserializable compiled nodes / can hang; this was the exact latent bug).
 - `installer.rs`: wired as **Step 3b** in the ONNX native install flow, right after provider validation (same `execute_native_command` pattern) — a non-converging compile now fails the install instead of hanging.
 - `benchmarks/mod.rs`: `os.environ.setdefault("ORT_MIGRAPHX_EXHAUSTIVE_TUNE", "0")` + FP16 lever before session creation (does not clobber user env).
-- Docs: `docs/guides/troubleshooting_guide.md` (verified fix ladder — pre-opt first, levers secondary), `docs/core/onnx_runtime_guide.md` (limitation + workaround + session snippet), `CHANGELOG.md` entry.
+- `migraphx_python.rs`: **library-level fix SHIPPED** — `MLSTACK_MIGRAPHX_CORE_FIX` env gate + `build_fixed_core_commands()` (6-step: vendor nlohmann-json, clone AMDMIGraphX `rocm-7.2.3`, `git apply` vendored PR #5106 backport, configure CK/MLIR off matching distro package, build, install to `~/.mlstack/migraphx-fixed`) + tests. Idempotent (skip-if-present clone/apply guards, quoted paths). Vendored patch: `rusty-stack/patches/amdmigraphx-5106-find_concat_transpose.patch`.
+- `installer.rs` (migraphx-python native arm): WIRED — when `MLSTACK_MIGRAPHX_CORE_FIX=1`, runs `build_fixed_core_commands` (patch resolved from `CARGO_MANIFEST_DIR` so it works from any cwd), then refreshes `~/.mlstack_env` so the overlay is emitted. Runs before the python-bindings step.
+- `bootstrap/env_setup.rs`: persistent-env generator emits an idempotent guarded `LD_LIBRARY_PATH` prepend for `~/.mlstack/migraphx-fixed/lib/migraphx/lib` (the RUNPATH-mirror subpath) + bare `lib` secondary (bash + fish, `$HOME`-relative at source-time mirroring the RCCL overlay block) when the patched core is present + test.
+- Docs: `docs/guides/troubleshooting_guide.md` (verified fix ladder — pre-opt first, levers secondary, library fix now SHIPPED), `docs/core/onnx_runtime_guide.md` (limitation + workaround + session snippet + library-fix path), `CHANGELOG.md` entry.
 
-**Outstanding:**
-1. MIGraphX **library-level fix** (the real fix) — NOT done: upgrade/patch MIGraphX 2.15.0, or build AMDMIGraphX `develop` (reshape-simplification guard fix) and point ORT at it via `--use_migraphx --migraphx_home`. The native assertion (`simplify_reshapes.cpp:845`) is the smoking gun. Optional escalation.
-2. Commits: DONE (this branch).
+**Library-level fix (Task 1 Step 2 — SHIPPED in rusty-stack; building/verifying on this host):**
+- Root cause pinned: MIGraphX 2.15.0 (`rocm-7.2.3`) `find_concat_transpose::apply` asserts `s.transposed()` (deduced from strides) — non-transposed transpose-inputs crash it AND drive the neighboring `repeat_while_changes` pass loop into non-convergence (the hang).
+- Upstream fix: **PR #5106** "Fix find_concat_transpose with non-transposed inputs", merged 2026-07-31, commit `b90f58a7e63a` (develop) — reads the permutation from the transpose op, drops the assert. Backportable verbatim to `rocm-7.2.3` (same SONAME `2015000`, so ORT's EP loads it unchanged). NOTE: PR #5052 is a DIFFERENT still-open TDR guard fix — not this defect.
+- System build IN PROGRESS (background): `rocm-7.2.3` clone + #5106 backport + cmake (`MIGRAPHX_USE_COMPOSABLEKERNEL=Off` — distro CK 7.2.4 dropped `jit_library`; `MIGRAPHX_ENABLE_MLIR=Off` — distro package has no rocmlir dep; `GPU_TARGETS=gfx1100`; ROCm clang; user prefix `~/.mlstack/migraphx-fixed`; no root needed). Deps present (cmake/ninja/hipcc); nlohmann-json vendored user-locally (missing system pkg, header-only). Once built: install → re-run probe L1/L2 against the real model to prove the fix.
+
+**Commits:** DONE (this branch).
 
 ## Global Constraints
 

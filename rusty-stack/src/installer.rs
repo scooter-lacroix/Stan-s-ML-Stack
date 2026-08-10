@@ -5631,13 +5631,73 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         // ── migraphx-python ───────────────────────────────────────────
         "migraphx-python" => {
             use crate::installers::components::migraphx_python::{
-                build_python_source_requested, source_branch, MigraphxPythonConfig,
-                MigraphxPythonInstaller,
+                build_python_source_requested, core_fix_requested, source_branch,
+                MigraphxPythonConfig, MigraphxPythonInstaller,
             };
             let inst = MigraphxPythonInstaller::new(MigraphxPythonConfig {
                 python_bin: resolve_python_bin(),
                 ..Default::default()
             });
+
+            // Library-level compile-hang fix (MLSTACK_MIGRAPHX_CORE_FIX=1):
+            // build the PATCHED MIGraphX C++ core (AMDMIGraphX rocm-7.2.3 +
+            // vendored PR #5106 find_concat_transpose backport) into
+            // ~/.mlstack/migraphx-fixed. Heavy build (~30-90 min); the env
+            // generator picks it up via LD_LIBRARY_PATH (RUNPATH-after-
+            // LD_LIBRARY_PATH precedence — /opt/rocm untouched). Runs FIRST,
+            // independent of the python bindings below.
+            if core_fix_requested() {
+                let _ = sender.send(InstallerEvent::Log(
+                    "[native] MLSTACK_MIGRAPHX_CORE_FIX=1 — building patched MIGraphX \
+                     core (rocm-7.2.3 + PR #5106 find_concat_transpose backport) into \
+                     ~/.mlstack/migraphx-fixed. Heavy build (~30-90 min)."
+                        .into(),
+                    false,
+                ));
+                let workdir = std::env::temp_dir()
+                    .join("rusty-migraphx-core-fix")
+                    .to_string_lossy()
+                    .to_string();
+                let _ = std::fs::remove_dir_all(&workdir);
+                let gpu_arch =
+                    std::env::var("GPU_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
+                // Vendored patch ships with the crate: resolve from the crate
+                // source dir so it works regardless of the launch cwd.
+                let patch_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("patches")
+                    .join("amdmigraphx-5106-find_concat_transpose.patch")
+                    .to_string_lossy()
+                    .to_string();
+                let cmds = inst.build_fixed_core_commands(
+                    &workdir,
+                    "/opt/rocm",
+                    &gpu_arch,
+                    &source_branch(),
+                    &patch_path,
+                    ctx.user_home,
+                );
+                for cmd in cmds {
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                // Post-build: refresh ~/.mlstack_env so the persistent-env
+                // generator emits the fixed-core LD_LIBRARY_PATH overlay.
+                match ensure_mlstack_env(ctx.user_home, ctx.install_method, false) {
+                    Ok(EnvUpdate::Created) | Ok(EnvUpdate::Updated) => {
+                        let _ = sender.send(InstallerEvent::Log(
+                            "[native] Refreshed ~/.mlstack_env with the patched \
+                             MIGraphX core LD_LIBRARY_PATH overlay"
+                                .into(),
+                            false,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
 
             // Check distro availability — skip on Arch (no pip wheel)
             let distro = crate::installers::common::DistroFacade::detect();

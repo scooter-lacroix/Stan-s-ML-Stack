@@ -599,6 +599,9 @@ pub fn generate_env_file_content(
     // RCCL overlay env is MANAGED here (the persistent-env generator is the
     // single source of truth for env vars — components no longer write env files).
     let rccl_block = rccl_overlay_bash_block(&home);
+    // Patched MIGraphX core overlay (library-level compile-hang fix, opt-in via
+    // MLSTACK_MIGRAPHX_CORE_FIX) — emitted only when the fixed core is present.
+    let migx_block = migraphx_fixed_core_bash_block(&home);
 
     format!(
         r#"# ML Stack Environment File
@@ -638,6 +641,7 @@ export AMDGPU_ASIC_ID_TABLE_PATHS=/usr/share/libdrm
 case ":${{PATH:-}}:" in *:"{rocm_path}/bin":*) ;; *) export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:{rocm_path}/bin:{rocm_path}/hip/bin:${{PATH:-}}";; esac
 case ":${{LD_LIBRARY_PATH:-}}:" in *:"{rocm_path}/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/libmpi-compat:$HOME/.mlstack/libmpi-compat-user-$(id -u):{rocm_path}/lib:{rocm_path}/hip/lib:{rocm_path}/opencl/lib:${{LD_LIBRARY_PATH:-}}";; esac
 {rccl_block}
+{migx_block}
 
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
@@ -712,6 +716,7 @@ fi
         home = home,
         python_bin = python_bin,
         rccl_block = rccl_block,
+        migx_block = migx_block,
     )
 }
 
@@ -736,6 +741,8 @@ pub fn generate_fish_env_file_content(
     let onnx_path = format!("{home}/onnxruntime_build/onnxruntime/build/Linux/Release");
     // RCCL overlay env is MANAGED here (single source of truth — no component env files).
     let rccl_block = rccl_overlay_fish_block(&home);
+    // Patched MIGraphX core overlay — emitted only when the fixed core is present.
+    let migx_block = migraphx_fixed_core_fish_block(&home);
 
     format!(
         r##"# ML Stack Environment File — Fish Shell Native
@@ -773,6 +780,7 @@ set -gx AMDGPU_ASIC_ID_TABLE_PATHS /usr/share/libdrm
 contains -- {rocm_path}/bin $PATH; or set -gx PATH /usr/local/bin /usr/bin /bin /usr/local/games /usr/games {rocm_path}/bin {rocm_path}/hip/bin $PATH
 contains -- {rocm_path}/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/libmpi-compat $HOME/.mlstack/libmpi-compat-user-(id -u) {rocm_path}/lib {rocm_path}/hip/lib {rocm_path}/opencl/lib $LD_LIBRARY_PATH
 {rccl_block}
+{migx_block}
 
 # --- Performance Settings ---
 set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}
@@ -841,6 +849,7 @@ end
         python_bin = python_bin,
         onnx_path = onnx_path,
         rccl_block = rccl_block,
+        migx_block = migx_block,
     )
 }
 
@@ -944,6 +953,76 @@ if test -r $HOME/.mlstack/components/rccl/active/lib/librccl.so.1.0
     if not contains -- $HOME/.mlstack/components/rccl/active/python $PYTHONPATH
         set -gx PYTHONPATH $HOME/.mlstack/components/rccl/active/python $PYTHONPATH
     end
+end
+"#
+    )
+}
+
+// ===========================================================================
+// Patched MIGraphX core overlay (library-level compile-hang fix, opt-in)
+// ===========================================================================
+
+/// `$HOME`-relative path to the patched MIGraphX core's lib dir.
+///
+/// The ORT MIGraphX EP provider resolves `libmigraphx.so.2015000` from
+/// `<rocm>/lib/migraphx/lib` (its RUNPATH), so the fixed core must be laid out
+/// at the mirror subpath `~/.mlstack/migraphx-fixed/lib/migraphx/lib` — that is
+/// the directory we prepend to `LD_LIBRARY_PATH`, not the bare `lib`. Emitted
+/// blocks reference `$HOME` at source-time (never the literal interpolated
+/// `home`), matching the RCCL overlay precedent so a home containing spaces or
+/// glob metacharacters can never break the sourced env file.
+fn migraphx_fixed_core_lib_dir(home: &str) -> String {
+    format!("{home}/.mlstack/migraphx-fixed/lib/migraphx/lib")
+}
+
+/// Emit the **idempotent** bash block that prepends the patched MIGraphX core
+/// lib dir to `LD_LIBRARY_PATH`, or an empty string when no fixed core is
+/// installed.
+///
+/// The patched core (built by the `MLSTACK_MIGRAPHX_CORE_FIX` env-gated path,
+/// AMDMIGraphX `rocm-7.2.3` + PR #5106 backport) keeps the distro SONAME
+/// (`libmigraphx.so.2015000`), so ORT's MIGraphX EP resolves it without a
+/// rebuild. The EP provider uses RUNPATH (which the loader searches AFTER
+/// `LD_LIBRARY_PATH`) and resolves the SONAME from `lib/migraphx/lib` — so
+/// prepending the fixed-core `lib/migraphx/lib` dir makes the patched library
+/// win without modifying `/opt/rocm`. Guarded (idempotent): re-sourcing the env
+/// never accumulates a duplicate entry.
+fn migraphx_fixed_core_bash_block(home: &str) -> String {
+    let lib = migraphx_fixed_core_lib_dir(home);
+    let so = format!("{lib}/libmigraphx.so.2015000");
+    if !std::path::Path::new(&so).exists() {
+        return String::new();
+    }
+    format!(
+        r#"
+# Patched MIGraphX core (PR #5106 find_concat_transpose fix) — MANAGED by the
+# persistent-env generator. Prepended to LD_LIBRARY_PATH (guarded, idempotent)
+# so the loader resolves the patched libmigraphx over the distro one via the
+# RUNPATH-after-LD_LIBRARY_PATH precedence rule; /opt/rocm is untouched.
+# Paths are $HOME-relative (resolved at source-time; never a literal home).
+if [ -r "$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib/libmigraphx.so.2015000" ]; then
+  case ":${{LD_LIBRARY_PATH:-}}:" in *:"$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib:$HOME/.mlstack/migraphx-fixed/lib:${{LD_LIBRARY_PATH:-}}";; esac
+fi
+"#
+    )
+}
+
+/// Emit the **idempotent** fish block for the patched MIGraphX core, or empty.
+/// Fish analogue of [`migraphx_fixed_core_bash_block`]; `contains` is the
+/// membership guard.
+fn migraphx_fixed_core_fish_block(home: &str) -> String {
+    let lib = migraphx_fixed_core_lib_dir(home);
+    let so = format!("{lib}/libmigraphx.so.2015000");
+    if !std::path::Path::new(&so).exists() {
+        return String::new();
+    }
+    format!(
+        r#"
+# --- Patched MIGraphX core (PR #5106 find_concat_transpose fix) — MANAGED by
+# the persistent-env generator; prepended to LD_LIBRARY_PATH; idempotent.
+# Paths are $HOME-relative (resolved at source-time; never a literal home). ---
+if test -r $HOME/.mlstack/migraphx-fixed/lib/migraphx/lib/libmigraphx.so.2015000
+    contains -- $HOME/.mlstack/migraphx-fixed/lib/migraphx/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/migraphx-fixed/lib/migraphx/lib $HOME/.mlstack/migraphx-fixed/lib $LD_LIBRARY_PATH
 end
 "#
     )
@@ -1641,6 +1720,59 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&home_no_rccl);
+    }
+
+    #[test]
+    fn test_migraphx_fixed_core_overlay_block_is_centralized_and_idempotent() {
+        // No patched MIGraphX core → generator emits nothing for it.
+        let tmp = std::env::temp_dir();
+        let home_no_core = tmp.join("rusty_migx_no_core_test");
+        let _ = std::fs::remove_dir_all(&home_no_core);
+        assert_eq!(
+            migraphx_fixed_core_bash_block(&home_no_core.to_string_lossy()),
+            ""
+        );
+        assert_eq!(
+            migraphx_fixed_core_fish_block(&home_no_core.to_string_lossy()),
+            ""
+        );
+
+        // Patched core present → both blocks emit an idempotent LD_LIBRARY_PATH
+        // prepend gated on the SONAME-matching lib file, at the `lib/migraphx/lib`
+        // subpath the ORT provider's RUNPATH resolves (not the bare `lib`).
+        let home = tmp.join("rusty_migx_core_test");
+        let lib = home.join(".mlstack/migraphx-fixed/lib/migraphx/lib");
+        let lib_c = home.join(".mlstack/migraphx-fixed/lib");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("libmigraphx.so.2015000"), b"").unwrap();
+        // Secondary entry: the bare `lib` holds libmigraphx_c.so.3 (the other
+        // SONAME the provider resolves).
+        std::fs::create_dir_all(&lib_c).unwrap();
+        std::fs::write(lib_c.join("libmigraphx_c.so.3"), b"").unwrap();
+
+        let bash = migraphx_fixed_core_bash_block(&home.to_string_lossy());
+        assert!(bash.contains("libmigraphx.so.2015000"));
+        // Idempotent: guard against duplicate accumulation on re-source.
+        assert!(bash.contains("case \":${LD_LIBRARY_PATH:-}:\""));
+        // Must prepend the RUNPATH-mirror subpath (patched lib wins via
+        // RUNPATH-after-LD_LIBRARY_PATH rule), with the bare lib dir second.
+        // Paths are $HOME-relative at source-time — never the literal `home`
+        // (a home with spaces/glob metacharacters must not break sourcing).
+        assert!(bash.contains("$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib"));
+        assert!(bash.contains("$HOME/.mlstack/migraphx-fixed/lib:"));
+        assert!(!bash.contains(&lib.to_string_lossy().as_ref().to_string()));
+        assert!(!bash.contains(&lib_c.to_string_lossy().as_ref().to_string()));
+
+        let fish = migraphx_fixed_core_fish_block(&home.to_string_lossy());
+        assert!(fish.contains("libmigraphx.so.2015000"));
+        assert!(fish.contains("contains --"));
+        assert!(fish.contains("$HOME/.mlstack/migraphx-fixed/lib/migraphx/lib"));
+        assert!(fish.contains("$HOME/.mlstack/migraphx-fixed/lib"));
+        assert!(!fish.contains(&lib.to_string_lossy().as_ref().to_string()));
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&home_no_core);
     }
 
     // --- setup_environment integration ---

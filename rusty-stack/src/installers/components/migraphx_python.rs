@@ -108,7 +108,23 @@ pub const PACKAGE_NAME: &str = "migraphx";
 /// inference). Values: `1`/`true`/`yes`/`on`.
 pub const MIGRAPHX_BUILD_PYTHON_ENV: &str = "MLSTACK_MIGRAPHX_BUILD_PYTHON";
 
-/// Optional env var overriding the AMDMIGraphX branch to build. The standalone
+/// Env var that opts into building a PATCHED MIGraphX C++ core from source
+/// (AMDMIGraphX `rocm-7.2.3` + backport of upstream PR #5106 "Fix
+/// find_concat_transpose with non-transposed inputs"). This is the LIBRARY-level
+/// fix for the MIGraphX 2.15.0 `repeat_while_changes` compile hang /
+/// `simplify_reshapes.cpp:845 find_concat_transpose: Assertion s.transposed()
+/// failed` crash — the same defect the offline pre-opt workaround dodges.
+///
+/// The patched core is installed into `~/.mlstack/migraphx-fixed` (same SONAME
+/// `2015000` as the distro package, so ORT's provider loads it unchanged); the
+/// caller must prepend its `lib` dir to `LD_LIBRARY_PATH` (the ORT provider
+/// uses RUNPATH, which is searched AFTER `LD_LIBRARY_PATH`, so the fixed lib
+/// wins without touching `/opt/rocm`). Opt-in only — off by default, because
+/// the pre-optimization workaround already ships and a full core build is heavy
+/// (~30-90 min). Values: `1`/`true`/`yes`/`on`.
+pub const MIGRAPHX_CORE_FIX_ENV: &str = "MLSTACK_MIGRAPHX_CORE_FIX";
+
+/// Env var overriding the AMDMIGraphX branch to build. The standalone
 /// python bindings must match the installed C++ core, so the default tracks the
 /// Arch `migraphx` package line.
 pub const MIGRAPHX_SOURCE_BRANCH_ENV: &str = "MLSTACK_MIGRAPHX_SOURCE_BRANCH";
@@ -118,6 +134,19 @@ pub const AMDMIGRAPHX_DEFAULT_BRANCH: &str = "rocm-7.2.3";
 
 /// Upstream source for the MIGraphX Python bindings.
 pub const AMDMIGRAPHX_REPO: &str = "https://github.com/ROCm/AMDMIGraphX";
+
+/// Install prefix for the patched MIGraphX core (`~/.mlstack/migraphx-fixed`).
+/// Kept version-agnostic so a future branch bump does not strand old builds.
+pub const MIGRAPHX_FIXED_PREFIX: &str = ".mlstack/migraphx-fixed";
+
+/// Whether the user opted into building the patched MIGraphX core from source.
+pub fn core_fix_requested() -> bool {
+    let v = std::env::var(MIGRAPHX_CORE_FIX_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(v.as_str(), "1" | "true" | "yes" | "on")
+}
 
 /// Whether the user opted into building the Python bindings from source.
 pub fn build_python_source_requested() -> bool {
@@ -286,6 +315,158 @@ impl MigraphxPythonInstaller {
                     "pip".to_string(),
                     "install".to_string(),
                     format!("{src}/python"),
+                ],
+                env: vec![],
+            },
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Patched C++ core build (library-level compile-hang fix, env-gated)
+    // -----------------------------------------------------------------------
+
+    /// Ordered shell commands to build a PATCHED MIGraphX C++ core from source
+    /// (AMDMIGraphX `rocm-7.2.3` + backport of upstream PR #5106) and install it
+    /// into [`MIGRAPHX_FIXED_PREFIX`] under `user_home`. Opt-in via
+    /// [`MIGRAPHX_CORE_FIX_ENV`]; see its doc comment for the defect this fixes.
+    ///
+    /// The built libs keep the distro SONAME (`libmigraphx.so.2015000` for
+    /// MIGraphX 2.15.0), so the ORT MIGraphX EP loads them unchanged. The caller
+    /// should export `LD_LIBRARY_PATH=<prefix>/lib:$LD_LIBRARY_PATH` (the EP
+    /// provider uses RUNPATH, which is searched AFTER `LD_LIBRARY_PATH`, so the
+    /// patched lib wins without modifying `/opt/rocm`).
+    ///
+    /// Config flags mirror what the distro packages actually ship so the build
+    /// matches the installed toolchain: `MIGRAPHX_USE_COMPOSABLEKERNEL=Off`
+    /// (distro composable-kernel 7.2.4 dropped the `jit_library` component the
+    /// 7.2.3 branch requires) and `MIGRAPHX_ENABLE_MLIR=Off` (the `migraphx`
+    /// Arch package has no `rocmlir` dependency). The fix itself is a pure C++
+    /// reshape-simplification change, unaffected by either option.
+    ///
+    /// - `workdir`     — scratch dir for the clone + build (e.g. `/tmp/...`)
+    /// - `rocm_prefix` — `/opt/rocm`
+    /// - `gpu_arch`    — `gfx1100` (or detected `GPU_ARCH`)
+    /// - `branch`      — matching ROCm branch, e.g. `rocm-7.2.3`
+    /// - `patch_path`  — path to the vendored PR #5106 backport patch
+    ///   (`rusty-stack/patches/amdmigraphx-5106-find_concat_transpose.patch`)
+    pub fn build_fixed_core_commands(
+        &self,
+        workdir: &str,
+        rocm_prefix: &str,
+        gpu_arch: &str,
+        branch: &str,
+        patch_path: &str,
+        user_home: &str,
+    ) -> Vec<ShellCommand> {
+        let src = format!("{workdir}/AMDMIGraphX");
+        let build = format!("{src}/build");
+        let prefix = format!("{user_home}/{}", MIGRAPHX_FIXED_PREFIX);
+        let deps = format!("{workdir}/deps");
+        let nlohmann = format!("{deps}/nlohmann-json");
+        let clang = format!("{rocm_prefix}/llvm/bin/clang");
+        let clangxx = format!("{rocm_prefix}/llvm/bin/clang++");
+        let patch_abs = std::path::Path::new(patch_path);
+        let patch_arg = if patch_abs.is_absolute() {
+            patch_path.to_string()
+        } else {
+            // Resolve relative to the crate root: `rusty-stack/patches/...`
+            // when invoked from the repo root.
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            cwd.join(patch_path).to_string_lossy().to_string()
+        };
+        vec![
+            // 1. Vendor nlohmann-json (header-only, no system package needed) into
+            //    the build prefix so `find_package(nlohmann_json)` succeeds.
+            //    Idempotent: reuses a previous clone (like the verified system
+            //    script) so a partial/failed run can be resumed.
+            ShellCommand {
+                program: "bash".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    format!(
+                        "mkdir -p \"{deps}\" && cd \"{deps}\" && \
+                         [ -d \"{nlohmann}/.git\" ] || git clone --depth 1 --branch v3.12.0 \
+                         https://github.com/nlohmann/json.git \"{nlohmann}\" && \
+                         cmake -S \"{nlohmann}\" -B \"{nlohmann}/build\" \
+                         -DCMAKE_INSTALL_PREFIX=\"{prefix}\" -DJSON_BuildTests=Off \
+                         -DJSON_MultipleHeaders=Off && \
+                         cmake --install \"{nlohmann}/build\""
+                    ),
+                ],
+                env: vec![],
+            },
+            // 2. Shallow clone of the matching ROCm branch. Idempotent: skip if a
+            //    previous clone already exists (resume after a partial/failed run).
+            ShellCommand {
+                program: "bash".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    format!(
+                        "[ -d \"{src}/.git\" ] || git clone --depth 1 --single-branch \
+                         --branch \"{branch}\" {repo} \"{src}\"",
+                        repo = AMDMIGRAPHX_REPO,
+                    ),
+                ],
+                env: vec![],
+            },
+            // 3. Apply the vendored PR #5106 backport (fixes
+            //    find_concat_transpose: Assertion s.transposed() + the
+            //    repeat_while_changes non-convergence it drives). Idempotent: a
+            //    re-run after a partial apply must not fail — check whether the
+            //    fix marker is already present before applying.
+            ShellCommand {
+                program: "bash".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    format!(
+                        "if ! grep -q 'get_permutation' \"{src}/src/simplify_reshapes.cpp\"; then \
+                         git -C \"{src}\" apply \"{patch_arg}\"; fi"
+                    ),
+                ],
+                env: vec![],
+            },
+            // 4. Configure: GPU only (CK JIT lib absent from distro CK 7.2.4),
+            //    no MLIR (distro migraphx has no rocmlir dep), python/tests/
+            //    examples off, ROCm clang, GPU arch, user install prefix.
+            ShellCommand {
+                program: "cmake".to_string(),
+                args: vec![
+                    "-S".to_string(),
+                    src.clone(),
+                    "-B".to_string(),
+                    build.clone(),
+                    format!("-DCMAKE_PREFIX_PATH={rocm_prefix}"),
+                    format!("-Dnlohmann_json_DIR={prefix}/share/cmake/nlohmann_json"),
+                    format!("-DGPU_TARGETS={gpu_arch}"),
+                    format!("-DCMAKE_C_COMPILER={clang}"),
+                    format!("-DCMAKE_CXX_COMPILER={clangxx}"),
+                    "-DCMAKE_BUILD_TYPE=Release".to_string(),
+                    "-DMIGRAPHX_ENABLE_PYTHON=Off".to_string(),
+                    "-DMIGRAPHX_ENABLE_CPP_EXAMPLES=Off".to_string(),
+                    "-DMIGRAPHX_ENABLE_TEST=Off".to_string(),
+                    "-DMIGRAPHX_ENABLE_CPU=Off".to_string(),
+                    "-DMIGRAPHX_USE_COMPOSABLEKERNEL=Off".to_string(),
+                    "-DMIGRAPHX_ENABLE_MLIR=Off".to_string(),
+                    format!("-DCMAKE_INSTALL_PREFIX={prefix}"),
+                ],
+                env: vec![],
+            },
+            // 5. Build + 6. install the patched core into the user prefix.
+            ShellCommand {
+                program: "cmake".to_string(),
+                args: vec![
+                    "--build".to_string(),
+                    build.clone(),
+                    "-j".to_string(),
+                ],
+                env: vec![],
+            },
+            ShellCommand {
+                program: "cmake".to_string(),
+                args: vec![
+                    "--install".to_string(),
+                    build.clone(),
                 ],
                 env: vec![],
             },
@@ -583,6 +764,119 @@ mod tests {
         assert_eq!(source_branch(), AMDMIGRAPHX_DEFAULT_BRANCH);
         std::env::set_var(MIGRAPHX_SOURCE_BRANCH_ENV, "rocm-7.2.4");
         assert_eq!(source_branch(), "rocm-7.2.4");
+    }
+
+    // --- Patched C++ core build (library-level fix) ---
+
+    #[test]
+    fn test_core_fix_requested_env_gated() {
+        let _env = crate::test_support::lock_env();
+        std::env::remove_var(MIGRAPHX_CORE_FIX_ENV);
+        assert!(!core_fix_requested(), "default must be OFF");
+        for v in ["1", "true", "TRUE", "yes", "on"] {
+            std::env::set_var(MIGRAPHX_CORE_FIX_ENV, v);
+            assert!(core_fix_requested(), "should be ON for {v:?}");
+        }
+        std::env::set_var(MIGRAPHX_CORE_FIX_ENV, "0");
+        assert!(!core_fix_requested());
+    }
+
+    #[test]
+    fn test_build_fixed_core_commands_sequence() {
+        let inst = MigraphxPythonInstaller::with_defaults();
+        let cmds = inst.build_fixed_core_commands(
+            "/tmp/wd",
+            "/opt/rocm",
+            "gfx1100",
+            "rocm-7.2.3",
+            "patches/amdmigraphx-5106-find_concat_transpose.patch",
+            "/home/user",
+        );
+        // nlohmann vendor, clone, apply patch, configure, build, install
+        assert_eq!(cmds.len(), 6);
+
+        // 0. vendor nlohmann-json (header-only) into the build prefix
+        assert_eq!(cmds[0].program, "bash");
+        assert!(cmds[0]
+            .args
+            .iter()
+            .any(|a| a.contains("nlohmann/json.git")));
+        assert!(cmds[0]
+            .args
+            .iter()
+            .any(|a| a.contains("|| git clone")), // idempotent guard
+        );
+
+        // 1. shallow clone of the matching ROCm branch (bash -c, idempotent)
+        assert_eq!(cmds[1].program, "bash");
+        let clone = cmds[1].args.iter().find(|a| a.contains("git clone")).unwrap();
+        assert!(clone.contains("--branch"));
+        assert!(clone.contains("rocm-7.2.3"));
+        assert!(clone.contains(AMDMIGRAPHX_REPO));
+        assert!(clone.contains("|| git clone")); // skip-if-present
+
+        // 2. apply the vendored PR #5106 backport patch (bash -c, idempotent)
+        assert_eq!(cmds[2].program, "bash");
+        let apply = cmds[2]
+            .args
+            .iter()
+            .find(|a| a.contains("git -C"))
+            .unwrap();
+        assert!(apply.contains("get_permutation")); // grep guard
+        assert!(
+            apply.contains("amdmigraphx-5106-find_concat_transpose.patch"),
+            "must apply the vendored backport patch: {apply}"
+        );
+
+        // 3. configure: GPU only, CK off (distro CK 7.2.4 has no jit_library),
+        //    MLIR off (distro migraphx has no rocmlir dep), user install prefix
+        assert_eq!(cmds[3].program, "cmake");
+        assert!(cmds[3]
+            .args
+            .contains(&"-DMIGRAPHX_USE_COMPOSABLEKERNEL=Off".to_string()));
+        assert!(cmds[3]
+            .args
+            .contains(&"-DMIGRAPHX_ENABLE_MLIR=Off".to_string()));
+        assert!(cmds[3]
+            .args
+            .contains(&"-DMIGRAPHX_ENABLE_PYTHON=Off".to_string()));
+        assert!(cmds[3]
+            .args
+            .iter()
+            .any(|a| a.contains("-Dnlohmann_json_DIR=")
+                && a.contains("migraphx-fixed")));
+        assert!(cmds[3]
+            .args
+            .iter()
+            .any(|a| a.contains("-DCMAKE_INSTALL_PREFIX=")
+                && a.contains("/home/user/")
+                && a.contains("migraphx-fixed")));
+
+        // 4. build + 5. install
+        assert_eq!(cmds[4].program, "cmake");
+        assert!(cmds[4].args.contains(&"--build".to_string()));
+        assert!(cmds[4].args.contains(&"-j".to_string()));
+        assert_eq!(cmds[5].program, "cmake");
+        assert!(cmds[5].args.contains(&"--install".to_string()));
+    }
+
+    #[test]
+    fn test_build_fixed_core_commands_absolute_patch() {
+        let inst = MigraphxPythonInstaller::with_defaults();
+        let cmds = inst.build_fixed_core_commands(
+            "/tmp/wd",
+            "/opt/rocm",
+            "gfx1100",
+            "rocm-7.2.3",
+            "/abs/path/amdmigraphx-5106.patch",
+            "/home/user",
+        );
+        let apply = cmds[2]
+            .args
+            .iter()
+            .find(|a| a.contains("git -C"))
+            .unwrap();
+        assert!(apply.contains("/abs/path/amdmigraphx-5106.patch"));
     }
 
     #[test]

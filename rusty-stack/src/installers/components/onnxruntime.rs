@@ -495,18 +495,24 @@ finally:
     /// Applies `ORT_ENABLE_ALL` optimization level which fuses quantized ops
     /// (DynamicQuantizeLinear, MatMulInteger, etc.) into custom ops that bypass
     /// MIGraphX's broken kernels. The optimized model is saved alongside the original.
+    ///
+    /// **CPU-only pre-opt** (verified 2026-08-09 on `qwen3-embed-0.6b-dynamic-uint8`):
+    /// running an EP (MIGraphX/ROCM) inside the pre-opt session bakes
+    /// EP-compiled nodes into the serialized graph (unserializable) and can hang
+    /// in MIGraphX's compile loop. The optimized model is then loaded with the
+    /// MIGraphX EP as usual — this offline pre-optimization is the verified
+    /// workaround for the MIGraphX 2.15.0 `repeat_while_changes` compile hang /
+    /// `find_concat_transpose` assertion (see `scripts/probe_migraphx_compile_hang.py` L8).
     pub fn build_model_optimizer_command(&self, model_path: &str) -> ShellCommand {
         let optimized_path = format!("{}.optimized", model_path);
 
         let script = format!(
             "import onnxruntime as ort; \
-             providers = [p for p in ['MIGraphXExecutionProvider', 'ROCMExecutionProvider'] if p in ort.get_available_providers()]; \
-             assert providers, f'No AMD ONNX Runtime provider available: {{ort.get_available_providers()}}'; \
              opts = ort.SessionOptions(); \
              opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL; \
              opts.optimized_model_filepath = '{optimized_path}'; \
-             ort.InferenceSession('{model_path}', opts, providers=providers); \
-             print('Optimized: {model_path} -> {optimized_path} using ' + providers[0])"
+             ort.InferenceSession('{model_path}', opts, providers=['CPUExecutionProvider']); \
+             print('Optimized (CPU pre-opt): {model_path} -> {optimized_path}')"
         );
 
         ShellCommand {
@@ -1244,9 +1250,11 @@ mod tests {
         assert_eq!(cmd.program, "python3");
         assert!(cmd.args.contains(&"-c".to_string()));
         let script = &cmd.args[1];
-        assert!(script.contains("MIGraphXExecutionProvider"));
-        assert!(script.contains("ROCMExecutionProvider"));
-        assert!(!script.contains("CPUExecutionProvider"));
+        // CPU-only pre-opt: running an EP here bakes in unserializable compiled
+        // nodes and can hang (verified 2026-08-09, probe L8).
+        assert!(script.contains("CPUExecutionProvider"));
+        assert!(!script.contains("MIGraphXExecutionProvider"));
+        assert!(!script.contains("ROCMExecutionProvider"));
         assert!(script.contains("ORT_ENABLE_ALL"));
         assert!(script.contains("/path/to/model.onnx"));
         assert!(script.contains("/path/to/model.onnx.optimized"));
