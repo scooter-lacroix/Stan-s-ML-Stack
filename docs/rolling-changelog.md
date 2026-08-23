@@ -1,5 +1,32 @@
 # Rolling Changelog — Session 54e587ea (post-v0.3.1, uncommitted)
 
+---
+
+## FreeToken: first-class MoE serving component on ROCm (2026-08-22)
+
+### Added — `freetoken` component (VAL-INSTALL-050..054)
+MoE-offload LLM serving engine (FlashML-org) as a first-class rusty-stack
+component, built from the `scooter-lacroix/FreeToken` fork's `feature/rocm`
+branch (5-commit upstreamable series: CppExtension HIP shim, tvm-ffi
+`backend="hip"` rail, GGUF hipify + ROCm 7 64-bit-mask shuffle fix, HIP-aware
+arch gates, README ROCm section). Deliberate divergence from the
+megatron/flash-attn pattern: installs into a **dedicated venv**
+(`~/.mlstack/venvs/freetoken`) because FreeToken's pins (transformers>=5.5,
+numpy<2.5) are ahead of the global env's vllm/megatron set. Torch comes from
+the same ROCm wheel index as the sealed core; launcher shim
+`~/.mlstack/bin/ft` sanitizes PYTHONPATH (onnxruntime/RCCL shims must not
+shadow venv imports); install-time HIP smoke test (backend→triton, pinned
+identity, LRU slot cache) is timeout-guarded. Full registration sweep:
+NATIVE_COMPONENT_IDS (42), dep closure [pytorch, rocm], TUI entry,
+detection/registry (venv python + FREETOKEN_VENV_PYTHON), manifest
+(0.1.2-rocm.1, Candidate), uninstall, enhanced verification, dispatch tests.
+Docs: `docs/extensions/freetoken_guide.md`, `docs/guides/freetoken_amd_guide.md`.
+Submodule: `Fork/FreeToken` → scooter-lacroix fork, branch `feature/rocm`.
+Verified on 2× RX 7900 XTX (gfx1100, ROCm 7.2.4, torch 2.13+rocm7.2):
+extensions build+import, index/store JIT kernels numerics via hipcc, GGUF
+Q4_K dequant on real checkpoint data, engine auto-backend → triton, HIP
+CUDA-graph capture, flashlib `lru_ensure` slot-cache invariants.
+
 Staging log of all work this session (pre- and post-context-compaction), to be
 merged into the root `CHANGELOG.md` under a new version section when the build
 is prod-ready. Grouped by theme; root-cause explanations kept verbatim where
