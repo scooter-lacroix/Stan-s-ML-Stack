@@ -2,3 +2,7 @@
 	path = Fork/llama.cpp-turboquant-hip
 	url = https://github.com/scooter-lacroix/llama.cpp-turboquant-hip.git
 	branch = feature/upstream-sync-2026-05
+[submodule "Fork/FreeToken"]
+	path = Fork/FreeToken
+	url = https://github.com/scooter-lacroix/FreeToken.git
+	branch = feature/rocm
