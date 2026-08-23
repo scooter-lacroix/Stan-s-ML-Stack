@@ -2,6 +2,38 @@
 
 ---
 
+## FreeToken multi-GPU rail: pynccl -> RCCL verified on 2x gfx1100 (2026-08-23)
+
+### Why only one GPU was used
+`ft serve` defaults to `--tensor-parallel-size 1`, and the GGUF expert
+path is TP=1-only upstream (gemma4 loader asserts the same: k-quant
+blocks cannot be inner-dim sliced without requantization).
+
+### Fixed — pynccl builds and runs against RCCL on HIP
+- Link `-lrccl`; include rccl.h + the HIP runtime header instead of the
+  vendored NVIDIA-only nccl 2.27 header; accept kDLROCM DLPack tensors
+  (torch on ROCm types tensors kDLROCM).
+- **Platform finding**: the stock system librccl is BROKEN for
+  cross-GPU collectives on this host — even torch's own
+  ProcessGroupNCCL fails ("operation cannot be performed in the present
+  state", abort in rccl enqueue). The stack's repaired RCCL overlay
+  (~/.mlstack/components/rccl/active, PYTHONPATH sitecustomize +
+  MLSTACK_RCCL_OVERLAY_*) fixes it: pynccl all_reduce verified correct
+  on RX 7900 XTX + RX 7800 XT (both the direct and symmetric-memory
+  buffer paths).
+- Launcher (~/.mlstack/bin/ft) now strips ONLY the onnxruntime
+  PYTHONPATH entry and keeps the RCCL overlay vars, so TP>1 works when
+  invoked through the stack; single-GPU serving unaffected.
+
+### Remaining for full TP=2 GGUF serving (scoped)
+The dense weights + attention TP machinery work via the engine; the
+GGUF k-quant expert banks need a sharding story: either dequant ->
+intermediate-split -> requant per rank, or expert-parallel (each GPU
+owns half the experts, all-to-all instead of all-reduce). Upstream's
+gemma4 GGUF loader has the same TP=1 restriction.
+
+---
+
 ## FreeToken GGUF serving on ROCm: Ornith-1.5-35B end-to-end (2026-08-23)
 
 ### Added — qwen35moe GGUF adapter (fork `feature/rocm`)
