@@ -200,10 +200,10 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             path_exists(home_path(&home, &["megatron", "Megatron-LM"]))
                 || python_any(python_candidates, &["megatron"])
         }
-        // Dedicated venv: the import only exists under the freetoken venv
-        // python (candidates include FREETOKEN_VENV_PYTHON + the canonical
-        // ~/.mlstack/venvs/freetoken path).
-        "freetoken" => python_any(python_candidates, &["freetoken"]),
+        // Dedicated venv with a sanitized-env import probe (see
+        // freetoken_installed): the RCCL sitecustomize re-exec breaks venv
+        // resolution under the shared stack env.
+        "freetoken" => freetoken_installed(),
         "vllm" => {
             python_candidates
                 .iter()
@@ -380,13 +380,28 @@ pub fn component_verification_commands(
             python_candidates,
             "import megatron,sys; ok=False\ntry:\n    from megatron.core import tensor_parallel; ok=True\nexcept Exception:\n    pass\nprint(f'Megatron-LM functional={ok}'); sys.exit(0 if ok else 1)",
         )],
-        "freetoken" => vec![python_command(
-            "FreeToken",
-            "freetoken",
-            &["freetoken"],
-            python_candidates,
-            "import sys\nimport freetoken\nfrom freetoken.attention.base import AttnType\nimport freetoken.engine.engine as ee\nbackend = ee._resolve_auto_attention_backend(frozenset([AttnType.FULL]), False)\nok = backend == 'triton'\nprint(f'FreeToken functional={{ok}} (attention backend: {{backend}})')\nsys.exit(0 if ok else 1)",
-        )],
+        // Sanitized-env functional check (the RCCL sitecustomize re-exec breaks
+        // venv imports under the shared stack env; freetoken never uses RCCL).
+        // No generic modules gate: this command IS the import proof.
+        "freetoken" => freetoken_venv_python().map_or_else(Vec::new, |python| {
+            vec![VerificationCommand {
+                label: "FreeToken".to_string(),
+                target_id: "freetoken".to_string(),
+                program: "env".to_string(),
+                args: vec![
+                    "-u".to_string(),
+                    "PYTHONPATH".to_string(),
+                    "-u".to_string(),
+                    "MLSTACK_RCCL_OVERLAY_LIB".to_string(),
+                    "-u".to_string(),
+                    "MLSTACK_RCCL_OVERLAY_SHA256".to_string(),
+                    python,
+                    "-c".to_string(),
+                    "import sys\nimport freetoken\nfrom freetoken.attention.base import AttnType\nimport freetoken.engine.engine as ee\nbackend = ee._resolve_auto_attention_backend(frozenset([AttnType.FULL]), False)\nok = backend == 'triton'\nprint(f'FreeToken functional={ok} (attention backend: {backend})')\nsys.exit(0 if ok else 1)".to_string(),
+                ],
+                modules: Vec::new(),
+            }]
+        }),
         "vllm" => vec![python_command(
             "vLLM",
             "vllm",
@@ -596,6 +611,48 @@ pub fn component_verification_commands(
         }],
         _ => Vec::new(),
     }
+}
+
+/// The dedicated freetoken venv python (env override or canonical layout).
+fn freetoken_venv_python() -> Option<String> {
+    if let Ok(value) = env::var("FREETOKEN_VENV_PYTHON") {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    let home = resolve_component_user_home();
+    let candidate = Path::new(&home)
+        .join(".mlstack")
+        .join("venvs")
+        .join("freetoken")
+        .join("bin")
+        .join("python");
+    candidate.exists().then(|| candidate.to_string_lossy().to_string())
+}
+
+/// FreeToken detection: a REAL import under the venv python with a sanitized
+/// environment. The stack env prepends the RCCL overlay shim to PYTHONPATH,
+/// whose sitecustomize re-execs any torch-bearing interpreter through ld.so —
+/// breaking the venv's site-packages resolution. FreeToken never touches
+/// NCCL/RCCL, so the overlay is shielded rather than honored. find_spec alone
+/// is not enough here: the re-exec makes spec resolution flaky while the
+/// actual import is the honest signal.
+fn freetoken_installed() -> bool {
+    let Some(python) = freetoken_venv_python() else {
+        return false;
+    };
+    Command::new(&python)
+        .arg("-c")
+        .arg("import freetoken")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env_remove("PYTHONPATH")
+        .env_remove("MLSTACK_RCCL_OVERLAY_LIB")
+        .env_remove("MLSTACK_RCCL_OVERLAY_SHA256")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 pub fn modules_available(modules: &[String], python_candidates: &[String]) -> bool {

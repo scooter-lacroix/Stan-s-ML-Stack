@@ -83,7 +83,7 @@ curl http://127.0.0.1:1919/v1/chat/completions -H 'content-type: application/jso
 - Bump the fork: push `feature/rocm`, then force-reinstall the component
   (`MLSTACK_FORCE_REINSTALL=1` or the TUI force path) — it purges the venv and
   clone, then rebuilds.
-- The manifest pins `0.1.2-rocm.1`; update `baseline_manifest.json` when
+- The manifest pins `0.1.3+rocm`; update `baseline_manifest.json` when
   rebasing onto a new upstream tag.
 - Upstream PR: the fork's commit series is structured for direct submission to
   `FlashML-org/FreeToken` (feature-detection style, no AMD hardcodes).

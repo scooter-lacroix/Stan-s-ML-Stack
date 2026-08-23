@@ -4762,6 +4762,21 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 &component.name,
             )?;
 
+            // Step 3b: flashlib --no-deps (its CUDA-target metadata would
+            // drag nvidia-cutlass-dsl -> cuda-python; the slot_cache path
+            // FreeToken uses is pure Triton and lazily loaded)
+            let flashlib_cmd = inst.build_flashlib_install_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(
+                    &flashlib_cmd.program,
+                    &flashlib_cmd.args,
+                    &flashlib_cmd.env,
+                ),
+                None,
+                sender,
+                &component.name,
+            )?;
+
             // Step 4: clone the ROCm fork (idempotent) + fix ownership
             let clone_target_str = clone_dir.to_string_lossy().to_string();
             git_clone_or_pull(

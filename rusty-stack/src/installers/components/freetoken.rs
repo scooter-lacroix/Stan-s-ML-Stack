@@ -137,7 +137,6 @@ pub struct ShellCommand {
 /// `--no-deps` self-install can never drag a CUDA wheel in transitively.
 pub const FREETOKEN_DEPS: &[&str] = &[
     "apache-tvm-ffi==0.1.13.post3",
-    "flashlib==0.3.0",
     "transformers>=5.5,<6",
     "einops>=0.8,<1",
     "fastapi>=0.115,<1",
@@ -215,6 +214,9 @@ impl FreetokenInstaller {
                 program: "uv".to_string(),
                 args: vec![
                     "venv".to_string(),
+                    // --seed: uv venvs ship WITHOUT pip; the subsequent
+                    // `python -m pip` steps need it seeded.
+                    "--seed".to_string(),
                     "--python".to_string(),
                     self.config.python_bin.clone(),
                     self.config.venv_dir().to_string_lossy().to_string(),
@@ -265,6 +267,27 @@ impl FreetokenInstaller {
         ShellCommand {
             program: self.config.venv_python().to_string_lossy().to_string(),
             args,
+            env: vec![("PYTHONPATH".to_string(), String::new())],
+            working_dir: None,
+        }
+    }
+
+    /// Install flashlib with --no-deps (No-CUDA hard tenet). Its metadata
+    /// requires nvidia-cutlass-dsl -> cuda-python/cuda-bindings for the CuTe
+    /// primitives, none of which FreeToken touches: the slot_cache path
+    /// (lru_ensure) is pure Triton, and flashlib loads primitives lazily, so
+    /// the CUDA toolchain never loads. torch/triton (its other requirements)
+    /// are already provided by the torch step.
+    pub fn build_flashlib_install_command(&self) -> ShellCommand {
+        ShellCommand {
+            program: self.config.venv_python().to_string_lossy().to_string(),
+            args: vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "--no-deps".to_string(),
+                "flashlib==0.3.0".to_string(),
+            ],
             env: vec![("PYTHONPATH".to_string(), String::new())],
             working_dir: None,
         }
@@ -370,7 +393,7 @@ print("FREETOKEN_HIP_SMOKE_OK")
     /// venv's imports) and execs the venv entry point.
     pub fn launcher_script(&self) -> String {
         format!(
-            "#!/bin/sh\n# rusty-stack freetoken launcher: exec the dedicated venv entry point\n# with a sanitized PYTHONPATH (stack component shims must not leak in).\nPYTHONPATH= exec {} \"$@\"\n",
+            "#!/bin/sh\n# rusty-stack freetoken launcher: exec the dedicated venv entry point\n# with a sanitized environment. The stack's RCCL sitecustomize (found via\n# PYTHONPATH) re-execs torch-bearing interpreters through ld.so and breaks\n# venv site resolution; freetoken never uses RCCL, so the overlay is\n# shielded, not honored.\nunset MLSTACK_RCCL_OVERLAY_LIB MLSTACK_RCCL_OVERLAY_SHA256\nPYTHONPATH= exec {} \"$@\"\n",
             self.config
                 .venv_dir()
                 .join("bin")
@@ -511,7 +534,18 @@ mod tests {
         let inst = FreetokenInstaller::new(config());
         let script = inst.launcher_script();
         assert!(script.contains("PYTHONPATH= exec"));
+        assert!(script.contains("unset MLSTACK_RCCL_OVERLAY_LIB"));
         assert!(script.contains(".mlstack/venvs/freetoken/bin/ft"));
+    }
+
+    /// flashlib installs --no-deps (its CUDA-target metadata would violate
+    /// the No-CUDA tenet; the slot_cache path is pure Triton + lazy).
+    #[test]
+    fn test_flashlib_no_deps() {
+        let inst = FreetokenInstaller::new(config());
+        let cmd = inst.build_flashlib_install_command();
+        assert!(cmd.args.contains(&"--no-deps".to_string()));
+        assert!(cmd.args.contains(&"flashlib==0.3.0".to_string()));
     }
 
     /// Build output scanning rejects known failure patterns.
@@ -530,6 +564,7 @@ mod tests {
         let inst = FreetokenInstaller::new(config());
         let uv_cmd = inst.build_venv_create_command(true);
         assert_eq!(uv_cmd.program, "uv");
+        assert!(uv_cmd.args.contains(&"--seed".to_string()), "pip must be seeded");
         assert!(uv_cmd.args.contains(&"--python".to_string()));
         let plain_cmd = inst.build_venv_create_command(false);
         assert!(plain_cmd.program.contains("python"));

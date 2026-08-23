@@ -399,15 +399,27 @@ fn detect_command_based(info: &ComponentInfo, home: &Path) -> bool {
         }
         "freetoken" => {
             // Dedicated venv: the import only exists under the venv python
-            // (never the global env). The launcher shim is the install receipt
-            // for PATH-launched use.
+            // (never the global env). Sanitized env: the stack's RCCL
+            // sitecustomize (found via PYTHONPATH) re-execs torch-bearing
+            // interpreters through ld.so and breaks venv site resolution —
+            // freetoken never uses RCCL, so the overlay is shielded. The
+            // launcher shim is the install receipt for PATH-launched use.
             let venv_python = home
                 .join(".mlstack")
                 .join("venvs")
                 .join("freetoken")
                 .join("bin")
                 .join("python");
-            try_python_import(&venv_python, "freetoken") || home.join(".mlstack").join("bin").join("ft").exists()
+            Command::new(&venv_python)
+                .arg("-c")
+                .arg("import freetoken")
+                .env_remove("PYTHONPATH")
+                .env_remove("MLSTACK_RCCL_OVERLAY_LIB")
+                .env_remove("MLSTACK_RCCL_OVERLAY_SHA256")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+                || home.join(".mlstack").join("bin").join("ft").exists()
         }
         _ => false,
     }
