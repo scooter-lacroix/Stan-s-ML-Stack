@@ -389,11 +389,16 @@ print("FREETOKEN_HIP_SMOKE_OK")
     }
 
     /// Contents of the `~/.mlstack/bin/ft` launcher shim. Sanitizes PYTHONPATH
-    /// (the stack env prepends onnxruntime/RCCL shims that must not shadow the
-    /// venv's imports) and execs the venv entry point.
+    /// by stripping only the onnxruntime-build entry (it shadows the venv's
+    /// site-packages), while KEEPING the stack's RCCL overlay shim
+    /// (`~/.mlstack/components/rccl/active/python` + its env vars): the stock
+    /// system librccl is broken for multi-GPU collectives on this platform,
+    /// and `--tensor-parallel-size 2` needs the repaired RCCL preloaded. The
+    /// overlay sitecustomize re-execs through ld.so with inhibit-rpath, which
+    /// is safe for the venv (verified: TP gloo+RCCL all_reduce on 2 GPUs).
     pub fn launcher_script(&self) -> String {
         format!(
-            "#!/bin/sh\n# rusty-stack freetoken launcher: exec the dedicated venv entry point\n# with a sanitized environment. The stack's RCCL sitecustomize (found via\n# PYTHONPATH) re-execs torch-bearing interpreters through ld.so and breaks\n# venv site resolution; freetoken never uses RCCL, so the overlay is\n# shielded, not honored.\nunset MLSTACK_RCCL_OVERLAY_LIB MLSTACK_RCCL_OVERLAY_SHA256\nPYTHONPATH= exec {} \"$@\"\n",
+            "#!/bin/sh\n# rusty-stack freetoken launcher: exec the dedicated venv entry point.\n# Strip ONLY the onnxruntime-build PYTHONPATH entry (it shadows venv imports);\n# keep the RCCL overlay shim + vars -- the stock system librccl is broken for\n# multi-GPU collectives, and TP>1 needs the stack's repaired RCCL preloaded.\nMLSTACK_PY=\"$MLSTACK_PYTHON_BIN\"; [ -n \"$MLSTACK_PY\" ] || MLSTACK_PY=\"$HOME/.mlstack/global/bin/python\"\nORPATH=\"$HOME/onnxruntime_build/onnxruntime/build/Linux/Release\"\nNEWPP=\"\"\nOLDIFS=\"$IFS\"; IFS=:\nfor d in \"$PYTHONPATH\"; do\n  [ -z \"$d\" ] && continue\n  [ \"$d\" = \"$ORPATH\" ] && continue\n  if [ -z \"$NEWPP\" ]; then NEWPP=\"$d\"; else NEWPP=\"$NEWPP:$d\"; fi\ndone\nIFS=\"$OLDIFS\"\nPYTHONPATH=\"$NEWPP\" exec {} \"$@\"\n",
             self.config
                 .venv_dir()
                 .join("bin")
@@ -533,8 +538,8 @@ mod tests {
     fn test_launcher_script() {
         let inst = FreetokenInstaller::new(config());
         let script = inst.launcher_script();
-        assert!(script.contains("PYTHONPATH= exec"));
-        assert!(script.contains("unset MLSTACK_RCCL_OVERLAY_LIB"));
+        assert!(script.contains("onnxruntime_build"));
+        assert!(!script.contains("unset MLSTACK_RCCL"));
         assert!(script.contains(".mlstack/venvs/freetoken/bin/ft"));
     }
 
