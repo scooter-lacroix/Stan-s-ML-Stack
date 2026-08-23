@@ -27,11 +27,11 @@ use rusty_stack::state::{default_components, Category, Component};
 
 #[test]
 fn test_all_native_components_recognized() {
-    // 28 installer/action ids + 11 benchmarks + fastvideo + llama-cpp.
+    // 28 installer/action ids + 11 benchmarks + fastvideo + llama-cpp + freetoken.
     assert_eq!(
         NATIVE_COMPONENT_IDS.len(),
-        41,
-        "Must have exactly 41 native component/action IDs"
+        42,
+        "Must have exactly 42 native component/action IDs"
     );
 
     for id in NATIVE_COMPONENT_IDS {
@@ -215,6 +215,46 @@ fn test_aiter_depends_on_pytorch_and_rocm() {
     let deps = get_dependencies("aiter");
     assert!(deps.contains(&"pytorch"), "AITER must depend on pytorch");
     assert!(deps.contains(&"rocm"), "AITER must depend on rocm");
+}
+
+// ===========================================================================
+// VAL-INSTALL-053: FreeToken dependency closure
+// ===========================================================================
+
+#[test]
+fn test_freetoken_depends_on_pytorch_and_rocm() {
+    let deps = get_dependencies("freetoken");
+    assert!(
+        deps.contains(&"pytorch"),
+        "FreeToken must depend on pytorch (venv base + torch from the ROCm index)"
+    );
+    assert!(deps.contains(&"rocm"), "FreeToken must depend on rocm");
+}
+
+#[test]
+fn test_freetoken_is_native_and_in_tui() {
+    assert!(is_native_component("freetoken"));
+    let components = default_components();
+    let comp = components
+        .iter()
+        .find(|c| c.id == "freetoken")
+        .expect("freetoken must appear in default_components()");
+    assert_eq!(comp.category, Category::Extension);
+    assert!(!comp.needs_sudo, "freetoken installs as the user (venv + pip)");
+    assert!(comp.script.is_empty(), "freetoken routes to the native installer");
+}
+
+#[test]
+fn test_freetoken_topological_order() {
+    let ids = vec![
+        "freetoken".to_string(),
+        "pytorch".to_string(),
+        "rocm".to_string(),
+    ];
+    let sorted = topological_sort(&ids).unwrap();
+    let pos = |id: &str| sorted.iter().position(|s| s == id).unwrap();
+    assert!(pos("rocm") < pos("pytorch"), "rocm before pytorch");
+    assert!(pos("pytorch") < pos("freetoken"), "pytorch before freetoken");
 }
 
 #[test]
@@ -415,6 +455,13 @@ fn test_every_native_component_has_installer_module() {
                     LlamaCppConfig::default(),
                 );
             }
+            // freetoken — uses dedicated installer
+            "freetoken" => {
+                use rusty_stack::installers::components::freetoken::FreetokenConfig;
+                let _ = rusty_stack::installers::components::freetoken::FreetokenInstaller::new(
+                    FreetokenConfig::default(),
+                );
+            }
             _ => panic!("Unknown native component ID: {}", id),
         }
     }
@@ -487,8 +534,8 @@ fn test_native_components_preserve_needs_sudo_flag() {
 fn test_default_components_total_count() {
     let components = default_components();
     // 25 native TUI installers/actions (incl fastvideo + llama-cpp + RCCL repair
-    // + migraphx-python) + 3 verification + 11 performance = 39.
-    assert_eq!(components.len(), 39, "Expected 39 total components");
+    // + migraphx-python + freetoken) + 3 verification + 11 performance = 40.
+    assert_eq!(components.len(), 40, "Expected 40 total components");
 }
 
 #[test]

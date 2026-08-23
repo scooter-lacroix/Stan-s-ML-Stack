@@ -34,6 +34,7 @@ pub fn python_interpreters() -> Vec<String> {
         "PYTORCH_VENV_PYTHON",
         "DEEPSPEED_VENV_PYTHON",
         "VLLM_VENV_PYTHON",
+        "FREETOKEN_VENV_PYTHON",
     ] {
         if let Ok(value) = env::var(key) {
             push_python_candidate(&mut candidates, value);
@@ -113,6 +114,7 @@ fn push_component_venv_candidates(candidates: &mut Vec<String>, root: &Path) {
         "vllm_venv/bin/python",
         ".mlstack/venvs/aiter/bin/python",
         ".mlstack/venvs/vllm/bin/python",
+        ".mlstack/venvs/freetoken/bin/python",
         "pytorch_rocm_venv/bin/python",
     ] {
         let candidate = root.join(rel);
@@ -198,6 +200,10 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             path_exists(home_path(&home, &["megatron", "Megatron-LM"]))
                 || python_any(python_candidates, &["megatron"])
         }
+        // Dedicated venv: the import only exists under the freetoken venv
+        // python (candidates include FREETOKEN_VENV_PYTHON + the canonical
+        // ~/.mlstack/venvs/freetoken path).
+        "freetoken" => python_any(python_candidates, &["freetoken"]),
         "vllm" => {
             python_candidates
                 .iter()
@@ -373,6 +379,13 @@ pub fn component_verification_commands(
             &["megatron"],
             python_candidates,
             "import megatron,sys; ok=False\ntry:\n    from megatron.core import tensor_parallel; ok=True\nexcept Exception:\n    pass\nprint(f'Megatron-LM functional={ok}'); sys.exit(0 if ok else 1)",
+        )],
+        "freetoken" => vec![python_command(
+            "FreeToken",
+            "freetoken",
+            &["freetoken"],
+            python_candidates,
+            "import sys\nimport freetoken\nfrom freetoken.attention.base import AttnType\nimport freetoken.engine.engine as ee\nbackend = ee._resolve_auto_attention_backend(frozenset([AttnType.FULL]), False)\nok = backend == 'triton'\nprint(f'FreeToken functional={{ok}} (attention backend: {{backend}})')\nsys.exit(0 if ok else 1)",
         )],
         "vllm" => vec![python_command(
             "vLLM",

@@ -3426,6 +3426,9 @@ fn component_pip_packages(id: &str) -> Vec<String> {
         "mpi4py" => vec!["mpi4py"],
         "wandb" => vec!["wandb"],
         "fastvideo" => vec!["fastvideo"],
+        // FreeToken owns the `freetoken` package inside its dedicated venv
+        // (~/.mlstack/venvs/freetoken), not the shared global env.
+        "freetoken" => vec!["freetoken"],
         _ => Vec::new(),
     }
     .into_iter()
@@ -4693,6 +4696,158 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 let _ = std::fs::remove_file(&filtered_path);
                 break;
             }
+        }
+
+        // ── freetoken ─────────────────────────────────────────────────
+        // MoE-offload serving engine in a DEDICATED venv: its pins
+        // (transformers>=5.5, numpy<2.5) are ahead of the co-installed
+        // vllm/megatron set in the global env, and a serving engine must not
+        // perturb the training stack. venv python + torch come from the core
+        // installers' managed base and ROCm wheel index.
+        "freetoken" => {
+            use crate::installers::components::freetoken::{FreetokenConfig, FreetokenInstaller};
+            let force = is_force_reinstall();
+            let inst = FreetokenInstaller::new(FreetokenConfig {
+                python_bin: resolve_python_bin(),
+                force_reinstall: force,
+                ..FreetokenConfig::default()
+            });
+            let venv_dir = inst.config.venv_dir();
+            let venv_python = inst.config.venv_python();
+            let clone_dir = inst.config.clone_dir();
+
+            // Force reinstall: purge the venv and the clone (non-fatal)
+            if force {
+                for dir in [&venv_dir, &clone_dir] {
+                    if dir.exists() {
+                        let rm_cmd = NativeCommand::from_shell_cmd(
+                            "rm",
+                            &["-rf".to_string(), dir.to_string_lossy().to_string()],
+                            &[],
+                        );
+                        let _ = execute_native_command(&rm_cmd, sudo_pw, sender, &component.name);
+                    }
+                }
+            }
+
+            // Step 1: create the dedicated venv (uv preferred: the managed
+            // python is a uv build whose stdlib venv is broken)
+            if !venv_python.exists() {
+                let uv_available = crate::installers::common::command_exists("uv");
+                let cmd = inst.build_venv_create_command(uv_available);
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
+            }
+
+            // Step 2: ROCm torch FIRST so every later dep resolves against it
+            let torch_cmd = inst.build_torch_install_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&torch_cmd.program, &torch_cmd.args, &torch_cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 3: curated runtime deps (no torch/triton — owned by step 2;
+            // no NVIDIA extras — Triton fallbacks in-repo)
+            let deps_cmd = inst.build_deps_install_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&deps_cmd.program, &deps_cmd.args, &deps_cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 4: clone the ROCm fork (idempotent) + fix ownership
+            let clone_target_str = clone_dir.to_string_lossy().to_string();
+            git_clone_or_pull(
+                &inst.config.repo_url,
+                &clone_target_str,
+                &[],
+                sudo_pw,
+                sender,
+                &component.name,
+            )?;
+            // The fork tracks feature/rocm; a clone from a prior branchless
+            // fetch may sit on main — force the branch so the HIP code builds.
+            let checkout_cmd = NativeCommand::from_shell_cmd(
+                "git",
+                &[
+                    "-C".to_string(),
+                    clone_target_str.clone(),
+                    "checkout".to_string(),
+                    inst.config.branch.clone(),
+                ],
+                &[],
+            );
+            let _ = execute_native_command(&checkout_cmd, sudo_pw, sender, &component.name);
+            let run_user = std::env::var("SUDO_USER")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_default();
+            if !run_user.is_empty() {
+                let chown_cmd = NativeCommand::from_shell_cmd(
+                    "chown",
+                    &[
+                        "-R".to_string(),
+                        format!("{run_user}:{run_user}"),
+                        clone_target_str.clone(),
+                    ],
+                    &[],
+                );
+                let _ = execute_native_command(&chown_cmd, sudo_pw, sender, &component.name);
+            }
+
+            // Step 5: build + install freetoken (--no-deps; extensions compile
+            // through the fork's HIP shim) with GPU arch identity from the env
+            let gpu_arch = ctx.env_exports.get("GPU_ARCH").cloned().unwrap_or_else(|| "gfx1100".to_string());
+            let hsa_version = ctx.env_exports.get("HSA_OVERRIDE_GFX_VERSION").cloned().unwrap_or_else(|| "11.0.0".to_string());
+            let pip_cmd = inst.build_pip_install_command(&gpu_arch, &hsa_version);
+            execute_native_command(
+                &NativeCommand::from_shell_cmd_with_dir(
+                    &pip_cmd.program,
+                    &pip_cmd.args,
+                    &pip_cmd.env,
+                    pip_cmd.working_dir.clone(),
+                ),
+                None,
+                sender,
+                &component.name,
+            )?;
+
+            // Step 6: launcher shim at ~/.mlstack/bin/ft (sanitized PYTHONPATH;
+            // the stack env prepends onnxruntime/RCCL shims that must not
+            // shadow the venv's imports). Failure to write fails the install:
+            // an installed-but-unlaunchable engine is untrackable.
+            let bin_dir = std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".mlstack").join("bin"))
+                .unwrap_or_else(|_| PathBuf::from("/root/.mlstack/bin"));
+            let _ = std::fs::create_dir_all(&bin_dir);
+            let launcher_path = bin_dir.join("ft");
+            std::fs::write(&launcher_path, inst.launcher_script()).with_context(|| {
+                format!("Failed to write FreeToken launcher to {launcher_path:?}")
+            })?;
+            {
+                let chmod_cmd = NativeCommand::from_shell_cmd(
+                    "chmod",
+                    &["+x".to_string(), launcher_path.to_string_lossy().to_string()],
+                    &[],
+                );
+                let _ = execute_native_command(&chmod_cmd, None, sender, &component.name);
+            }
+
+            // Step 7: install-time HIP smoke test (import + backend resolution
+            // + pinned identity + LRU slot cache), timeout-guarded
+            let smoke_cmd = inst.build_smoke_test_command();
+            execute_native_command(
+                &NativeCommand::from_shell_cmd(&smoke_cmd.program, &smoke_cmd.args, &smoke_cmd.env),
+                None,
+                sender,
+                &component.name,
+            )?;
         }
 
         // ── vllm ──────────────────────────────────────────────────────

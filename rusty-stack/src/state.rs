@@ -586,6 +586,31 @@ pub fn default_components() -> Vec<Component> {
             experimental: false,
             note: None,
         },
+        Component {
+            id: "freetoken".into(),
+            name: "FreeToken".into(),
+            description: "MoE-offload LLM serving engine (OpenAI/Anthropic APIs), HIP port"
+                .into(),
+            script: String::new(), // Native Rust installer
+            category: Extension,
+            required: false,
+            selected: false,
+            installed: false,
+            progress: 0.0,
+            estimate: "10-20 min".into(),
+            // Dedicated venv (~/.mlstack/venvs/freetoken) + torch from the ROCm
+            // index; launcher shim at ~/.mlstack/bin/ft. No sudo.
+            needs_sudo: false,
+            experimental: false,
+            note: Some(
+                "Serves MoE checkpoints (Qwen3.5-MoE / DeepSeek-V4 / GLM / gpt-oss class) with \
+                 experts offloaded to host RAM. Installs into its own venv, so the training \
+                 stack is untouched. Attention runs the pure-Triton backend on AMD; fp8/MXFP4/\
+                 NVFP4 checkpoints are NOT supported on RDNA consumer GPUs — use bf16 or \
+                 Q4_K/Q6_K GGUF. Launcher: ~/.mlstack/bin/ft."
+                    .into(),
+            ),
+        },
         // ── Maintenance (verify + repair) ──
         Component {
             id: "verify-basic".into(),

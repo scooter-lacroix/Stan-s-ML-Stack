@@ -66,6 +66,7 @@ pub mod comfyui;
 pub mod deepspeed;
 pub mod fastvideo;
 pub mod flash_attention_ck;
+pub mod freetoken;
 pub mod llama_cpp;
 pub mod megatron;
 pub mod migraphx_multi;
@@ -93,6 +94,7 @@ pub use bitsandbytes_multi::{BitsAndBytesConfig, BitsAndBytesInstaller};
 pub use comfyui::{ComfyuiConfig, ComfyuiInstaller};
 pub use deepspeed::{DeepSpeedConfig, DeepSpeedInstaller};
 pub use flash_attention_ck::{FlashAttentionConfig, FlashAttentionInstaller, GpuArch};
+pub use freetoken::{FreetokenConfig, FreetokenInstaller};
 pub use llama_cpp::{LlamaCppConfig, LlamaCppInstaller};
 pub use megatron::{MegatronConfig, MegatronInstaller};
 pub use migraphx_multi::{MigraphxConfig, MigraphxInstaller, MigraphxSupport};
@@ -172,6 +174,8 @@ pub const NATIVE_COMPONENT_IDS: &[&str] = &[
     "fastvideo",
     // llama.cpp component (HIP/ROCm CMake source build)
     "llama-cpp",
+    // FreeToken (MoE-offload serving engine, HIP port from the scooter-lacroix fork)
+    "freetoken",
 ];
 
 /// Returns `true` if the given component ID has been ported to native Rust
@@ -219,6 +223,10 @@ pub fn get_dependencies(component_id: &str) -> &'static [&'static str] {
         "pytorch" => &["rocm"], // PyTorch for ROCm requires ROCm installed
         "pytorch-profiler" => &["pytorch"],
         "llama-cpp" => &["rocm"], // llama.cpp HIP build requires ROCm
+        // FreeToken lives in its own venv but is created FROM the managed
+        // python and torch from the ROCm index — both owned by the core
+        // installers, so the closure is pytorch + rocm.
+        "freetoken" => &["pytorch", "rocm"],
         // All other native components have no cross-component dependencies
         _ => &[],
     }
@@ -305,7 +313,7 @@ mod dispatch_tests {
     #[test]
     fn test_all_native_components_listed() {
         // 28 installer/action ids + 11 benchmarks + fastvideo + llama-cpp.
-        assert_eq!(NATIVE_COMPONENT_IDS.len(), 41);
+        assert_eq!(NATIVE_COMPONENT_IDS.len(), 42);
     }
 
     #[test]

@@ -224,6 +224,14 @@ pub fn known_components() -> &'static [ComponentInfo] {
                 python_import: None,
                 clone_dir: None,
             },
+            ComponentInfo {
+                id: "freetoken".into(),
+                display_name: "FreeToken (HIP)".into(),
+                detection_method: DetectionMethod::CommandBased,
+                installer_script: String::new(), // Native Rust installer
+                python_import: None,
+                clone_dir: None,
+            },
             // UI/UX
             ComponentInfo {
                 id: "comfyui".into(),
@@ -389,6 +397,18 @@ fn detect_command_based(info: &ComponentInfo, home: &Path) -> bool {
                     .map(|o| o.status.success())
                     .unwrap_or(false)
         }
+        "freetoken" => {
+            // Dedicated venv: the import only exists under the venv python
+            // (never the global env). The launcher shim is the install receipt
+            // for PATH-launched use.
+            let venv_python = home
+                .join(".mlstack")
+                .join("venvs")
+                .join("freetoken")
+                .join("bin")
+                .join("python");
+            try_python_import(&venv_python, "freetoken") || home.join(".mlstack").join("bin").join("ft").exists()
+        }
         _ => false,
     }
 }
@@ -538,6 +558,31 @@ fn get_version_command_based(info: &ComponentInfo, home: &Path) -> String {
                         return parsed;
                     }
                     return "installed".to_string();
+                }
+            }
+            if detect_command_based(info, home) {
+                return "installed".to_string();
+            }
+            "not installed".to_string()
+        }
+        "freetoken" => {
+            // Version lives in the dedicated venv, not the global env.
+            let venv_python = home
+                .join(".mlstack")
+                .join("venvs")
+                .join("freetoken")
+                .join("bin")
+                .join("python");
+            if let Ok(output) = Command::new(&venv_python)
+                .arg("-c")
+                .arg("import freetoken; print(freetoken.__version__)")
+                .output()
+            {
+                if output.status.success() {
+                    let v = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !v.is_empty() {
+                        return v;
+                    }
                 }
             }
             if detect_command_based(info, home) {
@@ -918,8 +963,8 @@ mod tests {
         // the expected-ids list when adding a component.
         assert_eq!(
             components.len(),
-            22,
-            "Registry must contain exactly 22 known components, found {}",
+            23,
+            "Registry must contain exactly 23 known components, found {}",
             components.len()
         );
     }
@@ -949,6 +994,7 @@ mod tests {
             "rocm-smi",
             "permanent-env",
             "llama-cpp",
+            "freetoken",
         ];
         let components = known_components();
         for expected in &expected_ids {
@@ -984,6 +1030,7 @@ mod tests {
             "rocm-smi",
             "permanent-env",
             "llama-cpp",
+            "freetoken",
         ];
         for id in &ids {
             assert!(
@@ -1393,7 +1440,7 @@ mod tests {
     #[test]
     fn test_installer_scripts_for_installable_components() {
         // rocm-smi, permanent-env, and native Rust components don't have installer scripts
-        let no_script = ["rocm-smi", "permanent-env", "llama-cpp"];
+        let no_script = ["rocm-smi", "permanent-env", "llama-cpp", "freetoken"];
         for c in known_components() {
             if !no_script.contains(&c.id.as_str()) {
                 assert!(

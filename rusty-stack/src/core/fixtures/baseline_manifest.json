@@ -159,8 +159,30 @@
       "script": "scripts/install_llama_cpp.sh",
       "category": "Core",
       "validation_tier": "Experimental",
-      "compatible_channels": ["legacy", "stable", "latest"],
-      "dependencies": ["rocm"]
+      "compatible_channels": [
+        "legacy",
+        "stable",
+        "latest"
+      ],
+      "dependencies": [
+        "rocm"
+      ]
+    },
+    {
+      "id": "freetoken",
+      "version": "0.1.2-rocm.1",
+      "script": "scripts/install_freetoken.sh",
+      "category": "Extension",
+      "validation_tier": "Candidate",
+      "compatible_channels": [
+        "legacy",
+        "stable",
+        "latest"
+      ],
+      "dependencies": [
+        "pytorch",
+        "rocm"
+      ]
     }
   ]
 }

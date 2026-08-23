@@ -70,6 +70,7 @@ const ML_PIP_PACKAGES: &[&str] = &[
     "xformers",
     "accelerate",
     "transformers",
+    "freetoken",
 ];
 
 /// Options for [`uninstall_stack`].

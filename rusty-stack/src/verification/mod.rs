@@ -69,6 +69,7 @@ fn enhanced_verify_components() -> Vec<(&'static str, &'static str)> {
         ("textgen", "text-generation-webui"),
         ("vllm-studio", "vLLM Studio"),
         ("llama-cpp", "llama.cpp (HIP)"),
+        ("freetoken", "FreeToken"),
         ("basic-env", "Basic Environment"),
         ("enhanced-env", "Enhanced Environment"),
         ("permanent-env", "Permanent Environment"),
@@ -179,6 +180,7 @@ fn category_for_component(id: &str) -> String {
             "ML Framework".to_string()
         }
         "mpi4py" | "deepspeed" | "megatron" => "Training".to_string(),
+        "freetoken" => "Serving".to_string(),
         "vllm" | "aiter" | "vllm-studio" => "Inference".to_string(),
         "bitsandbytes" | "wandb" => "Utilities".to_string(),
         "ml-stack-core" => "Core".to_string(),
