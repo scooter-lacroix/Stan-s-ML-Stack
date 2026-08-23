@@ -2,6 +2,42 @@
 
 ---
 
+## FreeToken GGUF serving on ROCm: Ornith-1.5-35B end-to-end (2026-08-23)
+
+### Added — qwen35moe GGUF adapter (fork `feature/rocm`)
+Native GGUF loading for the hybrid GDN/MoE architecture: config from llama.cpp
+KV metadata, dense weights bf16-dequantized (norms verbatim — llama.cpp
+pre-bakes the Gemma +1), experts as a new `ggml` offload-bank format (native
+Q4_K/Q6_K bytes, mixed quants requantized to uniform; matched round-trip
+encoder at +0.12% over the Q4_K nibble floor). Three layout facts decoded and
+verified per-head against HF ground truth (cos 0.98-0.999): GDN value heads
+stored de-interleaved ([even|odd]) across all v-dim tensors; ssm_a =
+-exp(A_log); attention q|gate half keeps per-head interleave. MTP layer
+dropped. Dedicated venv install, all kernels HIP-green.
+
+### Fixed — four HIP kernel bugs found by the e2e loop
+1. ROCm 7 64-bit shuffle masks silently excluded wave64's upper 32-lane
+   segment -> Q8_1 activation quantizer corrupt -> ALL MMVQ results zero on
+   gfx1100. Fixed with mask-less `__shfl_xor(width=32)`.
+2. `launch_pdl` kwarg rejected by ROCm Triton even when False (crashed graph
+   capture); PTX tanh/ex2 intrinsics ('f' constraint) un-compilable on
+   AMDGCN -> libdevice/tl.exp2 under IS_AMD constexpr.
+3. ld/st PTX cache hints in fast_index_copy (invalid 'l' constraint) ->
+   __ldg/plain stores; extended the HIP API shim; functional
+   host_ptr_identity probe.
+4. Q4_K CPU dequant + requantizer (validated vs the GPU kernel on real
+   checkpoint data).
+
+### Verified end-to-end on 2× RX 7900 XTX (gfx1100, ROCm 7.2.4)
+`ft serve` Ornith-1.5-35B-A3B (Q4_K_M GGUF): llama.cpp-parity next tokens
+("The capital of France is Paris"), coherent chat + reasoning channel,
+~39 tok/s decode, attention=triton + MoE=offload auto-selected, CUDA graphs
+captured. Subsystem validations: 37/37 upstream attention/rotary tests, GDN
+chunk/decode vs the pure-torch reference, full offload loop (decode+prefill)
+at ~1.1%, multi-expert MMVQ on real banks at 0.6-1.2%.
+
+---
+
 ## FreeToken: first-class MoE serving component on ROCm (2026-08-22)
 
 ### Added — `freetoken` component (VAL-INSTALL-050..054)

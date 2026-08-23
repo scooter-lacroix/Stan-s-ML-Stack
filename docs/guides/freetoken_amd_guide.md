@@ -10,7 +10,8 @@ Serve MoE LLMs on Radeon GPUs with experts offloaded to host RAM.
 # 1. Install via the rusty-stack TUI (Extensions → FreeToken) or CLI:
 #    (creates ~/.mlstack/venvs/freetoken, launcher at ~/.mlstack/bin/ft)
 
-# 2. Serve a MoE checkpoint (GGUF Q4_K works great on RDNA3):
+# 2. Serve the Ornith GGUF (verified: coherent chat + reasoning, ~39 tok/s decode
+#    on a 7900 XTX with experts streamed from host RAM):
 ~/.mlstack/bin/ft serve --model /mnt/HDD-2/Models/ornith-ai/Ornith-1.5-35B-A3B-GGUF/Ornith-1.5-35B-Q4_K_M.gguf
 
 # 3. Chat with it (OpenAI-compatible API on :1919):
@@ -28,7 +29,7 @@ CPU — so a 35B-A3B MoE serves comfortably from a 24 GB card.
 | Format | RDNA3 (gfx1100) |
 |---|---|
 | bf16 / bf16-safetensors | ✅ |
-| GGUF Q4_K / Q6_K | ✅ (llama.cpp-derived HIP kernels) |
+| GGUF Q4_K / Q6_K | ✅ (qwen35moe + gemma4 archs; Ornith/Qwen3.5-class MoE verified) |
 | fp8 / MXFP4 / NVFP4 | ❌ tensor-core formats, not supported |
 
 Supported families include Qwen3.5-MoE (hybrid GDN), Qwen3-MoE, DeepSeek-V4,

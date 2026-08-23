@@ -20,6 +20,7 @@ through guards keyed off `torch.version.hip` / `__HIP_PLATFORM_AMD__`.
 | tvm-ffi JIT kernels | nvcc, `TVM_FFI_CUDA_ARCH_LIST` gencode | `backend="hip"` → hipcc, `--offload-arch` from `TVM_FFI_ROCM_ARCH_LIST` or rocminfo; nvcc-only flags dropped |
 | GGUF kernels (llama.cpp vendored) | nvcc + `-ccbin clang++` | torch cpp_extension in-process hipifier; ROCm 7's 64-bit-mask shuffles handled in `dispatch.h` (`width=32` segmentation) |
 | Attention backend | trtllm / fa+fi / fi | auto-resolves to the pure-Triton backend (in-repo kernels) |
+| qwen35moe GGUF (Q4_K_M) | not applicable (gemma4-only upstream) | native adapter: GGML k-quant experts stream through the offload cache, GDN v-head de-interleave + pre-baked norms decoded from the llama.cpp layout (verified vs HF ground truth) |
 | MoE LRU slot cache | flashlib Triton `lru_ensure` | same — runs as-is on gfx1100 |
 | NVIDIA-only extras | flashinfer `[fi]`, sgl-kernel `[sgl]`, vLLM Marlin NVFP4, PDL | not installed; every path has an in-repo Triton fallback |
 
@@ -72,7 +73,8 @@ curl http://127.0.0.1:1919/v1/chat/completions -H 'content-type: application/jso
 ## Known limitations on RDNA consumer GPUs (gfx1100 class)
 
 - fp8 / MXFP4 / NVFP4 checkpoints are **not supported** (tensor-core formats);
-  use bf16 safetensors or Q4_K/Q6_K GGUF checkpoints.
+  use bf16 safetensors or Q4_K/Q6_K GGUF checkpoints. GGUF arch support:
+  qwen35moe (Q4_K_M verified end-to-end on Ornith-1.5-35B-A3B) and gemma4.
 - NVIDIA extras (flashinfer fused norm/sampling, sgl-kernel FA3/FA4,
   trtllm-gen) are absent by design — Triton fallbacks cover every path.
 - Tensor-parallel serving via pynccl is not yet wired to RCCL (single-GPU
