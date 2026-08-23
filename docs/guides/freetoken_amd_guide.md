@@ -45,6 +45,30 @@ ft shell --model <ckpt>                        # interactive terminal chat
 ft checkpoint --help                           # checkpoint conversion tools
 ```
 
+## Memory management (zram swap + the model loader)
+
+The expert banks live in host RAM (mmap shmem). When the system zram swap
+fills to 100%, the kernel OOM killer targets the loader (agent-session
+processes carry `oom_score_adj=200` — the preferred victim) even with
+free RAM available. Rootless fix, verified:
+
+```bash
+# 1. Find the swap holders:
+for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+  swap=$(awk '/^VmSwap/{print $2}' /proc/$pid/status 2>/dev/null)
+  [ -n "$swap" ] && [ "$swap" -gt 102400 ] && echo "$((swap/1024))MB $pid $(cat /proc/$pid/comm)"
+done | sort -rn | head
+
+# 2. Kill stale holders that auto-restart (baloo_file indexer, old firefox
+#    content processes) — zram pages die with their owner, freeing headroom.
+# 3. The definitive reset needs root once: sudo swapoff -a && sudo swapon -a
+#    (verified safe: logical swap debt ~10GB fits in free RAM).
+```
+
+For tensor-parallel serving, the launcher keeps the RCCL overlay vars
+(see the extension guide) — the stock system librccl is broken for
+cross-GPU collectives.
+
 ## Troubleshooting
 
 - **`import freetoken` fails in the global env** — by design; the package
