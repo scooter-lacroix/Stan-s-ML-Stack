@@ -45,6 +45,31 @@ ft shell --model <ckpt>                        # interactive terminal chat
 ft checkpoint --help                           # checkpoint conversion tools
 ```
 
+## SSD tier + pre-warm (models larger than RAM)
+
+Model capacity is disk-bound, not RAM-bound: with the SSD tier, expert banks
+live in an NVMe pack file and the kernel page cache tiers hot/cold
+automatically. Verified with the 35B Q4_K_M (16.9 GiB pack); larger models
+are bounded by the NVMe mount, not host RAM.
+
+```bash
+# 1. Serve with file-backed banks (first run auto-packs, ~3.5 min from HDD):
+export FREETOKEN_EXPERT_BANK_STORAGE=file
+export FREETOKEN_BANK_CACHE_DIR=/mnt/WD-SSD/mlstack-banks   # your NVMe
+
+# 2. Capture a routing profile (500+ tokens of any generation):
+export FREETOKEN_EXPERT_PROFILE_OUT=$FREETOKEN_BANK_CACHE_DIR/model.profile.json
+
+# 3. Restart with the profile to pre-warm the slot cache (decode starts warm,
+#    the cold-start never faults; CUDA graphs are off in file mode):
+export FREETOKEN_EXPERT_PROFILE=$FREETOKEN_BANK_CACHE_DIR/model.profile.json
+```
+
+Why pre-warm works: long-run expert usage is FLAT (no globally-hot experts)
+but the moment-local set is -- a recency-ranked cache admits the right set
+even though the averages say there is none. Code + chat profiles can be
+merged; cross-workload profiles retain most of the benefit.
+
 ## Memory management (zram swap + the model loader)
 
 The expert banks live in host RAM (mmap shmem). When the system zram swap
