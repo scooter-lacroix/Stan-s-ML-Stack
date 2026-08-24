@@ -10,8 +10,8 @@ Serve MoE LLMs on Radeon GPUs with experts offloaded to host RAM.
 # 1. Install via the rusty-stack TUI (Extensions → FreeToken) or CLI:
 #    (creates ~/.mlstack/venvs/freetoken, launcher at ~/.mlstack/bin/ft)
 
-# 2. Serve the Ornith GGUF (verified: coherent chat + reasoning, ~39 tok/s decode
-#    on a 7900 XTX with experts streamed from host RAM):
+# 2. Serve the Ornith GGUF (verified: coherent chat + reasoning, ~40 tok/s decode
+#    on a 7900 XTX; experts in host RAM or streamed from NVMe -- same speed):
 ~/.mlstack/bin/ft serve --model /mnt/HDD-2/Models/ornith-ai/Ornith-1.5-35B-A3B-GGUF/Ornith-1.5-35B-Q4_K_M.gguf
 
 # 3. Chat with it (OpenAI-compatible API on :1919):
@@ -61,7 +61,8 @@ export FREETOKEN_BANK_CACHE_DIR=/mnt/WD-SSD/mlstack-banks   # your NVMe
 export FREETOKEN_EXPERT_PROFILE_OUT=$FREETOKEN_BANK_CACHE_DIR/model.profile.json
 
 # 3. Restart with the profile to pre-warm the slot cache (decode starts warm,
-#    the cold-start never faults; CUDA graphs are off in file mode):
+#    the cold-start never faults). Pre-warm admits the top cache_size/num_layers
+#    experts per layer and issues NVMe readahead for exactly those ranges.
 export FREETOKEN_EXPERT_PROFILE=$FREETOKEN_BANK_CACHE_DIR/model.profile.json
 ```
 
@@ -69,6 +70,13 @@ Why pre-warm works: long-run expert usage is FLAT (no globally-hot experts)
 but the moment-local set is -- a recency-ranked cache admits the right set
 even though the averages say there is none. Code + chat profiles can be
 merged; cross-workload profiles retain most of the benefit.
+
+Decode runs on **piecewise CUDA graphs** in file mode: each layer's graph
+segment ends after its LRU bookkeeping, the staged miss fetch runs between
+segments through a pinned ring buffer, and the expert GEMM continues in the
+next segment. Measured on the 35B Q4_K_M: ~40 tok/s from NVMe -- parity with
+the pinned-RAM tier. `FREETOKEN_FILE_PIECEWISE=0` falls back to fully eager
+decode; `FREETOKEN_FILE_STAGING_MB` sizes the pinned ring (default 32).
 
 ## Memory management (zram swap + the model loader)
 

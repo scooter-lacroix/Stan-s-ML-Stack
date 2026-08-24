@@ -2,6 +2,43 @@
 
 ---
 
+## FreeToken SSD tier at RAM-tier speed: piecewise graphs + pinned staging (2026-08-23)
+
+### Result
+File-backed (`FREETOKEN_EXPERT_BANK_STORAGE=file`) Ornith-1.5-35B Q4_K_M on a
+7900 XTX: **34-35 → 38-41 tok/s sustained (40.7 peak)** — parity with the
+pinned-RAM tier's ~39, coherent chat/reasoning/code outputs verified.
+
+### Piecewise CUDA graphs (`engine/piecewise.py`, `engine/graph.py`)
+The file tier's miss copies are host-driven (the GPU cannot fault page-cache
+pages), which made the monolithic decode graph uncapturable — file mode ran
+fully eager. Now the trunk is captured as a chain of segments ending at each
+layer's ensure/copy seam (`OffloadMoELayer` calls `capture_seam` after
+`ensure_experts`, whose LRU bookkeeping is device-side and capturable); the
+runner replays `seg[i]` -> staged miss fetch -> `seg[i+1]`. Cross-seam
+activations are kept alive so the shared graph pool cannot recycle their
+storage mid-chain. Only the expert fetch pays eager dispatch.
+`FREETOKEN_FILE_PIECEWISE=0` falls back to fully eager.
+
+### Pinned staging ring (`moe/file_staging.py`)
+Replaces per-row driver-staged pageable H2D: rows pack into a 2-deep pinned
+ring (plain memcpys, page-cache friendly), cross as one large async H2D per
+chunk, scatter device-side into the slot cache; chunk k+1 packs while chunk k
+drains. The three per-layer-step host syncs (.item() + two .tolist()) collapse
+into one D2H through a pinned index buffer. Prefill whole-layer copies route
+through the same ring. Byte-exact vs naive copy incl. ring rotation;
+`FREETOKEN_FILE_STAGING_MB` sizes the ring (default 32).
+
+### Pre-warm semantics fix + readahead
+`prewarm_from_profile` admitted min(cache_size, E) experts PER LAYER — with
+auto-sized caches that tried to admit every expert of every layer, churning
+the whole pack through a slot map that could not hold it. Now defaults to
+cache_size/num_layers per layer (9101-slot cache -> 227x40 = 9080 admissions,
+no eviction churn) and issues POSIX_FADV_WILLNEED for exactly the admitted
+byte ranges before copying (pack path plumbed ExpertBanks -> cache).
+
+---
+
 ## FreeToken multi-GPU rail: pynccl -> RCCL verified on 2x gfx1100 (2026-08-23)
 
 ### Why only one GPU was used
