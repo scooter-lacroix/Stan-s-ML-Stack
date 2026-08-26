@@ -18,6 +18,7 @@
 
 pub mod askpass;
 pub mod benchmark_common;
+pub mod component_bridge;
 pub mod distro;
 pub mod env_validation;
 pub mod guard;

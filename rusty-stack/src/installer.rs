@@ -2905,6 +2905,67 @@ fn is_existing_git_repo(target_dir: &str) -> bool {
 /// When `git_clone_or_pull` runs git operations with sudo, the resulting files
 /// are owned by root. This prevents subsequent user-space builds from writing
 /// to the directory. This function chowns the tree back to the real user.
+/// Auto-recognition between FastVideo and ComfyUI installs.
+///
+/// FastVideo's wheel ships a ComfyUI custom-node pack as the top-level
+/// `comfyui` package; stock ComfyUI only scans `custom_nodes/`. Called from
+/// BOTH arms after a successful install so either order wires the symlink.
+fn bridge_fastvideo_comfy_custom_nodes(_just_installed: &str, sender: &Sender<InstallerEvent>) {
+    use crate::installers::common::component_bridge::{ensure_custom_node_link, LinkOutcome};
+
+    let comfy_root: std::path::PathBuf = std::env::var("COMFYUI_DIR")
+        .ok()
+        .map(Into::into)
+        .unwrap_or_else(|| crate::installers::components::comfyui::default_install_dir().into());
+    if !comfy_root.join("main.py").is_file() {
+        return; // other side not installed yet — its own arm will wire this later
+    }
+    let node_src = std::process::Command::new(resolve_python_bin())
+        .args([
+            "-c",
+            "import comfyui, os; print(os.path.dirname(comfyui.__file__))",
+        ])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(node_src) = node_src else { return };
+
+    match ensure_custom_node_link(
+        &comfy_root,
+        std::path::Path::new(&node_src),
+        "fastvideo_nodes",
+    ) {
+        Ok(LinkOutcome::AlreadyLinked) => {}
+        Ok(outcome) => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[bridge] ComfyUI ↔ FastVideo custom nodes {}: {} -> {}",
+                    match outcome {
+                        LinkOutcome::Created => "linked",
+                        LinkOutcome::Refreshed => "re-pointed",
+                        _ => "updated",
+                    },
+                    comfy_root.display(),
+                    node_src
+                ),
+                false,
+            ));
+        }
+        Err(err) => {
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[bridge] WARN could not link ComfyUI ↔ FastVideo nodes ({err}); \
+                     recognition stays manual"
+                ),
+                false,
+            ));
+        }
+    }
+}
+
 /// Reassert centrally owned Python package pins when the environment drifted.
 ///
 /// The managed registry is provisioned once during the pytorch arm and then
@@ -5304,6 +5365,9 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     false,
                 ));
             }
+
+            // Self-recognition: if FastVideo is present, expose its node pack.
+            bridge_fastvideo_comfy_custom_nodes("comfyui", sender);
         }
 
         // ── textgen ───────────────────────────────────────────────────
@@ -6223,6 +6287,9 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Self-recognition: if ComfyUI is present, expose this node pack.
+            bridge_fastvideo_comfy_custom_nodes("fastvideo", sender);
         }
         // ── llama-cpp ──────────────────────────────────────────────────
         "llama-cpp" => {
