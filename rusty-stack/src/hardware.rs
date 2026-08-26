@@ -901,7 +901,10 @@ fn detect_gpu() -> GPUInfo {
         "rocminfo".to_string()
     };
 
-    if let Ok(output) = Command::new(rocminfo_cmd).output() {
+    if let Some(output) = crate::proc_util::run_with_detection_timeout(
+        &mut Command::new(rocminfo_cmd),
+        "rocminfo dump",
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut gpu_count = 0usize;
@@ -1053,12 +1056,13 @@ fn detect_gpu() -> GPUInfo {
         "rocm-smi".to_string()
     };
 
-    if let Ok(output) = Command::new(&rocm_smi_cmd)
-        .arg("--showmeminfo")
-        .arg("vram")
-        .arg("--csv")
-        .output()
-    {
+    if let Some(output) = crate::proc_util::run_with_detection_timeout(
+        Command::new(&rocm_smi_cmd)
+            .arg("--showmeminfo")
+            .arg("vram")
+            .arg("--csv"),
+        "rocm-smi meminfo",
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {
@@ -1073,11 +1077,10 @@ fn detect_gpu() -> GPUInfo {
         }
     }
 
-    if let Ok(output) = Command::new(&rocm_smi_cmd)
-        .arg("--showtemp")
-        .arg("--csv")
-        .output()
-    {
+    if let Some(output) = crate::proc_util::run_with_detection_timeout(
+        Command::new(&rocm_smi_cmd).arg("--showtemp").arg("--csv"),
+        "rocm-smi temp",
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {
@@ -1092,11 +1095,10 @@ fn detect_gpu() -> GPUInfo {
         }
     }
 
-    if let Ok(output) = Command::new(&rocm_smi_cmd)
-        .arg("--showpower")
-        .arg("--csv")
-        .output()
-    {
+    if let Some(output) = crate::proc_util::run_with_detection_timeout(
+        Command::new(&rocm_smi_cmd).arg("--showpower").arg("--csv"),
+        "rocm-smi power",
+    ) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines().skip(1) {

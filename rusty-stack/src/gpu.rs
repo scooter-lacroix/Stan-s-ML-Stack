@@ -511,8 +511,11 @@ struct LspciDevice {
 /// Returns vec of (pci_slot, marketing_name, pci_id). lspci output format:
 /// `BB:DD.F VGA compatible controller [0300]: Vendor Name [Device Name] [vvvv:dddd]`
 fn parse_lspci_amd() -> Vec<LspciDevice> {
-    let output = match std::process::Command::new("lspci").arg("-nn").output() {
-        Ok(o) if o.status.success() => o.stdout,
+    let output = match crate::proc_util::run_with_detection_timeout(
+        std::process::Command::new("lspci").arg("-nn"),
+        "lspci",
+    ) {
+        Some(o) if o.status.success() => o.stdout,
         _ => return Vec::new(),
     };
 
@@ -580,11 +583,12 @@ fn parse_lspci_amd() -> Vec<LspciDevice> {
 
 /// Check if rocminfo is available and runnable.
 fn rocminfo_available() -> bool {
-    std::process::Command::new("rocminfo")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    crate::proc_util::run_with_detection_timeout(
+        std::process::Command::new("rocminfo").arg("--version"),
+        "rocminfo --version",
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
 }
 
 /// Parse rocminfo agent list for ROCm device ordering (optional enrichment).
@@ -595,8 +599,12 @@ fn rocminfo_available() -> bool {
 /// agents that lack a numbered "Agent N" header fall back to the running GPU
 /// counter. Cross-verified against lspci/sysfs devices by the caller.
 fn parse_rocminfo_agents() -> Vec<(u32, String, Option<String>)> {
-    let output = match std::process::Command::new("rocminfo").output() {
-        Ok(o) if o.status.success() => o.stdout,
+    let mut rocminfo_probe = std::process::Command::new("rocminfo");
+    let output = match crate::proc_util::run_with_detection_timeout(
+        &mut rocminfo_probe,
+        "rocminfo agents",
+    ) {
+        Some(o) if o.status.success() => o.stdout,
         _ => return Vec::new(),
     };
 

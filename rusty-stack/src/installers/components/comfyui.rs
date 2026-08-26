@@ -382,7 +382,7 @@ impl ComfyuiInstaller {
              [Service]\nType=simple\nWorkingDirectory=\"{}\"\n\
              Environment=\"HIP_VISIBLE_DEVICES={}\"\n\
              Environment=\"CUDA_VISIBLE_DEVICES={}\"\n\
-             ExecStart={}/.local/bin/comfy\nRestart=on-failure\n\n\
+             ExecStart={}/.local/bin/comfy\nRestart=on-failure\nRestartPreventExitStatus=78\n\n\
              [Install]\nWantedBy=default.target\n",
             self.config.install_dir,
             gpu_devices,
@@ -631,5 +631,7 @@ mod tests {
         assert!(svc.contains("HIP_VISIBLE_DEVICES=0,1"));
         // routes through the shim so the drift guard covers systemd launches
         assert!(svc.contains("ExecStart=/home/user/.local/bin/comfy"));
+        // drift-guard exit must NOT trigger restart churn
+        assert!(svc.contains("RestartPreventExitStatus=78"));
     }
 }

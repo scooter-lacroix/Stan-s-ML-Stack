@@ -19,6 +19,7 @@ pub mod installers;
 pub mod logging;
 pub mod orchestrator;
 pub mod platform;
+pub mod proc_util;
 pub mod state;
 pub mod telemetry;
 pub mod uninstall;

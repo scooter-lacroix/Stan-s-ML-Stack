@@ -204,11 +204,19 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         // freetoken_installed): the RCCL sitecustomize re-exec breaks venv
         // resolution under the shared stack env.
         "freetoken" => freetoken_installed(),
+        // [DETECTION] Same rigorous runtime health contract as before (full
+        // import + native _C/_rocm_C loads), now BOUNDED: a contended GPU can
+        // no longer stall startup indefinitely. The identical check remains
+        // the Verify action at component_verification_commands()/vllm.
         "vllm" => {
-            python_candidates
-                .iter()
-                .any(|python| python_exec(python, vllm_runtime_check_snippet()))
-                || path_exists(home_path(&home, &["vllm_build"]))
+            python_candidates.iter().any(|python| {
+                python_exec_bounded(
+                    python,
+                    vllm_runtime_check_snippet(),
+                    std::time::Duration::from_secs(45),
+                    "detect vllm runtime",
+                )
+            }) || path_exists(home_path(&home, &["vllm_build"]))
                 || path_exists(home_path(&home, &["vllm_py313"]))
         }
         "aiter" => python_any(python_candidates, &["aiter"]),
@@ -264,10 +272,16 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         }
         "pytorch-profiler" => python_any(python_candidates, &["torch"]),
         "wandb" => python_any(python_candidates, &["wandb"]),
+        // [DETECTION] Unchanged rigorous kernel-smoke contract (per-GPU torch
+        // HIP init + int8_quant execution; enforced by its unit test), now
+        // BOUNDED so GPU contention cannot hang startup. Identical bytes run
+        // as the Verify action at component_verification_commands()/fastvideo.
         "fastvideo" => python_candidates.iter().any(|python| {
-            python_exec(
+            python_exec_bounded(
                 python,
                 crate::installers::components::fastvideo::fastvideo_verification_snippet(),
+                std::time::Duration::from_secs(30),
+                "detect fastvideo kernel smoke",
             )
         }),
         "llama-cpp" => {
@@ -628,7 +642,9 @@ fn freetoken_venv_python() -> Option<String> {
         .join("freetoken")
         .join("bin")
         .join("python");
-    candidate.exists().then(|| candidate.to_string_lossy().to_string())
+    candidate
+        .exists()
+        .then(|| candidate.to_string_lossy().to_string())
 }
 
 /// FreeToken detection: a REAL import under the venv python with a sanitized
@@ -1029,6 +1045,17 @@ fn onnxruntime_present_snippet() -> &'static str {
      sys.path = [p for p in sys.path if p and os.path.abspath(p.rstrip('/')) != os.path.abspath(os.getcwd())]; \
      s = importlib.util.find_spec('onnxruntime'); \
      sys.exit(0 if (s is not None and s.origin is not None) else 1)"
+}
+
+/// Bounded `python_exec`: identical exit-code semantics with a hard runtime
+/// cap via proc_util (process-group TERM on expiry). Used by heavyweight
+/// detection probes so contended GPUs cannot freeze component listing.
+fn python_exec_bounded(python: &str, code: &str, limit: std::time::Duration, label: &str) -> bool {
+    let mut cmd = std::process::Command::new(python);
+    cmd.arg("-c").arg(code);
+    crate::proc_util::run_command_timeout(&mut cmd, label, limit)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn python_exec(python: &str, code: &str) -> bool {
