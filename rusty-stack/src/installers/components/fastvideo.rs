@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 const FASTVIDEO_REPO: &str = "https://github.com/scooter-lacroix/FastVideo.git";
-pub const FASTVIDEO_COMMIT: &str = "22e448771ebf5c81108f1c57b9c7ef4d5c26d182";
+pub const FASTVIDEO_COMMIT: &str = "1d277a9b03a86abba53d08e0969117e1b7466f61";
 const FASTVIDEO_BUILD_DIR: &str = "/tmp/FastVideo_ROCm_build";
 
 /// Vendored, shipped copy of the audited fork inside the Stan's ML Stack
@@ -793,6 +793,14 @@ print(f"[FastVideo] selected flash_attn backend: {selected}")
         let env = vec![
             ("CMAKE_ARGS".to_string(), cmake_args),
             ("GPU_ARCHS".to_string(), self.config.gpu_archs.clone()),
+            // torch's LoadHIP.cmake overrides CMAKE_HIP_ARCHITECTURES from
+            // rocm_agent_enumerator unless this env var is set — without it,
+            // an explicit arch request silently degrades to whatever agents
+            // the enumerator happens to find.
+            (
+                "PYTORCH_ROCM_ARCH".to_string(),
+                self.config.gpu_archs.clone(),
+            ),
             ("MAX_JOBS".to_string(), max_jobs.to_string()),
             (
                 "PYTHON_EXECUTABLE".to_string(),
@@ -991,7 +999,7 @@ mod tests {
             python_bin: "/managed/bin/python".to_string(),
         });
 
-        assert_eq!(FASTVIDEO_COMMIT, "22e448771ebf5c81108f1c57b9c7ef4d5c26d182");
+        assert_eq!(FASTVIDEO_COMMIT, "1d277a9b03a86abba53d08e0969117e1b7466f61");
         assert_eq!(
             inst.git_checkout().args,
             ["checkout", "--detach", FASTVIDEO_COMMIT].map(String::from)
@@ -1431,6 +1439,14 @@ mod tests {
         let cmd = inst.pip_install_kernel();
         let gpu_env = cmd.env.iter().find(|(k, _)| k == "GPU_ARCHS").unwrap();
         assert_eq!(gpu_env.1, "gfx1100;gfx1101");
+        // LoadHIP.cmake ignores CMAKE_HIP_ARCHITECTURES without this env pin;
+        // without it the enumerator silently rewrites the arch list.
+        let rocm_arch_env = cmd
+            .env
+            .iter()
+            .find(|(k, _)| k == "PYTORCH_ROCM_ARCH")
+            .expect("PYTORCH_ROCM_ARCH must be pinned for LoadHIP.cmake");
+        assert_eq!(rocm_arch_env.1, "gfx1100;gfx1101");
     }
 
     #[test]

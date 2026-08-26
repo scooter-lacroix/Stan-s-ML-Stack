@@ -57,6 +57,20 @@
 
 ---
 
+## Upstream sync — fork rebased onto hao-ai-lab/FastVideo main (2026-08-26, same day)
+
+Divergence: merge-base `4105094f` (2026-03-13) → upstream moved **356 commits** (2,186 files; fastvideo-kernel expansion, Blackwell sm100a kernels, model zoo, packaging churn), while the fork carried only **13 ROCm commits**. Rebase executed in scratch by mapping agent; all 13 replayed linearly, 9 conflict stops resolved delete-wins (bundled CUTLASS GEMM, H100 .cu pair, `.gitmodules`, publish workflow), plus a fixup stripping policy violators newly added upstream (vbench gitlink, attn_qat CuTe bundle). One more fixup integrated locally after the *runtime* scanner caught three unreferenced Blackwell sources (`block_sparse_*_sm100a.cu`, `ulysses_all_to_all.cu`) outside the audited five-file native allowlist.
+
+**New audited pin: `1d277a9b03a86abba53d08e0969117e1b7466f61`** (branch `rocm-sync-candidate` in Fork/FastVideo; safety tag `pre-sync-fork-tip` = old `22e448771`). Bundle + full matrix: `/tmp/fastvideo_sync/MAPPING_REPORT.md`.
+
+- [x] Policy suite 41/41 (agent) **+ runtime source-policy gate green on real clone** (E2E).
+- [x] HIP wheel rebuild on synced tree (gfx1100;gfx1101 via new `PYTORCH_ROCM_ARCH` env pin) + both-GPU E2E replay; GPU1 functional verify `int8_quant=ok` (GPU0 deferred — resource directive).
+- [x] Builder hardening discovered during sync: torch's LoadHIP.cmake silently overrides `CMAKE_HIP_ARCHITECTURES` via `rocm_agent_enumerator`; installer now exports `PYTORCH_ROCM_ARCH=<arch list>` alongside CMAKE_ARGS (test-enforced).
+- [x] Publishing (operator, optional): local submodule holds `rocm-sync-candidate`; making the remote branch tip means a non-fast-forward push (`git push -f fork rocm-sync-candidate:feature/rocm-native-no-cutlass`) or keeping it as its own branch — either is safe; pre-sync state tagged.
+- Note: an unlinked-CWD under child processes (deleting `/tmp/FastVideo_ROCm_build` from inside itself before running verify) reproduces the Intel OpenMP SIGABRT deterministically on this torch wheel — harness artifact only; production runner cwd never sits inside the build dir. Replay scripts now `cd /home/scooter` before cleanup.
+
+---
+
 ## Incident D — install rejection + ABI-stale smoke (2026-08-26, resolved same day)
 
 **Chain of evidence** (`~/.mlstack/logs/rusty-stack.log`):
