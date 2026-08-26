@@ -86,6 +86,36 @@ pub const EXCLUDED_PACKAGES: &[&str] = &[
     "sentencepiece",
 ];
 
+/// Rusty-owned pinned ComfyUI Node Manager package.
+///
+/// Upstream instructs `pip install -U --pre comfyui-manager`; a floating or
+/// pre-channel install inside the managed environment would violate exact-pin
+/// ownership, so the version is pinned here and bumped consciously.
+pub const COMFYUI_MANAGER_PACKAGE: &str = "comfyui-manager==4.2.2";
+
+/// Append Rusty-managed extras to a filtered requirements body.
+///
+/// Idempotent: skips insertion when any comfyui-manager requirement line is
+/// already present (e.g. re-running against an already-extended body).
+pub fn inject_managed_extras(filtered_body: &str) -> String {
+    let has_manager = filtered_body.lines().any(|line| {
+        line.trim()
+            .to_ascii_lowercase()
+            .starts_with("comfyui-manager")
+    });
+    if has_manager {
+        return filtered_body.to_string();
+    }
+    let mut body = String::from(filtered_body);
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str("# Rusty-owned extra: ComfyUI Node Manager (upstream asks for `pip install -U --pre comfyui-manager`); pinned per managed-env ownership\n");
+    body.push_str(COMFYUI_MANAGER_PACKAGE);
+    body.push('\n');
+    body
+}
+
 /// Marker file storing the requirements.txt fingerprint captured at the time
 /// dependencies were last installed by Rusty.
 pub const DEPS_BASELINE_FILE: &str = ".mlstack-requirements.sha256";
@@ -551,6 +581,28 @@ mod tests {
         assert!(content.contains(DEPS_BASELINE_FILE));
         assert!(content.contains(&format!("exit {DRIFT_EXIT_CODE}")));
         assert!(content.contains("Reinstall 'ComfyUI'"));
+    }
+
+    #[test]
+    fn test_managed_extras_inject_manager_pin_idempotently() {
+        let once = inject_managed_extras("comfy-kitchen==0.2.31\n");
+        assert!(once.contains(COMFYUI_MANAGER_PACKAGE));
+        assert_eq!(once.lines().last().unwrap(), COMFYUI_MANAGER_PACKAGE);
+        let twice = inject_managed_extras(&once);
+        assert_eq!(
+            twice.matches(COMFYUI_MANAGER_PACKAGE).count(),
+            1,
+            "re-injection must stay idempotent"
+        );
+        // guard rails: exact pin, no float ranges, no nvidia channel drift
+        assert!(COMFYUI_MANAGER_PACKAGE.starts_with("comfyui-manager=="));
+    }
+
+    #[test]
+    fn test_inject_respects_existing_manager_line() {
+        let body = "# manual\ncomfyui-manager==9.9.9\n";
+        assert!(inject_managed_extras(body).contains("comfyui-manager==9.9.9"));
+        assert!(!inject_managed_extras(body).contains("==4.2.2"));
     }
 
     #[test]

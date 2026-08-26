@@ -5327,11 +5327,17 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                         anyhow::bail!("failed to read ComfyUI requirements {req_path}: {e}");
                     }
                 };
-                if !filtered.is_empty() {
+                // Rusty-owned extras (Node Manager) ride the same guarded
+                // pipeline: resolver co-satisfies them with upstream's own
+                // pins (comfy-kitchen etc.), reconcile restores any drift to
+                // centrally owned packages afterwards.
+                let combined_requirements =
+                    crate::installers::components::comfyui::inject_managed_extras(&filtered);
+                {
                     let tmp_dir = std::env::temp_dir().join("rusty-stack-comfyui");
                     let _ = std::fs::create_dir_all(&tmp_dir);
                     let filtered_path = tmp_dir.join("requirements_filtered.txt");
-                    std::fs::write(&filtered_path, &filtered).with_context(|| {
+                    std::fs::write(&filtered_path, &combined_requirements).with_context(|| {
                         format!(
                             "Failed to write filtered requirements to {:?}",
                             filtered_path
@@ -5340,7 +5346,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     let filtered_path_str = filtered_path.to_string_lossy().to_string();
                     let _ = sender.send(InstallerEvent::Log(
                         format!(
-                            "[native] Installing filtered requirements (CUDA deps excluded) from {}",
+                            "[native] Installing filtered requirements + managed extras (CUDA deps excluded) from {}",
                             req_path
                         ),
                         false,
@@ -5367,17 +5373,27 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                         sender,
                         &component.name,
                     )?;
-                } else {
-                    let _ = sender.send(InstallerEvent::Log(
-                        "[native] [WARN] All ComfyUI requirements were filtered out, nothing to install".to_string(),
-                        false,
-                    ));
-                }
+                } // managed-extras block
             } else {
                 let _ = sender.send(InstallerEvent::Log(
-                    "[native] [WARN] ComfyUI requirements.txt not found, skipping dependency installation".to_string(),
+                    "[native] [WARN] ComfyUI requirements.txt not found, managed extras still installed below".to_string(),
                     false,
                 ));
+                // requirements.txt missing entirely: install ONLY the Rusty
+                // extra so node-manager presence never depends on upstream.
+                let combined_requirements =
+                    crate::installers::components::comfyui::inject_managed_extras("");
+                let tmp_dir = std::env::temp_dir().join("rusty-stack-comfyui");
+                std::fs::create_dir_all(&tmp_dir)?;
+                let filtered_path = tmp_dir.join("requirements_filtered.txt");
+                std::fs::write(&filtered_path, &combined_requirements)?;
+                let cmd = inst.build_pip_install_command(&filtered_path.to_string_lossy());
+                execute_native_command(
+                    &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                    None,
+                    sender,
+                    &component.name,
+                )?;
             }
 
             // Step: (re)write the launcher shim + user unit on EVERY run so
