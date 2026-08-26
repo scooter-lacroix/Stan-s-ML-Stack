@@ -96,8 +96,19 @@ pub const COMFYUI_MANAGER_PACKAGE: &str = "comfyui-manager==4.2.2";
 /// Enables ComfyUI-Manager's matrix sharing feature when present.
 pub const MATRIX_NIO_PACKAGE: &str = "matrix-nio==0.26.0";
 
+/// PyOpenGL plus its REQUIRED-TO-MATCH Cython accelerator. Upstream ships
+/// `PyOpenGL>=3.1.8` in requirements.txt but omits the accelerator, so every
+/// launch logs "No OpenGL_accelerate module loaded" and runs pure-Python.
+pub const PYOPENGL_PACKAGE: &str = "PyOpenGL==3.1.10";
+pub const PYOPENGL_ACCELERATE_PACKAGE: &str = "PyOpenGL-accelerate==3.1.10";
+
 /// Exact-pin extras Rusty adds to every filtered requirements install.
-pub const MANAGED_COMFY_EXTRAS: &[&str] = &[COMFYUI_MANAGER_PACKAGE, MATRIX_NIO_PACKAGE];
+pub const MANAGED_COMFY_EXTRAS: &[&str] = &[
+    COMFYUI_MANAGER_PACKAGE,
+    MATRIX_NIO_PACKAGE,
+    PYOPENGL_PACKAGE,
+    PYOPENGL_ACCELERATE_PACKAGE,
+];
 
 /// Append Rusty-managed extras to a filtered requirements body.
 ///
@@ -611,6 +622,15 @@ mod tests {
                 "re-injection of {package} must stay idempotent"
             );
         }
+    }
+
+    #[test]
+    fn test_pyopengl_pair_versions_must_match() {
+        // OpenGL_accelerate hard-rejects version mismatches against its
+        // PyOpenGL at import time; keep the owned pins locked together.
+        let gl = PYOPENGL_PACKAGE.rsplit('=').next().unwrap();
+        let acc = PYOPENGL_ACCELERATE_PACKAGE.rsplit('=').next().unwrap();
+        assert_eq!(gl, acc);
     }
 
     #[test]
