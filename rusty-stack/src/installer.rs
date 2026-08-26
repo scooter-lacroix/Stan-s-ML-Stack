@@ -5353,6 +5353,20 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                         &component.name,
                     )?;
                     let _ = std::fs::remove_file(&filtered_path);
+
+                    // Record requirements fingerprint so the launcher drift
+                    // guard can refuse launches over un-synced source updates.
+                    let baseline_cmd = inst.build_record_requirements_baseline_command();
+                    execute_native_command(
+                        &NativeCommand::from_shell_cmd(
+                            &baseline_cmd.program,
+                            &baseline_cmd.args,
+                            &baseline_cmd.env,
+                        ),
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
                 } else {
                     let _ = sender.send(InstallerEvent::Log(
                         "[native] [WARN] All ComfyUI requirements were filtered out, nothing to install".to_string(),
@@ -5365,6 +5379,45 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     false,
                 ));
             }
+
+            // Step: (re)write the launcher shim + user unit on EVERY run so
+            // existing boxes pick up the drift guard and shim-based ExecStart.
+            let gpu_devices = inst.detect_gpu_devices();
+            let local_bin = std::path::Path::new(ctx.user_home).join(".local/bin");
+            std::fs::create_dir_all(&local_bin)?;
+            let launcher_path = local_bin.join("comfy");
+            std::fs::write(
+                launcher_path.clone(),
+                inst.build_launcher_content(&gpu_devices),
+            )?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o755))?;
+            }
+            let unit_dir = std::path::Path::new(ctx.user_home).join(".config/systemd/user");
+            std::fs::create_dir_all(&unit_dir)?;
+            std::fs::write(
+                unit_dir.join("comfyui.service"),
+                inst.build_systemd_service(&gpu_devices, ctx.user_home),
+            )?;
+            let _ = execute_native_command(
+                &NativeCommand::from_shell_cmd(
+                    "systemctl",
+                    &["--user".to_string(), "daemon-reload".to_string()],
+                    &[],
+                ),
+                None,
+                sender,
+                &component.name,
+            );
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] ComfyUI launcher refreshed: {} (requirements drift-guard active; systemd unit routes through shim)",
+                    launcher_path.display()
+                ),
+                false,
+            ));
 
             // Self-recognition: if FastVideo is present, expose its node pack.
             bridge_fastvideo_comfy_custom_nodes("comfyui", sender);

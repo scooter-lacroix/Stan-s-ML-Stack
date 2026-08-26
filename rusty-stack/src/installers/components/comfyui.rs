@@ -86,6 +86,38 @@ pub const EXCLUDED_PACKAGES: &[&str] = &[
     "sentencepiece",
 ];
 
+/// Marker file storing the requirements.txt fingerprint captured at the time
+/// dependencies were last installed by Rusty.
+pub const DEPS_BASELINE_FILE: &str = ".mlstack-requirements.sha256";
+
+/// Exit code used by the launcher when ComfyUI sources drifted past the last
+/// managed dependency install (78 = EX_CONFIG convention).
+pub const DRIFT_EXIT_CODE: u32 = 78;
+
+/// Bash snippet enforcing that `requirements.txt` still matches the baseline
+/// recorded at managed-install time. Out-of-band repo updates change the file;
+/// without re-running Rusty's dependency step, imports inside newer code fail
+/// at launch with missing modules (e.g. sqlalchemy/alembic for the asset DB).
+pub fn drift_guard_snippet(install_dir: &str) -> String {
+    format!(
+        r#"# Drift guard: requirements changed since Rusty's last managed install?
+if [ -f "{dir}/requirements.txt" ]; then
+    CUR_REQS=$(sha256sum "{dir}/requirements.txt" 2>/dev/null | cut -d' ' -f1)
+    OLD_REQS=$(cat "{dir}/{baseline}" 2>/dev/null)
+    if [ -n "$CUR_REQS" ] && [ "$CUR_REQS" != "$OLD_REQS" ]; then
+        echo "ComfyUI sources drifted since the last managed install (requirements fingerprint mismatch)." >&2
+        echo "Dependencies were NOT refreshed; launch refuses to avoid import-time breakage." >&2
+        echo "Fix: run Rusty Stack -> Reinstall 'ComfyUI' (re-syncs deps + refreshes this guard), then relaunch." >&2
+        exit {code}
+    fi
+fi
+"#,
+        dir = install_dir,
+        baseline = DEPS_BASELINE_FILE,
+        code = DRIFT_EXIT_CODE
+    )
+}
+
 /// Directories to preserve during git update.
 pub const PRESERVE_DIRS: &[&str] = &["models", "input", "output", "user"];
 
@@ -277,10 +309,12 @@ impl ComfyuiInstaller {
     ///
     /// Creates a shell script at `~/.local/bin/comfy` that runs:
     /// `cd "$COMFYUI_DIR" && HIP_VISIBLE_DEVICES=$GPUS ... python3 main.py --enable-manager`
+    /// preceded by the requirements-drift guard (see [`drift_guard_snippet`]).
     pub fn build_launcher_content(&self, gpu_devices: &str) -> String {
         format!(
-            "#!/bin/bash\n# ComfyUI launcher for Stan's ML Stack\n# Auto-detected GPU devices: {}\ncd \"{}\" && \\\n    HIP_VISIBLE_DEVICES={} \\\n    CUDA_VISIBLE_DEVICES={} \\\n    {} main.py --enable-manager \"$@\"\n",
+            "#!/bin/bash\n# ComfyUI launcher for Stan's ML Stack\n# Auto-detected GPU devices: {}\n{}\ncd \"{}\" && \\\n    HIP_VISIBLE_DEVICES={} \\\n    CUDA_VISIBLE_DEVICES={} \\\n    {} main.py --enable-manager \"$@\"\n",
             gpu_devices,
+            drift_guard_snippet(&self.config.install_dir),
             self.config.install_dir,
             gpu_devices,
             gpu_devices,
@@ -288,20 +322,42 @@ impl ComfyuiInstaller {
         )
     }
 
+    /// Construct a command that records the requirements fingerprint baseline
+    /// after a successful managed dependency install. Launcher drift-guard
+    /// comparisons run against this marker.
+    pub fn build_record_requirements_baseline_command(&self) -> ShellCommand {
+        let dir = &self.config.install_dir;
+        ShellCommand {
+            program: "bash".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "cd \"{dir}\" && sha256sum requirements.txt | cut -d' ' -f1 > \"{dir}/{tmp}\" && mv \"{dir}/{tmp}\" \"{dir}/{baseline}\"",
+                    dir = dir,
+                    tmp = format!("{DEPS_BASELINE_FILE}.tmp"),
+                    baseline = DEPS_BASELINE_FILE,
+                ),
+            ],
+            env: vec![],
+        }
+    }
+
     /// Construct the systemd service unit content.
-    pub fn build_systemd_service(&self, gpu_devices: &str) -> String {
+    ///
+    /// ExecStart routes through the launcher shim so the drift guard applies
+    /// to systemd launches identically to manual ones.
+    pub fn build_systemd_service(&self, gpu_devices: &str, home: &str) -> String {
         format!(
             "[Unit]\nDescription=ComfyUI - Node-based UI for Stable Diffusion\nAfter=network.target\n\n\
              [Service]\nType=simple\nWorkingDirectory=\"{}\"\n\
              Environment=\"HIP_VISIBLE_DEVICES={}\"\n\
              Environment=\"CUDA_VISIBLE_DEVICES={}\"\n\
-             ExecStart={} \"{}\" --enable-manager\nRestart=on-failure\n\n\
+             ExecStart={}/.local/bin/comfy\nRestart=on-failure\n\n\
              [Install]\nWantedBy=default.target\n",
             self.config.install_dir,
             gpu_devices,
             gpu_devices,
-            self.config.python_bin,
-            self.config.install_dir,
+            home,
         )
     }
 
@@ -489,6 +545,26 @@ mod tests {
     }
 
     #[test]
+    fn test_launcher_enforces_requirements_drift_guard() {
+        let installer = make_installer("/home/user/ComfyUI");
+        let content = installer.build_launcher_content("0,1");
+        assert!(content.contains(DEPS_BASELINE_FILE));
+        assert!(content.contains(&format!("exit {DRIFT_EXIT_CODE}")));
+        assert!(content.contains("Reinstall 'ComfyUI'"));
+    }
+
+    #[test]
+    fn test_baseline_command_writes_atomic_marker() {
+        let installer = make_installer("/home/user/ComfyUI");
+        let cmd = installer.build_record_requirements_baseline_command();
+        assert_eq!(cmd.program, "bash");
+        let joined = cmd.args.join(" ");
+        assert!(joined.contains("sha256sum requirements.txt"));
+        assert!(joined.contains(DEPS_BASELINE_FILE));
+        assert!(joined.contains(".tmp")); // atomic tmp+rename
+    }
+
+    #[test]
     fn test_preserve_dirs_match_original_script() {
         // Original script preserves: models, input, output, user
         assert_eq!(PRESERVE_DIRS, ["models", "input", "output", "user"]);
@@ -497,10 +573,11 @@ mod tests {
     #[test]
     fn test_systemd_service_content() {
         let installer = make_installer("/home/user/ComfyUI");
-        let svc = installer.build_systemd_service("0,1");
+        let svc = installer.build_systemd_service("0,1", "/home/user");
         assert!(svc.contains("[Unit]"));
         assert!(svc.contains("ComfyUI"));
         assert!(svc.contains("HIP_VISIBLE_DEVICES=0,1"));
-        assert!(svc.contains("--enable-manager"));
+        // routes through the shim so the drift guard covers systemd launches
+        assert!(svc.contains("ExecStart=/home/user/.local/bin/comfy"));
     }
 }
