@@ -9,7 +9,12 @@
 /// Keep this order stable: command construction and audit logs intentionally
 /// preserve it.
 pub const MANAGED_PYTHON_PACKAGES: [(&str, &str); 11] = [
-    ("setuptools", "81.0.0"),
+    // 79.0.1 is a deliberate co-existence pin: vLLM's dependency set requires
+    // `setuptools>=77.0.3,<80.0.0`, so owning an 81.x pin made every vLLM
+    // (re)install downgrade it and trip consumers' strict preflights (the
+    // FastVideo install rejection of 2026-08-26). torch's ceiling (<82) and
+    // every ROCm build backend accept 79.x.
+    ("setuptools", "79.0.1"),
     ("cmake", "4.3.4"),
     ("scikit-build-core", "1.0.3"),
     ("pathspec", "1.1.1"),
@@ -103,7 +108,7 @@ mod tests {
     };
 
     const EXPECTED_PACKAGES: [(&str, &str); 11] = [
-        ("setuptools", "81.0.0"),
+        ("setuptools", "79.0.1"),
         ("cmake", "4.3.4"),
         ("scikit-build-core", "1.0.3"),
         ("pathspec", "1.1.1"),

@@ -18,6 +18,71 @@ const FASTVIDEO_REPO: &str = "https://github.com/scooter-lacroix/FastVideo.git";
 pub const FASTVIDEO_COMMIT: &str = "22e448771ebf5c81108f1c57b9c7ef4d5c26d182";
 const FASTVIDEO_BUILD_DIR: &str = "/tmp/FastVideo_ROCm_build";
 
+/// Vendored, shipped copy of the audited fork inside the Stan's ML Stack
+/// package (`Fork/FastVideo` submodule). Installs prefer it over the network:
+/// the package ships its own kernel sources exactly as it does for FreeToken
+/// and llama.cpp-turboquant-hip.
+pub const FASTVIDEO_VENDORED_RELATIVE: &str = "Fork/FastVideo";
+
+/// `MLSTACK_FASTVIDEO_SOURCE` overrides every default source resolution so an
+/// operator can point one install at a specific audited checkout.
+const FASTVIDEO_SOURCE_ENV: &str = "MLSTACK_FASTVIDEO_SOURCE";
+
+fn git_head_at(path: &Path) -> Option<String> {
+    if !path.join(".git").exists() {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("HEAD")
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let head = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!head.is_empty()).then_some(head)
+}
+
+fn is_network_url(source: &str) -> bool {
+    source.starts_with("http://") || source.starts_with("https://")
+}
+
+/// Resolve where to clone FastVideo from, preferring shipped/vendored state.
+///
+/// Order: explicit env override (`MLSTACK_FASTVIDEO_SOURCE`, only when it is a
+/// repo pinned at the audited commit) → nearest ancestor holding
+/// `Fork/FastVideo` at that commit → upstream GitHub fork URL. The returned
+/// value must be byte-identical in meaning for later audits: whatever wins,
+/// the immutable-source policy still verifies the checked-out tree against
+/// [`FASTVIDEO_COMMIT`] before a single byte compiles.
+fn resolve_repo_source(
+    exe_root: Option<&Path>,
+    env_override: Option<&str>,
+    commit: &str,
+) -> String {
+    if let Some(dir) = env_override.map(str::trim).filter(|dir| !dir.is_empty()) {
+        if git_head_at(Path::new(dir)).as_deref() == Some(commit) {
+            return dir.to_string();
+        }
+    }
+    if let Some(exe) = exe_root {
+        let mut cursor = exe.to_path_buf();
+        for _ in 0..8 {
+            let candidate = cursor.join(FASTVIDEO_VENDORED_RELATIVE);
+            if git_head_at(&candidate).as_deref() == Some(commit) {
+                return candidate.to_string_lossy().into_owned();
+            }
+            match cursor.parent() {
+                Some(parent) => cursor = parent.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+    FASTVIDEO_REPO.to_string()
+}
+
 /// Leave one CPU free and never run more than four compile jobs.
 pub fn max_jobs_for_parallelism(nproc: usize) -> usize {
     nproc.saturating_sub(1).clamp(1, 4)
@@ -242,6 +307,10 @@ for device in devices:
     env.pop("HIP_VISIBLE_DEVICES", None)
     env.pop("CUDA_VISIBLE_DEVICES", None)
     env.pop("GPU_DEVICE_ORDINAL", None)
+    # torch 2.13.0+rocm7.2 bundles Intel OpenMP while aiter ships its own
+    # libgomp; importing fastvideo before CUDA init double-loads a runtime
+    # and SIGABRTs with recursive_init_error. Scoped to this probe only.
+    env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     subprocess.run([sys.executable, "-c", probe], check=True, env=env)
 "#
 }
@@ -322,8 +391,22 @@ impl Default for FastVideoInstaller {
 
 impl FastVideoInstaller {
     pub fn new(config: FastVideoConfig) -> Self {
+        let env_override = std::env::var(FASTVIDEO_SOURCE_ENV).ok();
+        let exe_root = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let repo_source = resolve_repo_source(
+            exe_root.as_deref(),
+            env_override.as_deref(),
+            FASTVIDEO_COMMIT,
+        );
+        Self::new_with_repo_source(config, repo_source)
+    }
+
+    /// Construct with an explicit source (URL or local audited checkout).
+    pub fn new_with_repo_source(config: FastVideoConfig, repo_source: impl Into<String>) -> Self {
         Self {
-            repo_url: FASTVIDEO_REPO.to_string(),
+            repo_url: repo_source.into(),
             commit: FASTVIDEO_COMMIT.to_string(),
             build_dir: FASTVIDEO_BUILD_DIR.to_string(),
             config,
@@ -340,9 +423,23 @@ impl FastVideoInstaller {
     }
 
     pub fn git_clone(&self) -> ShellCommand {
+        // Local checkouts (vendored Fork/FastVideo or MLSTACK_FASTVIDEO_SOURCE)
+        // need the explicit file-protocol allowance git ≥2.38.1 requires;
+        // network clones are untouched.
+        let args = if is_network_url(&self.repo_url) {
+            vec!["clone".to_string(), self.repo_url.clone(), ".".to_string()]
+        } else {
+            vec![
+                "-c".to_string(),
+                "protocol.file.allow=always".to_string(),
+                "clone".to_string(),
+                self.repo_url.clone(),
+                ".".to_string(),
+            ]
+        };
         ShellCommand {
             program: "git".to_string(),
-            args: vec!["clone".to_string(), self.repo_url.clone(), ".".to_string()],
+            args,
             env: vec![],
             working_dir: Some(PathBuf::from(&self.build_dir)),
         }
@@ -380,24 +477,17 @@ impl FastVideoInstaller {
     ///
     /// This preflight is deliberately read-only: FastVideo may consume the managed
     /// environment, but it must never install, upgrade, or resolve dependencies.
+    /// The pins are rendered from the single ownership registry
+    /// (`managed_python_build_tools::MANAGED_PYTHON_PACKAGES`) — never duplicated
+    /// here — so consumer and owner cannot drift apart again.
     pub fn managed_dependencies_preflight(&self) -> ShellCommand {
-        let script = r#"import importlib.metadata
+        const PREFLIGHT_TEMPLATE: &str = r#"import importlib.metadata
 import os
 from pathlib import Path
 import sys
 
 required = (
-    "setuptools==81.0.0",
-    "cmake==4.3.4",
-    "scikit-build-core==1.0.3",
-    "pathspec==1.1.1",
-    "wheel==0.47.0",
-    "ninja==1.13.0",
-    "imageio==2.36.0",
-    "diffusers==0.33.1",
-    "remote-pdb==2.1.0",
-    "ftfy==6.3.1",
-    "wcwidth==0.2.13",
+__MANAGED_PINS__
 )
 problems = []
 for pin in required:
@@ -447,6 +537,12 @@ if problems:
     )
 print("[FastVideo] Rusty-managed dependency pins verified")
 "#;
+        let pins = crate::installers::common::managed_python_build_tools::MANAGED_PYTHON_PACKAGES
+            .iter()
+            .map(|(name, version)| format!("    \"{name}=={version}\","))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let script = PREFLIGHT_TEMPLATE.replace("__MANAGED_PINS__", &pins);
         ShellCommand {
             program: self.config.python_bin.clone(),
             args: vec!["-c".to_string(), script.to_string()],
@@ -677,6 +773,11 @@ print(f"[FastVideo] selected flash_attn backend: {selected}")
             "--no-build-isolation".to_string(),
             "--no-deps".to_string(),
             "--no-index".to_string(),
+            // Same-version installs are pip no-ops, which would silently keep a
+            // kernel compiled against an older managed torch ABI (quant_cuda
+            // binding then dies as None). Every install attempt must genuinely
+            // recompile against the live environment.
+            "--force-reinstall".to_string(),
             ".".to_string(),
         ]);
 
@@ -722,6 +823,9 @@ print(f"[FastVideo] selected flash_attn backend: {selected}")
                 "--no-build-isolation",
                 "--no-deps",
                 "--no-index",
+                // Same reasoning as pip_install_kernel: never trust a
+                // same-version no-op to carry a fresh build.
+                "--force-reinstall",
                 ".",
             ]
             .map(String::from)
@@ -813,6 +917,73 @@ else:
 mod tests {
     use super::*;
 
+    /// Ops escape hatch: `RUSTY_DUMP_FASTVIDEO_DIR=<dir> cargo test dump_pipeline` writes
+    /// the EXACT Python byte-strings production executes (preflight, flash backend,
+    /// source policy, distribution snapshots) so external runners can replay the
+    /// pipeline without re-parsing Rust raw-string sources. No-op when unset.
+    #[test]
+    fn dumps_pipeline_scripts_when_ops_env_requests_it() {
+        let Ok(dir) = std::env::var("RUSTY_DUMP_FASTVIDEO_DIR") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("dump dir creatable");
+        let inst = FastVideoInstaller::new_with_repo_source(
+            FastVideoConfig {
+                gpu_archs: "gfx1100;gfx1101".to_string(),
+                python_bin: "python3".to_string(),
+            },
+            FASTVIDEO_REPO,
+        );
+        let write = |name: &str, body: &str| {
+            std::fs::write(dir.join(name), body).expect("dump writable");
+        };
+        write(
+            "preflight.py",
+            &inst.managed_dependencies_preflight().args[1],
+        );
+        write(
+            "flash_backend.py",
+            &inst.flash_attention_preflight().args[1],
+        );
+        write(
+            "source_policy.py",
+            &inst.source_policy_preflight().args[3], // [-I, -S, -c, script]
+        );
+        // The String return trips both needless_borrow (on `&value`) and
+        // unstable str_as_str (on `.as_str()`) depending on spelling; scope
+        // the allow instead of contorting the shape.
+        #[allow(clippy::needless_borrow)]
+        write("verification_snippet.py", &fastvideo_verification_snippet());
+        write(
+            "snapshot_before.py",
+            &inst
+                .distribution_snapshot(
+                    "before",
+                    crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES,
+                )
+                .args[1],
+        );
+        write(
+            "snapshot_after.py",
+            &inst
+                .distribution_snapshot(
+                    "after",
+                    crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES,
+                )
+                .args[1],
+        );
+        let pins = crate::installers::common::managed_python_build_tools::MANAGED_PYTHON_PACKAGES
+            .iter()
+            .map(|(n, v)| format!("{n}=={v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write("managed_pins.txt", &pins);
+        let prefixes =
+            crate::installers::common::nvidia_blocklist::NVIDIA_RUNTIME_PREFIXES.join(",");
+        write("nvidia_runtime_prefixes.txt", &prefixes);
+    }
+
     #[test]
     fn remediation_contract_is_immutable_read_only_and_offline() {
         let inst = FastVideoInstaller::new(FastVideoConfig {
@@ -833,21 +1004,31 @@ mod tests {
 
         let managed = inst.managed_dependencies_preflight();
         let managed_script = &managed.args[1];
-        for pin in [
-            "setuptools==81.0.0",
-            "cmake==4.3.4",
-            "scikit-build-core==1.0.3",
-            "pathspec==1.1.1",
-            "wheel==0.47.0",
-            "ninja==1.13.0",
-            "imageio==2.36.0",
-            "diffusers==0.33.1",
-            "remote-pdb==2.1.0",
-            "ftfy==6.3.1",
-            "wcwidth==0.2.13",
-        ] {
-            assert!(managed_script.contains(pin), "missing managed pin {pin}");
+        // The preflight must render EXACTLY the centrally owned pins from the
+        // ownership registry — a hand-copied duplicate here drifted stale once
+        // already (2026-08-26 setuptools/diffusers/wcwidth rejection).
+        for (name, version) in
+            crate::installers::common::managed_python_build_tools::MANAGED_PYTHON_PACKAGES
+        {
+            let pin = format!("    \"{name}=={version}\",");
+            assert!(managed_script.contains(&pin), "missing managed pin {pin}");
+            assert_eq!(
+                managed_script
+                    .matches(&format!("{name}=={version}"))
+                    .count(),
+                1,
+                "pin {name} must be rendered exactly once"
+            );
         }
+        let rendered_pins = managed_script
+            .lines()
+            .filter(|line| line.trim().starts_with('"') && line.contains("=="))
+            .count();
+        assert_eq!(
+            rendered_pins,
+            crate::installers::common::managed_python_build_tools::MANAGED_PYTHON_PACKAGES.len(),
+            "preflight renders pins beyond the owned registry"
+        );
         assert!(managed_script.contains("importlib.metadata"));
         for anchor in [
             "torch.version.hip",
@@ -1098,6 +1279,11 @@ mod tests {
         use std::process::Command;
 
         let snippet = fastvideo_verification_snippet();
+        assert!(
+            snippet.contains("KMP_DUPLICATE_LIB_OK"),
+            "verification children must carry the OpenMP double-load guard \
+             (torch 2.13+rocm + aiter libgomp collision)"
+        );
         for anchor in [
             "import os",
             "import subprocess",
@@ -1154,12 +1340,48 @@ mod tests {
 
     #[test]
     fn test_git_clone_uses_fork() {
-        let inst = FastVideoInstaller::new(FastVideoConfig::default());
+        // Explicit network source: pinned GitHub fork URL, no protocol override.
+        let inst =
+            FastVideoInstaller::new_with_repo_source(FastVideoConfig::default(), FASTVIDEO_REPO);
         let clone_cmd = inst.git_clone();
         assert!(clone_cmd.args.contains(&"clone".into()));
         assert!(
             clone_cmd.args.contains(&FASTVIDEO_REPO.into()),
             "Should clone from scooter-lacroix fork"
+        );
+        assert!(!clone_cmd
+            .args
+            .contains(&"protocol.file.allow=always".into()));
+    }
+
+    #[test]
+    fn test_git_clone_local_source_allows_file_protocol() {
+        // Vendored/shipped source: local path clones with the explicit
+        // file-protocol allowance git >=2.38.1 requires.
+        let inst = FastVideoInstaller::new_with_repo_source(
+            FastVideoConfig::default(),
+            "/opt/stan-ml-stack/Fork/FastVideo",
+        );
+        let clone_cmd = inst.git_clone();
+        let joined = clone_cmd.args.join(" ");
+        assert!(joined.contains("protocol.file.allow=always"));
+        assert!(joined.contains("/opt/stan-ml-stack/Fork/FastVideo"));
+    }
+
+    #[test]
+    fn test_resolve_repo_source_prefers_pinned_env_then_vendored_tree() {
+        // Nothing matching anywhere: the audited upstream fork URL is the
+        // fallback. (The happy paths need a real checkout at FASTVIDEO_COMMIT;
+        // they are exercised end-to-end by the shipped Fork/FastVideo install.)
+        let nowhere =
+            std::env::temp_dir().join(format!("no-fastvideo-here-{}", std::process::id()));
+        assert_eq!(
+            resolve_repo_source(Some(&nowhere), nowhere.to_str(), FASTVIDEO_COMMIT),
+            FASTVIDEO_REPO
+        );
+        assert_eq!(
+            resolve_repo_source(None, None, FASTVIDEO_COMMIT),
+            FASTVIDEO_REPO
         );
     }
 
@@ -1183,6 +1405,14 @@ mod tests {
         let cmd = inst.pip_install_kernel();
         assert!(cmd.args.contains(&"--no-build-isolation".into()));
         assert!(cmd.args.contains(&"--no-deps".into()));
+        // Same-version installs must never silently skip a recompile (the
+        // 2026-08-26 stale-ABI incident where quant_cuda bound as None).
+        assert!(
+            cmd.args.contains(&"--force-reinstall".into()),
+            "kernel install must force-reinstall to rebuild against live torch ABI"
+        );
+        let pkg = inst.pip_install_package();
+        assert!(pkg.args.contains(&"--force-reinstall".into()));
         let cmake_env = cmd.env.iter().find(|(k, _)| k == "CMAKE_ARGS").unwrap();
         assert!(cmake_env
             .1
@@ -1357,6 +1587,7 @@ mod tests {
                 "--no-build-isolation",
                 "--no-deps",
                 "--no-index",
+                "--force-reinstall",
                 ".",
             ]
             .map(String::from)

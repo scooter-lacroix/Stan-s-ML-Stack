@@ -372,8 +372,7 @@ impl MigraphxPythonInstaller {
         } else {
             // Resolve relative to the crate root: `rusty-stack/patches/...`
             // when invoked from the repo root.
-            let cwd = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             cwd.join(patch_path).to_string_lossy().to_string()
         };
         vec![
@@ -456,19 +455,12 @@ impl MigraphxPythonInstaller {
             // 5. Build + 6. install the patched core into the user prefix.
             ShellCommand {
                 program: "cmake".to_string(),
-                args: vec![
-                    "--build".to_string(),
-                    build.clone(),
-                    "-j".to_string(),
-                ],
+                args: vec!["--build".to_string(), build.clone(), "-j".to_string()],
                 env: vec![],
             },
             ShellCommand {
                 program: "cmake".to_string(),
-                args: vec![
-                    "--install".to_string(),
-                    build.clone(),
-                ],
+                args: vec!["--install".to_string(), build.clone()],
                 env: vec![],
             },
         ]
@@ -798,19 +790,17 @@ mod tests {
 
         // 0. vendor nlohmann-json (header-only) into the build prefix
         assert_eq!(cmds[0].program, "bash");
-        assert!(cmds[0]
-            .args
-            .iter()
-            .any(|a| a.contains("nlohmann/json.git")));
-        assert!(cmds[0]
-            .args
-            .iter()
-            .any(|a| a.contains("|| git clone")), // idempotent guard
-        );
+        assert!(cmds[0].args.iter().any(|a| a.contains("nlohmann/json.git")));
+        // idempotent guard: skip-if-present clone
+        assert!(cmds[0].args.iter().any(|a| a.contains("|| git clone")));
 
         // 1. shallow clone of the matching ROCm branch (bash -c, idempotent)
         assert_eq!(cmds[1].program, "bash");
-        let clone = cmds[1].args.iter().find(|a| a.contains("git clone")).unwrap();
+        let clone = cmds[1]
+            .args
+            .iter()
+            .find(|a| a.contains("git clone"))
+            .unwrap();
         assert!(clone.contains("--branch"));
         assert!(clone.contains("rocm-7.2.3"));
         assert!(clone.contains(AMDMIGRAPHX_REPO));
@@ -818,11 +808,7 @@ mod tests {
 
         // 2. apply the vendored PR #5106 backport patch (bash -c, idempotent)
         assert_eq!(cmds[2].program, "bash");
-        let apply = cmds[2]
-            .args
-            .iter()
-            .find(|a| a.contains("git -C"))
-            .unwrap();
+        let apply = cmds[2].args.iter().find(|a| a.contains("git -C")).unwrap();
         assert!(apply.contains("get_permutation")); // grep guard
         assert!(
             apply.contains("amdmigraphx-5106-find_concat_transpose.patch"),
@@ -844,8 +830,7 @@ mod tests {
         assert!(cmds[3]
             .args
             .iter()
-            .any(|a| a.contains("-Dnlohmann_json_DIR=")
-                && a.contains("migraphx")));
+            .any(|a| a.contains("-Dnlohmann_json_DIR=") && a.contains("migraphx")));
         assert!(cmds[3]
             .args
             .iter()
@@ -872,11 +857,7 @@ mod tests {
             "/abs/path/amdmigraphx-5106.patch",
             "/home/user",
         );
-        let apply = cmds[2]
-            .args
-            .iter()
-            .find(|a| a.contains("git -C"))
-            .unwrap();
+        let apply = cmds[2].args.iter().find(|a| a.contains("git -C")).unwrap();
         assert!(apply.contains("/abs/path/amdmigraphx-5106.patch"));
     }
 

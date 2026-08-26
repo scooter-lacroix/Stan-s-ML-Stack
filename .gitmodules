@@ -6,3 +6,6 @@
 	path = Fork/FreeToken
 	url = https://github.com/scooter-lacroix/FreeToken.git
 	branch = feature/rocm
+[submodule "Fork/FastVideo"]
+	path = Fork/FastVideo
+	url = https://github.com/scooter-lacroix/FastVideo.git

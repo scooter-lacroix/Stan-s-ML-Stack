@@ -369,6 +369,20 @@ pub fn run_installation_with_version(
             }
         } else if is_native_maintenance_action(&component) {
             native_maintenance_action_outcome(&component, install_success)
+        } else if !install_success {
+            // Don't execute verification against a half-installed component.
+            // Running it anyway produced the 2026-08-26 FastVideo spectacle:
+            // install refused on drifted managed pins, then the smoke still
+            // launched GPU child processes and crashed with confusing
+            // ABI-mismatch tracebacks. The verdict below already encodes the
+            // failure (Tenet 5: a failed install is never rescued).
+            VerificationOutcome {
+                success: false,
+                report_lines: vec![format!(
+                    "Verification skipped — {} installation step failed",
+                    component.name
+                )],
+            }
         } else {
             run_component_verification(&component, &python_candidates, &sender, &user_home)
         };
@@ -406,6 +420,15 @@ pub fn run_installation_with_version(
             // Success is sealed only after both the install step and its final
             // verification pass.
             registry_record(&component);
+            // Self-healing ownership enforcement: sibling components may swap
+            // centrally owned packages (vLLM's `setuptools<80`, Triton's bare
+            // build-tool upgrades). Reassert the managed pins immediately so
+            // every later consumer observes exact-managed state instead of
+            // tripping its preflight a week later. Best-effort with loud logs;
+            // never flips this component's own verdict.
+            if component.category != Category::Performance && component.id != "pytorch" {
+                reconcile_managed_python_packages(&component, &sender);
+            }
         }
 
         // Debug logging for environment components
@@ -2882,6 +2905,64 @@ fn is_existing_git_repo(target_dir: &str) -> bool {
 /// When `git_clone_or_pull` runs git operations with sudo, the resulting files
 /// are owned by root. This prevents subsequent user-space builds from writing
 /// to the directory. This function chowns the tree back to the real user.
+/// Reassert centrally owned Python package pins when the environment drifted.
+///
+/// The managed registry is provisioned once during the pytorch arm and then
+/// assumed stable, but several components legitimately pip-install overlapping
+/// toolchain packages unpinned. This reconciliation runs read-only first; only
+/// on drift does it reinstall the exact owned set (`--no-deps`, resolver-free).
+fn reconcile_managed_python_packages(component: &Component, sender: &Sender<InstallerEvent>) {
+    let python_bin = resolve_python_bin();
+    let verify = crate::installers::common::managed_python_verify_command(python_bin.clone());
+    let verify_status = std::process::Command::new(&verify.program)
+        .args(&verify.args)
+        .status();
+    let drifted = match verify_status {
+        Ok(status) => !status.success(),
+        Err(_) => true,
+    };
+    if !drifted {
+        return;
+    }
+
+    let _ = sender.send(InstallerEvent::Log(
+        "[managed-deps] Centrally owned Python packages drifted; \
+         reasserting Rusty-owned pins (--no-deps, resolver-free)"
+            .to_string(),
+        false,
+    ));
+    let install = crate::installers::common::managed_python_install_command(python_bin.clone());
+    let install_result = std::process::Command::new(&install.program)
+        .args(&install.args)
+        .status();
+    let repaired = matches!(install_result, Ok(status) if status.success());
+
+    // Read-only confirmation either way.
+    let confirm = crate::installers::common::managed_python_verify_command(python_bin);
+    let confirmed = match std::process::Command::new(&confirm.program)
+        .args(&confirm.args)
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    };
+
+    let verdict = if confirmed {
+        "restored exact managed pins"
+    } else if repaired {
+        "reinstall exited 0 but follow-up verification still reports drift"
+    } else {
+        "restore FAILED — next strict consumer will refuse; run the PyTorch component to repair"
+    };
+    let _ = sender.send(InstallerEvent::Log(
+        format!(
+            "[managed-deps] {} post-{} dependency reconciliation: {}",
+            component.name, component.id, verdict
+        ),
+        false,
+    ));
+}
+
 fn fix_directory_ownership(dir: &str, sudo_pw: Option<&str>, sender: &Sender<InstallerEvent>) {
     // Check if the directory is actually owned by root
     let stat_output = std::process::Command::new("stat")
@@ -4818,8 +4899,16 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 5: build + install freetoken (--no-deps; extensions compile
             // through the fork's HIP shim) with GPU arch identity from the env
-            let gpu_arch = ctx.env_exports.get("GPU_ARCH").cloned().unwrap_or_else(|| "gfx1100".to_string());
-            let hsa_version = ctx.env_exports.get("HSA_OVERRIDE_GFX_VERSION").cloned().unwrap_or_else(|| "11.0.0".to_string());
+            let gpu_arch = ctx
+                .env_exports
+                .get("GPU_ARCH")
+                .cloned()
+                .unwrap_or_else(|| "gfx1100".to_string());
+            let hsa_version = ctx
+                .env_exports
+                .get("HSA_OVERRIDE_GFX_VERSION")
+                .cloned()
+                .unwrap_or_else(|| "11.0.0".to_string());
             let pip_cmd = inst.build_pip_install_command(&gpu_arch, &hsa_version);
             execute_native_command(
                 &NativeCommand::from_shell_cmd_with_dir(
@@ -4848,7 +4937,10 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             {
                 let chmod_cmd = NativeCommand::from_shell_cmd(
                     "chmod",
-                    &["+x".to_string(), launcher_path.to_string_lossy().to_string()],
+                    &[
+                        "+x".to_string(),
+                        launcher_path.to_string_lossy().to_string(),
+                    ],
                     &[],
                 );
                 let _ = execute_native_command(&chmod_cmd, None, sender, &component.name);
@@ -5829,8 +5921,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                     .to_string_lossy()
                     .to_string();
                 let _ = std::fs::remove_dir_all(&workdir);
-                let gpu_arch =
-                    std::env::var("GPU_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
+                let gpu_arch = std::env::var("GPU_ARCH").unwrap_or_else(|_| "gfx1100".to_string());
                 // Vendored patch ships with the crate: resolve from the crate
                 // source dir so it works regardless of the launch cwd.
                 let patch_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

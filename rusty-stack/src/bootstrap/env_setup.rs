@@ -993,18 +993,17 @@ fn migraphx_fixed_core_bash_block(home: &str) -> String {
     if !std::path::Path::new(&so).exists() {
         return String::new();
     }
-    format!(
-        r#"
+    r#"
 # Patched MIGraphX core (PR #5106 find_concat_transpose fix) — MANAGED by the
 # persistent-env generator. Prepended to LD_LIBRARY_PATH (guarded, idempotent)
 # so the loader resolves the patched libmigraphx over the distro one via the
 # RUNPATH-after-LD_LIBRARY_PATH precedence rule; /opt/rocm is untouched.
 # Paths are $HOME-relative (resolved at source-time; never a literal home).
 if [ -r "$HOME/.mlstack/migraphx/lib/migraphx/lib/libmigraphx.so.2015000" ]; then
-  case ":${{LD_LIBRARY_PATH:-}}:" in *:"$HOME/.mlstack/migraphx/lib/migraphx/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/migraphx/lib/migraphx/lib:$HOME/.mlstack/migraphx/lib:${{LD_LIBRARY_PATH:-}}";; esac
+  case ":${LD_LIBRARY_PATH:-}:" in *:"$HOME/.mlstack/migraphx/lib/migraphx/lib":*) ;; *) export LD_LIBRARY_PATH="$HOME/.mlstack/migraphx/lib/migraphx/lib:$HOME/.mlstack/migraphx/lib:${LD_LIBRARY_PATH:-}";; esac
 fi
 "#
-    )
+    .to_string()
 }
 
 /// Emit the **idempotent** fish block for the patched MIGraphX core, or empty.
@@ -1016,8 +1015,7 @@ fn migraphx_fixed_core_fish_block(home: &str) -> String {
     if !std::path::Path::new(&so).exists() {
         return String::new();
     }
-    format!(
-        r#"
+    r#"
 # --- Patched MIGraphX core (PR #5106 find_concat_transpose fix) — MANAGED by
 # the persistent-env generator; prepended to LD_LIBRARY_PATH; idempotent.
 # Paths are $HOME-relative (resolved at source-time; never a literal home). ---
@@ -1025,7 +1023,7 @@ if test -r $HOME/.mlstack/migraphx/lib/migraphx/lib/libmigraphx.so.2015000
     contains -- $HOME/.mlstack/migraphx/lib/migraphx/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.mlstack/migraphx/lib/migraphx/lib $HOME/.mlstack/migraphx/lib $LD_LIBRARY_PATH
 end
 "#
-    )
+    .to_string()
 }
 
 // ===========================================================================
