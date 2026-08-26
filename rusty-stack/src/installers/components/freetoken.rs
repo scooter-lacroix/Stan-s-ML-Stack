@@ -192,7 +192,10 @@ impl FreetokenInstaller {
             ("PYTORCH_ROCM_ARCH".to_string(), gpu_arch.to_string()),
             ("ROCM_PATH".to_string(), "/opt/rocm".to_string()),
             ("ROCM_HOME".to_string(), "/opt/rocm".to_string()),
-            ("HSA_OVERRIDE_GFX_VERSION".to_string(), hsa_version.to_string()),
+            (
+                "HSA_OVERRIDE_GFX_VERSION".to_string(),
+                hsa_version.to_string(),
+            ),
             // The stack env prepends component shims (onnxruntime builds, the
             // RCCL overlay) to PYTHONPATH that must not leak into the venv's
             // import resolution.
@@ -258,11 +261,7 @@ impl FreetokenInstaller {
 
     /// Install the curated runtime dependency set (single resolution pass).
     pub fn build_deps_install_command(&self) -> ShellCommand {
-        let mut args = vec![
-            "-m".to_string(),
-            "pip".to_string(),
-            "install".to_string(),
-        ];
+        let mut args = vec!["-m".to_string(), "pip".to_string(), "install".to_string()];
         args.extend(FREETOKEN_DEPS.iter().map(|s| s.to_string()));
         ShellCommand {
             program: self.config.venv_python().to_string_lossy().to_string(),
@@ -451,7 +450,10 @@ mod tests {
         // HOME-dependent on purpose (stack layout convention); assert structure,
         // not an absolute path, so the test is host-independent.
         assert!(venv.ends_with("/.mlstack/venvs/freetoken"), "{venv}");
-        assert!(!venv.contains("/global"), "must NOT be the shared global env");
+        assert!(
+            !venv.contains("/global"),
+            "must NOT be the shared global env"
+        );
         assert!(inst
             .config
             .venv_python()
@@ -500,9 +502,18 @@ mod tests {
         for dep in FREETOKEN_DEPS {
             let d = dep.to_lowercase();
             assert!(!d.starts_with("nvidia-"), "CUDA dep in curated list: {dep}");
-            assert!(!d.contains("+cu"), "CUDA wheel marker in curated list: {dep}");
-            assert!(!d.contains("sglang"), "sgl extra leaked into curated list: {dep}");
-            assert!(!d.contains("flashinfer"), "fi extra leaked into curated list: {dep}");
+            assert!(
+                !d.contains("+cu"),
+                "CUDA wheel marker in curated list: {dep}"
+            );
+            assert!(
+                !d.contains("sglang"),
+                "sgl extra leaked into curated list: {dep}"
+            );
+            assert!(
+                !d.contains("flashinfer"),
+                "fi extra leaked into curated list: {dep}"
+            );
         }
     }
 
@@ -569,7 +580,10 @@ mod tests {
         let inst = FreetokenInstaller::new(config());
         let uv_cmd = inst.build_venv_create_command(true);
         assert_eq!(uv_cmd.program, "uv");
-        assert!(uv_cmd.args.contains(&"--seed".to_string()), "pip must be seeded");
+        assert!(
+            uv_cmd.args.contains(&"--seed".to_string()),
+            "pip must be seeded"
+        );
         assert!(uv_cmd.args.contains(&"--python".to_string()));
         let plain_cmd = inst.build_venv_create_command(false);
         assert!(plain_cmd.program.contains("python"));

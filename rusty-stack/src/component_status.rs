@@ -224,9 +224,17 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
             command_exists("vllm-studio") || path_exists(home_path(&home, &["vllm-studio"]))
         }
         "onnx" => {
-            python_candidates
-                .iter()
-                .any(|python| python_exec(python, onnxruntime_present_snippet()))
+            // Presence gate first; the provider snippet only runs when
+            // onnxruntime actually exists somewhere among candidates.
+            python_any(python_candidates, &["onnxruntime"])
+                && python_candidates.iter().any(|python| {
+                    python_exec_bounded(
+                        python,
+                        onnxruntime_present_snippet(),
+                        std::time::Duration::from_secs(15),
+                        "detect onnxruntime providers",
+                    )
+                })
                 || path_exists(home_path(&home, &["onnxruntime_build"]))
         }
         "bitsandbytes" => {
@@ -276,6 +284,10 @@ pub fn is_component_installed_by_id(component_id: &str, python_candidates: &[Str
         // HIP init + int8_quant execution; enforced by its unit test), now
         // BOUNDED so GPU contention cannot hang startup. Identical bytes run
         // as the Verify action at component_verification_commands()/fastvideo.
+        // Unchanged rigorous kernel-smoke gate; the snippet itself now
+        // short-circuits (exit 1, zero subprocesses) when either distribution
+        // is absent, so uninstalled machines cost milliseconds while installed
+        // verdicts still demand the full per-GPU smoke — bounded at 30s.
         "fastvideo" => python_candidates.iter().any(|python| {
             python_exec_bounded(
                 python,

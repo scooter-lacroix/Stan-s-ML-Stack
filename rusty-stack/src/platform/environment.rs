@@ -1545,11 +1545,9 @@ export LD_LIBRARY_PATH=\"/opt/rocm-6.0/lib:/opt/rocm-6.0/hip/lib:/opt/rocm-6.0/o
         assert!(result.contains("export ROCM_PATH=/opt/rocm"));
         assert!(result.contains("export ORT_MIGRAPHX_FP16_ENABLE=0"));
         assert!(result.contains("export ORT_MIGRAPHX_EXHAUSTIVE_TUNE=0"));
-        assert!(
-            result.contains(
-                "export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"/home/test/.mlstack/migraphx_cache\""
-            )
-        );
+        assert!(result.contains(
+            "export ORT_MIGRAPHX_MODEL_CACHE_PATH=\"/home/test/.mlstack/migraphx_cache\""
+        ));
     }
 
     #[test]

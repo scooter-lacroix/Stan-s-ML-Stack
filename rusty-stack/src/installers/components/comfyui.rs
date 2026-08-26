@@ -93,26 +93,37 @@ pub const EXCLUDED_PACKAGES: &[&str] = &[
 /// ownership, so the version is pinned here and bumped consciously.
 pub const COMFYUI_MANAGER_PACKAGE: &str = "comfyui-manager==4.2.2";
 
+/// Enables ComfyUI-Manager's matrix sharing feature when present.
+pub const MATRIX_NIO_PACKAGE: &str = "matrix-nio==0.26.0";
+
+/// Exact-pin extras Rusty adds to every filtered requirements install.
+pub const MANAGED_COMFY_EXTRAS: &[&str] = &[COMFYUI_MANAGER_PACKAGE, MATRIX_NIO_PACKAGE];
+
 /// Append Rusty-managed extras to a filtered requirements body.
 ///
 /// Idempotent: skips insertion when any comfyui-manager requirement line is
 /// already present (e.g. re-running against an already-extended body).
 pub fn inject_managed_extras(filtered_body: &str) -> String {
-    let has_manager = filtered_body.lines().any(|line| {
-        line.trim()
-            .to_ascii_lowercase()
-            .starts_with("comfyui-manager")
-    });
-    if has_manager {
-        return filtered_body.to_string();
-    }
     let mut body = String::from(filtered_body);
-    if !body.is_empty() && !body.ends_with('\n') {
+    for package in MANAGED_COMFY_EXTRAS {
+        let prefix = package
+            .split("==")
+            .next()
+            .unwrap_or(package)
+            .to_ascii_lowercase();
+        let present = body
+            .lines()
+            .any(|line| line.trim().to_ascii_lowercase().starts_with(&prefix));
+        if present {
+            continue;
+        }
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str("# Rusty-owned extra (pinned per managed-env ownership)\n");
+        body.push_str(package);
         body.push('\n');
     }
-    body.push_str("# Rusty-owned extra: ComfyUI Node Manager (upstream asks for `pip install -U --pre comfyui-manager`); pinned per managed-env ownership\n");
-    body.push_str(COMFYUI_MANAGER_PACKAGE);
-    body.push('\n');
     body
 }
 
@@ -584,25 +595,32 @@ mod tests {
     }
 
     #[test]
-    fn test_managed_extras_inject_manager_pin_idempotently() {
+    fn test_managed_extras_inject_all_pins_idempotently() {
+        for package in MANAGED_COMFY_EXTRAS {
+            assert!(package.contains("=="), "{package} must be exact-pinned");
+            assert!(!package.to_ascii_lowercase().contains("nvidia"));
+            assert!(!package.to_ascii_lowercase().contains("cuda"));
+        }
         let once = inject_managed_extras("comfy-kitchen==0.2.31\n");
-        assert!(once.contains(COMFYUI_MANAGER_PACKAGE));
-        assert_eq!(once.lines().last().unwrap(), COMFYUI_MANAGER_PACKAGE);
-        let twice = inject_managed_extras(&once);
-        assert_eq!(
-            twice.matches(COMFYUI_MANAGER_PACKAGE).count(),
-            1,
-            "re-injection must stay idempotent"
-        );
-        // guard rails: exact pin, no float ranges, no nvidia channel drift
-        assert!(COMFYUI_MANAGER_PACKAGE.starts_with("comfyui-manager=="));
+        for package in MANAGED_COMFY_EXTRAS {
+            assert!(once.contains(package));
+            let twice = inject_managed_extras(&once);
+            assert_eq!(
+                twice.matches(package).count(),
+                1,
+                "re-injection of {package} must stay idempotent"
+            );
+        }
     }
 
     #[test]
     fn test_inject_respects_existing_manager_line() {
         let body = "# manual\ncomfyui-manager==9.9.9\n";
-        assert!(inject_managed_extras(body).contains("comfyui-manager==9.9.9"));
-        assert!(!inject_managed_extras(body).contains("==4.2.2"));
+        let out = inject_managed_extras(body);
+        assert!(out.contains("comfyui-manager==9.9.9"));
+        assert!(!out.contains("==4.2.2"));
+        // other owned extras still arrive
+        assert!(out.contains(MATRIX_NIO_PACKAGE));
     }
 
     #[test]

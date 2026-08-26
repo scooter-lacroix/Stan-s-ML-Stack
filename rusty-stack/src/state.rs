@@ -589,8 +589,7 @@ pub fn default_components() -> Vec<Component> {
         Component {
             id: "freetoken".into(),
             name: "FreeToken".into(),
-            description: "MoE-offload LLM serving engine (OpenAI/Anthropic APIs), HIP port"
-                .into(),
+            description: "MoE-offload LLM serving engine (OpenAI/Anthropic APIs), HIP port".into(),
             script: String::new(), // Native Rust installer
             category: Extension,
             required: false,
