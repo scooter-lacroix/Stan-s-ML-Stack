@@ -58,7 +58,7 @@ fn is_network_url(source: &str) -> bool {
 /// the immutable-source policy still verifies the checked-out tree against
 /// [`FASTVIDEO_COMMIT`] before a single byte compiles.
 fn resolve_repo_source(
-    exe_root: Option<&Path>,
+    search_roots: &[PathBuf],
     env_override: Option<&str>,
     commit: &str,
 ) -> String {
@@ -67,8 +67,8 @@ fn resolve_repo_source(
             return dir.to_string();
         }
     }
-    if let Some(exe) = exe_root {
-        let mut cursor = exe.to_path_buf();
+    for start in search_roots {
+        let mut cursor = start.clone();
         for _ in 0..8 {
             let candidate = cursor.join(FASTVIDEO_VENDORED_RELATIVE);
             if git_head_at(&candidate).as_deref() == Some(commit) {
@@ -392,14 +392,20 @@ impl Default for FastVideoInstaller {
 impl FastVideoInstaller {
     pub fn new(config: FastVideoConfig) -> Self {
         let env_override = std::env::var(FASTVIDEO_SOURCE_ENV).ok();
-        let exe_root = std::env::current_exe()
+        // Search from BOTH the executable location and the process cwd: the
+        // deployed binary lives under ~/.cargo/bin (no repo ancestor), but
+        // operators typically launch it from inside a Stan's ML Stack
+        // checkout whose Fork/FastVideo is pinned at FASTVIDEO_COMMIT.
+        let mut search_roots = std::env::current_exe()
             .ok()
-            .and_then(|path| path.parent().map(Path::to_path_buf));
-        let repo_source = resolve_repo_source(
-            exe_root.as_deref(),
-            env_override.as_deref(),
-            FASTVIDEO_COMMIT,
-        );
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Ok(cwd) = std::env::current_dir() {
+            search_roots.push(cwd);
+        }
+        let repo_source =
+            resolve_repo_source(&search_roots, env_override.as_deref(), FASTVIDEO_COMMIT);
         Self::new_with_repo_source(config, repo_source)
     }
 
@@ -1384,11 +1390,15 @@ mod tests {
         let nowhere =
             std::env::temp_dir().join(format!("no-fastvideo-here-{}", std::process::id()));
         assert_eq!(
-            resolve_repo_source(Some(&nowhere), nowhere.to_str(), FASTVIDEO_COMMIT),
+            resolve_repo_source(
+                std::slice::from_ref(&nowhere),
+                nowhere.to_str(),
+                FASTVIDEO_COMMIT
+            ),
             FASTVIDEO_REPO
         );
         assert_eq!(
-            resolve_repo_source(None, None, FASTVIDEO_COMMIT),
+            resolve_repo_source(&[], None, FASTVIDEO_COMMIT),
             FASTVIDEO_REPO
         );
     }
