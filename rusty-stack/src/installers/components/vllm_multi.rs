@@ -209,8 +209,14 @@ if [ -z "$KEEP_RCCL" ]; then
 fi
 
 # GPU visibility: HIP is canonical on ROCm; CUDA_* triggers deprecation and
-# PYTORCH_ROCM_DEVICE conflicts with explicit masks.
-export HIP_VISIBLE_DEVICES="{gpus}"
+# PYTORCH_ROCM_DEVICE conflicts with explicit masks. An OPERATOR-provided
+# visibility mask wins outright (shared-GPU workflows pin one card); absent
+# that, all discrete GPUs are exposed and vLLM picks cuda:0.
+if [ -n "${{HIP_VISIBLE_DEVICES:-}}" ]; then
+    echo "[vllm-serve] honoring operator mask HIP_VISIBLE_DEVICES=$HIP_VISIBLE_DEVICES"
+else
+    export HIP_VISIBLE_DEVICES="{gpus}"
+fi
 unset CUDA_VISIBLE_DEVICES PYTORCH_ROCM_DEVICE ROCR_VISIBLE_DEVICES
 export HSA_ENABLE_SDMA=0
 export KMP_DUPLICATE_LIB_OK=TRUE
