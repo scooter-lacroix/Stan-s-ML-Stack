@@ -5098,6 +5098,36 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 sender,
                 &component.name,
             )?;
+
+            // Step 5: managed launcher `~/.mlstack/bin/vllm-serve` — a raw
+            // `vllm serve` in the operator shell dies in mp-spawn unpickling
+            // under the RCCL overlay sitecustomize (2026-08-27 EngineCore).
+            let bin_dir = std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".mlstack").join("bin"))
+                .unwrap_or_else(|_| PathBuf::from("/root/.mlstack/bin"));
+            std::fs::create_dir_all(&bin_dir)?;
+            let launcher_path = bin_dir.join("vllm-serve");
+            std::fs::write(&launcher_path, {
+                let v_inst = crate::installers::components::vllm_multi::VllmInstaller::new(
+                    crate::installers::components::vllm_multi::VllmConfig {
+                        python_bin: resolve_python_bin(),
+                        ..Default::default()
+                    },
+                );
+                v_inst.launcher_script()
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&launcher_path, std::fs::Permissions::from_mode(0o755))?;
+            }
+            let _ = sender.send(InstallerEvent::Log(
+                format!(
+                    "[native] vLLM managed launcher written to {}",
+                    launcher_path.display()
+                ),
+                false,
+            ));
         }
 
         // ── aiter ─────────────────────────────────────────────────────

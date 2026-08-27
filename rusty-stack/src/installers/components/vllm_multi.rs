@@ -89,6 +89,7 @@ impl std::fmt::Display for InstallMethod {
 
 /// Configuration for the vLLM installer.
 #[derive(Debug, Clone)]
+
 pub struct VllmConfig {
     /// ROCm version string (e.g., "7.2.0").
     pub rocm_version: String,
@@ -156,6 +157,72 @@ pub struct VllmInstaller {
 }
 
 impl VllmInstaller {
+    /// Sanitized launcher for the vLLM CLI (`~/.mlstack/bin/vllm-serve`).
+    ///
+    /// Why it exists: the operator shell's PYTHONPATH carries the RCCL
+    /// overlay whose `sitecustomize.py` re-execs torch-bearing interpreters
+    /// through ld.so. Transparent for plain runs, but it corrupts the
+    /// multiprocessing spawn channel vLLM's EngineCore relies on — children
+    /// died with `_pickle.UnpicklingError: unpickling stack underflow`
+    /// before a single line of engine code ran (2026-08-26/27). This wrapper:
+    /// - strips BOTH poison PYTHONPATH entries (onnxruntime build dir AND the
+    ///   RCCL overlay python) plus the overlay env vars,
+    /// - auto-keeps the RCCL shim ONLY when tensor-parallelism >1 is actually
+    ///   requested (stock system librccl is broken; TP needs the overlay),
+    /// - pins HIP visibility and clears CUDA_* deprecation sources,
+    /// - sets the standing dual-GPU guards (HSA_ENABLE_SDMA=0,
+    ///   KMP_DUPLICATE_LIB_OK=TRUE).
+    pub fn launcher_script(&self) -> String {
+        self.launcher_script_with_gpus(&crate::installer::detect_gpu_list())
+    }
+
+    /// Pure variant taking explicit GPU devices — unit-testable without probing.
+    pub fn launcher_script_with_gpus(&self, gpus: &str) -> String {
+        let python = &self.config.python_bin;
+        format!(
+            r#"#!/bin/sh
+# rusty-stack vLLM launcher — sanitized environment for mp-spawn safety.
+# See VllmInstaller::launcher_script docs; bypass with raw `vllm` at your own risk.
+KEEP_RCCL="${{MLSTACK_VLLM_KEEP_RCCL:-}}"
+TP_REQUESTED=$(printf '%s\n' "$@" | grep -Eo 'tensor-parallel-size[= ][2-9]|--tp[= ][2-9]' | head -n1)
+if [ -n "$TP_REQUESTED" ] && [ -z "$KEEP_RCCL" ]; then
+    KEEP_RCCL=1
+    echo "[vllm-serve] TP>1 requested: keeping stack RCCL overlay (stock librccl broken)"
+fi
+
+NEWPP=""
+OLDIFS="$IFS"; IFS=':'
+for d in $PYTHONPATH; do
+    [ -z "$d" ] && continue
+    case "$d" in
+        "$HOME/onnxruntime_build/onnxruntime/build/Linux/Release") continue ;;
+        "$HOME/.mlstack/components/rccl/active/python")
+            [ -n "$KEEP_RCCL" ] || continue ;;
+        *) ;;
+    esac
+    if [ -z "$NEWPP" ]; then NEWPP="$d"; else NEWPP="$NEWPP:$d"; fi
+done
+IFS="$OLDIFS"
+
+if [ -z "$KEEP_RCCL" ]; then
+    unset MLSTACK_RCCL_OVERLAY_DIR MLSTACK_RCCL_OVERLAY_PRELOAD MLSTACK_RCCL_OVERLAY_WRAPPER
+fi
+
+# GPU visibility: HIP is canonical on ROCm; CUDA_* triggers deprecation and
+# PYTORCH_ROCM_DEVICE conflicts with explicit masks.
+export HIP_VISIBLE_DEVICES="{gpus}"
+unset CUDA_VISIBLE_DEVICES PYTORCH_ROCM_DEVICE ROCR_VISIBLE_DEVICES
+export HSA_ENABLE_SDMA=0
+export KMP_DUPLICATE_LIB_OK=TRUE
+export PYTHONPATH="$NEWPP"
+
+exec {python} -m vllm.entrypoints.cli.main serve "$@"
+"#,
+            gpus = gpus,
+            python = python,
+        )
+    }
+
     /// Create a new vLLM installer with the given config.
     pub fn new(config: VllmConfig) -> Self {
         Self { config }
@@ -860,5 +927,30 @@ mod tests {
         let result = installer.validate_dependencies(&["rocm"]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("pytorch"));
+    }
+
+    #[cfg(test)]
+    mod launcher_tests {
+        use super::*;
+        #[test]
+        fn launcher_sanitizes_spawn_environment() {
+            let inst = VllmInstaller::new(VllmConfig {
+                python_bin: "/managed/python".to_string(),
+                ..Default::default()
+            });
+            let script = inst.launcher_script_with_gpus("0,1");
+            assert!(script.contains("unset CUDA_VISIBLE_DEVICES PYTORCH_ROCM_DEVICE"));
+            assert!(script.contains("HIP_VISIBLE_DEVICES="));
+            assert!(script.contains("HSA_ENABLE_SDMA=0"));
+            assert!(script.contains("KMP_DUPLICATE_LIB_OK=TRUE"));
+            assert!(script.contains("onnxruntime_build"));
+            assert!(script.contains("rccl/active/python"));
+            assert!(script.contains("MLSTACK_VLLM_KEEP_RCCL"));
+            assert!(
+                script.contains("exec \"/managed/python\"")
+                    || script.contains("exec /managed/python")
+            );
+            assert!(script.contains("-m vllm.entrypoints.cli.main serve"));
+        }
     }
 }
