@@ -542,9 +542,11 @@ for line in (proc.stdout or "").splitlines():
         continue
     who_m = re.match(r"^([A-Za-z0-9_.\-]+)", line)
     who = norm(who_m.group(1)) if who_m else ""
-    tgt_m = re.search(r"(?:has requirement|requires)\s+([^,<>=!~\s;,]+)", line)
-    tgt = norm(tgt_m.group(1)) if tgt_m else ""
-    if who in mine or (tgt and tgt in mine):
+    # Ownership rule: fatal only when the COMPLAINING HOLDER belongs to
+    # vLLM's own closure. A foreign dist complaining about versions our
+    # resolver raised is cross-stack negotiation noise — its own arm
+    # reconciles on its next install.
+    if who in mine:
         relevant.append(line)
     else:
         noise.append(line)
