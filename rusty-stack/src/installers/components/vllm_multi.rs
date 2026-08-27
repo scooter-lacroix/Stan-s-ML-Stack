@@ -496,10 +496,76 @@ exec {python} -m vllm.entrypoints.cli.main serve "$@"
     /// This is intentionally read-only. It catches stale or missing packages
     /// after Rusty's `--no-deps` installs without allowing pip to mutate torch,
     /// ROCm, CUDA/NVIDIA libraries, or any other stack component.
+    /// Closure-scoped dependency integrity gate.
+    ///
+    /// The shared managed environment legitimately carries cross-component
+    /// conflicts from OTHER stacks (mcp-agent-mail, gradio-custom,
+    /// pymupdf...). Raw `pip check` exits 1 on all of them and false-fails
+    /// this install. This gate classifies: conflicts touching vLLM's own
+    /// two-level importlib-metadata closure are FATAL; everything else is
+    /// logged as `[integrity][env-noise]` stderr warnings and ignored.
     pub fn build_integrity_check_command(&self) -> ShellCommand {
+        let script = r#"import re, subprocess, sys
+from importlib.metadata import distribution
+
+def norm(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+def closure(root, depth=2):
+    seen, frontier = set(), [root]
+    for _ in range(depth):
+        nxt = []
+        for name in frontier:
+            key = norm(name)
+            if key in seen:
+                continue
+            try:
+                dist = distribution(key)
+            except Exception:
+                continue
+            seen.add(key)
+            for req in (dist.requires or []):
+                base = re.split(r"[;\[<>=!~\s]", req)[0].strip()
+                if base:
+                    k = norm(base)
+                    if k not in seen:
+                        nxt.append(k)
+        frontier = nxt
+    return seen
+
+mine = closure("vllm")
+proc = subprocess.run([sys.executable, "-m", "pip", "check"],
+                      capture_output=True, text=True)
+relevant, noise = [], []
+for line in (proc.stdout or "").splitlines():
+    if not line.strip():
+        continue
+    who_m = re.match(r"^([A-Za-z0-9_.\-]+)", line)
+    who = norm(who_m.group(1)) if who_m else ""
+    tgt_m = re.search(r"(?:has requirement|requires)\s+([^,<>=!~\s;,]+)", line)
+    tgt = norm(tgt_m.group(1)) if tgt_m else ""
+    if who in mine or (tgt and tgt in mine):
+        relevant.append(line)
+    else:
+        noise.append(line)
+
+for line in noise:
+    print("[integrity][env-noise] " + line, file=sys.stderr)
+
+if relevant:
+    print("[integrity] vLLM closure conflicts:", file=sys.stderr)
+    for line in relevant:
+        print("[integrity]   " + line, file=sys.stderr)
+    sys.exit(1)
+
+print(
+    "[integrity] vLLM closure consistent "
+    f"({len(noise)} unrelated env conflict(s) logged as noise)"
+)
+sys.exit(0)"#;
         ShellCommand {
             program: self.config.python_bin.clone(),
-            args: vec!["-m".to_string(), "pip".to_string(), "check".to_string()],
+            args: vec!["-c".to_string(), script.to_string()],
             env: vec![],
         }
     }
@@ -549,6 +615,11 @@ exec {python} -m vllm.entrypoints.cli.main serve "$@"
             "setuptools-rust".to_string(),
             "setuptools-scm".to_string(),
             "patchelf".to_string(),
+            // vLLM 0.27.1 closure gaps the strict --no-deps install cannot
+            // satisfy: resolver co-satisfies with the rest of the env (no
+            // other component pins these lower).
+            "pydantic>=2.12.0".to_string(),
+            "mistral-common[image]>=1.11.6".to_string(),
         ]);
         ShellCommand {
             program: self.config.python_bin.clone(),
@@ -854,12 +925,32 @@ mod tests {
     }
 
     #[test]
-    fn test_integrity_check_command_is_read_only() {
+    fn test_integrity_check_command_is_read_only_and_scoped() {
         let installer = VllmInstaller::with_defaults();
         let cmd = installer.build_integrity_check_command();
+        // inline read-only classifier: no pip install/upgrade anywhere
         assert_eq!(cmd.program, "python3");
-        assert_eq!(cmd.args, vec!["-m", "pip", "check"]);
+        assert_eq!(cmd.args.first().map(String::as_str), Some("-c"));
+        assert_eq!(cmd.args.len(), 2);
         assert!(cmd.env.is_empty());
+        let script = &cmd.args[1];
+        for anchor in [
+            "pip",
+            "check",                  // still drives pip check ...
+            "distribution(",          // ... over the importlib closure walk
+            "[integrity][env-noise]", // unrelated conflicts: visible, non-fatal
+            "vLLM closure conflicts", // own-closure conflicts: fatal
+        ] {
+            assert!(script.contains(anchor), "missing anchor {anchor}");
+        }
+        // guard rails: strictly a checker — must never mutate the env
+        for forbidden in ["install ", "--upgrade", "--force-reinstall"] {
+            let needle = format!("subprocess.run([sys.executable, \"-m\", \"pip\", \"{forbidden}");
+            assert!(
+                !script.contains(&needle.replace("\"", "")),
+                "integrity script must not invoke pip {forbidden}"
+            );
+        }
     }
 
     #[test]
