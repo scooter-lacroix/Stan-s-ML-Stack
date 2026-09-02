@@ -776,31 +776,17 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Res
             primary.pci_device_id
         )
     })?;
-    // ROCR_VISIBLE_DEVICES / HIP_VISIBLE_DEVICES filter by the *original* ROCr
-    // enumeration order (CPU + iGPU + dGPU agents as `rocminfo` prints them),
-    // NOT a re-numbered post-filter sequence. On an APU+dGPU host the iGPU is a
-    // low ROCr agent index, so emitting the compacted filtered-list indices
-    // (0,1,...) would point ROCr at the iGPU/CPU instead of the dGPU — defeating
-    // the iGPU-exclusion hardening. Use the real ROCm agent indices captured by
-    // the gpu detector (from rocminfo) when available; fall back to compacted
-    // indices only when rocminfo is absent (a rocminfo-less host has no separate
-    // CPU/iGPU agent, so there is no index gap to worry about — this matches
-    // bootstrap::env_setup::detect_discrete_gpus's lspci/render-node fallbacks,
-    // which also compact).
-    let discrete_indices = if dgpus.iter().all(|g| g.rocm_index.is_some()) {
-        dgpus
-            .iter()
-            .map(|g| g.rocm_index.expect("checked Some above").to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    } else {
-        dgpus
-            .iter()
-            .enumerate()
-            .map(|(i, _)| i.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    // Canonical device mask for ROCR/HIP/CUDA_VISIBLE_DEVICES, from ONE
+    // builder (crate::gpu::runtime_device_mask): uniform UUID tokens when the
+    // stack exposes unique_id (enumeration-immune — iGPU insertion or dGPU
+    // vfio-pinning never re-points the mask), else uniform runtime GPU
+    // ordinals (compact positions among GPU-type agents, iGPU counted).
+    // There is NO compacted 0..n fallback: a card with neither identity fails
+    // LOUD here (compacted ordinals resolve to the iGPU's slot — the exact
+    // failure this builder exists to prevent). Mixed masks are never emitted:
+    // ROCr honors GPU-uuid,ordinal mixes but HIP/torch resolve only the UUID
+    // token (layer skew, probed on ROCm 7.2.4).
+    let discrete_indices = crate::gpu::runtime_device_mask(&dgpus)?;
     // After filtering, the dGPU is always index 0 of the *visible* (re-numbered)
     // set, regardless of its original ROCr index. PYTORCH_ROCM_DEVICE selects
     // within the post-filter visible set, so it stays "0".
@@ -889,6 +875,30 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Res
         let updated = ensure_gpu_metadata_exports(&sanitized, &gpu_pairs);
         if updated != contents {
             fs::write(&env_path, &updated).context("Failed to update .mlstack_env")?;
+        }
+        // Fish mirror refresh runs on EVERY merge (not only when bash changed):
+        // a divergent mirror — stale ordinals or a stale PYTORCH_ROCM_DEVICE
+        // while bash carries UUIDs — silently reintroduces the enumeration
+        // fragility in fish shells via conf.d auto-load. Content-compared, so
+        // an already-current mirror is left untouched.
+        let fish_dir = PathBuf::from(user_home).join(".config/fish/conf.d");
+        if fs::create_dir_all(&fish_dir).is_ok() {
+            let fish_content = crate::bootstrap::env_setup::generate_fish_env_file_content(
+                &discrete_indices,
+                rocm_home,
+                &rocm_version,
+                "latest",
+                gpu_arch,
+                &hsa_override,
+                &python_bin,
+            );
+            let fish_path = fish_dir.join("mlstack_env.fish");
+            let fish_current = fs::read_to_string(&fish_path).unwrap_or_default();
+            if fish_current != fish_content {
+                let _ = fs::write(&fish_path, fish_content);
+            }
+        }
+        if updated != contents {
             return Ok(EnvUpdate::Updated);
         }
         return Ok(EnvUpdate::Unchanged);
@@ -8531,5 +8541,55 @@ mod tests {
         assert_eq!(VerificationResult::Verified.label(), "Verified");
         assert_eq!(VerificationResult::Failed.label(), "Failed");
         assert_eq!(VerificationResult::Missing.label(), "Missing");
+    }
+
+    /// LIVE-BOX ONLY (`#[ignore]`): regenerate `~/.mlstack_env` (+ fish mirror)
+    /// from real system state via the canonical `ensure_mlstack_env` path, then
+    /// assert the emitted device mask is enumeration-robust (UUID tokens when
+    /// the stack exposes `unique_id`). Run explicitly on the target machine:
+    ///
+    /// ```text
+    /// cargo test --lib live_refresh_mlstack_env -- --ignored --nocapture
+    /// ```
+    ///
+    /// This is the operator "refresh env after topology change" entry point —
+    /// run it after enabling an iGPU or vfio-pinning a dGPU; the mask re-derives
+    /// from live detection instead of drifting stale.
+    #[test]
+    #[ignore = "writes the real ~/.mlstack_env; run explicitly on the live box"]
+    fn live_refresh_mlstack_env() {
+        let home = resolve_mlstack_user_home();
+        let update = ensure_mlstack_env(&home, "auto", false).expect("ensure_mlstack_env");
+        println!("ensure_mlstack_env -> {update:?}");
+
+        let dgpus = crate::gpu::detect_discrete_amd_gpus();
+        assert!(
+            !dgpus.is_empty(),
+            "no discrete AMD GPUs detected — cannot validate a mask"
+        );
+        let expected = crate::gpu::runtime_device_mask(&dgpus).expect("runtime_device_mask");
+        println!("expected mask: {expected}");
+        assert!(!expected.is_empty());
+
+        let env_path = std::path::Path::new(&home).join(".mlstack_env");
+        let env = std::fs::read_to_string(&env_path).expect("read ~/.mlstack_env");
+        let mask_line = env
+            .lines()
+            .find(|l| l.starts_with("export ROCR_VISIBLE_DEVICES="))
+            .expect("ROCR_VISIBLE_DEVICES export in ~/.mlstack_env");
+        assert_eq!(
+            mask_line
+                .trim_start_matches("export ROCR_VISIBLE_DEVICES=")
+                .trim(),
+            expected,
+            "~/.mlstack_env mask must equal the runtime-derived mask"
+        );
+
+        let fish_path = std::path::Path::new(&home).join(".config/fish/conf.d/mlstack_env.fish");
+        let fish = std::fs::read_to_string(&fish_path).expect("read fish mirror");
+        assert!(
+            fish.contains(&format!("set -gx ROCR_VISIBLE_DEVICES {expected}")),
+            "fish mirror must carry the same mask as bash (divergence = the bug this guards)"
+        );
     }
 }

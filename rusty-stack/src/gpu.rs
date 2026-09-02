@@ -283,6 +283,24 @@ pub fn read_vram_bytes(pci_slot: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
 }
 
+/// Read a PCI device's stable `unique_id` from sysfs, if available.
+///
+/// `pci_slot` is the `BB:DD.F` form (with or without a `0000:` domain prefix).
+/// The raw value matches rocminfo's `Uuid` body (RDNA2+ / ROCm ≥ 5.x expose
+/// it); the `GPU-` prefix is added here so the token is directly usable in
+/// `ROCR_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` / `CUDA_VISIBLE_DEVICES`.
+pub fn read_unique_id(pci_slot: &str) -> Option<String> {
+    let slot = pci_slot.trim().trim_start_matches("0000:");
+    let path = format!("/sys/bus/pci/devices/0000:{slot}/unique_id");
+    let value = std::fs::read_to_string(&path).ok()?;
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(format!("GPU-{value}"))
+    }
+}
+
 // ===========================================================================
 // AMD GPU detection from sysfs — PCI class filter, VRAM, gfx arch resolution
 // ===========================================================================
@@ -305,18 +323,29 @@ pub struct AmdGpu {
     pub vram_bytes: Option<u64>,
     /// `true` if classified as integrated by [`device_is_integrated`].
     pub is_integrated: bool,
-    /// Real ROCm (HSA) agent index from `rocminfo`, when available.
+    /// Stable device UUID in `GPU-<hex>` form (matches rocminfo's `Uuid`),
+    /// when known.
     ///
-    /// This is the authoritative device index for `ROCR_VISIBLE_DEVICES` /
-    /// `HIP_VISIBLE_DEVICES`: those vars filter by the *original* enumeration
-    /// order (CPU + iGPU + dGPU agents as `rocminfo` prints them), NOT a
-    /// re-numbered post-filter sequence. On an APU+dGPU host where the iGPU is
-    /// ROCr agent 2 and the dGPU is agent 3, the visibility mask must be `3`,
-    /// not the compacted `0` produced by enumerating the filtered dGPU list.
+    /// Sourced from sysfs `unique_id` (present on RDNA2+; ROCm ≥ 5.x), with a
+    /// rocminfo fallback during agent enrichment. This is the PREFERRED
+    /// `*_VISIBLE_DEVICES` token: UUID masks are immune to PCIe enumeration
+    /// changes (iGPU agent insertion, dGPU vfio-pinning) and fail closed when
+    /// a device is absent — a stale UUID yields zero devices, never the iGPU.
+    pub uuid: Option<String>,
+    /// Runtime device ordinal: this GPU's 0-based position among GPU-type
+    /// agents as the ROCm runtime enumerates them (CPU agents skipped, iGPU
+    /// GPU-agent counted), when derivable from rocminfo.
     ///
-    /// `None` when rocminfo is unavailable; callers fall back to compacted
-    /// indices (the historical sysfs-only behavior) in that case.
-    pub rocm_index: Option<u32>,
+    /// NOT the raw rocminfo "Agent N" header — probed on ROCm 7.2.4:
+    /// `ROCR_VISIBLE_DEVICES` filters by COMPACTED GPU ordinals (`ROCR=1,2` on
+    /// an Agent1-CPU/Agent2/Agent3 host selects both dGPUs; `ROCR=2,3` selects
+    /// nothing). Never emit raw agent indices; use [`runtime_device_mask`].
+    ///
+    /// `None` when rocminfo is unavailable or the agent could not be matched;
+    /// [`runtime_device_mask`] can then only use UUID mode for that host
+    /// (there is NO compacted-ordinal fallback — that token space resolves to
+    /// the iGPU's slot on APU hosts).
+    pub runtime_gpu_ordinal: Option<u32>,
 }
 
 /// Authoritative PCI device ID → gfx arch mapping for AMD discrete GPUs.
@@ -591,14 +620,83 @@ fn rocminfo_available() -> bool {
     .unwrap_or(false)
 }
 
-/// Parse rocminfo agent list for ROCm device ordering (optional enrichment).
+/// One rocminfo agent, reduced to what GPU enrichment needs.
 ///
-/// Returns vec of (index, name, gfx_arch) in ROCm device index order. The
-/// `index` is the literal "Agent N" counter from rocminfo (the same value
-/// `ROCR_VISIBLE_DEVICES` / `HIP_VISIBLE_DEVICES` must use to filter). GPU
-/// agents that lack a numbered "Agent N" header fall back to the running GPU
-/// counter. Cross-verified against lspci/sysfs devices by the caller.
-fn parse_rocminfo_agents() -> Vec<(u32, String, Option<String>)> {
+/// Deliberately NOT carrying the "Agent N" header index: probed on ROCm
+/// 7.2.4, `*_VISIBLE_DEVICES` filter by COMPACTED GPU ordinals, not agent
+/// headers (`ROCR=2,3` on an Agent1-CPU/Agent2/Agent3 host selects nothing).
+/// Ordinals are derived by counting GPU-type agents in order at enrichment
+/// time instead.
+#[derive(Debug, Clone)]
+pub struct RocmAgent {
+    /// `Device Type:` contains `GPU` (CPU agents are never GPU-ordinal slots).
+    pub is_gpu: bool,
+    /// `Uuid:` value (`GPU-<hex>` for GPUs), when present.
+    pub uuid: Option<String>,
+    /// gfx architecture (`gfx1100`…): the agent's `Name:` when it looks like
+    /// a gfx string, else the `gfx version:` line.
+    pub gfx_arch: Option<String>,
+}
+
+/// Parse rocminfo text into ordered [`RocmAgent`]s (pure — unit-testable).
+fn parse_rocminfo_text(text: &str) -> Vec<RocmAgent> {
+    let mut agents = Vec::new();
+
+    // rocminfo sections: banner, then "****" -delimited "Agent N" blocks.
+    for agent_block in text.split("****") {
+        let mut name: Option<String> = None; // FIRST `Name:` = kernel/gfx name
+        let mut gfx_version: Option<String> = None;
+        let mut uuid: Option<String> = None;
+        let mut is_gpu = false;
+
+        for line in agent_block.lines() {
+            let line = line.trim();
+            if line.starts_with("Agent ") {
+                // Header — nothing to extract; ordinal comes from is_gpu counting.
+            } else if name.is_none() {
+                if let Some(rest) = line.strip_prefix("Name:") {
+                    name = Some(rest.trim().to_string());
+                }
+            }
+            if let Some(rest) = line.strip_prefix("gfx version:") {
+                gfx_version = Some(rest.trim().to_string());
+            }
+            if let Some(rest) = line.strip_prefix("Uuid:") {
+                uuid = Some(rest.trim().to_string());
+            }
+            if let Some(rest) = line.strip_prefix("Device Type:") {
+                is_gpu = rest.trim().contains("GPU");
+            }
+        }
+
+        // GPU agents report `Name: gfxNNNN` (later `amdgcn-…` kernel names in
+        // the same block are NOT the arch — keep the first gfx-looking value).
+        let gfx_arch = name
+            .as_deref()
+            .filter(|n| n.starts_with("gfx"))
+            .map(str::to_string)
+            .or(gfx_version);
+
+        // rocminfo separates fields and the "Agent N" header with `*******`
+        // rules, so a naive split yields bare-header chunks (no fields at all)
+        // plus a leading banner chunk. Only chunks carrying identity are
+        // agents; the rest are formatting debris.
+        if name.is_none() && uuid.is_none() && gfx_arch.is_none() && !is_gpu {
+            continue;
+        }
+
+        agents.push(RocmAgent {
+            is_gpu,
+            uuid,
+            gfx_arch,
+        });
+    }
+
+    agents
+}
+
+/// Run rocminfo and parse its agent list (optional enrichment source).
+fn parse_rocminfo_agents() -> Vec<RocmAgent> {
     let mut rocminfo_probe = std::process::Command::new("rocminfo");
     let output = match crate::proc_util::run_with_detection_timeout(
         &mut rocminfo_probe,
@@ -607,45 +705,7 @@ fn parse_rocminfo_agents() -> Vec<(u32, String, Option<String>)> {
         Some(o) if o.status.success() => o.stdout,
         _ => return Vec::new(),
     };
-
-    let mut agents = Vec::new();
-    let text = String::from_utf8_lossy(&output);
-
-    // rocminfo sections: "Agent 1" ... "Agent 2" ...
-    for agent_block in text.split("****") {
-        let mut name = None;
-        let mut gfx_arch = None;
-        let mut index: Option<u32> = None;
-
-        for line in agent_block.lines() {
-            let line = line.trim();
-            // Capture the "Agent N" header index — this is the canonical ROCr
-            // agent index that ROCR_VISIBLE_DEVICES filters against.
-            if line.starts_with("Agent ") && index.is_none() {
-                if let Some(rest) = line.strip_prefix("Agent ") {
-                    if let Ok(n) = rest.trim().parse::<u32>() {
-                        index = Some(n);
-                    }
-                }
-            }
-            if let Some(rest) = line.strip_prefix("Name:") {
-                name = Some(rest.trim().to_string());
-            }
-            if let Some(rest) = line.strip_prefix("gfx version:") {
-                gfx_arch = Some(rest.trim().to_string());
-            }
-        }
-
-        if let Some(n) = name {
-            // Fall back to the running agent count if no "Agent N" header parsed
-            // (some rocminfo builds omit the numbered header). The count is still
-            // a real enumeration index, not a compacted post-filter value.
-            let idx = index.unwrap_or(agents.len() as u32);
-            agents.push((idx, n, gfx_arch));
-        }
-    }
-
-    agents
+    parse_rocminfo_text(&String::from_utf8_lossy(&output))
 }
 
 /// Detect ALL AMD GPUs via lspci + sysfs (includes iGPU; use
@@ -794,6 +854,8 @@ pub fn detect_amd_gpus() -> Vec<AmdGpu> {
             vram_bytes,
         );
 
+        let unique_id = read_unique_id(&pci_slot);
+
         gpus.push(AmdGpu {
             pci_slot,
             pci_device_id,
@@ -801,36 +863,72 @@ pub fn detect_amd_gpus() -> Vec<AmdGpu> {
             gfx_arch,
             vram_bytes,
             is_integrated,
-            rocm_index: None,
+            uuid: unique_id,
+            runtime_gpu_ordinal: None,
         });
     }
 
-    // Step 3 (optional): rocminfo enrichment for gfx arch + ROCm device ordering
+    // Step 3 (optional): rocminfo enrichment — runtime GPU ordinals, uuid, gfx.
     if rocminfo_available() {
-        let rocminfo_agents = parse_rocminfo_agents();
-        if !rocminfo_agents.is_empty() {
-            // Cross-verify rocminfo agents against detected devices by name/PCI.
-            // Enrich gfx arch AND capture the real ROCm agent index (the value
-            // ROCR_VISIBLE_DEVICES must use). Matching is by name substring
-            // (rocminfo marketing names are usually shorter than lspci strings).
-            for (rocm_idx, rocm_name, rocm_gfx) in rocminfo_agents {
-                for gpu in &mut gpus {
-                    if let Some(ref name) = gpu.marketing_name {
-                        if name.contains(&rocm_name) || rocm_name.contains(name) {
-                            if gpu.rocm_index.is_none() {
-                                gpu.rocm_index = Some(rocm_idx);
-                            }
-                            if let Some(ref rg) = rocm_gfx {
-                                gpu.gfx_arch = Some(rg.clone());
-                            }
-                        }
-                    }
-                }
-            }
+        let agents = parse_rocminfo_agents();
+        if !agents.is_empty() {
+            enrich_gpus_from_agents(&mut gpus, &agents);
         }
     }
 
     gpus
+}
+
+/// Enrich detected GPUs from ordered rocminfo agents.
+///
+/// Captures each GPU-type agent's RUNTIME ordinal (compact 0-based position
+/// among GPU-type agents — CPU agents skipped, iGPU GPU-agents counted) and
+/// fills missing uuid / gfx arch.
+///
+/// Matching is by stable identity, never by marketing name: rocminfo's
+/// per-GPU `Name:` is the gfx arch string, which cannot distinguish two
+/// same-arch cards and never substring-matches lspci descriptions. Priority:
+/// 1. `Uuid` ↔ sysfs `unique_id` (exact, unique per device)
+/// 2. gfx arch among still-unmatched cards (best effort for uuid-less stacks)
+fn enrich_gpus_from_agents(gpus: &mut [AmdGpu], agents: &[RocmAgent]) {
+    let mut gpu_ordinal = 0u32;
+    for agent in agents {
+        if !agent.is_gpu {
+            continue; // CPU agents occupy no runtime GPU ordinal slot
+        }
+        let ordinal = gpu_ordinal;
+        gpu_ordinal += 1;
+
+        let gfx = agent.gfx_arch.as_deref();
+        let mut matched: Option<usize> = None;
+        if let Some(ref uid) = agent.uuid {
+            matched = gpus
+                .iter()
+                .position(|g| g.uuid.as_deref() == Some(uid.as_str()));
+        }
+        if matched.is_none() {
+            if let Some(gfx) = gfx {
+                matched = gpus.iter().position(|g| {
+                    g.runtime_gpu_ordinal.is_none() && g.gfx_arch.as_deref() == Some(gfx)
+                });
+            }
+        }
+
+        if let Some(i) = matched {
+            let gpu = &mut gpus[i];
+            if gpu.runtime_gpu_ordinal.is_none() {
+                gpu.runtime_gpu_ordinal = Some(ordinal);
+            }
+            if gpu.uuid.is_none() {
+                gpu.uuid = agent.uuid.clone();
+            }
+            if gpu.gfx_arch.is_none() {
+                if let Some(gfx) = gfx {
+                    gpu.gfx_arch = Some(gfx.to_string());
+                }
+            }
+        }
+    }
 }
 
 /// Detect ONLY discrete AMD GPUs (iGPU filtered out).
@@ -846,6 +944,62 @@ pub fn detect_discrete_amd_gpus() -> Vec<AmdGpu> {
     dgpus
 }
 
+/// Build the canonical `*_VISIBLE_DEVICES` mask for the given discrete GPUs
+/// (in the order given — `detect_discrete_amd_gpus`' pci-slot order).
+///
+/// UNIFORM masks only — probed on ROCm 7.2.4, the runtime layers DISAGREE on
+/// mixed token masks: `ROCR_VISIBLE_DEVICES=GPU-<uuid>,1` resolves both
+/// devices, but the same mask through HIP/PyTorch resolves ONLY the UUID
+/// token (layer skew: ROCr sees 2 GPUs, torch sees 1). Never emit mixed.
+///
+/// - **UUID mode** — every GPU carries a uuid: emit `GPU-<hex>,…`.
+///   Enumeration-immune; a removed (vfio-pinned) device fails closed per
+///   token (survivors stay visible, never re-pointed, never the iGPU).
+/// - **Runtime-ordinal mode** — no uuids, but every GPU has a
+///   `runtime_gpu_ordinal`: emit those (compact GPU-agent positions, iGPU
+///   counted, holes preserved).
+/// - **Neither** — `Err`. There is NO compacted `0..n` fallback: compacted
+///   ordinals are the iGPU-unsafe token space (they resolve to the iGPU's
+///   runtime slot whenever an iGPU or extra GPU agent exists), and a silent
+///   downgrade would reintroduce exactly the bug this builder exists to kill.
+///   A card with neither identity means pre-RDNA2 silicon without rocminfo —
+///   fix the environment (install/locate rocminfo) rather than guess.
+///
+/// The iGPU can never appear in the output: it is absent from `dgpus` by
+/// construction, its uuid is never emitted, and ordinal mode numbers only
+/// the cards in `dgpus` against the runtime's FULL GPU-agent sequence.
+pub fn runtime_device_mask(dgpus: &[AmdGpu]) -> anyhow::Result<String> {
+    if dgpus.is_empty() {
+        return Ok(String::new());
+    }
+    if dgpus.iter().all(|g| g.uuid.is_some()) {
+        return Ok(dgpus
+            .iter()
+            .map(|g| g.uuid.as_deref().unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+            .join(","));
+    }
+    if dgpus.iter().all(|g| g.runtime_gpu_ordinal.is_some()) {
+        return Ok(dgpus
+            .iter()
+            .map(|g| g.runtime_gpu_ordinal.unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+            .join(","));
+    }
+    let unidentifiable: Vec<&str> = dgpus
+        .iter()
+        .filter(|g| g.uuid.is_none() && g.runtime_gpu_ordinal.is_none())
+        .map(|g| g.pci_slot.as_str())
+        .collect();
+    anyhow::bail!(
+        "cannot build an enumeration-safe device mask: GPU(s) at PCI {} expose \
+         neither unique_id (sysfs) nor a rocminfo runtime ordinal; refusing to \
+         fall back to compacted ordinals (they resolve to the iGPU's slot). \
+         Install/locate rocminfo so runtime ordinals can be derived.",
+        unidentifiable.join(", ")
+    );
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -853,6 +1007,192 @@ pub fn detect_discrete_amd_gpus() -> Vec<AmdGpu> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Discrete-card fixture: XTX-like, caller controls uuid + runtime ordinal.
+    fn dgpu(slot: &str, uuid: Option<&str>, ordinal: Option<u32>, gfx: &str) -> AmdGpu {
+        AmdGpu {
+            pci_slot: slot.to_string(),
+            pci_device_id: "0x744c".to_string(),
+            marketing_name: Some("AMD Radeon RX 7900 XTX".to_string()),
+            gfx_arch: Some(gfx.to_string()),
+            vram_bytes: Some(24 * 1024 * 1024 * 1024),
+            is_integrated: false,
+            uuid: uuid.map(str::to_string),
+            runtime_gpu_ordinal: ordinal,
+        }
+    }
+
+    #[test]
+    fn mask_prefers_uuids_and_ignores_ordinal_shifts() {
+        // APU-first host: runtime ordinals are shifted (1,2) — UUID mode must
+        // win so the mask survives ANY enumeration change.
+        let dgpus = vec![
+            dgpu("03:00.0", Some("GPU-aaaa"), Some(1), "gfx1100"),
+            dgpu("16:00.0", Some("GPU-bbbb"), Some(2), "gfx1101"),
+        ];
+        assert_eq!(
+            runtime_device_mask(&dgpus).expect("uniform uuids"),
+            "GPU-aaaa,GPU-bbbb"
+        );
+    }
+
+    #[test]
+    fn mask_falls_back_to_runtime_ordinals_preserving_holes() {
+        // No uuids (pre-RDNA2-style), iGPU occupies runtime ordinal 0.
+        let dgpus = vec![
+            dgpu("03:00.0", None, Some(1), "gfx1100"),
+            dgpu("16:00.0", None, Some(2), "gfx1101"),
+        ];
+        assert_eq!(
+            runtime_device_mask(&dgpus).expect("uniform ordinals"),
+            "1,2"
+        );
+    }
+
+    #[test]
+    fn mask_is_empty_for_no_gpus() {
+        assert_eq!(runtime_device_mask(&[]).expect("empty"), "");
+    }
+
+    #[test]
+    fn mask_errors_instead_of_compacting_or_mixing() {
+        // ONE uuid-less, ordinal-less card must neither drag the mask to
+        // compacted 0..n (the iGPU-unsafe token space) nor produce a mixed
+        // mask (ROCr honors mixed tokens; HIP/torch resolve only the UUID
+        // token — layer skew). Loud failure is the only safe answer.
+        let dgpus = vec![
+            dgpu("03:00.0", Some("GPU-aaaa"), None, "gfx1100"),
+            dgpu("16:00.0", None, None, "gfx1101"),
+        ];
+        let err = runtime_device_mask(&dgpus).expect_err("mixed identity must fail loud");
+        assert!(err.to_string().contains("16:00.0"));
+        // Fully unidentifiable cards also fail (no silent compacted fallback).
+        let dgpus = vec![dgpu("03:00.0", None, None, "gfx1100")];
+        assert!(runtime_device_mask(&dgpus).is_err());
+    }
+
+    #[test]
+    fn parse_rocminfo_text_extracts_gpu_agents_in_order() {
+        let text = "\
+*******
+Agent 1
+*******
+  Marketing Name:          AMD Ryzen 7 7800X3D 8-Core Processor
+  Device Type:             CPU
+  Uuid:                    CPU-XX
+
+*******
+Agent 2
+*******
+  Name:                    gfx1036
+  Marketing Name:          AMD Radeon Graphics
+  Device Type:             GPU
+  Uuid:                    GPU-cccc
+
+*******
+Agent 3
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Device Type:             GPU
+  Uuid:                    GPU-dddd
+      Name:                    amdgcn-amd-amdhsa--gfx1100
+      Name:                    amdgcn-amd-amdhsa--gfx11-generic
+";
+        let agents = parse_rocminfo_text(text);
+        assert_eq!(agents.len(), 3);
+        assert!(!agents[0].is_gpu);
+        assert!(agents[1].is_gpu);
+        assert_eq!(agents[1].uuid.as_deref(), Some("GPU-cccc"));
+        assert_eq!(agents[1].gfx_arch.as_deref(), Some("gfx1036"));
+        assert!(agents[2].is_gpu);
+        // FIRST gfx-looking `Name:` wins — kernel `amdgcn-…` names ignored.
+        assert_eq!(agents[2].gfx_arch.as_deref(), Some("gfx1100"));
+        assert_eq!(agents[2].uuid.as_deref(), Some("GPU-dddd"));
+    }
+
+    #[test]
+    fn enrich_assigns_runtime_ordinals_counting_every_gpu_agent() {
+        // iGPU (Raphael) is a GPU-type agent and MUST consume ordinal 0.
+        let agents = vec![
+            RocmAgent {
+                is_gpu: false,
+                uuid: Some("CPU-XX".into()),
+                gfx_arch: None,
+            },
+            RocmAgent {
+                is_gpu: true,
+                uuid: Some("GPU-cccc".into()),
+                gfx_arch: Some("gfx1036".into()),
+            },
+            RocmAgent {
+                is_gpu: true,
+                uuid: Some("GPU-aaaa".into()),
+                gfx_arch: Some("gfx1100".into()),
+            },
+            RocmAgent {
+                is_gpu: true,
+                uuid: Some("GPU-bbbb".into()),
+                gfx_arch: Some("gfx1101".into()),
+            },
+        ];
+        let mut gpus = vec![
+            dgpu("03:00.0", Some("GPU-aaaa"), None, "gfx1100"),
+            dgpu("16:00.0", Some("GPU-bbbb"), None, "gfx1101"),
+        ];
+        enrich_gpus_from_agents(&mut gpus, &agents);
+        assert_eq!(gpus[0].runtime_gpu_ordinal, Some(1));
+        assert_eq!(gpus[1].runtime_gpu_ordinal, Some(2));
+        assert_eq!(
+            runtime_device_mask(&gpus).expect("uniform uuids"),
+            "GPU-aaaa,GPU-bbbb"
+        );
+    }
+
+    #[test]
+    fn enrich_matches_by_uuid_then_gfx_arch_fallback() {
+        // No uuids anywhere: same-arch cards match by gfx in agent order.
+        let agents = vec![
+            RocmAgent {
+                is_gpu: true,
+                uuid: None,
+                gfx_arch: Some("gfx1101".into()),
+            },
+            RocmAgent {
+                is_gpu: true,
+                uuid: None,
+                gfx_arch: Some("gfx1101".into()),
+            },
+        ];
+        let mut gpus = vec![
+            dgpu("03:00.0", None, None, "gfx1101"),
+            dgpu("16:00.0", None, None, "gfx1101"),
+        ];
+        enrich_gpus_from_agents(&mut gpus, &agents);
+        assert_eq!(gpus[0].runtime_gpu_ordinal, Some(0));
+        assert_eq!(gpus[1].runtime_gpu_ordinal, Some(1));
+    }
+
+    #[test]
+    fn enrich_ignores_agents_absent_from_sysfs() {
+        // vfio-pinned dGPU: rocminfo (here: a hypothetical stale list) may show
+        // devices sysfs no longer has — unmatched agents are simply skipped.
+        let agents = vec![
+            RocmAgent {
+                is_gpu: true,
+                uuid: Some("GPU-zzzz".into()),
+                gfx_arch: Some("gfx1100".into()),
+            },
+            RocmAgent {
+                is_gpu: true,
+                uuid: Some("GPU-bbbb".into()),
+                gfx_arch: Some("gfx1101".into()),
+            },
+        ];
+        let mut gpus = vec![dgpu("16:00.0", Some("GPU-bbbb"), None, "gfx1101")];
+        enrich_gpus_from_agents(&mut gpus, &agents);
+        assert_eq!(gpus[0].runtime_gpu_ordinal, Some(1));
+    }
 
     #[test]
     fn discrete_cards_are_not_integrated() {

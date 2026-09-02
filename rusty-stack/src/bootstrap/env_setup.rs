@@ -612,11 +612,15 @@ pub fn generate_env_file_content(
 # detected discrete GPUs on every source so a stale override can never re-expose
 # an integrated GPU (the iGPU segfault). ROCR_VISIBLE_DEVICES is the authoritative
 # ROCr (HSA) runtime filter; HIP/CUDA alias it for the HIP + CUDA-compat layers.
-# Discrete GPUs only (iGPUs filtered): {hip_visible_devices}
+# Discrete GPUs only (iGPUs filtered) — enumeration-immune GPU-<uuid> tokens
+# (sysfs unique_id). After ANY topology change (iGPU enable, dGPU vfio pin):
+#   cargo test --lib live_refresh_mlstack_env -- --ignored --nocapture
 export ROCR_VISIBLE_DEVICES={hip_visible_devices}
 export HIP_VISIBLE_DEVICES={hip_visible_devices}
 export CUDA_VISIBLE_DEVICES={hip_visible_devices}
-export PYTORCH_ROCM_DEVICE={hip_visible_devices}
+# Post-filter PRIMARY device is always visible-slot 0 (the mask orders the
+# dGPUs); never the raw mask.
+export PYTORCH_ROCM_DEVICE=0
 
 # ROCm Settings
 # Only set if not already set
@@ -754,11 +758,15 @@ pub fn generate_fish_env_file_content(
 # --- GPU Selection — device filter is MANAGED (unconditional) so a stale
 # override can never re-expose an integrated GPU. ROCR_VISIBLE_DEVICES is the
 # authoritative ROCr (HSA) filter. ---
-# Discrete GPUs only (iGPUs filtered): {hip_visible_devices}
+# Discrete GPUs only (iGPUs filtered) — enumeration-immune GPU-<uuid> tokens
+# (sysfs unique_id). After ANY topology change (iGPU enable, dGPU vfio pin):
+#   cargo test --lib live_refresh_mlstack_env -- --ignored --nocapture
 set -gx ROCR_VISIBLE_DEVICES {hip_visible_devices}
 set -gx HIP_VISIBLE_DEVICES {hip_visible_devices}
 set -gx CUDA_VISIBLE_DEVICES {hip_visible_devices}
-set -gx PYTORCH_ROCM_DEVICE {hip_visible_devices}
+# Post-filter PRIMARY device is always visible-slot 0 (the mask orders the
+# dGPUs); never the raw mask.
+set -gx PYTORCH_ROCM_DEVICE 0
 
 # --- ROCm Settings ---
 set -q ROCM_HOME; or set -gx ROCM_HOME {rocm_path}

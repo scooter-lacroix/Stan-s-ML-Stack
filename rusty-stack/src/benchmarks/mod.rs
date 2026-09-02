@@ -473,15 +473,19 @@ def _find_gguf_model():
 
 def _gpu_info_from_env():
     """GPU info from the canonical env (~/.mlstack_env) — the SINGLE source.
-    Carries ROCR_VISIBLE_DEVICES (discrete indices, iGPU filtered), GPU_ARCH,
-    MLSTACK_GPU_NAMES, MLSTACK_GPU_VRAM_GB, MLSTACK_GPU_CUS. No rocm-smi/rocminfo
-    here. Returns (indices, names, vram_gb_strings, cus_strings, arch)."""
+    Carries ROCR_VISIBLE_DEVICES (device tokens: ordinals or GPU-<uuid>, iGPU
+    filtered), GPU_ARCH, MLSTACK_GPU_NAMES, MLSTACK_GPU_VRAM_GB,
+    MLSTACK_GPU_CUS. No rocm-smi/rocminfo here. Returns (indices, names,
+    vram_gb_strings, cus_strings, arch) — `indices` are the mask tokens
+    VERBATIM (strings): UUID tokens are enumeration-immune and are re-exported
+    one-per-run by the per-device isolation loops below."""
     rocr = os.environ.get("ROCR_VISIBLE_DEVICES", "").strip()
     indices = []
     for part in rocr.split(","):
         part = part.strip()
-        if part.isdigit():
-            indices.append(int(part))
+        # Ordinal ("0") or UUID ("GPU-<hex>") tokens both address one device.
+        if part.isdigit() or (part.startswith("GPU-") and len(part) > 4):
+            indices.append(part)
     if not indices:
         # Fail closed: do NOT invent device 0. On an APU+dGPU host where the env
         # was not sourced (or lacks a valid ROCR_VISIBLE_DEVICES), guessing 0 can
@@ -571,8 +575,14 @@ def _llama_cpp():
     }
     errors = []
     got_throughput = False
-    for gpu_idx in indices:
+    for gpu_pos, gpu_idx in enumerate(indices):
         env = os.environ.copy()
+        # Metric keys use the enumerate POSITION (0,1,…), NOT the token: the
+        # TUI/HTML metrics parser (widgets/benchmarks_page.rs) extracts the GPU
+        # number from the f"_gpu{N}" key suffix with parse::<usize>() — a
+        # GPU-<uuid> suffix would fail to parse and blank the whole panel.
+        # gpu_idx (the verbatim token) stays the DEVICE address: it is what
+        # ROCR_VISIBLE_DEVICES is re-exported to below.
         # ROCR_VISIBLE_DEVICES (the ROCr runtime filter) — NOT the nonexistent
         # ROCM_VISIBLE_DEVICES — isolates one discrete GPU per llama-bench run.
         env["ROCR_VISIBLE_DEVICES"] = str(gpu_idx)
@@ -610,8 +620,8 @@ def _llama_cpp():
                 if prefix == "other" or avg_ts is None:
                     continue
                 context = n_prompt if prefix == "prefill" else n_gen
-                metrics[f"{prefix}_{context}_tps_gpu{gpu_idx}"] = float(avg_ts)
-                metrics[f"{prefix}_{context}_stddev_tps_gpu{gpu_idx}"] = float(stddev_ts or 0.0)
+                metrics[f"{prefix}_{context}_tps_gpu{gpu_pos}"] = float(avg_ts)
+                metrics[f"{prefix}_{context}_stddev_tps_gpu{gpu_pos}"] = float(stddev_ts or 0.0)
                 got_throughput = True
         except Exception as exc:
             errors.append(str(exc))
@@ -735,23 +745,25 @@ def _load_torch():
 
 
 def _parse_visible_gpu_indices():
+    """Mask tokens (ordinals or GPU-<uuid>) from the first set visibility var.
+
+    Returned VERBATIM as strings: with a UUID mask there is no numeric global
+    index — the Nth visible torch device simply corresponds to the Nth mask
+    entry, so the token itself is the device identity."""
     for key in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         raw = os.environ.get(key, "").strip()
         if not raw:
             continue
 
         values = []
-        valid = True
         for token in raw.split(","):
             token = token.strip()
             if not token:
                 continue
-            if not token.isdigit():
-                valid = False
-                break
-            values.append(int(token))
+            if token.isdigit() or (token.startswith("GPU-") and len(token) > 4):
+                values.append(token)
 
-        if valid and values:
+        if values:
             return values
     return []
 
@@ -813,6 +825,11 @@ def _gpu_info():
     devices = []
     for idx in range(torch.cuda.device_count()):
         global_idx = visible_indices[idx] if idx < len(visible_indices) else idx
+        # rocm-smi indexes the POST-FILTER visible set: its device N is the
+        # Nth visible device (the torch position). It cannot take mask tokens
+        # (argparse rejects GPU-<uuid>) and an ordinal token would still be
+        # wrong whenever the mask carries holes — pass the position, always.
+        smi_idx = idx
         device = torch.device(f"cuda:{idx}")
         props = torch.cuda.get_device_properties(device)
         info = {
@@ -839,7 +856,7 @@ def _gpu_info():
                         "--showclocks",
                         "--json",
                         "-d",
-                        str(global_idx),
+                        str(smi_idx),
                     ],
                     check=False,
                     capture_output=True,
@@ -1392,7 +1409,12 @@ def _vllm():
         seen = set()
         for token in visible.split(","):
             item = token.strip()
-            if not item.isdigit() or item in seen:
+            # Ordinal or GPU-<uuid> tokens both address one device. With both
+            # accepted, any real mask (ordinal or UUID) yields candidates; the
+            # ["0"] default below now only fires when NO visibility var is set
+            # at all (historical behavior for mask-less hosts).
+            is_token = item.isdigit() or (item.startswith("GPU-") and len(item) > 4)
+            if not is_token or item in seen:
                 continue
             seen.add(item)
             candidates.append(item)

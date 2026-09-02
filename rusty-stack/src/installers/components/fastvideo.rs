@@ -124,11 +124,33 @@ pub fn select_visible_gpu_archs(
 
     let mut selected = Vec::new();
     if let Some(mask) = mask {
-        for index in mask
+        let mut saw_token = false;
+        let mut all_numeric = true;
+        for value in mask
             .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
-            .filter_map(|value| value.trim().parse::<usize>().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
         {
-            if let Some(arch) = enumerated_archs.get(index) {
+            saw_token = true;
+            match value.parse::<usize>() {
+                Ok(index) => {
+                    if let Some(arch) = enumerated_archs.get(index) {
+                        push_normalized_archs(&mut selected, arch);
+                    }
+                }
+                // Non-numeric tokens (GPU-<uuid> masks) select DEVICES, not
+                // positions — positional arch selection is meaningless. Any
+                // such token invalidates the whole positional mapping; fall
+                // back to every enumerated arch so the per-device probe still
+                // covers exactly the visible cards (superset, never wrong).
+                Err(_) => all_numeric = false,
+            }
+        }
+        if saw_token && !all_numeric {
+            selected.clear();
+        }
+        if !saw_token || !all_numeric {
+            for arch in enumerated_archs {
                 push_normalized_archs(&mut selected, arch);
             }
         }

@@ -86,7 +86,22 @@ impl RcclInstaller {
             .as_deref()
             .map(parse_visibility_tokens)
             .filter(|tokens| !tokens.is_empty())
-            .unwrap_or_else(|| (0..gpus.len()).map(|idx| idx.to_string()).collect());
+            .unwrap_or_else(|| {
+                // Canonical mask (GPU-<uuid> tokens when available, runtime
+                // ordinals otherwise) — opaque pass-through strings here, so
+                // UUID tokens survive into the probe env verbatim. An Err
+                // (a card with neither identity) yields NO tokens, which
+                // fails loud below ("requires at least two ROCr visibility
+                // tokens") instead of probing compacted ordinals.
+                match crate::gpu::runtime_device_mask(&gpus) {
+                    Ok(mask) => mask
+                        .split(',')
+                        .filter(|t| !t.trim().is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                    Err(_) => Vec::new(),
+                }
+            });
         Self {
             home: home.into(),
             python_bin: python_bin.into(),
@@ -889,6 +904,27 @@ if __name__ == "__main__":
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visibility_token_parsing_preserves_uuid_tokens_verbatim() {
+        // runtime_device_mask emits GPU-<uuid> tokens when unique_id exists;
+        // the probe env must carry them through UNSPLIT (they are opaque
+        // device identities, not positions). Guards a regression to numeric
+        // parsing that would silently drop UUID masks.
+        let tokens = parse_visibility_tokens("GPU-36ebd038d4f13ef8,GPU-7e39f0afe2a07bc1");
+        assert_eq!(
+            tokens,
+            vec![
+                "GPU-36ebd038d4f13ef8".to_string(),
+                "GPU-7e39f0afe2a07bc1".to_string()
+            ]
+        );
+        // Ordinal masks parse identically to before (no behavior change).
+        assert_eq!(
+            parse_visibility_tokens("0, 1"),
+            vec!["0".to_string(), "1".to_string()]
+        );
+    }
 
     #[test]
     fn classifies_only_known_rocm_rccl_collective_failures() {

@@ -240,8 +240,14 @@ fn test_freetoken_is_native_and_in_tui() {
         .find(|c| c.id == "freetoken")
         .expect("freetoken must appear in default_components()");
     assert_eq!(comp.category, Category::Extension);
-    assert!(!comp.needs_sudo, "freetoken installs as the user (venv + pip)");
-    assert!(comp.script.is_empty(), "freetoken routes to the native installer");
+    assert!(
+        !comp.needs_sudo,
+        "freetoken installs as the user (venv + pip)"
+    );
+    assert!(
+        comp.script.is_empty(),
+        "freetoken routes to the native installer"
+    );
 }
 
 #[test]
@@ -254,7 +260,10 @@ fn test_freetoken_topological_order() {
     let sorted = topological_sort(&ids).unwrap();
     let pos = |id: &str| sorted.iter().position(|s| s == id).unwrap();
     assert!(pos("rocm") < pos("pytorch"), "rocm before pytorch");
-    assert!(pos("pytorch") < pos("freetoken"), "pytorch before freetoken");
+    assert!(
+        pos("pytorch") < pos("freetoken"),
+        "pytorch before freetoken"
+    );
 }
 
 #[test]
