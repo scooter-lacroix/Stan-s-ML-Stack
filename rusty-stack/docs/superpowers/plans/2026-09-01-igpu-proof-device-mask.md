@@ -58,8 +58,10 @@ Root causes:
 One builder, used by every emission path (merge + regenerate + fish mirror):
 
 ```
-pub enum DeviceToken { Uuid(String), Ordinal(u32) }   // Display → "GPU-<uid>" | "N"
-pub fn runtime_device_mask(dgpus: &[AmdGpu]) -> String
+pub fn runtime_device_mask(dgpus: &[AmdGpu]) -> anyhow::Result<String>
+// all-uuid  -> "GPU-<uid>,GPU-<uid>"   (uniform, pci_slot order)
+// else      -> "N,N"                   (uniform runtime ordinals)
+// else      -> Err naming the offending pci_slots (no compacted tier)
 ```
 
 - **UUID mode (primary):** when *every* dGPU carries a uuid (`sysfs unique_id`,
@@ -79,8 +81,11 @@ pub fn runtime_device_mask(dgpus: &[AmdGpu]) -> String
   dGPU is pinned. Masks are UNIFORM, never mixed: `ROCR=GPU-<uuid>,1` resolves
   both devices, but HIP/torch resolve ONLY the UUID token (layer skew).
 - **Stale after topology change** (e.g. pinned dGPU): runtime filters resolve
-  fewer/zero devices → ML workloads fail loud/clean; **iGPU can never appear**
-  (its UUID is not in the mask; ordinals are re-derived at next refresh, not baked).
+  fewer/zero devices — one valid + one stale UUID leaves the survivor alone
+  visible (correctly identified; the pinned card's workloads fail on their own
+  node); all-stale resolves to zero devices. ML workloads fail loud/clean;
+  **iGPU can never appear** (its UUID is not in the mask; ordinals are
+  re-derived at next refresh, not baked).
 - **Refresh surface:** any `rusty-stack` run that already writes the env
   (install/repair/verify-env paths) re-derives the mask from live topology. No
   new daemon, no cron.

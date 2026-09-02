@@ -895,7 +895,11 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Res
             let fish_path = fish_dir.join("mlstack_env.fish");
             let fish_current = fs::read_to_string(&fish_path).unwrap_or_default();
             if fish_current != fish_content {
-                let _ = fs::write(&fish_path, fish_content);
+                // Same failure surface as the regenerate path: a mirror the
+                // refresh could not update is exactly the bash/fish divergence
+                // this block exists to kill — never swallow it silently.
+                fs::write(&fish_path, fish_content)
+                    .context("Failed to update fish conf.d/mlstack_env.fish")?;
             }
         }
         if updated != contents {
@@ -8559,7 +8563,18 @@ mod tests {
     #[ignore = "writes the real ~/.mlstack_env; run explicitly on the live box"]
     fn live_refresh_mlstack_env() {
         let home = resolve_mlstack_user_home();
-        let update = ensure_mlstack_env(&home, "auto", false).expect("ensure_mlstack_env");
+        // Preserve the PERSISTED install method: a hardcoded "auto" would flip
+        // MLSTACK_INSTALL_METHOD/INSTALL_METHOD in the real file on venv/global
+        // installs (the merge path normalizes both keys to this argument).
+        let env_path = std::path::Path::new(&home).join(".mlstack_env");
+        let persisted = fs::read_to_string(&env_path).unwrap_or_default();
+        let method = persisted
+            .lines()
+            .find_map(|l| l.strip_prefix("export MLSTACK_INSTALL_METHOD="))
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "auto".to_string());
+        let update = ensure_mlstack_env(&home, &method, false).expect("ensure_mlstack_env");
         println!("ensure_mlstack_env -> {update:?}");
 
         let dgpus = crate::gpu::detect_discrete_amd_gpus();
