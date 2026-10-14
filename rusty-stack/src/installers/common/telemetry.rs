@@ -140,7 +140,7 @@ mod tests {
                 install_path: "/tmp/install".into(),
                 cmake_flags: vec!["-DGGML_HIP=ON".into()],
                 verification_path: "/tmp/verify".into(),
-                binary_version: "v0.3.2".into(),
+                binary_version: "v0.4.0".into(),
                 was_prebuilt: true,
             },
         );
@@ -190,7 +190,7 @@ mod tests {
                 install_path: "/opt/mlstack".into(),
                 cmake_flags: vec!["-DGGML_HIP=ON".into(), "-DGPU_TARGETS=gfx1100".into()],
                 verification_path: "/tmp/verify".into(),
-                binary_version: "v0.3.2".into(),
+                binary_version: "v0.4.0".into(),
                 was_prebuilt: false,
             },
         );

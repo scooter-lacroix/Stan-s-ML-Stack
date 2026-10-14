@@ -11,7 +11,12 @@ All notable changes to Stan's ML Stack will be documented in this file.
 2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
 
 ### Release Track Status
-- Next changes accumulate here after 0.3.2.
+- Next changes accumulate here after 0.4.0.
+
+## [0.4.0] - Maintenance
+
+### Changed
+- Maintenance pass: refreshed FastVideo/managed Python build-tool pins (cmake 4.4.4, scikit-build-core 1.1.1, wheel 0.48.0, ninja 1.13.2, imageio 2.38.1) to latest PyPI releases. Torch/vLLM/gRPC/setuptools pins and ROCm/PyTorch channel URLs were intentionally left unchanged (coupled to ROCm wheels; upstream hosts unreachable from the audit environment).
 
 ## [0.3.2] - 2026-07-21
 
