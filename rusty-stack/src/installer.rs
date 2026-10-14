@@ -3790,13 +3790,76 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         "rocm" => {
             use crate::installers::components::rocm::{RocmConfig, RocmInstaller};
             let rocm_force = is_force_reinstall();
+            use crate::installers::components::rocm::RocmChannel;
+            let rocm_channel = std::env::var("ROCM_CHANNEL")
+                .ok()
+                .or_else(|| ctx.env_exports.get("ROCM_CHANNEL").cloned())
+                .and_then(|c| RocmChannel::parse(&c))
+                .unwrap_or(RocmChannel::Latest);
             let inst = RocmInstaller::new(RocmConfig {
                 force_reinstall: rocm_force,
+                channel: rocm_channel,
+                gfx_arch: detect_gpu_arch().unwrap_or_else(|| "gfx1100".to_string()),
+                legacy_fallback: std::env::var("ROCM_LEGACY_VERSION")
+                    .map(|v| v.trim() == "7.2.3")
+                    .unwrap_or(false),
                 ..RocmConfig::default()
             });
             let distro = crate::installers::common::DistroFacade::detect();
             let is_arch = distro.is_arch_family();
-            if is_arch {
+            if rocm_channel.is_therock() && (is_arch || rocm_channel == RocmChannel::Preview) {
+                // TheRock (7.14+/10.x) has no pacman packages, and 10.x has no
+                // apt/rpm repo: install the ROCm SDK into a user-space venv.
+                let home = std::env::var("HOME").unwrap_or_default();
+                let venv = format!("{home}/.mlstack/rocm/{}", inst.effective_version());
+                let index = inst.pip_index_url().unwrap_or_default().to_string();
+                let req = inst.pip_requirement();
+                let steps: Vec<(&str, Vec<String>)> = vec![
+                    (
+                        "uv",
+                        vec![
+                            "venv".into(),
+                            "--python".into(),
+                            "3.12".into(),
+                            venv.clone(),
+                        ],
+                    ),
+                    (
+                        "uv",
+                        vec![
+                            "pip".into(),
+                            "install".into(),
+                            "--python".into(),
+                            format!("{venv}/bin/python"),
+                            "--index-url".into(),
+                            index,
+                            "--extra-index-url".into(),
+                            "https://pypi.org/simple".into(),
+                            "--index-strategy".into(),
+                            "unsafe-best-match".into(),
+                            req,
+                        ],
+                    ),
+                ];
+                for (prog, args) in steps {
+                    execute_native_command(
+                        &NativeCommand::Pip {
+                            program: prog.to_string(),
+                            args,
+                        },
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] ROCm {} installed to {venv}",
+                        inst.effective_version()
+                    ),
+                    false,
+                ));
+            } else if is_arch {
                 // Arch/pacman path. The AUR helper (`yay`) MUST run as the
                 // user — makepkg refuses root, and `yay` warns "Avoid running
                 // yay as root/sudo". This branch therefore does NOT reuse the
