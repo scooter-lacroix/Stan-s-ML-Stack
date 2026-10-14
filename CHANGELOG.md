@@ -15,6 +15,9 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [0.4.0] - Maintenance
 
+### Added
+- PyTorch installer: ROCm 10.x (TheRock) now resolves to AMD's `whl-next` wheel index with the `torch[device-all]` extra, instead of a nonexistent download.pytorch.org URL. Replaced the stale "ROCm 7.10 preview" note in the multi-channel guide.
+
 ### Changed
 - Maintenance pass: refreshed FastVideo/managed Python build-tool pins (cmake 4.4.4, scikit-build-core 1.1.1, wheel 0.48.0, ninja 1.13.2, imageio 2.38.1) to latest PyPI releases. Torch/vLLM/gRPC/setuptools pins and ROCm/PyTorch channel URLs were intentionally left unchanged (coupled to ROCm wheels; upstream hosts unreachable from the audit environment).
 
