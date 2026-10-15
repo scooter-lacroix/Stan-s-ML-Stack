@@ -2029,7 +2029,20 @@ fn passwd_homes_with_mlstack() -> Vec<String> {
     homes
 }
 
-fn candidate_mlstack_homes(preferred_home: &str) -> Vec<String> {
+/// Pin `name` to `==version` in pip args when an update plan supplies a
+/// target version. Drops `--upgrade`, since an exact pin already moves the
+/// package (and must not upgrade sibling requirements such as einops).
+fn pin_pip_requirement(args: Vec<String>, name: &str, version: Option<&str>) -> Vec<String> {
+    let Some(v) = version.map(str::trim).filter(|v| !v.is_empty()) else {
+        return args;
+    };
+    args.into_iter()
+        .filter(|a| a != "--upgrade")
+        .map(|a| if a == name { format!("{name}=={v}") } else { a })
+        .collect()
+}
+
+pub(crate) fn candidate_mlstack_homes(preferred_home: &str) -> Vec<String> {
     let mut homes = Vec::new();
     push_unique_env_path(&mut homes, preferred_home);
 
@@ -4400,10 +4413,15 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 2: Install DeepSpeed
             let install_cmd = inst.build_install_command();
+            let install_args = pin_pip_requirement(
+                install_cmd.args.clone(),
+                "deepspeed",
+                ctx.target_version.as_deref(),
+            );
             execute_native_command(
                 &NativeCommand::Pip {
                     program: install_cmd.program.clone(),
-                    args: install_cmd.args.clone(),
+                    args: install_args,
                 },
                 None,
                 sender,
@@ -5589,8 +5607,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 2: Install from PyPI
             let cmd = inst.build_pypi_install_command();
+            let cmd_args = pin_pip_requirement(
+                cmd.args.clone(),
+                "bitsandbytes",
+                ctx.target_version.as_deref(),
+            );
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd_args, &cmd.env),
                 None,
                 sender,
                 &component.name,
@@ -5731,8 +5754,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
+            let cmd_args = pin_pip_requirement(
+                cmd.args.clone(),
+                "wandb",
+                ctx.target_version.as_deref(),
+            );
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd_args, &cmd.env),
                 None,
                 sender,
                 &component.name,
@@ -7453,6 +7481,16 @@ fn persist_benchmark_result(bench_name: &str, output: &crate::benchmark_runners:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pin_pip_requirement_pins_target_and_drops_upgrade() {
+        let a: Vec<String> = ["-m", "pip", "install", "--upgrade", "deepspeed", "einops"]
+            .iter().map(|s| s.to_string()).collect();
+        let out = super::pin_pip_requirement(a.clone(), "deepspeed", Some(" 0.19.7 "));
+        assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "einops"]);
+        assert_eq!(super::pin_pip_requirement(a.clone(), "deepspeed", None), a);
+        assert_eq!(super::pin_pip_requirement(a.clone(), "deepspeed", Some("")), a);
+    }
+
     use super::*;
     use std::sync::Mutex;
 
