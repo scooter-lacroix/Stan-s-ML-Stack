@@ -138,6 +138,8 @@ impl RocmChannel {
     /// (`if [ -z "${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=x; fi`), and
     /// fish `set -gx ROCM_CHANNEL x`.
     pub fn channel_from_env_body(body: &str) -> Option<Self> {
+        // The last recognized assignment is authoritative even when its value
+        // is invalid (caller then applies the default), so wrap in Some().
         body.lines().rev().find_map(|l| {
             let l = l.trim();
             if l.starts_with('#') {
@@ -173,10 +175,10 @@ impl RocmChannel {
                 .next()
                 .unwrap_or("")
                 .trim_matches(|c| c == '"' || c == '\'');
-            Self::parse(v)
+            Some(Self::parse(v))
         })
+        .flatten()
     }
-
 
     /// Channel for a detected ROCm version string.
     pub fn for_version(version: &str) -> Self {
@@ -1650,6 +1652,14 @@ mod channel_env_tests {
         assert_eq!(f("set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL preview"), Some(RocmChannel::Preview));
         assert_eq!(f("# export ROCM_CHANNEL=stable"), None);
         assert_eq!(f("export ROCM_CHANNEL=bogus"), None);
+    }
+
+    #[test]
+    fn channel_env_last_invalid_assignment_wins() {
+        assert_eq!(
+            RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=bogus\n"),
+            None
+        );
     }
 
     #[test]
