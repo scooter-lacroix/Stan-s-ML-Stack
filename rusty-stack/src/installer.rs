@@ -1269,19 +1269,37 @@ fn strip_hsa_override_for_therock(command: &mut Command, env_exports: &HashMap<S
 
 /// True when a user-space ROCm SDK (TheRock) venv is installed under
 /// `~/.mlstack/rocm/`, i.e. the runtime in use is not the system /opt/rocm.
+fn rocm_sdk_venv_python() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let entries = match fs::read_dir(format!("{home}/.mlstack/rocm")) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join("bin/python"))
+        .find(|p| p.exists())
+}
+
 fn rocm_sdk_venv_active() -> bool {
-    std::env::var("HOME")
-        .map(|h| {
-            fs::read_dir(format!("{h}/.mlstack/rocm"))
-                .map(|d| d.flatten().any(|e| e.path().join("bin/python").exists()))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false)
+    rocm_sdk_venv_python().is_some()
 }
 
 fn detect_rocm_version() -> String {
     if let Ok(version) = fs::read_to_string("/opt/rocm/.info/version") {
         return version.trim().to_string();
+    }
+    // No system ROCm: fall back to the user-space TheRock SDK venv, if any.
+    if let Some(py) = rocm_sdk_venv_python() {
+        if let Ok(out) = Command::new(py)
+            .args(["-c", "import importlib.metadata as m; print(m.version('rocm'))"])
+            .output()
+        {
+            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if out.status.success() && !v.is_empty() {
+                return v;
+            }
+        }
     }
     "7.2.0".to_string()
 }

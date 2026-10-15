@@ -432,8 +432,21 @@ impl RocmInstaller {
             program: "sudo".to_string(),
             args: args.into_iter().map(String::from).collect(),
         };
+        let import_key = PackageCommand {
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "set -e; wget -qO /tmp/rocm-multi-arch.gpg {THEROCK_GPG_URL}; \
+                     gpg --show-keys --with-colons /tmp/rocm-multi-arch.gpg | grep -q '^fpr:::::::::{THEROCK_GPG_FINGERPRINT}:' \
+                     || {{ echo 'ROCm GPG key fingerprint mismatch' >&2; exit 1; }}; \
+                     sudo rpm --import /tmp/rocm-multi-arch.gpg"
+                ),
+            ],
+        };
         Ok(if distro.uses_zypper() {
             vec![
+                import_key,
                 sudo(vec![
                     "zypper",
                     "--non-interactive",
@@ -445,15 +458,15 @@ impl RocmInstaller {
                 sudo(vec![
                     "zypper",
                     "--non-interactive",
-                    "--gpg-auto-import-keys",
                     "refresh",
                 ]),
                 sudo(vec!["zypper", "--non-interactive", "install", &pkg]),
             ]
         } else {
             vec![
+                import_key,
                 sudo(vec!["dnf", "config-manager", "--add-repo", &url]),
-                sudo(vec!["dnf", "install", "-y", "--nogpgcheck", &pkg]),
+                sudo(vec!["dnf", "install", "-y", &pkg]),
             ]
         })
     }
