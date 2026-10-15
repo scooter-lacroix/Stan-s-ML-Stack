@@ -802,8 +802,20 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Res
     ];
 
     // Precise HSA override: use GpuArchInfo mapping for gfx1101→11.0.1 etc.
+    // TheRock runtimes (7.14+/10.x) fail HSA init when the override is set, so
+    // an empty value means "keep it unset" (it is removed from existing files).
     let hsa_override =
-        crate::bootstrap::env_setup::GpuArchInfo::from_arch(gpu_arch).hsa_override_gfx_version;
+        if crate::bootstrap::env_setup::rocm_version_is_therock(&detect_rocm_version())
+            || std::env::var("ROCM_CHANNEL")
+                .ok()
+                .and_then(|c| crate::installers::components::rocm::RocmChannel::parse(&c))
+                .map(|c| c.is_therock() && rocm_sdk_venv_active())
+                .unwrap_or(false)
+        {
+            String::new()
+        } else {
+            crate::bootstrap::env_setup::GpuArchInfo::from_arch(gpu_arch).hsa_override_gfx_version
+        };
 
     // `force` (force-reinstall / explicit env rewrite): skip the in-place merge
     // and fall through to the regenerate path below, which truncates-then-writes
@@ -1072,6 +1084,10 @@ fn sanitize_mlstack_env(
         //   - PYTORCH_ALLOC_CONF: a non-standard no-op rename (PyTorch never
         //     dropped the _CUDA) — strip from legacy files so only the functional
         //     PYTORCH_CUDA_ALLOC_CONF remains.
+        if hsa_override.is_empty() && trimmed.starts_with("export HSA_OVERRIDE_GFX_VERSION=") {
+            changed = true;
+            continue;
+        }
         if trimmed.starts_with("export TORCH_CUDA_ARCH_LIST=")
             || trimmed.starts_with("export PYTORCH_ALLOC_CONF=")
         {
@@ -1086,8 +1102,11 @@ fn sanitize_mlstack_env(
             normalize_env_value(&line, "MLSTACK_INSTALL_METHOD", install_method);
         let (line, changed_method_alias) =
             normalize_env_value(&line, "INSTALL_METHOD", install_method);
-        let (line, changed_hsa) =
-            normalize_env_value(&line, "HSA_OVERRIDE_GFX_VERSION", hsa_override);
+        let (line, changed_hsa) = if hsa_override.is_empty() {
+            (line, false)
+        } else {
+            normalize_env_value(&line, "HSA_OVERRIDE_GFX_VERSION", hsa_override)
+        };
         let (line, changed_hip_vis) =
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
         let (line, changed_cuda_vis) =
@@ -1231,6 +1250,33 @@ fn normalize_visible_devices(line: &str, key: &str, desired: &str) -> (String, b
         }
     }
     (line.to_string(), false)
+}
+
+/// Remove `HSA_OVERRIDE_GFX_VERSION` from a child process when the active ROCm
+/// runtime is TheRock (7.14+/10.x): it breaks HSA init there. Also clears any
+/// value inherited from the parent shell.
+fn strip_hsa_override_for_therock(command: &mut Command, env_exports: &HashMap<String, String>) {
+    let version = env_exports
+        .get("ROCM_VERSION")
+        .cloned()
+        .unwrap_or_else(detect_rocm_version);
+    if crate::bootstrap::env_setup::rocm_version_is_therock(&version)
+        || crate::bootstrap::env_setup::rocm_version_is_therock(&detect_rocm_version())
+    {
+        command.env_remove("HSA_OVERRIDE_GFX_VERSION");
+    }
+}
+
+/// True when a user-space ROCm SDK (TheRock) venv is installed under
+/// `~/.mlstack/rocm/`, i.e. the runtime in use is not the system /opt/rocm.
+fn rocm_sdk_venv_active() -> bool {
+    std::env::var("HOME")
+        .map(|h| {
+            fs::read_dir(format!("{h}/.mlstack/rocm"))
+                .map(|d| d.flatten().any(|e| e.path().join("bin/python").exists()))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
 }
 
 fn detect_rocm_version() -> String {
@@ -2195,6 +2241,7 @@ fn run_verification_command(
     if let Some(value) = hsa_override {
         command.env("HSA_OVERRIDE_GFX_VERSION", value);
     }
+    strip_hsa_override_for_therock(&mut command, &env_exports);
     if step.target_id == "aiter" {
         let aiter_jit_dir = PathBuf::from(&user_home)
             .join(".mlstack")
@@ -6308,6 +6355,7 @@ fn run_script(
     if let Some(value) = hsa_override {
         command.env("HSA_OVERRIDE_GFX_VERSION", value);
     }
+    strip_hsa_override_for_therock(&mut command, &env_exports);
     if component.id == "aiter" {
         command.env("AITER_JIT_DIR", aiter_jit_dir);
     }
