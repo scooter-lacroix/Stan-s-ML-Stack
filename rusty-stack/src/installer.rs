@@ -4883,8 +4883,14 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // skip the newest release = lag 1). Queries PyPI for releases + dates,
             // picks the newest satisfying the version-lag + age policy. Falls back
             // to a pinned constant if PyPI is unreachable.
-            let vllm_version = inst
-                .resolve_version_with_policy(ctx.vllm_version_lag, ctx.vllm_version_min_age_days);
+            // An update apply installs exactly the planned (reviewed) version.
+            let vllm_version = match ctx.target_version.as_deref() {
+                Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+                _ => inst.resolve_version_with_policy(
+                    ctx.vllm_version_lag,
+                    ctx.vllm_version_min_age_days,
+                ),
+            };
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "[native] vLLM: selected {vllm_version} (gate: lag={}, min_age_days={}) — \

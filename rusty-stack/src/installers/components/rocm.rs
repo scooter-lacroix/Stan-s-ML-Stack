@@ -86,16 +86,17 @@ impl RocmChannel {
     /// else from `~/.mlstack_env`, else [`RocmChannel::Latest`]. Shared by the
     /// installer and `rusty-stack update` so both resolve the same target.
     pub fn configured() -> Self {
-        if let Some(c) = std::env::var("ROCM_CHANNEL")
-            .ok()
-            .and_then(|v| Self::parse(&v))
-        {
-            return c;
+        // An invalid assignment at a higher-precedence source is authoritative:
+        // it stops the search and yields the default, never a stale lower one.
+        if let Ok(v) = std::env::var("ROCM_CHANNEL") {
+            if !v.trim().is_empty() {
+                return Self::parse(&v).unwrap_or(RocmChannel::Latest);
+            }
         }
         for home in Self::env_file_homes() {
             if let Ok(body) = std::fs::read_to_string(std::path::Path::new(&home).join(".mlstack_env")) {
-                if let Some(c) = Self::channel_from_env_body(&body) {
-                    return c;
+                if let Some(found) = Self::channel_assignment(&body) {
+                    return found.unwrap_or(RocmChannel::Latest);
                 }
             }
         }
@@ -138,6 +139,11 @@ impl RocmChannel {
     /// (`if [ -z "${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=x; fi`), and
     /// fish `set -gx ROCM_CHANNEL x`.
     pub fn channel_from_env_body(body: &str) -> Option<Self> {
+        Self::channel_assignment(body).flatten()
+    }
+
+    /// `None` = no assignment; `Some(None)` = last assignment has an invalid value.
+    fn channel_assignment(body: &str) -> Option<Option<Self>> {
         // The last recognized assignment is authoritative even when its value
         // is invalid (caller then applies the default), so wrap in Some().
         body.lines().rev().find_map(|l| {
@@ -177,7 +183,6 @@ impl RocmChannel {
                 .trim_matches(|c| c == '"' || c == '\'');
             Some(Self::parse(v))
         })
-        .flatten()
     }
 
     /// Channel for a detected ROCm version string.
@@ -1660,6 +1665,12 @@ mod channel_env_tests {
             RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=bogus\n"),
             None
         );
+    }
+
+    #[test]
+    fn invalid_assignment_is_distinct_from_missing() {
+        assert_eq!(RocmChannel::channel_assignment("export ROCM_CHANNEL=bogus\n"), Some(None));
+        assert_eq!(RocmChannel::channel_assignment("echo hi\n"), None);
     }
 
     #[test]
