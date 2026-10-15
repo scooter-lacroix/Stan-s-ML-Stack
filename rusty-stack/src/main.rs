@@ -459,7 +459,7 @@ mod update_impl {
         let width = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(100)
-            .clamp(1, 200);
+            .max(1);
         render_selection_body_width(plan, selected_indices, cursor_idx, width)
     }
 
