@@ -121,6 +121,7 @@ impl WandbInstaller {
         if use_break {
             args.push("--break-system-packages".to_string());
         }
+        args.push("--upgrade".to_string());
         args.push("wandb".to_string());
 
         ShellCommand {

@@ -615,7 +615,13 @@ mod update_impl {
             selected_indices.len(),
             rows.len()
         ));
-        out
+        // Hard cap: below ~40 columns the fixed gaps and class cell cannot
+        // shrink further, so clip every line to `width` instead of letting the
+        // terminal wrap it (wraps would break the redraw line count).
+        out.split("\r\n")
+            .map(|l| l.chars().take(width).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\r\n")
     }
 
     /// Interactive selection UI for update plan items.

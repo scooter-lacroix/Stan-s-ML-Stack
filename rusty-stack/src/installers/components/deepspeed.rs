@@ -165,6 +165,9 @@ impl DeepSpeedInstaller {
         // CUDA-torch pull, but it ALSO skipped deepspeed's real runtime deps
         // (py-cpuinfo → the `cpuinfo` module), so `import deepspeed` failed with
         // "No module named 'cpuinfo'".
+        // --upgrade (default only-if-needed strategy) so an update apply
+        // actually moves an older installed deepspeed to the target.
+        args.push("--upgrade".to_string());
         args.push("deepspeed".to_string());
         args.push("einops".to_string());
 

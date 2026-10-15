@@ -143,13 +143,27 @@ impl RocmChannel {
             if l.starts_with('#') {
                 return None;
             }
-            let raw = if let Some(i) = l.find("ROCM_CHANNEL=") {
-                &l[i + "ROCM_CHANNEL=".len()..]
-            } else if let Some(i) = l.find("ROCM_CHANNEL ") {
-                if !l.starts_with("set ") {
-                    return None;
-                }
-                &l[i + "ROCM_CHANNEL ".len()..]
+            // Only genuine assignment statements: `export ROCM_CHANNEL=x`,
+            // `ROCM_CHANNEL=x`, the guarded `... then export ROCM_CHANNEL=x`,
+            // and fish `set -gx ROCM_CHANNEL x`. Other lines (echo, etc.) are ignored.
+            let stmt = l.rsplit(|c| c == ';').find(|p| p.contains("ROCM_CHANNEL")).unwrap_or(l);
+            let stmt = stmt.trim();
+            let stmt = ["then ", "or ", "and "]
+                .iter()
+                .find_map(|p| stmt.strip_prefix(p))
+                .unwrap_or(stmt)
+                .trim();
+            let raw = if let Some(r) = stmt
+                .strip_prefix("export ROCM_CHANNEL=")
+                .or_else(|| stmt.strip_prefix("ROCM_CHANNEL="))
+            {
+                r
+            } else if let Some(r) = stmt
+                .strip_prefix("set -gx ROCM_CHANNEL ")
+                .or_else(|| stmt.strip_prefix("set -x ROCM_CHANNEL "))
+                .or_else(|| stmt.strip_prefix("set -Ux ROCM_CHANNEL "))
+            {
+                r
             } else {
                 return None;
             };
@@ -1640,6 +1654,10 @@ mod channel_env_tests {
 
     #[test]
     fn last_assignment_wins() {
+        assert_eq!(
+            RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\necho ROCM_CHANNEL=latest\n"),
+            Some(RocmChannel::Stable)
+        );
         assert_eq!(
             RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=\"latest\"\n"),
             Some(RocmChannel::Latest)
