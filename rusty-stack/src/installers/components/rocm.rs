@@ -82,6 +82,29 @@ impl RocmChannel {
         }
     }
 
+    /// Channel the installer targets: `ROCM_CHANNEL` from the environment,
+    /// else from `~/.mlstack_env`, else [`RocmChannel::Latest`]. Shared by the
+    /// installer and `rusty-stack update` so both resolve the same target.
+    pub fn configured() -> Self {
+        if let Some(c) = std::env::var("ROCM_CHANNEL")
+            .ok()
+            .and_then(|v| Self::parse(&v))
+        {
+            return c;
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        std::fs::read_to_string(std::path::Path::new(&home).join(".mlstack_env"))
+            .ok()
+            .and_then(|body| {
+                body.lines().rev().find_map(|l| {
+                    let l = l.trim().trim_start_matches("export ").trim();
+                    let v = l.strip_prefix("ROCM_CHANNEL=")?;
+                    Self::parse(v.trim().trim_matches(|c| c == '"' || c == '\''))
+                })
+            })
+            .unwrap_or(RocmChannel::Latest)
+    }
+
     /// Channel for a detected ROCm version string.
     pub fn for_version(version: &str) -> Self {
         let mut it = version.split('.');

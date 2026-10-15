@@ -3860,7 +3860,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 .ok()
                 .or_else(|| ctx.env_exports.get("ROCM_CHANNEL").cloned())
                 .and_then(|c| RocmChannel::parse(&c))
-                .unwrap_or(RocmChannel::Latest);
+                .unwrap_or_else(RocmChannel::configured);
             let inst = RocmInstaller::new(RocmConfig {
                 force_reinstall: rocm_force,
                 channel: rocm_channel,

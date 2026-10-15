@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "sequence": 2,
+  "sequence": 3,
   "generated_at": "2026-05-04T00:00:00Z",
   "components": [
     {
       "id": "rocm",
-      "version": "7.2.4",
+      "version": "7.14.1",
       "script": "scripts/install_rocm.sh",
       "category": "Foundation",
       "validation_tier": "Validated"
@@ -99,28 +99,28 @@
     },
     {
       "id": "deepspeed",
-      "version": "0.16.0",
+      "version": "0.19.7",
       "script": "scripts/install_deepspeed.sh",
       "category": "Extension",
       "validation_tier": "Candidate"
     },
     {
       "id": "vllm",
-      "version": "0.8.0",
+      "version": "0.31.0",
       "script": "scripts/install_vllm.sh",
       "category": "Extension",
       "validation_tier": "Candidate"
     },
     {
       "id": "bitsandbytes",
-      "version": "0.45.0",
+      "version": "0.50.2",
       "script": "scripts/install_bitsandbytes.sh",
       "category": "Extension",
       "validation_tier": "Candidate"
     },
     {
       "id": "wandb",
-      "version": "0.19.0",
+      "version": "0.30.0",
       "script": "scripts/install_wandb.sh",
       "category": "Extension",
       "validation_tier": "Validated"

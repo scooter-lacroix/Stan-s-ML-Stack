@@ -15,6 +15,9 @@ All notable changes to Stan's ML Stack will be documented in this file.
 ### Release Track Status
 - Next changes accumulate here after 0.4.0.
 
+- Fixed `rusty-stack update` treating outdated installs as current: the bundled manifest now pins the installer's versions (vLLM 0.31.0, deepspeed 0.19.7, bitsandbytes 0.50.2, wandb 0.30.0), and the ROCm target follows `ROCM_CHANNEL` (default latest = 7.14.1) exactly like the installer. Scan channel labels use the installer's classification.
+- Update UI: the apply panel and selection list size their columns from the data and fill the full terminal width, with a header row and rules.
+
 ## [0.4.0] - Maintenance
 
 ### Added
