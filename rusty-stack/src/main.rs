@@ -459,7 +459,7 @@ mod update_impl {
         let width = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(100)
-            .clamp(60, 200);
+            .clamp(20, 200);
         render_selection_body_width(plan, selected_indices, cursor_idx, width)
     }
 
@@ -497,6 +497,15 @@ mod update_impl {
             })
             .collect();
 
+        let trunc = |s: &str, w: usize| -> String {
+            if s.chars().count() <= w {
+                s.to_string()
+            } else {
+                let mut o: String = s.chars().take(w.saturating_sub(1)).collect();
+                o.push('\u{2026}');
+                o
+            }
+        };
         let width_name = rows
             .iter()
             .map(|(_, n, _, _, _)| n.chars().count())
@@ -525,11 +534,28 @@ mod update_impl {
         // marker(1) + sp + [x](3) + sp + "N." + sp  => prefix
         let prefix = 1 + 1 + 3 + 1 + width_disp + 1 + 1;
         // Fixed content: name + cur + " → " + new + class; the rest is gap.
+        // Shrink name/current/target columns when the terminal is too narrow
+        // for the data plus two minimum gaps, so no row exceeds `width`.
+        let (mut width_name, mut width_cur, mut width_new) = (width_name, width_cur, width_new);
+        while prefix + width_name + width_cur + 3 + width_new + width_class + 4 > width
+            && width_name.max(width_cur).max(width_new) > 4
+        {
+            if width_name >= width_cur && width_name >= width_new {
+                width_name -= 1;
+            } else if width_cur >= width_new {
+                width_cur -= 1;
+            } else {
+                width_new -= 1;
+            }
+        }
         let content = width_name + width_cur + 3 + width_new + width_class;
         let slack = width.saturating_sub(prefix + content);
-        // Three gaps (name|cur, new|class, plus leading) share the slack.
-        let gap = (slack / 2).max(2);
-        let gap_gap = " ".repeat(gap);
+        // Two gaps (name|cur, new|class) share the slack; the first absorbs
+        // the odd column so rows span exactly `width`.
+        let gap2 = (slack / 2).max(1);
+        let gap1 = slack.saturating_sub(gap2).max(1);
+        let gap_gap = " ".repeat(gap1);
+        let gap_gap2 = " ".repeat(gap2);
         let rule = "\u{2500}".repeat(width);
 
         let mut out = String::new();
@@ -541,7 +567,7 @@ mod update_impl {
         out.push_str(&format!("{controls}\r\n\r\n"));
 
         let header = format!(
-            "{:prefix$}{:<width_name$}{gap}{:>width_cur$}   {:>width_new$}{gap}{:>width_class$}",
+            "{:prefix$}{:<width_name$}{gap}{:>width_cur$}   {:>width_new$}{gap2}{:>width_class$}",
             "",
             "COMPONENT",
             "CURRENT",
@@ -553,6 +579,7 @@ mod update_impl {
             width_new = width_new,
             width_class = width_class,
             gap = gap_gap,
+            gap2 = gap_gap2,
         );
         out.push_str(&format!("{header}\r\n{rule}\r\n"));
 
@@ -563,13 +590,13 @@ mod update_impl {
             let marker = if is_selected { "[x]" } else { "[ ]" };
             let class_cell = format!("({class})");
             out.push_str(&format!(
-                "{} {} {:<width_disp$}. {:<width_name$}{gap}{:>width_cur$} \u{2192} {:>width_new$}{gap}{:>width_class$}\r\n",
+                "{} {} {:<width_disp$}. {:<width_name$}{gap}{:>width_cur$} \u{2192} {:>width_new$}{gap2}{:>width_class$}\r\n",
                 cursor_marker,
                 marker,
                 disp_idx + 1,
-                name,
-                current,
-                proposed,
+                trunc(name, width_name),
+                trunc(current, width_cur),
+                trunc(proposed, width_new),
                 class_cell,
                 width_disp = width_disp,
                 width_name = width_name,
@@ -577,6 +604,7 @@ mod update_impl {
                 width_new = width_new,
                 width_class = width_class,
                 gap = gap_gap,
+                gap2 = gap_gap2,
             ));
         }
         out.push_str(&rule);
@@ -1180,7 +1208,7 @@ mod update_impl {
                 gpu_info.architecture.clone()
             };
 
-            // Same classification the installer uses (6.x/7.2 legacy,
+            // Classifies the DETECTED version with the installer's channel rules (6.x/7.2 legacy,
             // 7.14.0 stable, 7.14.1+ latest, 10.x preview).
             let rocm_channel = if rocm_version.is_empty() {
                 String::new()
@@ -3522,6 +3550,32 @@ mod update_parity_tests {
             let body = update_impl::render_selection_body_width(&plan, &[], 0, w);
             for l in body.lines().filter(|l| l.contains('\u{2500}')) {
                 assert_eq!(l.chars().count(), w);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_rows_never_exceed_narrow_width() {
+        let item = PlannerItemOutput {
+            component_id: "a-very-long-component-identifier".into(),
+            current_version: "1.2.3.dev20261015+rocm10.1.0.gitabcdef".into(),
+            proposed_version: "9.9.9.dev20261016+rocm10.1.0.gitfedcba".into(),
+            classification: "guarded".into(),
+            risk_tier: "low".into(),
+            selected: false,
+            visible: true,
+            rationale: String::new(),
+            dependencies: vec![],
+            exclusive_group: String::new(),
+        };
+        let plan = PlanOutput {
+            summary: PlanSummary::from_items(&[]),
+            plan: vec![item],
+        };
+        for w in [60usize, 80, 100] {
+            let body = update_impl::render_selection_body_width(&plan, &[], 0, w);
+            for l in body.lines() {
+                assert!(l.chars().count() <= w, "width {w}: {l:?}");
             }
         }
     }

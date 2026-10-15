@@ -92,18 +92,77 @@ impl RocmChannel {
         {
             return c;
         }
-        let home = std::env::var("HOME").unwrap_or_default();
-        std::fs::read_to_string(std::path::Path::new(&home).join(".mlstack_env"))
-            .ok()
-            .and_then(|body| {
-                body.lines().rev().find_map(|l| {
-                    let l = l.trim().trim_start_matches("export ").trim();
-                    let v = l.strip_prefix("ROCM_CHANNEL=")?;
-                    Self::parse(v.trim().trim_matches(|c| c == '"' || c == '\''))
-                })
-            })
-            .unwrap_or(RocmChannel::Latest)
+        for home in Self::env_file_homes() {
+            if let Ok(body) = std::fs::read_to_string(std::path::Path::new(&home).join(".mlstack_env")) {
+                if let Some(c) = Self::channel_from_env_body(&body) {
+                    return c;
+                }
+            }
+        }
+        RocmChannel::Latest
     }
+
+    /// Home directories to search for `.mlstack_env`, in the installer's
+    /// precedence: `MLSTACK_USER_HOME`, `HOME`, then the invoking user's
+    /// passwd home (`SUDO_USER`, `USER`, `LOGNAME`). Empty values are skipped.
+    fn env_file_homes() -> Vec<String> {
+        let mut homes: Vec<String> = Vec::new();
+        let mut push = |h: String| {
+            let h = h.trim().to_string();
+            if !h.is_empty() && !homes.contains(&h) {
+                homes.push(h);
+            }
+        };
+        for key in ["MLSTACK_USER_HOME", "HOME"] {
+            if let Ok(v) = std::env::var(key) {
+                push(v);
+            }
+        }
+        if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+            for key in ["SUDO_USER", "USER", "LOGNAME"] {
+                if let Ok(user) = std::env::var(key) {
+                    for line in passwd.lines() {
+                        let f: Vec<&str> = line.split(':').collect();
+                        if f.len() >= 6 && f[0] == user {
+                            push(f[5].to_string());
+                        }
+                    }
+                }
+            }
+        }
+        homes
+    }
+
+    /// Last `ROCM_CHANNEL` assignment in an env file body. Understands plain
+    /// `export ROCM_CHANNEL=x`, the guarded form written by the env generator
+    /// (`if [ -z "${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=x; fi`), and
+    /// fish `set -gx ROCM_CHANNEL x`.
+    pub fn channel_from_env_body(body: &str) -> Option<Self> {
+        body.lines().rev().find_map(|l| {
+            let l = l.trim();
+            if l.starts_with('#') {
+                return None;
+            }
+            let raw = if let Some(i) = l.find("ROCM_CHANNEL=") {
+                &l[i + "ROCM_CHANNEL=".len()..]
+            } else if let Some(i) = l.find("ROCM_CHANNEL ") {
+                if !l.starts_with("set ") {
+                    return None;
+                }
+                &l[i + "ROCM_CHANNEL ".len()..]
+            } else {
+                return None;
+            };
+            let v = raw
+                .trim_start()
+                .split(|c: char| c.is_whitespace() || c == ';')
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '"' || c == '\'');
+            Self::parse(v)
+        })
+    }
+
 
     /// Channel for a detected ROCm version string.
     pub fn for_version(version: &str) -> Self {
@@ -1559,5 +1618,31 @@ mod tests {
         let cmd = RocmInstaller::build_pacman_check_installed_command("rocm-hip-sdk");
         assert_eq!(cmd.program, "pacman");
         assert!(cmd.args.contains(&"rocm-hip-sdk".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod channel_env_tests {
+    use super::RocmChannel;
+
+    #[test]
+    fn parses_plain_guarded_and_fish() {
+        let f = RocmChannel::channel_from_env_body;
+        assert_eq!(f("export ROCM_CHANNEL=stable\n"), Some(RocmChannel::Stable));
+        assert_eq!(
+            f("if [ -z \"${ROCM_CHANNEL:-}\" ]; then export ROCM_CHANNEL=legacy; fi"),
+            Some(RocmChannel::Legacy)
+        );
+        assert_eq!(f("set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL preview"), Some(RocmChannel::Preview));
+        assert_eq!(f("# export ROCM_CHANNEL=stable"), None);
+        assert_eq!(f("export ROCM_CHANNEL=bogus"), None);
+    }
+
+    #[test]
+    fn last_assignment_wins() {
+        assert_eq!(
+            RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=\"latest\"\n"),
+            Some(RocmChannel::Latest)
+        );
     }
 }

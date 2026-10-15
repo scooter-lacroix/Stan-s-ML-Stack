@@ -365,9 +365,22 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ApplyState) {
             s.to_string()
         }
     };
-    let name_w = col_w(&|r| r.name.chars().count(), "COMPONENT".len());
-    let cur_w = col_w(&|r| dash(&r.current).chars().count(), "CURRENT".len());
-    let tgt_w = col_w(&|r| dash(&r.target).chars().count(), "TARGET".len());
+    let mut name_w = col_w(&|r| r.name.chars().count(), "COMPONENT".len());
+    let mut cur_w = col_w(&|r| dash(&r.current).chars().count(), "CURRENT".len());
+    let mut tgt_w = col_w(&|r| dash(&r.target).chars().count(), "TARGET".len());
+    // Keep data columns within the box, reserving 8 columns for status:
+    // shrink the widest column until everything fits.
+    let budget = inner_w.saturating_sub(1 + 2 + 2 + 5 + 2 + 8);
+    while name_w + cur_w + tgt_w > budget && name_w.max(cur_w).max(tgt_w) > 3 {
+        if name_w >= cur_w && name_w >= tgt_w {
+            name_w -= 1;
+        } else if cur_w >= tgt_w {
+            cur_w -= 1;
+        } else {
+            tgt_w -= 1;
+        }
+    }
+    let fit = |s: &str, w: usize| truncate_to_width(s, w);
     // " " pad + glyph(1) + " " + name + "  " + cur + "  →  " + tgt + "  "
     let fixed = 1 + 2 + name_w + 2 + cur_w + 5 + tgt_w + 2;
     let status_w = inner_w.saturating_sub(fixed).max(8);
@@ -377,9 +390,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ApplyState) {
         format!(
             " {:<2}{:<name_w$}  {:>cur_w$}     {:>tgt_w$}  {:<status_w$}",
             "",
-            "COMPONENT",
-            "CURRENT",
-            "TARGET",
+            fit("COMPONENT", name_w),
+            fit("CURRENT", cur_w),
+            fit("TARGET", tgt_w),
             "STATUS",
             name_w = name_w,
             cur_w = cur_w,
@@ -391,7 +404,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ApplyState) {
             .fg(Color::Gray),
     ));
     lines.push(Line::styled(
-        format!(" {}", "─".repeat(inner_w.saturating_sub(2))),
+        format!(" {}", "─".repeat(inner_w.saturating_sub(1))),
         Style::default().fg(Color::DarkGray),
     ));
 
@@ -416,20 +429,20 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ApplyState) {
                 .add_modifier(Modifier::BOLD),
         );
         let name = Span::styled(
-            format!("{:<name_w$}  ", r.name, name_w = name_w),
+            format!("{:<name_w$}  ", fit(&r.name, name_w), name_w = name_w),
             Style::default().fg(if r.status == RowStatus::Running {
                 Color::Yellow
             } else {
                 Color::White
             }),
         );
-        let cur = Span::raw(format!("{:>cur_w$}", dash(&r.current), cur_w = cur_w));
+        let cur = Span::raw(format!("{:>cur_w$}", fit(&dash(&r.current), cur_w), cur_w = cur_w));
         let arrow = Span::styled("  →  ", Style::default().fg(Color::DarkGray));
-        let tgt = Span::raw(format!("{:>tgt_w$}  ", dash(&r.target), tgt_w = tgt_w));
+        let tgt = Span::raw(format!("{:>tgt_w$}  ", fit(&dash(&r.target), tgt_w), tgt_w = tgt_w));
         // Running rows show a bar that stretches across the status column;
         // finished/failed rows show their message, truncated to fit.
         let msg = if r.status == RowStatus::Running {
-            let bar_w = status_w.saturating_sub(5).max(10);
+            let bar_w = status_w.saturating_sub(5).max(1);
             format!("{} {:>3}%", progress_bar_width(r.progress, bar_w), pct)
         } else if r.message.is_empty() {
             format!("{:>3}%", pct)
@@ -500,7 +513,7 @@ impl ApplyPanel {
         if !std::io::stdout().is_terminal() {
             return None;
         }
-        let height = (rows.len() as u16 + 4).min(40); // rows + header + tally + borders
+        let height = (rows.len() as u16 + 5).min(40); // rows + header + rule + tally + borders
         let backend = CrosstermBackend::new(std::io::stdout());
         let terminal = Terminal::with_options(
             backend,
