@@ -3859,7 +3859,23 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 // apt/rpm repo: install the ROCm SDK into a user-space venv.
                 let home = std::env::var("HOME").unwrap_or_default();
                 let venv = format!("{home}/.mlstack/rocm/{}", inst.effective_version());
-                let index = inst.pip_index_url().unwrap_or_default().to_string();
+                let index = inst
+                    .pip_index_url()
+                    .ok_or_else(|| anyhow::anyhow!("TheRock channel has no pip index"))?
+                    .to_string();
+                if !std::process::Command::new("uv")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
+                    bail!(
+                        "`uv` is required to install ROCm {} into a user-space environment; install it from https://docs.astral.sh/uv/ and retry",
+                        inst.effective_version()
+                    );
+                }
+                let venv_python =
+                    std::env::var("ROCM_VENV_PYTHON").unwrap_or_else(|_| "3.12".to_string());
                 let req = inst.pip_requirement();
                 let steps: Vec<(&str, Vec<String>)> = vec![
                     (
@@ -3867,7 +3883,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                         vec![
                             "venv".into(),
                             "--python".into(),
-                            "3.12".into(),
+                            venv_python.clone(),
                             venv.clone(),
                         ],
                     ),
@@ -4001,13 +4017,29 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 // wrap the program in `sudo -S` (running yay as root → refused).
                 execute_native_command(&yay_cmd, None, sender, &component.name)?;
             } else {
+                let therock = rocm_channel.is_therock();
                 let commands = if distro.uses_apt() {
-                    inst.apt_install_commands()
+                    if therock {
+                        inst.therock_apt_commands(&distro)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    } else {
+                        inst.apt_install_commands()
+                    }
                 } else if distro.uses_dnf() || distro.uses_yum() {
-                    let rhel_ver = distro.version().split('.').next().unwrap_or("9");
-                    inst.dnf_install_commands(rhel_ver)
+                    if therock {
+                        inst.therock_rpm_commands(&distro)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    } else {
+                        let rhel_ver = distro.version().split('.').next().unwrap_or("9");
+                        inst.dnf_install_commands(rhel_ver)
+                    }
                 } else if distro.uses_zypper() {
-                    inst.zypper_install_commands()
+                    if therock {
+                        inst.therock_rpm_commands(&distro)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    } else {
+                        inst.zypper_install_commands()
+                    }
                 } else {
                     bail!(
                         "Unsupported distribution for ROCm installation: {} ({})",
