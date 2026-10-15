@@ -108,9 +108,8 @@ impl RocmChannel {
     /// passwd home (`SUDO_USER`, `USER`, `LOGNAME`). Empty values are skipped.
     fn env_file_homes() -> Vec<String> {
         // Same resolver the installer uses, so planning and apply agree.
-        let preferred = std::env::var("MLSTACK_USER_HOME")
-            .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_default();
+        // Mirror `resolve_mlstack_user_home`: HOME is the preferred candidate.
+        let preferred = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         crate::installer::candidate_mlstack_homes(&preferred)
     }
 
