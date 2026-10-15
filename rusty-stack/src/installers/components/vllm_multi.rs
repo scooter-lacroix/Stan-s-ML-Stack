@@ -14,7 +14,7 @@
 /// is needed across releases. Also provides the `VLLM_VERSION_OVERRIDE` value
 /// that suppresses vLLM's `+rocmNNN` build label (avoids pip's filename-vs-
 /// metadata cascade).
-const VLLM_SOURCE_VERSION: &str = "0.25.1";
+const VLLM_SOURCE_VERSION: &str = "0.31.0";
 
 /// Python: query PyPI for vLLM releases, apply the version-lag + age gate, and
 /// print the selected version (empty if none qualifies). Run as
@@ -397,8 +397,8 @@ impl VllmInstaller {
             "depyf==0.20.0",
             "diskcache==5.6.3",
             "fastapi[standard]>=0.133.0,<0.137.0",
-            "grpcio==1.78.0",
-            "grpcio-reflection==1.78.0",
+            "grpcio==1.84.0",
+            "grpcio-reflection==1.84.0",
             "lark==1.2.2",
             "llguidance>=1.7.0,<1.8.0",
             "llvmlite>=0.47.0,<0.48.0",
@@ -408,7 +408,7 @@ impl VllmInstaller {
             "runai-model-streamer[azure,gcs,s3]==0.15.7",
             "setuptools>=77.0.3,<80.0.0",
             "tensorizer==2.10.1",
-            "tilelang==0.1.10",
+            "tilelang==0.1.12",
             "torch-c-dlpack-ext",
             "xgrammar>=0.2.1,<1.0.0",
             "z3-solver>=4.13.0,<4.15.5",
@@ -770,7 +770,7 @@ mod tests {
             .any(|a| a.starts_with("outlines-core==0.2.14")));
         assert!(cmd.args.iter().any(|a| a.starts_with("llguidance>=1.7.0")));
         assert!(cmd.args.iter().any(|a| a.starts_with("llvmlite>=0.47.0")));
-        assert!(cmd.args.iter().any(|a| a.starts_with("grpcio==1.78.0")));
+        assert!(cmd.args.iter().any(|a| a.starts_with("grpcio==1.84.0")));
         assert!(cmd.args.contains(&"torch-c-dlpack-ext".to_string()));
         assert!(cmd.args.contains(&"z3-solver>=4.13.0,<4.15.5".to_string()));
         assert!(!cmd.args.iter().any(|arg| arg == "torch"));
@@ -807,12 +807,12 @@ mod tests {
     #[test]
     fn test_source_rebuild_command() {
         let installer = VllmInstaller::with_defaults();
-        let cmd = installer.build_source_rebuild_command("0.25.1");
+        let cmd = installer.build_source_rebuild_command("0.31.0");
         assert!(cmd.args.contains(&"--no-build-isolation".to_string()));
         assert!(cmd.args.contains(&"--no-binary".to_string()));
         // The fallback must pin the resolved version (supply-chain gate honored),
         // not install bare `vllm`.
-        assert!(cmd.args.contains(&"vllm==0.25.1".to_string()));
+        assert!(cmd.args.contains(&"vllm==0.31.0".to_string()));
         assert!(cmd
             .env
             .iter()
@@ -826,7 +826,7 @@ mod tests {
         assert!(cmd
             .env
             .iter()
-            .any(|(k, v)| k == "VLLM_VERSION_OVERRIDE" && v == "0.25.1"));
+            .any(|(k, v)| k == "VLLM_VERSION_OVERRIDE" && v == "0.31.0"));
     }
 
     #[test]

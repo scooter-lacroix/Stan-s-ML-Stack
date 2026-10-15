@@ -802,8 +802,20 @@ fn ensure_mlstack_env(user_home: &str, install_method: &str, force: bool) -> Res
     ];
 
     // Precise HSA override: use GpuArchInfo mapping for gfx1101→11.0.1 etc.
+    // TheRock runtimes (7.14+/10.x) fail HSA init when the override is set, so
+    // an empty value means "keep it unset" (it is removed from existing files).
     let hsa_override =
-        crate::bootstrap::env_setup::GpuArchInfo::from_arch(gpu_arch).hsa_override_gfx_version;
+        if crate::bootstrap::env_setup::rocm_version_is_therock(&detect_rocm_version())
+            || std::env::var("ROCM_CHANNEL")
+                .ok()
+                .and_then(|c| crate::installers::components::rocm::RocmChannel::parse(&c))
+                .map(|c| c.is_therock() && rocm_sdk_venv_active())
+                .unwrap_or(false)
+        {
+            String::new()
+        } else {
+            crate::bootstrap::env_setup::GpuArchInfo::from_arch(gpu_arch).hsa_override_gfx_version
+        };
 
     // `force` (force-reinstall / explicit env rewrite): skip the in-place merge
     // and fall through to the regenerate path below, which truncates-then-writes
@@ -1072,6 +1084,10 @@ fn sanitize_mlstack_env(
         //   - PYTORCH_ALLOC_CONF: a non-standard no-op rename (PyTorch never
         //     dropped the _CUDA) — strip from legacy files so only the functional
         //     PYTORCH_CUDA_ALLOC_CONF remains.
+        if hsa_override.is_empty() && trimmed.starts_with("export HSA_OVERRIDE_GFX_VERSION=") {
+            changed = true;
+            continue;
+        }
         if trimmed.starts_with("export TORCH_CUDA_ARCH_LIST=")
             || trimmed.starts_with("export PYTORCH_ALLOC_CONF=")
         {
@@ -1086,8 +1102,11 @@ fn sanitize_mlstack_env(
             normalize_env_value(&line, "MLSTACK_INSTALL_METHOD", install_method);
         let (line, changed_method_alias) =
             normalize_env_value(&line, "INSTALL_METHOD", install_method);
-        let (line, changed_hsa) =
-            normalize_env_value(&line, "HSA_OVERRIDE_GFX_VERSION", hsa_override);
+        let (line, changed_hsa) = if hsa_override.is_empty() {
+            (line, false)
+        } else {
+            normalize_env_value(&line, "HSA_OVERRIDE_GFX_VERSION", hsa_override)
+        };
         let (line, changed_hip_vis) =
             normalize_visible_devices(&line, "HIP_VISIBLE_DEVICES", gpu_list);
         let (line, changed_cuda_vis) =
@@ -1233,9 +1252,54 @@ fn normalize_visible_devices(line: &str, key: &str, desired: &str) -> (String, b
     (line.to_string(), false)
 }
 
+/// Remove `HSA_OVERRIDE_GFX_VERSION` from a child process when the active ROCm
+/// runtime is TheRock (7.14+/10.x): it breaks HSA init there. Also clears any
+/// value inherited from the parent shell.
+fn strip_hsa_override_for_therock(command: &mut Command, env_exports: &HashMap<String, String>) {
+    let version = env_exports
+        .get("ROCM_VERSION")
+        .cloned()
+        .unwrap_or_else(detect_rocm_version);
+    if crate::bootstrap::env_setup::rocm_version_is_therock(&version)
+        || crate::bootstrap::env_setup::rocm_version_is_therock(&detect_rocm_version())
+    {
+        command.env_remove("HSA_OVERRIDE_GFX_VERSION");
+    }
+}
+
+/// True when a user-space ROCm SDK (TheRock) venv is installed under
+/// `~/.mlstack/rocm/`, i.e. the runtime in use is not the system /opt/rocm.
+fn rocm_sdk_venv_python() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let entries = match fs::read_dir(format!("{home}/.mlstack/rocm")) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    entries
+        .flatten()
+        .map(|e| e.path().join("bin/python"))
+        .find(|p| p.exists())
+}
+
+fn rocm_sdk_venv_active() -> bool {
+    rocm_sdk_venv_python().is_some()
+}
+
 fn detect_rocm_version() -> String {
     if let Ok(version) = fs::read_to_string("/opt/rocm/.info/version") {
         return version.trim().to_string();
+    }
+    // No system ROCm: fall back to the user-space TheRock SDK venv, if any.
+    if let Some(py) = rocm_sdk_venv_python() {
+        if let Ok(out) = Command::new(py)
+            .args(["-c", "import importlib.metadata as m; print(m.version('rocm'))"])
+            .output()
+        {
+            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if out.status.success() && !v.is_empty() {
+                return v;
+            }
+        }
     }
     "7.2.0".to_string()
 }
@@ -2195,6 +2259,7 @@ fn run_verification_command(
     if let Some(value) = hsa_override {
         command.env("HSA_OVERRIDE_GFX_VERSION", value);
     }
+    strip_hsa_override_for_therock(&mut command, &env_exports);
     if step.target_id == "aiter" {
         let aiter_jit_dir = PathBuf::from(&user_home)
             .join(".mlstack")
@@ -3790,13 +3855,92 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
         "rocm" => {
             use crate::installers::components::rocm::{RocmConfig, RocmInstaller};
             let rocm_force = is_force_reinstall();
+            use crate::installers::components::rocm::RocmChannel;
+            let rocm_channel = std::env::var("ROCM_CHANNEL")
+                .ok()
+                .or_else(|| ctx.env_exports.get("ROCM_CHANNEL").cloned())
+                .and_then(|c| RocmChannel::parse(&c))
+                .unwrap_or(RocmChannel::Latest);
             let inst = RocmInstaller::new(RocmConfig {
                 force_reinstall: rocm_force,
+                channel: rocm_channel,
+                gfx_arch: detect_gpu_arch().unwrap_or_else(|| "gfx1100".to_string()),
+                legacy_fallback: std::env::var("ROCM_LEGACY_VERSION")
+                    .map(|v| v.trim() == "7.2.3")
+                    .unwrap_or(false),
                 ..RocmConfig::default()
             });
             let distro = crate::installers::common::DistroFacade::detect();
             let is_arch = distro.is_arch_family();
-            if is_arch {
+            if rocm_channel.is_therock() && (is_arch || rocm_channel == RocmChannel::Preview) {
+                // TheRock (7.14+/10.x) has no pacman packages, and 10.x has no
+                // apt/rpm repo: install the ROCm SDK into a user-space venv.
+                let home = std::env::var("HOME").unwrap_or_default();
+                let venv = format!("{home}/.mlstack/rocm/{}", inst.effective_version());
+                let index = inst
+                    .pip_index_url()
+                    .ok_or_else(|| anyhow::anyhow!("TheRock channel has no pip index"))?
+                    .to_string();
+                if !std::process::Command::new("uv")
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+                {
+                    bail!(
+                        "`uv` is required to install ROCm {} into a user-space environment; install it from https://docs.astral.sh/uv/ and retry",
+                        inst.effective_version()
+                    );
+                }
+                let venv_python =
+                    std::env::var("ROCM_VENV_PYTHON").unwrap_or_else(|_| "3.12".to_string());
+                let req = inst.pip_requirement();
+                let steps: Vec<(&str, Vec<String>)> = vec![
+                    (
+                        "uv",
+                        vec![
+                            "venv".into(),
+                            "--python".into(),
+                            venv_python.clone(),
+                            venv.clone(),
+                        ],
+                    ),
+                    (
+                        "uv",
+                        vec![
+                            "pip".into(),
+                            "install".into(),
+                            "--python".into(),
+                            format!("{venv}/bin/python"),
+                            "--index-url".into(),
+                            index,
+                            "--extra-index-url".into(),
+                            "https://pypi.org/simple".into(),
+                            "--index-strategy".into(),
+                            "unsafe-best-match".into(),
+                            req,
+                        ],
+                    ),
+                ];
+                for (prog, args) in steps {
+                    execute_native_command(
+                        &NativeCommand::Pip {
+                            program: prog.to_string(),
+                            args,
+                        },
+                        None,
+                        sender,
+                        &component.name,
+                    )?;
+                }
+                let _ = sender.send(InstallerEvent::Log(
+                    format!(
+                        "[native] ROCm {} installed to {venv}",
+                        inst.effective_version()
+                    ),
+                    false,
+                ));
+            } else if is_arch {
                 // Arch/pacman path. The AUR helper (`yay`) MUST run as the
                 // user — makepkg refuses root, and `yay` warns "Avoid running
                 // yay as root/sudo". This branch therefore does NOT reuse the
@@ -3891,13 +4035,29 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 // wrap the program in `sudo -S` (running yay as root → refused).
                 execute_native_command(&yay_cmd, None, sender, &component.name)?;
             } else {
+                let therock = rocm_channel.is_therock();
                 let commands = if distro.uses_apt() {
-                    inst.apt_install_commands()
+                    if therock {
+                        inst.therock_apt_commands(&distro)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    } else {
+                        inst.apt_install_commands()
+                    }
                 } else if distro.uses_dnf() || distro.uses_yum() {
-                    let rhel_ver = distro.version().split('.').next().unwrap_or("9");
-                    inst.dnf_install_commands(rhel_ver)
+                    if therock {
+                        inst.therock_rpm_commands(&distro)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    } else {
+                        let rhel_ver = distro.version().split('.').next().unwrap_or("9");
+                        inst.dnf_install_commands(rhel_ver)
+                    }
                 } else if distro.uses_zypper() {
-                    inst.zypper_install_commands()
+                    if therock {
+                        inst.therock_rpm_commands(&distro)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    } else {
+                        inst.zypper_install_commands()
+                    }
                 } else {
                     bail!(
                         "Unsupported distribution for ROCm installation: {} ({})",
@@ -6245,6 +6405,7 @@ fn run_script(
     if let Some(value) = hsa_override {
         command.env("HSA_OVERRIDE_GFX_VERSION", value);
     }
+    strip_hsa_override_for_therock(&mut command, &env_exports);
     if component.id == "aiter" {
         command.env("AITER_JIT_DIR", aiter_jit_dir);
     }

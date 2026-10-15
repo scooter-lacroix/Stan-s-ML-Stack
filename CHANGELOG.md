@@ -11,7 +11,19 @@ All notable changes to Stan's ML Stack will be documented in this file.
 2026-06-25 - feat(rusty-stack): v0.3.0 — all 7 project tenets met (iGPU filter, no-CUDA hard-prime, single-source/no-override, functional verify, env isolation, uninstall/reinstall) (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/21
 
 ### Release Track Status
-- Next changes accumulate here after 0.3.2.
+- Next changes accumulate here after 0.4.0.
+
+## [0.4.0] - Maintenance
+
+### Added
+- PyTorch installer: ROCm 10.x (TheRock) now resolves to AMD's `whl-next` wheel index with the `torch[device-all]` extra, instead of a nonexistent download.pytorch.org URL. Replaced the stale "ROCm 7.10 preview" note in the multi-channel guide.
+
+- ROCm installer channels: Preview = 10.1.0 (pip `whl-next` SDK venv), Latest = 7.14.1, Stable = 7.14.0 (TheRock `packages-multi-arch` apt/rpm repos, `rocm[libraries,device-all]` pip, tarball and runfile builders), Legacy = 7.2.4 (7.2.3 via `ROCM_LEGACY_VERSION=7.2.3`). `ROCM_CHANNEL` is now honoured by the installer; Arch and Preview install the SDK into `~/.mlstack/rocm/<version>`.
+
+### Changed
+- vLLM 0.25.1 -> 0.31.0 with its own pins (tilelang 0.1.12, numba 0.65.0 kept; gRPC 1.78.0 -> 1.84.0); FastVideo diffusers 0.33.1 -> 0.41.0 (FastVideo requires >=0.38).
+- Torch stays 2.13.0 in the manifest because vLLM 0.31.0 pins `torch==2.13.0`; torch 2.14.1+rocm7.2 was verified on the RX 7900 XTX / 7800 XT.
+- Maintenance pass: refreshed FastVideo/managed Python build-tool pins (cmake 4.4.4, scikit-build-core 1.1.1, wheel 0.48.0, ninja 1.13.2, imageio 2.38.1) to latest PyPI releases. Torch/vLLM/gRPC/setuptools pins and ROCm/PyTorch channel URLs were intentionally left unchanged (coupled to ROCm wheels; upstream hosts unreachable from the audit environment).
 
 ## [0.3.2] - 2026-07-21
 

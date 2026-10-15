@@ -46,6 +46,9 @@ impl TorchChannel {
     }
 }
 
+/// AMD's PyTorch wheel index for ROCm 10.x (TheRock) releases.
+pub const AMD_WHL_NEXT_INDEX: &str = "https://stable.repo.amd.com/rocm/whl-next/";
+
 /// Installation method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {
@@ -145,7 +148,11 @@ impl PyTorchInstaller {
     /// - Fallback: ROCm 6.3 stable
     pub fn index_url_for_rocm(&self, rocm_mm: &str) -> String {
         let mm: f32 = rocm_mm.parse().unwrap_or(7.2);
-        if mm >= 7.0 {
+        if mm >= 10.0 {
+            // ROCm 10.x (TheRock) PyTorch wheels live on AMD's own PEP 503 index,
+            // tagged `+rocm10.x.y`, with per-GPU `[device-*]` extras.
+            AMD_WHL_NEXT_INDEX.to_string()
+        } else if mm >= 7.0 {
             // PyTorch's OWN PEP 503 simple index for ROCm 7.x. NOT AMD's Radeon
             // manylinux listing (repo.radeon.com/rocm/manylinux/rocm-rel-X.Y/) —
             // that is a flat --find-links directory with no per-package /torch/
@@ -241,9 +248,15 @@ impl PyTorchInstaller {
         }
         args.push("--index-url".to_string());
         args.push(index_url);
+        // ROCm 10.x wheels need the `[device-all]` extra to pull the ROCm runtime.
+        let torch_name = if rocm_mm.parse::<f32>().map(|m| m >= 10.0).unwrap_or(false) {
+            "torch[device-all]"
+        } else {
+            "torch"
+        };
         match pin {
-            Some(v) => args.push(format!("torch=={v}")),
-            None => args.push("torch".to_string()),
+            Some(v) => args.push(format!("{torch_name}=={v}")),
+            None => args.push(torch_name.to_string()),
         }
         args.push("torchvision".to_string());
         args.push("torchaudio".to_string());
@@ -346,6 +359,17 @@ mod tests {
         let installer = PyTorchInstaller::with_defaults();
         let url = installer.index_url_for_rocm("7.2");
         assert_eq!(url, "https://download.pytorch.org/whl/rocm7.2");
+    }
+
+    #[test]
+    fn test_index_url_rocm_101_uses_amd_whl_next() {
+        let installer = PyTorchInstaller::with_defaults();
+        assert_eq!(installer.index_url_for_rocm("10.1"), AMD_WHL_NEXT_INDEX);
+        let cmd = installer.build_install_command("10.1", false, Some("2.14.0"));
+        assert!(cmd.args.contains(&AMD_WHL_NEXT_INDEX.to_string()));
+        assert!(cmd.args.contains(&"torch[device-all]==2.14.0".to_string()));
+        let old = installer.build_install_command("7.2", false, None);
+        assert!(old.args.contains(&"torch".to_string()));
     }
 
     #[test]

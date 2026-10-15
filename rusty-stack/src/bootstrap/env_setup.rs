@@ -23,6 +23,28 @@ use std::fmt;
 // Types
 // ===========================================================================
 
+/// True when `version` is a TheRock-based ROCm runtime (7.14+ or 10.x+).
+///
+/// The TheRock runtime fails HSA init (`HSA_STATUS_ERROR_OUT_OF_RESOURCES`, so
+/// `torch.cuda.is_available()` is False) when `HSA_OVERRIDE_GFX_VERSION` is
+/// set: it enumerates the GPUs natively and the spoofed ISA matches no device
+/// code object. Classic 7.2.x still needs the override (e.g. gfx1101 as 11.0.0).
+pub fn rocm_version_is_therock(version: &str) -> bool {
+    let mut it = version.trim().split('.');
+    let major: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let minor: u32 = it
+        .next()
+        .and_then(|v| {
+            v.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0);
+    major >= 10 || (major == 7 && minor >= 14)
+}
+
 /// GPU architecture information detected from the system.
 #[derive(Debug, Clone)]
 pub struct GpuArchInfo {
@@ -595,6 +617,11 @@ pub fn generate_env_file_content(
     hsa_override_gfx_version: &str,
     python_bin: &str,
 ) -> String {
+    let hsa_override_line = if rocm_version_is_therock(rocm_version) {
+        "# TheRock runtime (7.14+/10.x): HSA_OVERRIDE_GFX_VERSION breaks HSA init; keep it unset.\nunset HSA_OVERRIDE_GFX_VERSION".to_string()
+    } else {
+        format!("export HSA_OVERRIDE_GFX_VERSION={hsa_override_gfx_version}")
+    };
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
     // RCCL overlay env is MANAGED here (the persistent-env generator is the
     // single source of truth for env vars — components no longer write env files).
@@ -641,7 +668,7 @@ case ":${{LD_LIBRARY_PATH:-}}:" in *:"{rocm_path}/lib":*) ;; *) export LD_LIBRAR
 
 # Performance Settings
 # HSA_OVERRIDE_GFX_VERSION is set based on detected GPU_ARCH
-export HSA_OVERRIDE_GFX_VERSION={hsa_override_gfx_version}
+{hsa_override_line}
 export HSA_ENABLE_SDMA=0
 export GPU_MAX_HEAP_SIZE=100
 export GPU_MAX_ALLOC_PERCENT=100
@@ -708,7 +735,7 @@ fi
         rocm_version = rocm_version,
         rocm_channel = rocm_channel,
         gpu_arch = gpu_arch,
-        hsa_override_gfx_version = hsa_override_gfx_version,
+        hsa_override_line = hsa_override_line,
         home = home,
         python_bin = python_bin,
         rccl_block = rccl_block,
@@ -730,6 +757,11 @@ pub fn generate_fish_env_file_content(
     hsa_override_gfx_version: &str,
     python_bin: &str,
 ) -> String {
+    let hsa_override_line_fish = if rocm_version_is_therock(rocm_version) {
+        "# TheRock runtime (7.14+/10.x): HSA_OVERRIDE_GFX_VERSION breaks HSA init; keep it unset.\nset -e HSA_OVERRIDE_GFX_VERSION".to_string()
+    } else {
+        format!("set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}")
+    };
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
 
     // Build ONNX Runtime PYTHONPATH check
@@ -775,7 +807,7 @@ contains -- {rocm_path}/lib $LD_LIBRARY_PATH; or set -gx LD_LIBRARY_PATH $HOME/.
 {rccl_block}
 
 # --- Performance Settings ---
-set -gx HSA_OVERRIDE_GFX_VERSION {hsa_override_gfx_version}
+{hsa_override_line_fish}
 set -gx HSA_ENABLE_SDMA 0
 set -gx GPU_MAX_HEAP_SIZE 100
 set -gx GPU_MAX_ALLOC_PERCENT 100
@@ -837,7 +869,7 @@ end
         rocm_version = rocm_version,
         rocm_channel = rocm_channel,
         gpu_arch = gpu_arch,
-        hsa_override_gfx_version = hsa_override_gfx_version,
+        hsa_override_line_fish = hsa_override_line_fish,
         python_bin = python_bin,
         onnx_path = onnx_path,
         rccl_block = rccl_block,
@@ -1652,5 +1684,52 @@ mod tests {
         let _ = env_result.success;
         assert!(!gpu_result.hip_visible_devices.is_empty());
         assert!(!gpu_arch.gpu_arch.is_empty());
+    }
+    #[test]
+    fn test_rocm_version_is_therock() {
+        for v in ["7.14.0", "7.14.1", "7.15.0", "10.1.0", "10.1"] {
+            assert!(rocm_version_is_therock(v), "{v}");
+        }
+        for v in ["6.4.3", "7.2.3", "7.2.4", "7.13.0", "", "garbage"] {
+            assert!(!rocm_version_is_therock(v), "{v}");
+        }
+    }
+
+    #[test]
+    fn test_env_file_omits_hsa_override_on_therock() {
+        let classic = generate_env_file_content(
+            "0,1",
+            "/opt/rocm",
+            "7.2.4",
+            "latest",
+            "gfx1100",
+            "11.0.0",
+            "python3",
+        );
+        assert!(classic.contains("export HSA_OVERRIDE_GFX_VERSION=11.0.0"));
+        for v in ["7.14.1", "10.1.0"] {
+            let c = generate_env_file_content(
+                "0,1",
+                "/opt/rocm",
+                v,
+                "latest",
+                "gfx1100",
+                "11.0.0",
+                "python3",
+            );
+            assert!(!c.contains("export HSA_OVERRIDE_GFX_VERSION"), "{v}");
+            assert!(c.contains("unset HSA_OVERRIDE_GFX_VERSION"), "{v}");
+            let f = generate_fish_env_file_content(
+                "0,1",
+                "/opt/rocm",
+                v,
+                "latest",
+                "gfx1100",
+                "11.0.0",
+                "python3",
+            );
+            assert!(!f.contains("set -gx HSA_OVERRIDE_GFX_VERSION"), "{v}");
+            assert!(f.contains("set -e HSA_OVERRIDE_GFX_VERSION"), "{v}");
+        }
     }
 }

@@ -16,15 +16,36 @@ use std::fmt;
 // Types
 // ===========================================================================
 
+/// Classic (amdgpu-install) ROCm fallback for the Legacy channel.
+pub const LEGACY_FALLBACK_VERSION: &str = "7.2.3";
+/// TheRock multi-arch apt/rpm repo root (ROCm 7.14+).
+pub const THEROCK_REPO_ROOT: &str = "https://repo.amd.com/rocm/packages-multi-arch";
+/// TheRock multi-arch apt GPG key.
+pub const THEROCK_GPG_URL: &str = "https://repo.amd.com/rocm/packages-multi-arch/gpg/rocm.gpg";
+/// Fingerprint of AMD's multi-arch repo signing key (verified after download).
+pub const THEROCK_GPG_FINGERPRINT: &str = "D0F004A0025A1145C7807FCD0701EAC4D5E02107";
+/// Default runfile build id in `rocm-installer-<ver>-<build>.run`.
+pub const RUNFILE_BUILD_DEFAULT: &str = "7";
+/// TheRock multi-arch pip index (7.14.x).
+pub const THEROCK_PIP_INDEX: &str = "https://repo.amd.com/rocm/whl-multi-arch/";
+/// ROCm 10.x preview pip index.
+pub const PREVIEW_PIP_INDEX: &str = "https://stable.repo.amd.com/rocm/whl-next/";
+/// TheRock tarball root.
+pub const THEROCK_TARBALL_ROOT: &str = "https://repo.amd.com/rocm/tarball-multi-arch";
+/// Runfile installer root.
+pub const RUNFILE_ROOT: &str = "https://repo.radeon.com/installer/rocm-runfile-installer";
+
 /// ROCm release channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RocmChannel {
-    /// ROCm 6.4.3 — conservative compatibility target (Legacy).
+    /// ROCm 7.2.4 (7.2.3 fallback) — classic amdgpu-install line (Legacy).
     Legacy,
-    /// ROCm 7.2.3 — prior production target for RDNA 3/4 (Stable).
+    /// ROCm 7.14.0 — TheRock (Stable).
     Stable,
-    /// ROCm 7.2.4 — current production release (Latest, default).
+    /// ROCm 7.14.1 — TheRock (Latest, default).
     Latest,
+    /// ROCm 10.1.0 — TheRock Core SDK preview (pip/tarball only).
+    Preview,
 }
 
 impl fmt::Display for RocmChannel {
@@ -33,54 +54,85 @@ impl fmt::Display for RocmChannel {
             RocmChannel::Legacy => write!(f, "legacy"),
             RocmChannel::Stable => write!(f, "stable"),
             RocmChannel::Latest => write!(f, "latest"),
+            RocmChannel::Preview => write!(f, "preview"),
         }
     }
 }
 
 impl RocmChannel {
-    /// Parse from a choice number (1-3) as used in the original script.
+    /// Parse from a choice number (1-4).
     pub fn from_choice(choice: u8) -> Option<Self> {
         match choice {
             1 => Some(RocmChannel::Legacy),
             2 => Some(RocmChannel::Stable),
             3 => Some(RocmChannel::Latest),
+            4 => Some(RocmChannel::Preview),
             _ => None,
         }
+    }
+
+    /// Parse a channel name (`ROCM_CHANNEL`); unknown values yield `None`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Some(RocmChannel::Legacy),
+            "stable" => Some(RocmChannel::Stable),
+            "latest" => Some(RocmChannel::Latest),
+            "preview" => Some(RocmChannel::Preview),
+            _ => None,
+        }
+    }
+
+    /// Channel for a detected ROCm version string.
+    pub fn for_version(version: &str) -> Self {
+        let mut it = version.split('.');
+        let major: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let minor: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let patch: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        match (major, minor) {
+            (10.., _) => RocmChannel::Preview,
+            (7, 14..) if patch >= 1 || minor > 14 => RocmChannel::Latest,
+            (7, 14..) => RocmChannel::Stable,
+            _ => RocmChannel::Legacy,
+        }
+    }
+
+    /// True for TheRock-based releases (7.14+), which use the multi-arch repos.
+    pub fn is_therock(&self) -> bool {
+        !matches!(self, RocmChannel::Legacy)
     }
 
     /// Get the ROCm version string for this channel.
     pub fn version(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4.3",
-            RocmChannel::Stable => "7.2.3",
-            RocmChannel::Latest => "7.2.4",
+            RocmChannel::Legacy => "7.2.4",
+            RocmChannel::Stable => "7.14.0",
+            RocmChannel::Latest => "7.14.1",
+            RocmChannel::Preview => "10.1.0",
         }
     }
 
     /// Get the ROCm directory path component for this channel.
     pub fn dir_path(&self) -> &'static str {
-        match self {
-            RocmChannel::Legacy => "6.4.3",
-            RocmChannel::Stable => "7.2.3",
-            RocmChannel::Latest => "7.2.4",
-        }
+        self.version()
     }
 
-    /// Get the package version string used in installer package names.
+    /// Get the classic package version string used in amdgpu-install names.
+    /// Only meaningful for the Legacy channel; TheRock uses `therock_pkg_revision`.
     pub fn pkg_version(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4.60403-1",
-            RocmChannel::Stable => "7.2.3.70203-1",
-            RocmChannel::Latest => "7.2.4.70204-1",
+            RocmChannel::Legacy => "7.2.4.70204-1",
+            RocmChannel::Stable => "7.14.0",
+            RocmChannel::Latest => "7.14.1",
+            RocmChannel::Preview => "10.1.0",
         }
     }
 
-    /// Get the major.minor version (e.g., "7.2") for repo URLs.
+    /// Get the major.minor version (e.g., "7.14") for repo URLs and package names.
     pub fn major_minor(&self) -> &'static str {
         match self {
-            RocmChannel::Legacy => "6.4",
-            RocmChannel::Stable => "7.2",
-            RocmChannel::Latest => "7.2",
+            RocmChannel::Legacy => "7.2",
+            RocmChannel::Stable | RocmChannel::Latest => "7.14",
+            RocmChannel::Preview => "10.1",
         }
     }
 
@@ -99,19 +151,22 @@ impl RocmChannel {
 
     /// Get the package version for this channel, with optional manifest override.
     ///
-    /// Constructs a package version string from the manifest version if available.
+    /// Classic (<7.14) releases map `7.2.4` -> `7.2.4.70204-1`; TheRock releases
+    /// use the bare version.
     pub fn pkg_version_from_manifest(manifest: &crate::core::manifest::Manifest) -> String {
         let version = Self::version_from_manifest(manifest);
         if version == "6.4.3" {
             return "6.4.60403-1".to_string();
         }
-
-        // Convert "7.2.4" to "7.2.4.70204-1" format.
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() >= 3 {
             let major: u64 = parts[0].parse().unwrap_or(7);
             let minor: u64 = parts[1].parse().unwrap_or(2);
             let patch: u64 = parts[2].parse().unwrap_or(0);
+            // Same classification as `for_version`, so 8.x/9.x stay classic.
+            if RocmChannel::for_version(&version).is_therock() {
+                return version;
+            }
             let build = format!("{major}{minor:02}{patch:02}");
             format!("{}.{build}-1", version)
         } else {
@@ -155,6 +210,10 @@ pub struct RocmConfig {
     pub force_reinstall: bool,
     /// Whether to run in dry-run mode.
     pub dry_run: bool,
+    /// Target GPU architecture (e.g. `gfx1100`) for TheRock per-arch packages.
+    pub gfx_arch: String,
+    /// Use the 7.2.3 classic build instead of 7.2.4 on the Legacy channel.
+    pub legacy_fallback: bool,
 }
 
 impl Default for RocmConfig {
@@ -164,6 +223,8 @@ impl Default for RocmConfig {
             install_type: RocmInstallType::Standard,
             force_reinstall: false,
             dry_run: false,
+            gfx_arch: "gfx1100".to_string(),
+            legacy_fallback: false,
         }
     }
 }
@@ -220,6 +281,259 @@ impl RocmInstaller {
     /// Get the ROCm channel.
     pub fn channel(&self) -> RocmChannel {
         self.config.channel
+    }
+
+    /// Effective ROCm version, honouring the Legacy 7.2.3 fallback.
+    pub fn effective_version(&self) -> &'static str {
+        if self.config.channel == RocmChannel::Legacy && self.config.legacy_fallback {
+            LEGACY_FALLBACK_VERSION
+        } else {
+            self.config.channel.version()
+        }
+    }
+
+    fn classic_release(&self) -> &'static str {
+        self.effective_version()
+    }
+
+    fn classic_pkg_version(&self) -> &'static str {
+        if self.config.channel == RocmChannel::Legacy && self.config.legacy_fallback {
+            "7.2.3.70203-1"
+        } else {
+            self.config.channel.pkg_version()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TheRock (7.14+) install methods
+    // -----------------------------------------------------------------------
+
+    /// Repo directory name for a distro on the TheRock multi-arch repo
+    /// (e.g. `ubuntu2404`, `debian12`, `rhel9`, `sles16`). `None` if unsupported.
+    pub fn therock_distro_dir(distro: &DistroFacade) -> Option<String> {
+        let v = distro.version();
+        let major = v.split('.').next().unwrap_or("");
+        if distro.uses_apt() {
+            if distro.id() == "debian" {
+                return match major {
+                    "12" | "13" => Some(format!("debian{major}")),
+                    _ => None,
+                };
+            }
+            let compact = v.replace('.', "");
+            match compact.as_str() {
+                "2204" | "2404" | "2604" => Some(format!("ubuntu{compact}")),
+                _ => match distro.codename() {
+                    "jammy" => Some("ubuntu2204".into()),
+                    "noble" => Some("ubuntu2404".into()),
+                    _ => None,
+                },
+            }
+        } else if distro.uses_dnf() || distro.uses_yum() {
+            match major {
+                "8" | "9" | "10" => Some(format!("rhel{major}")),
+                _ => None,
+            }
+        } else if distro.uses_zypper() {
+            match major {
+                "15" => Some("sles15".into()),
+                "16" => Some("sles16".into()),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Per-GPU metapackage name, e.g. `amdrocm7.14-gfx1100`.
+    pub fn therock_package(&self) -> String {
+        format!(
+            "amdrocm{}-{}",
+            self.config.channel.major_minor(),
+            self.config.gfx_arch
+        )
+    }
+
+    /// apt `Version` of the metapackage: `7.14.1` -> `7.14.1-*`.
+    ///
+    /// The glob is intentional: it pins the ROCm release but tracks the
+    /// repo's latest packaging revision (`-0`, `-1`, ...) of that release.
+    pub fn therock_apt_version_glob(&self) -> String {
+        format!("{}-*", self.config.channel.version())
+    }
+
+    /// Commands that configure the TheRock apt repo (key, source) and install.
+    pub fn therock_apt_commands(
+        &self,
+        distro: &DistroFacade,
+    ) -> Result<Vec<PackageCommand>, String> {
+        let dir = Self::therock_distro_dir(distro).ok_or_else(|| {
+            format!(
+                "ROCm {} has no apt repo for {} {} (supported: Ubuntu 22.04/24.04/26.04, Debian 12/13)",
+                self.config.channel.version(),
+                distro.id(),
+                distro.version()
+            )
+        })?;
+        let sh = |script: String| PackageCommand {
+            program: "sudo".to_string(),
+            args: vec!["sh".to_string(), "-c".to_string(), script],
+        };
+        // The key is fetched over TLS, then its fingerprint is checked against
+        // the pinned AMD ROCm signing key before it is trusted by apt.
+        let key_script = format!(
+            "set -e; mkdir -p /etc/apt/keyrings; \
+             wget -qO /tmp/rocm-multi-arch.gpg {THEROCK_GPG_URL}; \
+             gpg --show-keys --with-colons /tmp/rocm-multi-arch.gpg | grep -q '^fpr:::::::::{THEROCK_GPG_FINGERPRINT}:' \
+             || {{ echo 'ROCm repo key fingerprint mismatch' >&2; rm -f /tmp/rocm-multi-arch.gpg; exit 1; }}; \
+             mv /tmp/rocm-multi-arch.gpg /etc/apt/keyrings/rocm-multi-arch.gpg"
+        );
+        Ok(vec![
+            sh(key_script),
+            sh(format!(
+                "echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm-multi-arch.gpg] {THEROCK_REPO_ROOT}/{dir} stable main' > /etc/apt/sources.list.d/rocm-multi-arch.list"
+            )),
+            PackageCommand {
+                program: "sudo".to_string(),
+                args: vec!["apt-get".to_string(), "update".to_string()],
+            },
+            PackageCommand {
+                program: "sudo".to_string(),
+                args: vec![
+                    "apt-get".to_string(),
+                    "install".to_string(),
+                    "-y".to_string(),
+                    format!("{}={}", self.therock_package(), self.therock_apt_version_glob()),
+                ],
+            },
+        ])
+    }
+
+    /// Commands that configure the TheRock rpm repo and install (dnf / zypper).
+    pub fn therock_rpm_commands(
+        &self,
+        distro: &DistroFacade,
+    ) -> Result<Vec<PackageCommand>, String> {
+        let dir = Self::therock_distro_dir(distro).ok_or_else(|| {
+            format!(
+                "ROCm {} has no rpm repo for {} {} (supported: RHEL 8/9/10, SLES 15/16)",
+                self.config.channel.version(),
+                distro.id(),
+                distro.version()
+            )
+        })?;
+        let url = format!("{THEROCK_REPO_ROOT}/{dir}/x86_64");
+        let pkg = format!(
+            "{}-{}",
+            self.therock_package(),
+            self.config.channel.version()
+        );
+        let sudo = |args: Vec<&str>| PackageCommand {
+            program: "sudo".to_string(),
+            args: args.into_iter().map(String::from).collect(),
+        };
+        let import_key = PackageCommand {
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                format!(
+                    "set -e; wget -qO /tmp/rocm-multi-arch.gpg {THEROCK_GPG_URL}; \
+                     gpg --show-keys --with-colons /tmp/rocm-multi-arch.gpg | grep -q '^fpr:::::::::{THEROCK_GPG_FINGERPRINT}:' \
+                     || {{ echo 'ROCm GPG key fingerprint mismatch' >&2; exit 1; }}; \
+                     sudo rpm --import /tmp/rocm-multi-arch.gpg"
+                ),
+            ],
+        };
+        Ok(if distro.uses_zypper() {
+            vec![
+                import_key,
+                sudo(vec![
+                    "zypper",
+                    "--non-interactive",
+                    "addrepo",
+                    "--refresh",
+                    &url,
+                    "rocm-multi-arch",
+                ]),
+                sudo(vec![
+                    "zypper",
+                    "--non-interactive",
+                    "refresh",
+                ]),
+                sudo(vec!["zypper", "--non-interactive", "install", &pkg]),
+            ]
+        } else {
+            vec![
+                import_key,
+                sudo(vec!["dnf", "config-manager", "--add-repo", &url]),
+                sudo(vec!["dnf", "install", "-y", &pkg]),
+            ]
+        })
+    }
+
+    /// pip requirement for the ROCm SDK on this channel
+    /// (`rocm[libraries,device-all]==7.14.1`).
+    pub fn pip_requirement(&self) -> String {
+        format!(
+            "rocm[libraries,device-all]=={}",
+            self.config.channel.version()
+        )
+    }
+
+    /// pip index URL for this channel (`None` for classic Legacy).
+    pub fn pip_index_url(&self) -> Option<&'static str> {
+        match self.config.channel {
+            RocmChannel::Legacy => None,
+            RocmChannel::Stable | RocmChannel::Latest => Some(THEROCK_PIP_INDEX),
+            RocmChannel::Preview => Some(PREVIEW_PIP_INDEX),
+        }
+    }
+
+    /// TheRock GPU family for tarball names (`gfx1100` -> `gfx110X-all`).
+    pub fn therock_family(gfx: &str) -> Option<String> {
+        let g = gfx.trim().to_ascii_lowercase();
+        let fam = match g.as_str() {
+            s if s.starts_with("gfx101") => "gfx101X-dgpu",
+            s if s.starts_with("gfx103") => "gfx103X-all",
+            s if s.starts_with("gfx110") => "gfx110X-all",
+            s if s.starts_with("gfx115") => "gfx115X-all",
+            s if s.starts_with("gfx120") => "gfx120X-all",
+            "gfx908" => "gfx908",
+            "gfx90a" => "gfx90a",
+            "gfx942" | "gfx941" | "gfx940" => "gfx94X-dcgpu",
+            "gfx950" => "gfx950-dcgpu",
+            _ => return None,
+        };
+        Some(fam.to_string())
+    }
+
+    /// TheRock tarball URL for the configured GPU and channel.
+    pub fn tarball_url(&self) -> Result<String, String> {
+        let family = Self::therock_family(&self.config.gfx_arch).ok_or_else(|| {
+            format!(
+                "no TheRock tarball family known for GPU architecture '{}'",
+                self.config.gfx_arch
+            )
+        })?;
+        Ok(format!(
+            "{THEROCK_TARBALL_ROOT}/therock-dist-linux-{family}-{}.tar.gz",
+            self.config.channel.version()
+        ))
+    }
+
+    /// Runfile installer URL (`rocm-installer-7.14.0-7.run`).
+    ///
+    /// The trailing number is the runfile build id; it defaults to
+    /// [`RUNFILE_BUILD_DEFAULT`] and can be overridden with `ROCM_RUNFILE_BUILD`.
+    pub fn runfile_url(&self) -> String {
+        let build = std::env::var("ROCM_RUNFILE_BUILD")
+            .ok()
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or_else(|| RUNFILE_BUILD_DEFAULT.to_string());
+        let v = self.config.channel.version();
+        let mm = self.config.channel.major_minor();
+        format!("{RUNFILE_ROOT}/rocm-rel-{mm}/rocm-installer-{v}-{build}.run")
     }
 
     // -----------------------------------------------------------------------
@@ -287,8 +601,8 @@ impl RocmInstaller {
 
     /// Construct the amdgpu-install package download URL for apt-based distros.
     pub fn amdgpu_install_deb_url(&self) -> String {
-        let release_dir = self.config.channel.dir_path();
-        let pkg_ver = self.config.channel.pkg_version();
+        let release_dir = self.classic_release();
+        let pkg_ver = self.classic_pkg_version();
         format!(
             "https://repo.radeon.com/amdgpu-install/{release_dir}/ubuntu/noble/amdgpu-install_{pkg_ver}_all.deb"
         )
@@ -296,8 +610,8 @@ impl RocmInstaller {
 
     /// Construct the amdgpu-install RPM download URL.
     pub fn amdgpu_install_rpm_url(&self, rhel_version: &str) -> String {
-        let release_dir = self.config.channel.dir_path();
-        let pkg_ver = self.config.channel.pkg_version();
+        let release_dir = self.classic_release();
+        let pkg_ver = self.classic_pkg_version();
         format!(
             "https://repo.radeon.com/amdgpu-install/{release_dir}/rhel/{rhel_version}/amdgpu-install-{pkg_ver}.el{rhel_version}.noarch.rpm"
         )
@@ -305,8 +619,8 @@ impl RocmInstaller {
 
     /// Construct the amdgpu-install SLES RPM download URL.
     pub fn amdgpu_install_sles_rpm_url(&self) -> String {
-        let release_dir = self.config.channel.dir_path();
-        let pkg_ver = self.config.channel.pkg_version();
+        let release_dir = self.classic_release();
+        let pkg_ver = self.classic_pkg_version();
         format!(
             "https://repo.radeon.com/amdgpu-install/{release_dir}/sle/15.7/amdgpu-install-{pkg_ver}.noarch.rpm"
         )
@@ -314,6 +628,10 @@ impl RocmInstaller {
 
     /// Construct the apt-get install command for amdgpu-install.
     pub fn apt_install_commands(&self) -> Vec<PackageCommand> {
+        debug_assert!(
+            !self.config.channel.is_therock(),
+            "TheRock channels use therock_*_commands"
+        );
         let deb_url = self.amdgpu_install_deb_url();
         vec![
             // Download the .deb
@@ -327,10 +645,7 @@ impl RocmInstaller {
                 args: vec![
                     "dpkg".to_string(),
                     "-i".to_string(),
-                    format!(
-                        "amdgpu-install_{}_all.deb",
-                        self.config.channel.pkg_version()
-                    ),
+                    format!("amdgpu-install_{}_all.deb", self.classic_pkg_version()),
                 ],
             },
             // Update and install ROCm packages
@@ -364,6 +679,10 @@ impl RocmInstaller {
 
     /// Construct the dnf install commands for ROCm.
     pub fn dnf_install_commands(&self, rhel_version: &str) -> Vec<PackageCommand> {
+        debug_assert!(
+            !self.config.channel.is_therock(),
+            "TheRock channels use therock_*_commands"
+        );
         let rpm_url = self.amdgpu_install_rpm_url(rhel_version);
         vec![
             PackageCommand {
@@ -449,6 +768,10 @@ impl RocmInstaller {
 
     /// Construct the zypper install commands for ROCm on SUSE.
     pub fn zypper_install_commands(&self) -> Vec<PackageCommand> {
+        debug_assert!(
+            !self.config.channel.is_therock(),
+            "TheRock channels use therock_*_commands"
+        );
         let rpm_url = self.amdgpu_install_sles_rpm_url();
         vec![
             PackageCommand {
@@ -626,27 +949,17 @@ mod tests {
     // --- VAL-INSTALL-002: ROCm channel selection correct version pins ---
 
     #[test]
-    fn test_channel_legacy_version() {
-        let ch = RocmChannel::Legacy;
-        assert_eq!(ch.version(), "6.4.3");
-        assert_eq!(ch.pkg_version(), "6.4.60403-1");
-        assert_eq!(ch.major_minor(), "6.4");
-    }
-
-    #[test]
-    fn test_channel_stable_version() {
-        let ch = RocmChannel::Stable;
-        assert_eq!(ch.version(), "7.2.3");
-        assert_eq!(ch.pkg_version(), "7.2.3.70203-1");
-        assert_eq!(ch.major_minor(), "7.2");
-    }
-
-    #[test]
-    fn test_channel_latest_version() {
-        let ch = RocmChannel::Latest;
-        assert_eq!(ch.version(), "7.2.4");
-        assert_eq!(ch.pkg_version(), "7.2.4.70204-1");
-        assert_eq!(ch.major_minor(), "7.2");
+    fn test_channel_versions() {
+        assert_eq!(RocmChannel::Legacy.version(), "7.2.4");
+        assert_eq!(RocmChannel::Legacy.pkg_version(), "7.2.4.70204-1");
+        assert_eq!(RocmChannel::Legacy.major_minor(), "7.2");
+        assert_eq!(RocmChannel::Stable.version(), "7.14.0");
+        assert_eq!(RocmChannel::Latest.version(), "7.14.1");
+        assert_eq!(RocmChannel::Stable.major_minor(), "7.14");
+        assert_eq!(RocmChannel::Preview.version(), "10.1.0");
+        assert_eq!(RocmChannel::Preview.major_minor(), "10.1");
+        assert!(!RocmChannel::Legacy.is_therock());
+        assert!(RocmChannel::Preview.is_therock());
     }
 
     #[test]
@@ -654,8 +967,155 @@ mod tests {
         assert_eq!(RocmChannel::from_choice(1), Some(RocmChannel::Legacy));
         assert_eq!(RocmChannel::from_choice(2), Some(RocmChannel::Stable));
         assert_eq!(RocmChannel::from_choice(3), Some(RocmChannel::Latest));
+        assert_eq!(RocmChannel::from_choice(4), Some(RocmChannel::Preview));
         assert_eq!(RocmChannel::from_choice(0), None);
-        assert_eq!(RocmChannel::from_choice(4), None);
+        assert_eq!(RocmChannel::from_choice(5), None);
+    }
+
+    #[test]
+    fn test_channel_parse_and_for_version() {
+        assert_eq!(RocmChannel::parse("Preview"), Some(RocmChannel::Preview));
+        assert_eq!(RocmChannel::parse("bogus"), None);
+        assert_eq!(RocmChannel::for_version("10.1.0"), RocmChannel::Preview);
+        assert_eq!(RocmChannel::for_version("7.14.1"), RocmChannel::Latest);
+        assert_eq!(RocmChannel::for_version("7.14.0"), RocmChannel::Stable);
+        assert_eq!(RocmChannel::for_version("7.2.4"), RocmChannel::Legacy);
+        assert_eq!(RocmChannel::for_version("6.4.3"), RocmChannel::Legacy);
+    }
+
+    #[test]
+    fn test_legacy_fallback_723() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Legacy,
+            legacy_fallback: true,
+            ..Default::default()
+        });
+        assert_eq!(i.effective_version(), "7.2.3");
+        assert!(i
+            .amdgpu_install_deb_url()
+            .contains("7.2.3/ubuntu/noble/amdgpu-install_7.2.3.70203-1_all.deb"));
+    }
+
+    #[test]
+    fn test_therock_urls_and_package() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Stable,
+            gfx_arch: "gfx1100".into(),
+            ..Default::default()
+        });
+        assert_eq!(i.therock_package(), "amdrocm7.14-gfx1100");
+        assert_eq!(i.pip_requirement(), "rocm[libraries,device-all]==7.14.0");
+        assert_eq!(
+            i.pip_index_url(),
+            Some("https://repo.amd.com/rocm/whl-multi-arch/")
+        );
+        assert_eq!(
+            i.tarball_url().unwrap(),
+            "https://repo.amd.com/rocm/tarball-multi-arch/therock-dist-linux-gfx110X-all-7.14.0.tar.gz"
+        );
+        assert_eq!(
+            i.runfile_url(),
+            "https://repo.radeon.com/installer/rocm-runfile-installer/rocm-rel-7.14/rocm-installer-7.14.0-7.run"
+        );
+    }
+
+    #[test]
+    fn test_therock_apt_commands_latest() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Latest,
+            ..Default::default()
+        });
+        let cmds = i.therock_apt_commands(&ubuntu_distro()).unwrap();
+        let all: String = cmds
+            .iter()
+            .map(|c| c.to_command_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("packages-multi-arch/gpg/rocm.gpg"));
+        assert!(all.contains("packages-multi-arch/ubuntu2404 stable main"));
+        assert!(all.contains("amdrocm7.14-gfx1100=7.14.1-*"));
+    }
+
+    #[test]
+    fn test_therock_rpm_and_distro_dir() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Latest,
+            ..Default::default()
+        });
+        assert_eq!(
+            RocmInstaller::therock_distro_dir(&ubuntu_distro()).as_deref(),
+            Some("ubuntu2404")
+        );
+        assert_eq!(
+            RocmInstaller::therock_distro_dir(&rhel9_distro()).as_deref(),
+            Some("rhel9")
+        );
+        let cmds = i.therock_rpm_commands(&rhel9_distro()).unwrap();
+        assert!(cmds
+            .iter()
+            .any(|c| c.to_command_string().contains("amdrocm7.14-gfx1100-7.14.1")));
+    }
+
+    #[test]
+    fn test_therock_unknown_gpu_and_distro_error() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Latest,
+            gfx_arch: "gfx9999".into(),
+            ..Default::default()
+        });
+        assert!(i.tarball_url().is_err());
+        assert_eq!(RocmInstaller::therock_family("gfx9999"), None);
+    }
+
+    #[test]
+    fn test_therock_apt_pins_gpg_fingerprint() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Latest,
+            ..Default::default()
+        });
+        let all: String = i
+            .therock_apt_commands(&ubuntu_distro())
+            .unwrap()
+            .iter()
+            .map(|c| c.to_command_string())
+            .collect();
+        assert!(all.contains(THEROCK_GPG_FINGERPRINT));
+    }
+
+    #[test]
+    fn test_pkg_version_classification_matches_for_version() {
+        for v in ["8.0.0", "9.1.0", "7.2.4", "7.13.0"] {
+            assert!(!RocmChannel::for_version(v).is_therock(), "{v}");
+        }
+        for v in ["7.14.0", "7.14.1", "10.1.0"] {
+            assert!(RocmChannel::for_version(v).is_therock(), "{v}");
+        }
+    }
+
+    #[test]
+    fn test_preview_channel_consistency() {
+        let ch = RocmChannel::from_choice(4).unwrap();
+        assert_eq!(ch, RocmChannel::Preview);
+        assert_eq!(ch.version(), "10.1.0");
+        assert_eq!(ch.major_minor(), "10.1");
+        let i = RocmInstaller::new(RocmConfig {
+            channel: ch,
+            ..Default::default()
+        });
+        assert_eq!(i.pip_requirement(), "rocm[libraries,device-all]==10.1.0");
+    }
+
+    #[test]
+    fn test_preview_pip_index() {
+        let i = RocmInstaller::new(RocmConfig {
+            channel: RocmChannel::Preview,
+            ..Default::default()
+        });
+        assert_eq!(
+            i.pip_index_url(),
+            Some("https://stable.repo.amd.com/rocm/whl-next/")
+        );
+        assert_eq!(i.pip_requirement(), "rocm[libraries,device-all]==10.1.0");
     }
 
     #[test]
@@ -719,7 +1179,7 @@ mod tests {
     #[test]
     fn test_apt_install_commands_latest() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             install_type: RocmInstallType::Standard,
             ..Default::default()
         });
@@ -748,7 +1208,7 @@ mod tests {
     #[test]
     fn test_apt_install_commands_full() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Stable,
+            channel: RocmChannel::Legacy,
             install_type: RocmInstallType::Full,
             ..Default::default()
         });
@@ -760,7 +1220,7 @@ mod tests {
     #[test]
     fn test_dnf_install_commands() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             install_type: RocmInstallType::Standard,
             ..Default::default()
         });
@@ -831,7 +1291,7 @@ mod tests {
     #[test]
     fn test_zypper_install_commands() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             install_type: RocmInstallType::Standard,
             ..Default::default()
         });
@@ -848,7 +1308,7 @@ mod tests {
     #[test]
     fn test_repo_base_url_ubuntu() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let distro = ubuntu_distro();
@@ -859,7 +1319,7 @@ mod tests {
     #[test]
     fn test_repo_base_url_rhel() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let distro = rhel9_distro();
@@ -870,7 +1330,7 @@ mod tests {
     #[test]
     fn test_repo_base_url_fedora() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Stable,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let distro = fedora_distro();
@@ -882,7 +1342,7 @@ mod tests {
     #[test]
     fn test_repo_base_url_suse() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let distro = suse_distro();
@@ -893,7 +1353,7 @@ mod tests {
     #[test]
     fn test_amdgpu_install_deb_url() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let url = installer.amdgpu_install_deb_url();
@@ -906,7 +1366,7 @@ mod tests {
     #[test]
     fn test_amdgpu_install_rpm_url() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let url = installer.amdgpu_install_rpm_url("9");
@@ -919,7 +1379,7 @@ mod tests {
     #[test]
     fn test_apt_repo_config() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let distro = ubuntu_distro();
@@ -932,7 +1392,7 @@ mod tests {
     #[test]
     fn test_amdgpu_apt_repo_config() {
         let installer = RocmInstaller::new(RocmConfig {
-            channel: RocmChannel::Latest,
+            channel: RocmChannel::Legacy,
             ..Default::default()
         });
         let distro = ubuntu_distro();
@@ -991,6 +1451,7 @@ mod tests {
             (RocmInstallType::Custom, "rocm-libs"),
         ] {
             let installer = RocmInstaller::new(RocmConfig {
+                channel: RocmChannel::Legacy,
                 install_type: itype,
                 ..Default::default()
             });

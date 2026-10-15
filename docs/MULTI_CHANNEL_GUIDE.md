@@ -8,7 +8,7 @@ Stan's ML Stack supports three ROCm channels:
 | Stable  | 7.2.3        | Production RDNA 3/4 environments |
 | Latest  | 7.2.4        | Default choice, current ROCm production release |
 
-**Note:** ROCm 7.10.0 Preview is not available through this installer. ROCm 7.10.0 uses 'TheRock' distribution (pip/tarball only). See: https://rocm.docs.amd.com/en/7.10.0-preview/install/rocm.html
+**Note:** AMD's newest releases (7.14.x, 10.0, 10.1.0 as of Oct 2026) use the 'TheRock' distribution (pip/tarball/runfile). The ROCm system installer does not yet offer them as a channel, but PyTorch installs for ROCm 10.x resolve to AMD's wheel index (`https://stable.repo.amd.com/rocm/whl-next/`, `torch[device-all]==2.14.0+rocm10.1.0`). See: https://rocm.docs.amd.com/en/latest/install/rocm.html
 
 ## Installing ROCm
 
