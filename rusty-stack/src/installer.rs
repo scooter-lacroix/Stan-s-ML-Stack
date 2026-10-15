@@ -2030,7 +2030,9 @@ fn passwd_homes_with_mlstack() -> Vec<String> {
 }
 
 /// Pin `name` to `==version` in pip args when an update plan supplies a
-/// target version. Drops `--upgrade`, since an exact pin already moves the
+/// target version. Overrides any existing specifier on the package's
+/// requirement token (`name==x`, `name>=x`, `name[extra]==x`) so the planned
+/// pin wins, and drops `--upgrade`, since an exact pin already moves the
 /// package (and must not upgrade sibling requirements such as einops).
 fn pin_pip_requirement(args: Vec<String>, name: &str, version: Option<&str>) -> Vec<String> {
     let Some(v) = version.map(str::trim).filter(|v| !v.is_empty()) else {
@@ -2038,7 +2040,20 @@ fn pin_pip_requirement(args: Vec<String>, name: &str, version: Option<&str>) -> 
     };
     args.into_iter()
         .filter(|a| a != "--upgrade")
-        .map(|a| if a == name { format!("{name}=={v}") } else { a })
+        .map(|a| {
+            // Requirement token = name + optional extras/specifier; compare
+            // on the bare package name only.
+            let base = a
+                .split(['=', '<', '>', '!', '~', '[', ' ', '\t'])
+                .next()
+                .unwrap_or(&a)
+                .trim();
+            if base == name {
+                format!("{name}=={v}")
+            } else {
+                a
+            }
+        })
         .collect()
 }
 
@@ -7489,6 +7504,21 @@ mod tests {
         assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "einops"]);
         assert_eq!(super::pin_pip_requirement(a.clone(), "deepspeed", None), a);
         assert_eq!(super::pin_pip_requirement(a.clone(), "deepspeed", Some("")), a);
+    }
+
+    #[test]
+    fn pin_pip_requirement_overrides_existing_specifier() {
+        // A planned pin replaces any specifier already on the requirement
+        // token instead of coexisting with it (e.g. `name>=old name==new`).
+        let a: Vec<String> = ["-m", "pip", "install", "deepspeed>=0.18", "einops"]
+            .iter().map(|s| s.to_string()).collect();
+        let out = super::pin_pip_requirement(a, "deepspeed", Some("0.19.7"));
+        assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "einops"]);
+        // Extras and sibling packages sharing the prefix are left alone.
+        let b: Vec<String> = ["-m", "pip", "install", "deepspeed[extra]==0.18", "deepspeed-tools"]
+            .iter().map(|s| s.to_string()).collect();
+        let out = super::pin_pip_requirement(b, "deepspeed", Some("0.19.7"));
+        assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "deepspeed-tools"]);
     }
 
     use super::*;

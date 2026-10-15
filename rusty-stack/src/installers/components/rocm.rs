@@ -131,8 +131,9 @@ impl RocmChannel {
                 return None;
             }
             // Only genuine assignment statements: `export ROCM_CHANNEL=x`,
-            // `ROCM_CHANNEL=x`, the guarded `... then export ROCM_CHANNEL=x`,
-            // and fish `set -gx ROCM_CHANNEL x`. Other lines (echo, etc.) are ignored.
+            // `ROCM_CHANNEL=x` (spaces around `=` tolerated), the guarded
+            // `... then export ROCM_CHANNEL=x`, and fish
+            // `set -gx ROCM_CHANNEL x`. Other lines (echo, etc.) are ignored.
             let stmt = l.rsplit(|c| c == ';').find(|p| p.contains("ROCM_CHANNEL")).unwrap_or(l);
             let stmt = stmt.trim();
             let stmt = ["then ", "or ", "and "]
@@ -143,6 +144,16 @@ impl RocmChannel {
             let raw = if let Some(r) = stmt
                 .strip_prefix("export ROCM_CHANNEL=")
                 .or_else(|| stmt.strip_prefix("ROCM_CHANNEL="))
+            {
+                r
+            } else if let Some(r) = stmt
+                // Spaced form: `export ROCM_CHANNEL = stable` or
+                // `ROCM_CHANNEL = "latest"` (must still be an assignment).
+                .strip_prefix("export ROCM_CHANNEL")
+                .or_else(|| stmt.strip_prefix("ROCM_CHANNEL"))
+                .map(str::trim_start)
+                .and_then(|r| r.strip_prefix('='))
+                .map(str::trim_start)
             {
                 r
             } else if let Some(r) = stmt
@@ -1636,6 +1647,12 @@ mod channel_env_tests {
         assert_eq!(f("set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL preview"), Some(RocmChannel::Preview));
         assert_eq!(f("# export ROCM_CHANNEL=stable"), None);
         assert_eq!(f("export ROCM_CHANNEL=bogus"), None);
+        // Spaces around `=` (plain and quoted values) are tolerated.
+        assert_eq!(f("export ROCM_CHANNEL = stable"), Some(RocmChannel::Stable));
+        assert_eq!(f("ROCM_CHANNEL = \"latest\""), Some(RocmChannel::Latest));
+        // Mentions that are not assignments stay unrecognized.
+        assert_eq!(f("export ROCM_CHANNEL_X=stable"), None);
+        assert_eq!(f("grep ROCM_CHANNEL env"), None);
     }
 
     #[test]

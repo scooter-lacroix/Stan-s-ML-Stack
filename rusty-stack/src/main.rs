@@ -472,6 +472,10 @@ mod update_impl {
         cursor_idx: usize,
         width: usize,
     ) -> String {
+        // True widths below 20 are honored, but below 10 even the row prefix
+        // (marker + checkbox + number) clips — floor there instead of
+        // rendering unusable output.
+        let width = width.max(10);
         // Only render SELECTABLE (non-blocked) items as numbered rows. Blocked
         // items are retained by the planner (visible=false) but must not be
         // offered for selection — the display numbering must match the
@@ -3578,10 +3582,12 @@ mod update_parity_tests {
             summary: PlanSummary::from_items(&[]),
             plan: vec![item],
         };
-        for w in [60usize, 80, 100] {
+        // Includes sub-10 widths: the renderer floors those at 10 instead of
+        // emitting clipped rows (min width of 1 produced unusable output).
+        for w in [3usize, 10, 60, 80, 100] {
             let body = update_impl::render_selection_body_width(&plan, &[], 0, w);
             for l in body.lines() {
-                assert!(l.chars().count() <= w, "width {w}: {l:?}");
+                assert!(l.chars().count() <= w.max(10), "width {w}: {l:?}");
             }
         }
     }
