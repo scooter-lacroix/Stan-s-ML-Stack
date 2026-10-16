@@ -81,6 +81,20 @@ pub fn run_installation_with_version(
     let user_home = resolve_mlstack_user_home();
     let input_rx = Arc::new(Mutex::new(input_rx));
 
+    // An explicit, concrete update target (from a confirmed update apply) is
+    // the consent to override sealed components: the plan showed the version
+    // jump and the user selected it. registry_gate reuses a sealed install
+    // unless force+unseal are set, which would silently skip the very
+    // component the update advertised — and the post-install version check
+    // would then fail and re-offer the same update on every scan.
+    // Set-only (never cleared), matching the config.force_reinstall boundary
+    // in the update executor; `rusty update` exits after apply, so nothing
+    // else in-process observes stale values.
+    if is_explicit_update_target(target_version.as_deref()) {
+        std::env::set_var("MLSTACK_FORCE_REINSTALL", "1");
+        std::env::set_var("MLSTACK_UNSEAL_CORE", "1");
+    }
+
     match ensure_mlstack_env(&user_home, &install_method, false) {
         Ok(EnvUpdate::Created) => {
             let _ = sender.send(InstallerEvent::Log(
@@ -3415,6 +3429,21 @@ fn purge_flash_attn(sender: &Sender<InstallerEvent>, component_name: &str) {
 /// Purge vLLM and related packages.
 fn purge_vllm(sender: &Sender<InstallerEvent>, component_name: &str) {
     purge_component_packages(&["vllm"], sender, component_name);
+}
+
+/// Is this an explicit, concrete update target from a confirmed apply?
+///
+/// `Some("7.14.1")` → yes. `None` (plain install) or an opaque placeholder
+/// (`latest`, `installed`, `""`) → no: those carry no user-confirmed version
+/// jump, so sealed-core reuse must stay in effect.
+fn is_explicit_update_target(target: Option<&str>) -> bool {
+    match target {
+        Some(t) => {
+            let t = t.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("latest") && !t.eq_ignore_ascii_case("installed")
+        }
+        None => false,
+    }
 }
 
 /// Has the user explicitly requested to unseal core components (force-reinstall
@@ -7519,6 +7548,23 @@ mod tests {
             .iter().map(|s| s.to_string()).collect();
         let out = super::pin_pip_requirement(b, "deepspeed", Some("0.19.7"));
         assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "deepspeed-tools"]);
+    }
+
+    #[test]
+    fn explicit_update_target_predicate_and_gate_stay_paired() {
+        let _guard = crate::test_support::lock_env();
+        std::env::remove_var("MLSTACK_UNSEAL_CORE");
+        // Only a concrete, confirmed version target counts as explicit.
+        assert!(!super::is_explicit_update_target(None));
+        assert!(!super::is_explicit_update_target(Some("")));
+        assert!(!super::is_explicit_update_target(Some("   ")));
+        assert!(!super::is_explicit_update_target(Some("latest")));
+        assert!(!super::is_explicit_update_target(Some("Installed")));
+        assert!(super::is_explicit_update_target(Some("7.14.1")));
+        assert!(super::is_explicit_update_target(Some(" 0.19.7 ")));
+        // With no explicit target (and no user-set unseal), the sealed-core
+        // gate stays shut — plain installs must keep the reuse semantics.
+        assert!(!super::unseal_core_requested());
     }
 
     use super::*;
