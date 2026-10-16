@@ -87,13 +87,18 @@ pub fn run_installation_with_version(
     // unless force+unseal are set, which would silently skip the very
     // component the update advertised — and the post-install version check
     // would then fail and re-offer the same update on every scan.
-    // Set-only (never cleared), matching the config.force_reinstall boundary
-    // in the update executor; `rusty update` exits after apply, so nothing
-    // else in-process observes stale values.
-    if is_explicit_update_target(target_version.as_deref()) {
-        std::env::set_var("MLSTACK_FORCE_REINSTALL", "1");
-        std::env::set_var("MLSTACK_UNSEAL_CORE", "1");
-    }
+    // Scoped: the previous values are restored on exit (including early
+    // returns) so a later installation in the same process — e.g. the next
+    // component in a sequential apply, whose target may be opaque — cannot
+    // inherit this invocation's consent.
+    let _unseal_scope = if is_explicit_update_target(target_version.as_deref()) {
+        Some(ScopedEnvOverride::setting(&[
+            ("MLSTACK_FORCE_REINSTALL", "1"),
+            ("MLSTACK_UNSEAL_CORE", "1"),
+        ]))
+    } else {
+        None
+    };
 
     match ensure_mlstack_env(&user_home, &install_method, false) {
         Ok(EnvUpdate::Created) => {
@@ -3431,6 +3436,64 @@ fn purge_vllm(sender: &Sender<InstallerEvent>, component_name: &str) {
     purge_component_packages(&["vllm"], sender, component_name);
 }
 
+/// ROCm channel for this installation run, in update parity with the planner.
+///
+/// The planner (update scan) resolves the ROCm target with
+/// `RocmChannel::configured()` — `ROCM_CHANNEL` env, else `.mlstack_env`, else
+/// Latest, with an invalid nonblank value authoritative for Latest. A concrete
+/// planned target maps back to exactly that channel so the applied install
+/// matches what the user confirmed, even if `ROCM_CHANNEL` changes between
+/// scan and apply. Without a concrete target the same shared resolver runs
+/// directly. (The previous env/env_exports pre-layer could select the env
+/// file's channel while the planner resolved Latest, diverging the targets.)
+fn update_rocm_channel(target: Option<&str>) -> crate::installers::components::rocm::RocmChannel {
+    use crate::installers::components::rocm::RocmChannel;
+    if is_explicit_update_target(target) {
+        if let Some(channel) = target.and_then(RocmChannel::for_version_to_channel) {
+            return channel;
+        }
+        // Unrecognized version string: fall through to the shared resolver
+        // rather than guessing a channel the planner did not offer.
+    }
+    RocmChannel::configured()
+}
+
+/// Sets process env overrides and restores the previous values on drop.
+///
+/// Scopes installation consent (force-reinstall / unseal-core) to a single
+/// `run_installation*` invocation: a sequential apply loop in one process
+/// must not let component A's consent leak into component B, whose target may
+/// deliberately be opaque (no override). Drop restores even on early returns,
+/// in reverse construction order.
+struct ScopedEnvOverride {
+    previous: Vec<(String, Option<String>)>,
+}
+
+impl ScopedEnvOverride {
+    fn setting(entries: &[(&str, &str)]) -> Self {
+        let previous = entries
+            .iter()
+            .map(|(key, value)| {
+                let old = std::env::var(key).ok();
+                std::env::set_var(key, value);
+                ((*key).to_string(), old)
+            })
+            .collect();
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedEnvOverride {
+    fn drop(&mut self) {
+        for (key, old) in &self.previous {
+            match old {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
 /// Is this an explicit, concrete update target from a confirmed apply?
 ///
 /// `Some("7.14.1")` → yes. `None` (plain install) or an opaque placeholder
@@ -3913,11 +3976,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::rocm::{RocmConfig, RocmInstaller};
             let rocm_force = is_force_reinstall();
             use crate::installers::components::rocm::RocmChannel;
-            let rocm_channel = std::env::var("ROCM_CHANNEL")
-                .ok()
-                .or_else(|| ctx.env_exports.get("ROCM_CHANNEL").cloned())
-                .and_then(|c| RocmChannel::parse(&c))
-                .unwrap_or_else(RocmChannel::configured);
+            let rocm_channel = update_rocm_channel(ctx.target_version.as_deref());
             let inst = RocmInstaller::new(RocmConfig {
                 force_reinstall: rocm_force,
                 channel: rocm_channel,
@@ -7565,6 +7624,45 @@ mod tests {
         // With no explicit target (and no user-set unseal), the sealed-core
         // gate stays shut — plain installs must keep the reuse semantics.
         assert!(!super::unseal_core_requested());
+    }
+
+    #[test]
+    fn update_rocm_channel_maps_planned_target_and_matches_planner_precedence() {
+        use crate::installers::components::rocm::RocmChannel;
+        let _guard = crate::test_support::lock_env();
+        // Concrete planned target → its own channel, regardless of env vars.
+        std::env::set_var("ROCM_CHANNEL", "bogus");
+        assert_eq!(super::update_rocm_channel(Some("7.14.1")), RocmChannel::Latest);
+        assert_eq!(super::update_rocm_channel(Some("7.2.4")), RocmChannel::Legacy);
+        // Without a concrete target the planner's shared resolver applies —
+        // including the invalid-value-is-authoritative precedence (Latest,
+        // never the env file's channel).
+        assert_eq!(super::update_rocm_channel(None), RocmChannel::Latest);
+        assert_eq!(super::update_rocm_channel(Some("latest")), RocmChannel::Latest);
+        std::env::remove_var("ROCM_CHANNEL");
+    }
+
+    #[test]
+    fn scoped_env_override_restores_previous_values_on_drop() {
+        let _guard = crate::test_support::lock_env();
+        std::env::set_var("MLSTACK_FORCE_REINSTALL", "user-set");
+        std::env::remove_var("MLSTACK_UNSEAL_CORE");
+        {
+            let _scope = super::ScopedEnvOverride::setting(&[
+                ("MLSTACK_FORCE_REINSTALL", "1"),
+                ("MLSTACK_UNSEAL_CORE", "1"),
+            ]);
+            assert_eq!(std::env::var("MLSTACK_FORCE_REINSTALL").as_deref(), Ok("1"));
+            assert_eq!(std::env::var("MLSTACK_UNSEAL_CORE").as_deref(), Ok("1"));
+        }
+        // Drop restored the user-set value and removed the previously-absent
+        // var — a sequential apply cannot inherit this invocation's consent.
+        assert_eq!(
+            std::env::var("MLSTACK_FORCE_REINSTALL").as_deref(),
+            Ok("user-set")
+        );
+        assert!(std::env::var("MLSTACK_UNSEAL_CORE").is_err());
+        std::env::remove_var("MLSTACK_FORCE_REINSTALL");
     }
 
     use super::*;

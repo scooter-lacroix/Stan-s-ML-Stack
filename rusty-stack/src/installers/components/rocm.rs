@@ -189,6 +189,21 @@ impl RocmChannel {
         }
     }
 
+    /// Inverse of [`Self::version`] for update planning: the channel whose
+    /// pinned version equals `version` (e.g. `"7.14.1"` → Latest, `"7.2.4"` →
+    /// Legacy). `None` when no channel pins that exact version.
+    pub fn for_version_to_channel(version: &str) -> Option<Self> {
+        let v = version.trim();
+        [
+            RocmChannel::Legacy,
+            RocmChannel::Stable,
+            RocmChannel::Latest,
+            RocmChannel::Preview,
+        ]
+        .into_iter()
+        .find(|c| c.version() == v)
+    }
+
     /// True for TheRock-based releases (7.14+), which use the multi-arch repos.
     pub fn is_therock(&self) -> bool {
         !matches!(self, RocmChannel::Legacy)
@@ -1679,5 +1694,26 @@ mod channel_env_tests {
             RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=\"latest\"\n"),
             Some(RocmChannel::Latest)
         );
+    }
+
+    #[test]
+    fn version_round_trips_to_its_channel() {
+        // Every channel's pinned version maps back to itself (update-apply
+        // parity: the planned target selects the confirmed channel again).
+        for channel in [
+            RocmChannel::Legacy,
+            RocmChannel::Stable,
+            RocmChannel::Latest,
+            RocmChannel::Preview,
+        ] {
+            assert_eq!(
+                RocmChannel::for_version_to_channel(channel.version()),
+                Some(channel)
+            );
+        }
+        // Unpinned and unparsable inputs yield None (no channel guessed).
+        assert_eq!(RocmChannel::for_version_to_channel("9.9.9"), None);
+        assert_eq!(RocmChannel::for_version_to_channel("latest"), None);
+        assert_eq!(RocmChannel::for_version_to_channel("  7.14.1  "), Some(RocmChannel::Latest));
     }
 }
