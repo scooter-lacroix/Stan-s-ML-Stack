@@ -4,6 +4,8 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [Unreleased]
 
+2026-10-16 - fix(update): align update manifest/channel with installer pins; fill-width update UI (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/41
+
 2026-10-15 - chore(release): v0.4.0 maintenance pass (@reason-machines[bot]) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/40
 
 2026-07-28 - Prepare Rusty Stack 0.3.2 ROCm installer hardening (@scooter-lacroix) — https://github.com/scooter-lacroix/Stan-s-ML-Stack/pull/27
