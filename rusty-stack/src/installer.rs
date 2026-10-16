@@ -2057,6 +2057,13 @@ fn pin_pip_requirement(args: Vec<String>, name: &str, version: Option<&str>) -> 
     let Some(v) = version.map(str::trim).filter(|v| !v.is_empty()) else {
         return args;
     };
+    // Opaque targets ("latest", "installed") are not versions: pinning them
+    // would produce `name==latest` and drop --upgrade, failing the apply.
+    // Leave the installer's unversioned upgrade command untouched so pip
+    // resolves a real release.
+    if !is_explicit_update_target(Some(v)) {
+        return args;
+    }
     args.into_iter()
         .filter(|a| a != "--upgrade")
         .map(|a| {
@@ -5004,9 +5011,11 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // skip the newest release = lag 1). Queries PyPI for releases + dates,
             // picks the newest satisfying the version-lag + age policy. Falls back
             // to a pinned constant if PyPI is unreachable.
-            // An update apply installs exactly the planned (reviewed) version.
+            // An update apply installs exactly the planned (reviewed) version;
+            // opaque targets (`latest`, `installed`) are not versions — the
+            // policy resolver picks a real release instead.
             let vllm_version = match ctx.target_version.as_deref() {
-                Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+                Some(v) if is_explicit_update_target(Some(v)) => v.trim().to_string(),
                 _ => inst.resolve_version_with_policy(
                     ctx.vllm_version_lag,
                     ctx.vllm_version_min_age_days,
@@ -7607,6 +7616,13 @@ mod tests {
             .iter().map(|s| s.to_string()).collect();
         let out = super::pin_pip_requirement(b, "deepspeed", Some("0.19.7"));
         assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "deepspeed-tools"]);
+        // Opaque targets are not versions: the unversioned upgrade command
+        // stays intact instead of becoming an invalid `name==latest` pin.
+        let c: Vec<String> = ["-m", "pip", "install", "--upgrade", "deepspeed"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(super::pin_pip_requirement(c.clone(), "deepspeed", Some("latest")), c);
+        assert_eq!(super::pin_pip_requirement(c.clone(), "deepspeed", Some("installed")), c);
+        assert_eq!(super::pin_pip_requirement(c.clone(), "deepspeed", Some(" Latest ")), c);
     }
 
     #[test]
