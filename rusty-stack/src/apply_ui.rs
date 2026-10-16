@@ -308,10 +308,16 @@ fn is_milestone(line: &str) -> bool {
 
 /// Compact ASCII progress bar (10 cells). The TTY uses a ratatui `Gauge`; this
 /// is for the pure text fallback + tests.
+#[allow(dead_code)]
 fn progress_bar(p: f32) -> String {
-    let filled = ((p.clamp(0.0, 1.0) * 10.0).round() as usize).min(10);
-    let mut s = String::with_capacity(10);
-    for i in 0..10 {
+    progress_bar_width(p, 10)
+}
+
+/// Progress bar of `width` cells (used to stretch across the status column).
+fn progress_bar_width(p: f32, width: usize) -> String {
+    let filled = ((p.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    let mut s = String::with_capacity(width * 3);
+    for i in 0..width {
         s.push(if i < filled { '█' } else { '░' });
     }
     s
@@ -345,33 +351,67 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ApplyState) {
     let panel = chunks[0];
     let footer = chunks[1];
 
-    let name_w = state
-        .rows
-        .iter()
-        .map(|r| r.name.len())
-        .max()
-        .unwrap_or(8)
-        .max(8);
+    // Inner width = panel minus the two border columns and one column of
+    // padding each side. Columns are sized from the data, and the final
+    // status column takes ALL remaining width so the box is fully used.
+    let inner_w = (panel.width as usize).saturating_sub(2);
+    let col_w = |f: &dyn Fn(&ApplyRow) -> usize, min: usize| -> usize {
+        state.rows.iter().map(f).max().unwrap_or(0).max(min)
+    };
+    let dash = |s: &str| -> String {
+        if s.is_empty() {
+            "—".to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    let mut name_w = col_w(&|r| r.name.chars().count(), "COMPONENT".len());
+    let mut cur_w = col_w(&|r| dash(&r.current).chars().count(), "CURRENT".len());
+    let mut tgt_w = col_w(&|r| dash(&r.target).chars().count(), "TARGET".len());
+    // Keep data columns within the box, reserving 8 columns for status:
+    // shrink the widest column until everything fits.
+    let budget = inner_w.saturating_sub(1 + 2 + 2 + 5 + 2 + 8);
+    while name_w + cur_w + tgt_w > budget && name_w.max(cur_w).max(tgt_w) > 3 {
+        if name_w >= cur_w && name_w >= tgt_w {
+            name_w -= 1;
+        } else if cur_w >= tgt_w {
+            cur_w -= 1;
+        } else {
+            tgt_w -= 1;
+        }
+    }
+    let fit = |s: &str, w: usize| truncate_to_width(s, w);
+    // " " pad + glyph(1) + " " + name + "  " + cur + "  →  " + tgt + "  "
+    let fixed = 1 + 2 + name_w + 2 + cur_w + 5 + tgt_w + 2;
+    let status_w = inner_w.saturating_sub(fixed).max(8);
 
-    let mut lines: Vec<Line> = Vec::with_capacity(state.rows.len() + 1);
+    let mut lines: Vec<Line> = Vec::with_capacity(state.rows.len() + 2);
     lines.push(Line::styled(
         format!(
-            "  {:<name_w$}  {:>14}    {:>14}",
-            "COMPONENT",
-            "CURRENT",
-            "TARGET",
+            " {:<2}{:<name_w$}  {:>cur_w$}     {:>tgt_w$}  {:<status_w$}",
+            "",
+            fit("COMPONENT", name_w),
+            fit("CURRENT", cur_w),
+            fit("TARGET", tgt_w),
+            "STATUS",
             name_w = name_w,
+            cur_w = cur_w,
+            tgt_w = tgt_w,
+            status_w = status_w,
         ),
         Style::default()
             .add_modifier(Modifier::BOLD)
             .fg(Color::Gray),
     ));
+    lines.push(Line::styled(
+        format!(" {}", "─".repeat(inner_w.saturating_sub(1))),
+        Style::default().fg(Color::DarkGray),
+    ));
 
     for r in &state.rows {
         let pct = ((r.progress * 100.0) as u16).min(100);
         // Running rows animate: the braille glyph rotates frame-to-frame and
-        // takes the gradient color, so the eye tracks the active component even
-        // when no Progress event has landed for a moment.
+        // takes the gradient color.
         let glyph_text = if r.status == RowStatus::Running {
             spinner_char(state.spinner_frame).to_string()
         } else {
@@ -383,50 +423,33 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &ApplyState) {
             r.status.color()
         };
         let glyph = Span::styled(
-            format!("{} ", glyph_text),
+            format!(" {} ", glyph_text),
             Style::default()
                 .fg(glyph_color)
                 .add_modifier(Modifier::BOLD),
         );
         let name = Span::styled(
-            format!("{:<name_w$}  ", r.name, name_w = name_w),
+            format!("{:<name_w$}  ", fit(&r.name, name_w), name_w = name_w),
             Style::default().fg(if r.status == RowStatus::Running {
                 Color::Yellow
             } else {
                 Color::White
             }),
         );
-        let cur = Span::raw(format!(
-            "{:>14} ",
-            if r.current.is_empty() {
-                "—"
-            } else {
-                &r.current
-            }
-        ));
-        let arrow = Span::styled("→ ", Style::default().fg(Color::DarkGray));
-        let tgt = Span::raw(format!(
-            "{:>14} ",
-            if r.target.is_empty() {
-                "—"
-            } else {
-                &r.target
-            }
-        ));
-        // Running rows show a live bar + pct; completed/failed rows show their
-        // outcome message; idle rows show the pct.
+        let cur = Span::raw(format!("{:>cur_w$}", fit(&dash(&r.current), cur_w), cur_w = cur_w));
+        let arrow = Span::styled("  →  ", Style::default().fg(Color::DarkGray));
+        let tgt = Span::raw(format!("{:>tgt_w$}  ", fit(&dash(&r.target), tgt_w), tgt_w = tgt_w));
+        // Running rows show a bar that stretches across the status column;
+        // finished/failed rows show their message, truncated to fit.
         let msg = if r.status == RowStatus::Running {
-            format!("{} {:>3}%", progress_bar(r.progress), pct)
+            let bar_w = status_w.saturating_sub(5).max(1);
+            format!("{} {:>3}%", progress_bar_width(r.progress, bar_w), pct)
         } else if r.message.is_empty() {
             format!("{:>3}%", pct)
         } else {
             r.message.clone()
         };
-        // Keep the message inside the panel: available columns = content width
-        // (panel minus 2 borders) minus the fixed glyph/name/current/arrow/target
-        // columns (name_w + 36). Long errors no longer break the bounding box.
-        let msg_w = (panel.width as usize).saturating_sub(name_w + 38).max(8);
-        let msg = truncate_to_width(&msg, msg_w);
+        let msg = truncate_to_width(&msg, status_w);
         let msg_span = Span::styled(
             msg,
             Style::default().fg(if r.status == RowStatus::Failed {
@@ -490,7 +513,7 @@ impl ApplyPanel {
         if !std::io::stdout().is_terminal() {
             return None;
         }
-        let height = (rows.len() as u16 + 4).min(40); // rows + header + tally + borders
+        let height = (rows.len() as u16 + 5).min(40); // rows + header + rule + tally + borders
         let backend = CrosstermBackend::new(std::io::stdout());
         let terminal = Terminal::with_options(
             backend,

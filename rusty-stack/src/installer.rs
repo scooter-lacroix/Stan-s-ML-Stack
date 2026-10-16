@@ -81,6 +81,25 @@ pub fn run_installation_with_version(
     let user_home = resolve_mlstack_user_home();
     let input_rx = Arc::new(Mutex::new(input_rx));
 
+    // An explicit, concrete update target (from a confirmed update apply) is
+    // the consent to override sealed components: the plan showed the version
+    // jump and the user selected it. registry_gate reuses a sealed install
+    // unless force+unseal are set, which would silently skip the very
+    // component the update advertised — and the post-install version check
+    // would then fail and re-offer the same update on every scan.
+    // Scoped: the previous values are restored on exit (including early
+    // returns) so a later installation in the same process — e.g. the next
+    // component in a sequential apply, whose target may be opaque — cannot
+    // inherit this invocation's consent.
+    let _unseal_scope = if is_explicit_update_target(target_version.as_deref()) {
+        Some(ScopedEnvOverride::setting(&[
+            ("MLSTACK_FORCE_REINSTALL", "1"),
+            ("MLSTACK_UNSEAL_CORE", "1"),
+        ]))
+    } else {
+        None
+    };
+
     match ensure_mlstack_env(&user_home, &install_method, false) {
         Ok(EnvUpdate::Created) => {
             let _ = sender.send(InstallerEvent::Log(
@@ -2029,7 +2048,42 @@ fn passwd_homes_with_mlstack() -> Vec<String> {
     homes
 }
 
-fn candidate_mlstack_homes(preferred_home: &str) -> Vec<String> {
+/// Pin `name` to `==version` in pip args when an update plan supplies a
+/// target version. Overrides any existing specifier on the package's
+/// requirement token (`name==x`, `name>=x`, `name[extra]==x`) so the planned
+/// pin wins, and drops `--upgrade`, since an exact pin already moves the
+/// package (and must not upgrade sibling requirements such as einops).
+fn pin_pip_requirement(args: Vec<String>, name: &str, version: Option<&str>) -> Vec<String> {
+    let Some(v) = version.map(str::trim).filter(|v| !v.is_empty()) else {
+        return args;
+    };
+    // Opaque targets ("latest", "installed") are not versions: pinning them
+    // would produce `name==latest` and drop --upgrade, failing the apply.
+    // Leave the installer's unversioned upgrade command untouched so pip
+    // resolves a real release.
+    if !is_explicit_update_target(Some(v)) {
+        return args;
+    }
+    args.into_iter()
+        .filter(|a| a != "--upgrade")
+        .map(|a| {
+            // Requirement token = name + optional extras/specifier; compare
+            // on the bare package name only.
+            let base = a
+                .split(['=', '<', '>', '!', '~', '[', ' ', '\t'])
+                .next()
+                .unwrap_or(&a)
+                .trim();
+            if base == name {
+                format!("{name}=={v}")
+            } else {
+                a
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn candidate_mlstack_homes(preferred_home: &str) -> Vec<String> {
     let mut homes = Vec::new();
     push_unique_env_path(&mut homes, preferred_home);
 
@@ -3389,6 +3443,79 @@ fn purge_vllm(sender: &Sender<InstallerEvent>, component_name: &str) {
     purge_component_packages(&["vllm"], sender, component_name);
 }
 
+/// ROCm channel for this installation run, in update parity with the planner.
+///
+/// The planner (update scan) resolves the ROCm target with
+/// `RocmChannel::configured()` — `ROCM_CHANNEL` env, else `.mlstack_env`, else
+/// Latest, with an invalid nonblank value authoritative for Latest. A concrete
+/// planned target maps back to exactly that channel so the applied install
+/// matches what the user confirmed, even if `ROCM_CHANNEL` changes between
+/// scan and apply. Without a concrete target the same shared resolver runs
+/// directly. (The previous env/env_exports pre-layer could select the env
+/// file's channel while the planner resolved Latest, diverging the targets.)
+fn update_rocm_channel(target: Option<&str>) -> crate::installers::components::rocm::RocmChannel {
+    use crate::installers::components::rocm::RocmChannel;
+    if is_explicit_update_target(target) {
+        if let Some(channel) = target.and_then(RocmChannel::for_version_to_channel) {
+            return channel;
+        }
+        // Unrecognized version string: fall through to the shared resolver
+        // rather than guessing a channel the planner did not offer.
+    }
+    RocmChannel::configured()
+}
+
+/// Sets process env overrides and restores the previous values on drop.
+///
+/// Scopes installation consent (force-reinstall / unseal-core) to a single
+/// `run_installation*` invocation: a sequential apply loop in one process
+/// must not let component A's consent leak into component B, whose target may
+/// deliberately be opaque (no override). Drop restores even on early returns,
+/// in reverse construction order.
+struct ScopedEnvOverride {
+    previous: Vec<(String, Option<String>)>,
+}
+
+impl ScopedEnvOverride {
+    fn setting(entries: &[(&str, &str)]) -> Self {
+        let previous = entries
+            .iter()
+            .map(|(key, value)| {
+                let old = std::env::var(key).ok();
+                std::env::set_var(key, value);
+                ((*key).to_string(), old)
+            })
+            .collect();
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedEnvOverride {
+    fn drop(&mut self) {
+        for (key, old) in &self.previous {
+            match old {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
+/// Is this an explicit, concrete update target from a confirmed apply?
+///
+/// `Some("7.14.1")` → yes. `None` (plain install) or an opaque placeholder
+/// (`latest`, `installed`, `""`) → no: those carry no user-confirmed version
+/// jump, so sealed-core reuse must stay in effect.
+fn is_explicit_update_target(target: Option<&str>) -> bool {
+    match target {
+        Some(t) => {
+            let t = t.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("latest") && !t.eq_ignore_ascii_case("installed")
+        }
+        None => false,
+    }
+}
+
 /// Has the user explicitly requested to unseal core components (force-reinstall
 /// past the sealed-core no-override gate)? Env: `MLSTACK_UNSEAL_CORE=1`.
 fn unseal_core_requested() -> bool {
@@ -3856,11 +3983,7 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             use crate::installers::components::rocm::{RocmConfig, RocmInstaller};
             let rocm_force = is_force_reinstall();
             use crate::installers::components::rocm::RocmChannel;
-            let rocm_channel = std::env::var("ROCM_CHANNEL")
-                .ok()
-                .or_else(|| ctx.env_exports.get("ROCM_CHANNEL").cloned())
-                .and_then(|c| RocmChannel::parse(&c))
-                .unwrap_or(RocmChannel::Latest);
+            let rocm_channel = update_rocm_channel(ctx.target_version.as_deref());
             let inst = RocmInstaller::new(RocmConfig {
                 force_reinstall: rocm_force,
                 channel: rocm_channel,
@@ -4400,10 +4523,15 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 2: Install DeepSpeed
             let install_cmd = inst.build_install_command();
+            let install_args = pin_pip_requirement(
+                install_cmd.args.clone(),
+                "deepspeed",
+                ctx.target_version.as_deref(),
+            );
             execute_native_command(
                 &NativeCommand::Pip {
                     program: install_cmd.program.clone(),
-                    args: install_cmd.args.clone(),
+                    args: install_args,
                 },
                 None,
                 sender,
@@ -4883,8 +5011,16 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
             // skip the newest release = lag 1). Queries PyPI for releases + dates,
             // picks the newest satisfying the version-lag + age policy. Falls back
             // to a pinned constant if PyPI is unreachable.
-            let vllm_version = inst
-                .resolve_version_with_policy(ctx.vllm_version_lag, ctx.vllm_version_min_age_days);
+            // An update apply installs exactly the planned (reviewed) version;
+            // opaque targets (`latest`, `installed`) are not versions — the
+            // policy resolver picks a real release instead.
+            let vllm_version = match ctx.target_version.as_deref() {
+                Some(v) if is_explicit_update_target(Some(v)) => v.trim().to_string(),
+                _ => inst.resolve_version_with_policy(
+                    ctx.vllm_version_lag,
+                    ctx.vllm_version_min_age_days,
+                ),
+            };
             let _ = sender.send(InstallerEvent::Log(
                 format!(
                     "[native] vLLM: selected {vllm_version} (gate: lag={}, min_age_days={}) — \
@@ -5583,8 +5719,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 2: Install from PyPI
             let cmd = inst.build_pypi_install_command();
+            let cmd_args = pin_pip_requirement(
+                cmd.args.clone(),
+                "bitsandbytes",
+                ctx.target_version.as_deref(),
+            );
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd_args, &cmd.env),
                 None,
                 sender,
                 &component.name,
@@ -5725,8 +5866,13 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
 
             // Step 1: pip install
             let cmd = inst.build_install_command();
+            let cmd_args = pin_pip_requirement(
+                cmd.args.clone(),
+                "wandb",
+                ctx.target_version.as_deref(),
+            );
             execute_native_command(
-                &NativeCommand::from_shell_cmd(&cmd.program, &cmd.args, &cmd.env),
+                &NativeCommand::from_shell_cmd(&cmd.program, &cmd_args, &cmd.env),
                 None,
                 sender,
                 &component.name,
@@ -7447,6 +7593,94 @@ fn persist_benchmark_result(bench_name: &str, output: &crate::benchmark_runners:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pin_pip_requirement_pins_target_and_drops_upgrade() {
+        let a: Vec<String> = ["-m", "pip", "install", "--upgrade", "deepspeed", "einops"]
+            .iter().map(|s| s.to_string()).collect();
+        let out = super::pin_pip_requirement(a.clone(), "deepspeed", Some(" 0.19.7 "));
+        assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "einops"]);
+        assert_eq!(super::pin_pip_requirement(a.clone(), "deepspeed", None), a);
+        assert_eq!(super::pin_pip_requirement(a.clone(), "deepspeed", Some("")), a);
+    }
+
+    #[test]
+    fn pin_pip_requirement_overrides_existing_specifier() {
+        // A planned pin replaces any specifier already on the requirement
+        // token instead of coexisting with it (e.g. `name>=old name==new`).
+        let a: Vec<String> = ["-m", "pip", "install", "deepspeed>=0.18", "einops"]
+            .iter().map(|s| s.to_string()).collect();
+        let out = super::pin_pip_requirement(a, "deepspeed", Some("0.19.7"));
+        assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "einops"]);
+        // Extras and sibling packages sharing the prefix are left alone.
+        let b: Vec<String> = ["-m", "pip", "install", "deepspeed[extra]==0.18", "deepspeed-tools"]
+            .iter().map(|s| s.to_string()).collect();
+        let out = super::pin_pip_requirement(b, "deepspeed", Some("0.19.7"));
+        assert_eq!(out, ["-m", "pip", "install", "deepspeed==0.19.7", "deepspeed-tools"]);
+        // Opaque targets are not versions: the unversioned upgrade command
+        // stays intact instead of becoming an invalid `name==latest` pin.
+        let c: Vec<String> = ["-m", "pip", "install", "--upgrade", "deepspeed"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(super::pin_pip_requirement(c.clone(), "deepspeed", Some("latest")), c);
+        assert_eq!(super::pin_pip_requirement(c.clone(), "deepspeed", Some("installed")), c);
+        assert_eq!(super::pin_pip_requirement(c.clone(), "deepspeed", Some(" Latest ")), c);
+    }
+
+    #[test]
+    fn explicit_update_target_predicate_and_gate_stay_paired() {
+        let _guard = crate::test_support::lock_env();
+        std::env::remove_var("MLSTACK_UNSEAL_CORE");
+        // Only a concrete, confirmed version target counts as explicit.
+        assert!(!super::is_explicit_update_target(None));
+        assert!(!super::is_explicit_update_target(Some("")));
+        assert!(!super::is_explicit_update_target(Some("   ")));
+        assert!(!super::is_explicit_update_target(Some("latest")));
+        assert!(!super::is_explicit_update_target(Some("Installed")));
+        assert!(super::is_explicit_update_target(Some("7.14.1")));
+        assert!(super::is_explicit_update_target(Some(" 0.19.7 ")));
+        // With no explicit target (and no user-set unseal), the sealed-core
+        // gate stays shut — plain installs must keep the reuse semantics.
+        assert!(!super::unseal_core_requested());
+    }
+
+    #[test]
+    fn update_rocm_channel_maps_planned_target_and_matches_planner_precedence() {
+        use crate::installers::components::rocm::RocmChannel;
+        let _guard = crate::test_support::lock_env();
+        // Concrete planned target → its own channel, regardless of env vars.
+        std::env::set_var("ROCM_CHANNEL", "bogus");
+        assert_eq!(super::update_rocm_channel(Some("7.14.1")), RocmChannel::Latest);
+        assert_eq!(super::update_rocm_channel(Some("7.2.4")), RocmChannel::Legacy);
+        // Without a concrete target the planner's shared resolver applies —
+        // including the invalid-value-is-authoritative precedence (Latest,
+        // never the env file's channel).
+        assert_eq!(super::update_rocm_channel(None), RocmChannel::Latest);
+        assert_eq!(super::update_rocm_channel(Some("latest")), RocmChannel::Latest);
+        std::env::remove_var("ROCM_CHANNEL");
+    }
+
+    #[test]
+    fn scoped_env_override_restores_previous_values_on_drop() {
+        let _guard = crate::test_support::lock_env();
+        std::env::set_var("MLSTACK_FORCE_REINSTALL", "user-set");
+        std::env::remove_var("MLSTACK_UNSEAL_CORE");
+        {
+            let _scope = super::ScopedEnvOverride::setting(&[
+                ("MLSTACK_FORCE_REINSTALL", "1"),
+                ("MLSTACK_UNSEAL_CORE", "1"),
+            ]);
+            assert_eq!(std::env::var("MLSTACK_FORCE_REINSTALL").as_deref(), Ok("1"));
+            assert_eq!(std::env::var("MLSTACK_UNSEAL_CORE").as_deref(), Ok("1"));
+        }
+        // Drop restored the user-set value and removed the previously-absent
+        // var — a sequential apply cannot inherit this invocation's consent.
+        assert_eq!(
+            std::env::var("MLSTACK_FORCE_REINSTALL").as_deref(),
+            Ok("user-set")
+        );
+        assert!(std::env::var("MLSTACK_UNSEAL_CORE").is_err());
+        std::env::remove_var("MLSTACK_FORCE_REINSTALL");
+    }
+
     use super::*;
     use std::sync::Mutex;
 

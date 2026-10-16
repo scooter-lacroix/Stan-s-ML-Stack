@@ -153,6 +153,7 @@ impl BitsAndBytesInstaller {
             args.push("--break-system-packages".to_string());
         }
         args.extend([
+            "--upgrade".to_string(),
             "bitsandbytes".to_string(),
             "--no-cache-dir".to_string(),
             "--no-deps".to_string(),

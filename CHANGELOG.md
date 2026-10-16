@@ -17,6 +17,9 @@ All notable changes to Stan's ML Stack will be documented in this file.
 
 ## [0.4.0] - Maintenance
 
+- Fixed `rusty-stack update` treating outdated installs as current: the bundled manifest now pins the installer's versions (vLLM 0.31.0, deepspeed 0.19.7, bitsandbytes 0.50.2, wandb 0.30.0), and the ROCm target follows `ROCM_CHANNEL` (default latest = 7.14.1) exactly like the installer. Scan channel labels use the installer's classification.
+- Update UI: the apply panel and selection list size their columns from the data and fill the full terminal width, with a header row and rules.
+
 ### Added
 - PyTorch installer: ROCm 10.x (TheRock) now resolves to AMD's `whl-next` wheel index with the `torch[device-all]` extra, instead of a nonexistent download.pytorch.org URL. Replaced the stale "ROCm 7.10 preview" note in the multi-channel guide.
 

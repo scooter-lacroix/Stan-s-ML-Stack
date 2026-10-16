@@ -82,6 +82,99 @@ impl RocmChannel {
         }
     }
 
+    /// Channel the installer targets: `ROCM_CHANNEL` from the environment,
+    /// else from `~/.mlstack_env`, else [`RocmChannel::Latest`]. Shared by the
+    /// installer and `rusty-stack update` so both resolve the same target.
+    pub fn configured() -> Self {
+        // An invalid assignment at a higher-precedence source is authoritative:
+        // it stops the search and yields the default, never a stale lower one.
+        if let Ok(v) = std::env::var("ROCM_CHANNEL") {
+            if !v.trim().is_empty() {
+                return Self::parse(&v).unwrap_or(RocmChannel::Latest);
+            }
+        }
+        for home in Self::env_file_homes() {
+            if let Ok(body) = std::fs::read_to_string(std::path::Path::new(&home).join(".mlstack_env")) {
+                if let Some(found) = Self::channel_assignment(&body) {
+                    return found.unwrap_or(RocmChannel::Latest);
+                }
+            }
+        }
+        RocmChannel::Latest
+    }
+
+    /// Home directories to search for `.mlstack_env`, in the installer's
+    /// precedence: `MLSTACK_USER_HOME`, `HOME`, then the invoking user's
+    /// passwd home (`SUDO_USER`, `USER`, `LOGNAME`). Empty values are skipped.
+    fn env_file_homes() -> Vec<String> {
+        // Same resolver the installer uses, so planning and apply agree.
+        // Mirror `resolve_mlstack_user_home`: HOME is the preferred candidate.
+        let preferred = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        crate::installer::candidate_mlstack_homes(&preferred)
+    }
+
+    /// Last `ROCM_CHANNEL` assignment in an env file body. Understands plain
+    /// `export ROCM_CHANNEL=x`, the guarded form written by the env generator
+    /// (`if [ -z "${ROCM_CHANNEL:-}" ]; then export ROCM_CHANNEL=x; fi`), and
+    /// fish `set -gx ROCM_CHANNEL x`.
+    pub fn channel_from_env_body(body: &str) -> Option<Self> {
+        Self::channel_assignment(body).flatten()
+    }
+
+    /// `None` = no assignment; `Some(None)` = last assignment has an invalid value.
+    fn channel_assignment(body: &str) -> Option<Option<Self>> {
+        // The last recognized assignment is authoritative even when its value
+        // is invalid (caller then applies the default), so wrap in Some().
+        body.lines().rev().find_map(|l| {
+            let l = l.trim();
+            if l.starts_with('#') {
+                return None;
+            }
+            // Only genuine assignment statements: `export ROCM_CHANNEL=x`,
+            // `ROCM_CHANNEL=x` (spaces around `=` tolerated), the guarded
+            // `... then export ROCM_CHANNEL=x`, and fish
+            // `set -gx ROCM_CHANNEL x`. Other lines (echo, etc.) are ignored.
+            let stmt = l.rsplit(|c| c == ';').find(|p| p.contains("ROCM_CHANNEL")).unwrap_or(l);
+            let stmt = stmt.trim();
+            let stmt = ["then ", "or ", "and "]
+                .iter()
+                .find_map(|p| stmt.strip_prefix(p))
+                .unwrap_or(stmt)
+                .trim();
+            let raw = if let Some(r) = stmt
+                .strip_prefix("export ROCM_CHANNEL=")
+                .or_else(|| stmt.strip_prefix("ROCM_CHANNEL="))
+            {
+                r
+            } else if let Some(r) = stmt
+                // Spaced form: `export ROCM_CHANNEL = stable` or
+                // `ROCM_CHANNEL = "latest"` (must still be an assignment).
+                .strip_prefix("export ROCM_CHANNEL")
+                .or_else(|| stmt.strip_prefix("ROCM_CHANNEL"))
+                .map(str::trim_start)
+                .and_then(|r| r.strip_prefix('='))
+                .map(str::trim_start)
+            {
+                r
+            } else if let Some(r) = stmt
+                .strip_prefix("set -gx ROCM_CHANNEL ")
+                .or_else(|| stmt.strip_prefix("set -x ROCM_CHANNEL "))
+                .or_else(|| stmt.strip_prefix("set -Ux ROCM_CHANNEL "))
+            {
+                r
+            } else {
+                return None;
+            };
+            let v = raw
+                .trim_start()
+                .split(|c: char| c.is_whitespace() || c == ';')
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '"' || c == '\'');
+            Some(Self::parse(v))
+        })
+    }
+
     /// Channel for a detected ROCm version string.
     pub fn for_version(version: &str) -> Self {
         let mut it = version.split('.');
@@ -94,6 +187,21 @@ impl RocmChannel {
             (7, 14..) => RocmChannel::Stable,
             _ => RocmChannel::Legacy,
         }
+    }
+
+    /// Inverse of [`Self::version`] for update planning: the channel whose
+    /// pinned version equals `version` (e.g. `"7.14.1"` → Latest, `"7.2.4"` →
+    /// Legacy). `None` when no channel pins that exact version.
+    pub fn for_version_to_channel(version: &str) -> Option<Self> {
+        let v = version.trim();
+        [
+            RocmChannel::Legacy,
+            RocmChannel::Stable,
+            RocmChannel::Latest,
+            RocmChannel::Preview,
+        ]
+        .into_iter()
+        .find(|c| c.version() == v)
     }
 
     /// True for TheRock-based releases (7.14+), which use the multi-arch repos.
@@ -1536,5 +1644,76 @@ mod tests {
         let cmd = RocmInstaller::build_pacman_check_installed_command("rocm-hip-sdk");
         assert_eq!(cmd.program, "pacman");
         assert!(cmd.args.contains(&"rocm-hip-sdk".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod channel_env_tests {
+    use super::RocmChannel;
+
+    #[test]
+    fn parses_plain_guarded_and_fish() {
+        let f = RocmChannel::channel_from_env_body;
+        assert_eq!(f("export ROCM_CHANNEL=stable\n"), Some(RocmChannel::Stable));
+        assert_eq!(
+            f("if [ -z \"${ROCM_CHANNEL:-}\" ]; then export ROCM_CHANNEL=legacy; fi"),
+            Some(RocmChannel::Legacy)
+        );
+        assert_eq!(f("set -q ROCM_CHANNEL; or set -gx ROCM_CHANNEL preview"), Some(RocmChannel::Preview));
+        assert_eq!(f("# export ROCM_CHANNEL=stable"), None);
+        assert_eq!(f("export ROCM_CHANNEL=bogus"), None);
+        // Spaces around `=` (plain and quoted values) are tolerated.
+        assert_eq!(f("export ROCM_CHANNEL = stable"), Some(RocmChannel::Stable));
+        assert_eq!(f("ROCM_CHANNEL = \"latest\""), Some(RocmChannel::Latest));
+        // Mentions that are not assignments stay unrecognized.
+        assert_eq!(f("export ROCM_CHANNEL_X=stable"), None);
+        assert_eq!(f("grep ROCM_CHANNEL env"), None);
+    }
+
+    #[test]
+    fn channel_env_last_invalid_assignment_wins() {
+        assert_eq!(
+            RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=bogus\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn invalid_assignment_is_distinct_from_missing() {
+        assert_eq!(RocmChannel::channel_assignment("export ROCM_CHANNEL=bogus\n"), Some(None));
+        assert_eq!(RocmChannel::channel_assignment("echo hi\n"), None);
+    }
+
+    #[test]
+    fn last_assignment_wins() {
+        assert_eq!(
+            RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\necho ROCM_CHANNEL=latest\n"),
+            Some(RocmChannel::Stable)
+        );
+        assert_eq!(
+            RocmChannel::channel_from_env_body("export ROCM_CHANNEL=stable\nexport ROCM_CHANNEL=\"latest\"\n"),
+            Some(RocmChannel::Latest)
+        );
+    }
+
+    #[test]
+    fn version_round_trips_to_its_channel() {
+        // Every channel's pinned version maps back to itself (update-apply
+        // parity: the planned target selects the confirmed channel again).
+        for channel in [
+            RocmChannel::Legacy,
+            RocmChannel::Stable,
+            RocmChannel::Latest,
+            RocmChannel::Preview,
+        ] {
+            assert_eq!(
+                RocmChannel::for_version_to_channel(channel.version()),
+                Some(channel)
+            );
+        }
+        // Unpinned and unparsable inputs yield None (no channel guessed).
+        assert_eq!(RocmChannel::for_version_to_channel("9.9.9"), None);
+        assert_eq!(RocmChannel::for_version_to_channel("latest"), None);
+        assert_eq!(RocmChannel::for_version_to_channel("  7.14.1  "), Some(RocmChannel::Latest));
     }
 }

@@ -456,6 +456,26 @@ mod update_impl {
         selected_indices: &[usize],
         cursor_idx: usize,
     ) -> String {
+        let width = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(100)
+            .max(1);
+        render_selection_body_width(plan, selected_indices, cursor_idx, width)
+    }
+
+    /// Width-aware renderer: every row spans exactly `width` columns, with the
+    /// extra space distributed between columns and the classification
+    /// right-aligned to the edge.
+    pub(super) fn render_selection_body_width(
+        plan: &PlanOutput,
+        selected_indices: &[usize],
+        cursor_idx: usize,
+        width: usize,
+    ) -> String {
+        // True widths below 20 are honored, but below 10 even the row prefix
+        // (marker + checkbox + number) clips — floor there instead of
+        // rendering unusable output.
+        let width = width.max(10);
         // Only render SELECTABLE (non-blocked) items as numbered rows. Blocked
         // items are retained by the planner (visible=false) but must not be
         // offered for selection — the display numbering must match the
@@ -481,62 +501,131 @@ mod update_impl {
             })
             .collect();
 
-        let width_num = rows
+        let trunc = |s: &str, w: usize| -> String {
+            if s.chars().count() <= w {
+                s.to_string()
+            } else {
+                let mut o: String = s.chars().take(w.saturating_sub(1)).collect();
+                o.push('\u{2026}');
+                o
+            }
+        };
+        let width_name = rows
             .iter()
-            .map(|(_, name, _, _, _)| name.chars().count())
+            .map(|(_, n, _, _, _)| n.chars().count())
             .max()
             .unwrap_or(0)
-            .max(4);
-        let width_name = width_num; // alias for clarity below
+            .max(9);
         let width_cur = rows
             .iter()
-            .map(|(_, _, cur, _, _)| cur.chars().count())
+            .map(|(_, _, c, _, _)| c.chars().count())
             .max()
             .unwrap_or(0)
-            .max(5);
+            .max(7);
         let width_new = rows
             .iter()
-            .map(|(_, _, _, prop, _)| prop.chars().count())
+            .map(|(_, _, _, p, _)| p.chars().count())
             .max()
             .unwrap_or(0)
-            .max(3);
-        // display number width (1..N)
+            .max(6);
+        let width_class = rows
+            .iter()
+            .map(|(_, _, _, _, k)| k.chars().count() + 2)
+            .max()
+            .unwrap_or(0)
+            .max(6);
         let width_disp = rows.len().to_string().chars().count().max(1);
+        // marker(1) + sp + [x](3) + sp + "N." + sp  => prefix
+        let prefix = 1 + 1 + 3 + 1 + width_disp + 1 + 1;
+        // Fixed content: name + cur + " → " + new + class; the rest is gap.
+        // Shrink name/current/target columns when the terminal is too narrow
+        // for the data plus two minimum gaps, so no row exceeds `width`.
+        let (mut width_name, mut width_cur, mut width_new) = (width_name, width_cur, width_new);
+        while prefix + width_name + width_cur + 3 + width_new + width_class + 4 > width
+            && width_name.max(width_cur).max(width_new) > 4
+        {
+            if width_name >= width_cur && width_name >= width_new {
+                width_name -= 1;
+            } else if width_cur >= width_new {
+                width_cur -= 1;
+            } else {
+                width_new -= 1;
+            }
+        }
+        let content = width_name + width_cur + 3 + width_new + width_class;
+        let slack = width.saturating_sub(prefix + content);
+        // Two gaps (name|cur, new|class) share the slack; the first absorbs
+        // the odd column so rows span exactly `width`.
+        let gap2 = (slack / 2).max(1);
+        let gap1 = slack.saturating_sub(gap2).max(1);
+        let gap_gap = " ".repeat(gap1);
+        let gap_gap2 = " ".repeat(gap2);
+        let rule = "\u{2500}".repeat(width);
 
         let mut out = String::new();
         out.push_str("Interactive Update Selection\r\n");
-        out.push_str("===========================\r\n\r\n");
-        out.push_str(
-            "Controls: \u{2191}\u{2193} Navigate | Space Toggle | Enter Confirm | a:Select All | n:Select None | Esc:Cancel\r\n\r\n",
+        out.push_str(&rule);
+        out.push_str("\r\n");
+        let controls_full = "\u{2191}\u{2193} Navigate | Space Toggle | Enter Confirm | a:All | n:None | Esc:Cancel";
+        let controls: String = controls_full.chars().take(width).collect();
+        out.push_str(&format!("{controls}\r\n\r\n"));
+
+        let header = format!(
+            "{:prefix$}{:<width_name$}{gap}{:>width_cur$}   {:>width_new$}{gap2}{:>width_class$}",
+            "",
+            "COMPONENT",
+            "CURRENT",
+            "TARGET",
+            "CLASS",
+            prefix = prefix,
+            width_name = width_name,
+            width_cur = width_cur,
+            width_new = width_new,
+            width_class = width_class,
+            gap = gap_gap,
+            gap2 = gap_gap2,
         );
+        out.push_str(&format!("{header}\r\n{rule}\r\n"));
 
         for (disp_idx, (plan_idx, name, current, proposed, class)) in rows.iter().enumerate() {
             let is_selected = selected_indices.contains(plan_idx);
             let is_cursor = disp_idx == cursor_idx;
             let cursor_marker = if is_cursor { '>' } else { ' ' };
             let marker = if is_selected { "[x]" } else { "[ ]" };
+            let class_cell = format!("({class})");
             out.push_str(&format!(
-                "{} {} {:<width_disp$}. {:<width_name$} {:>width_cur$} \u{2192} {:>width_new$} ({})\r\n",
+                "{} {} {:<width_disp$}. {:<width_name$}{gap}{:>width_cur$} \u{2192} {:>width_new$}{gap2}{:>width_class$}\r\n",
                 cursor_marker,
                 marker,
                 disp_idx + 1,
-                name,
-                current,
-                proposed,
-                class,
+                trunc(name, width_name),
+                trunc(current, width_cur),
+                trunc(proposed, width_new),
+                class_cell,
                 width_disp = width_disp,
                 width_name = width_name,
                 width_cur = width_cur,
                 width_new = width_new,
+                width_class = width_class,
+                gap = gap_gap,
+                gap2 = gap_gap2,
             ));
         }
+        out.push_str(&rule);
+        out.push_str("\r\n");
 
         out.push_str(&format!(
-            "\r\nSelected: {} of {}\r\n",
+            "Selected: {} of {}\r\n",
             selected_indices.len(),
             rows.len()
         ));
-        out
+        // Hard cap: below ~40 columns the fixed gaps and class cell cannot
+        // shrink further, so clip every line to `width` instead of letting the
+        // terminal wrap it (wraps would break the redraw line count).
+        out.split("\r\n")
+            .map(|l| l.chars().take(width).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\r\n")
     }
 
     /// Interactive selection UI for update plan items.
@@ -1129,27 +1218,13 @@ mod update_impl {
                 gpu_info.architecture.clone()
             };
 
-            // Determine channel from version
+            // Classifies the DETECTED version with the installer's channel rules (6.x/7.2 legacy,
+            // 7.14.0 stable, 7.14.1+ latest, 10.x preview).
             let rocm_channel = if rocm_version.is_empty() {
                 String::new()
-            } else if rocm_version.starts_with("6.4") {
-                "legacy".to_string()
-            } else if rocm_version.starts_with("7.2") {
-                // 7.2.0-7.2.3 -> stable; 7.2.4+ -> latest
-                let patch: u32 = rocm_version
-                    .split('.')
-                    .nth(2)
-                    .and_then(|p| p.parse().ok())
-                    .unwrap_or(0);
-                if patch <= 3 {
-                    "stable".to_string()
-                } else {
-                    "latest".to_string()
-                }
-            } else if rocm_version.starts_with("7.1") {
-                "stable".to_string()
             } else {
-                "latest".to_string()
+                rusty_stack::installers::components::rocm::RocmChannel::for_version(&rocm_version)
+                    .to_string()
             };
 
             (rocm_version, gpu_architecture, rocm_channel)
@@ -1211,7 +1286,24 @@ mod update_impl {
 
         // Resolve update manifest with trust-checked fallback chain:
         // fresh remote (when configured) -> cached -> bundled baseline.
-        let manifest = manifest::resolve_manifest(&UpdateManifestFetcher).manifest;
+        let mut manifest = manifest::resolve_manifest(&UpdateManifestFetcher).manifest;
+
+        // Installer parity: the ROCm target is the version of the channel the
+        // installer would use (ROCM_CHANNEL, default latest), not a fixed pin.
+        let channel = rusty_stack::installers::components::rocm::RocmChannel::configured();
+        let channel_version = if channel
+            == rusty_stack::installers::components::rocm::RocmChannel::Legacy
+            && std::env::var("ROCM_LEGACY_VERSION")
+                .map(|v| v.trim() == "7.2.3")
+                .unwrap_or(false)
+        {
+            rusty_stack::installers::components::rocm::LEGACY_FALLBACK_VERSION
+        } else {
+            channel.version()
+        };
+        for comp in manifest.components.iter_mut().filter(|c| c.id == "rocm") {
+            comp.version = channel_version.to_string();
+        }
 
         // Build compatibility context from scan results
         let mut context = CompatibilityContext::new();
@@ -1957,8 +2049,9 @@ mod update_selection_tests {
         let plan = sample_plan();
         let body = update_impl::render_selection_body(&plan, &[], 0);
         assert!(body.starts_with("Interactive Update Selection\r\n"));
-        assert!(body.contains("===========================\r\n\r\n"));
-        assert!(body.contains("Controls:"));
+        assert!(body.contains("\u{2500}\u{2500}\u{2500}"));
+        assert!(body.contains("Navigate"));
+        assert!(body.contains("COMPONENT"));
         assert!(body.contains("\u{2191}\u{2193}".chars().next().unwrap()));
     }
 
@@ -3418,6 +3511,83 @@ fn main() {
                      Install with TUI support or use a subcommand (update, upgrade, bench)."
                 );
                 process::exit(1);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_parity_tests {
+    use super::update_impl;
+    use rusty_stack::core::manifest::Manifest;
+    use rusty_stack::installers::components::onnxruntime::DEFAULT_ONNXRUNTIME_VERSION;
+    use rusty_stack::installers::components::rocm::RocmChannel;
+    use rusty_stack::orchestrator::planner::{PlanOutput, PlanSummary, PlannerItemOutput};
+
+    fn pin(id: &str) -> String {
+        Manifest::load_baseline()
+            .unwrap()
+            .components
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .version
+    }
+
+    #[test]
+    fn baseline_pins_match_installer_pins() {
+        assert_eq!(pin("rocm"), RocmChannel::Latest.version());
+        assert_eq!(pin("onnx"), DEFAULT_ONNXRUNTIME_VERSION);
+        assert_eq!(pin("vllm"), "0.31.0");
+    }
+
+    #[test]
+    fn old_installs_are_offered_updates() {
+        let m = Manifest::load_baseline().unwrap();
+        for (id, old) in [("rocm", "7.2.4"), ("vllm", "0.8.0"), ("deepspeed", "0.16.0")] {
+            let c = m.components.iter().find(|c| c.id == id).unwrap();
+            assert_ne!(c.version, old, "{id} baseline still equals the old pin");
+        }
+    }
+
+    #[test]
+    fn selection_rows_fill_requested_width() {
+        let plan = PlanOutput {
+            plan: Vec::<PlannerItemOutput>::new(),
+            summary: PlanSummary::from_items(&[]),
+        };
+        for w in [80usize, 120, 160] {
+            let body = update_impl::render_selection_body_width(&plan, &[], 0, w);
+            for l in body.lines().filter(|l| l.contains('\u{2500}')) {
+                assert_eq!(l.chars().count(), w);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_rows_never_exceed_narrow_width() {
+        let item = PlannerItemOutput {
+            component_id: "a-very-long-component-identifier".into(),
+            current_version: "1.2.3.dev20261015+rocm10.1.0.gitabcdef".into(),
+            proposed_version: "9.9.9.dev20261016+rocm10.1.0.gitfedcba".into(),
+            classification: "guarded".into(),
+            risk_tier: "low".into(),
+            selected: false,
+            visible: true,
+            rationale: String::new(),
+            dependencies: vec![],
+            exclusive_group: String::new(),
+        };
+        let plan = PlanOutput {
+            summary: PlanSummary::from_items(&[]),
+            plan: vec![item],
+        };
+        // Includes sub-10 widths: the renderer floors those at 10 instead of
+        // emitting clipped rows (min width of 1 produced unusable output).
+        for w in [3usize, 10, 60, 80, 100] {
+            let body = update_impl::render_selection_body_width(&plan, &[], 0, w);
+            for l in body.lines() {
+                assert!(l.chars().count() <= w.max(10), "width {w}: {l:?}");
             }
         }
     }
