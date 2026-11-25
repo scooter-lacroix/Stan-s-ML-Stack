@@ -6471,6 +6471,19 @@ fn run_native_installer(component: &Component, ctx: &NativeInstallerContext) -> 
                 }
             }
 
+            // ── PATH exposure (launcher + symlinks) ────────────────────
+            // Write ~/.mlstack/bin/llama-serve and symlink the installed
+            // tools there BEFORE verification, so verification and the
+            // user's shell see the same surface. ~/.mlstack/bin is on PATH
+            // via the stack env (same mechanism as vllm-serve/ft).
+            let exposed = inst.expose_on_path(home).map_err(|err| {
+                anyhow::anyhow!("llama-cpp failed to expose binaries on PATH: {}", err)
+            })?;
+            let _ = sender.send(InstallerEvent::Log(
+                format!("llama-cpp exposed on PATH: {}", exposed.join(", ")),
+                false,
+            ));
+
             // ── Post-install verification (VAL-CROSS-008/009/010/011) ──
             // Binaries resolve from the managed install dir inside verify; the
             // clone dir is only a best-effort search root for a verification model.

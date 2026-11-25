@@ -64,6 +64,15 @@ pub const DETECTION_BINARY: &str = "llama-cli";
 /// The detection subcommand that must succeed for installed status.
 pub const DETECTION_SUBCOMMAND: &str = "--help";
 
+/// The server launcher shim installed at `~/.mlstack/bin/llama-serve`
+/// (`~/.mlstack/bin` is on PATH via the stack env, same as `vllm-serve`/`ft`).
+pub const LAUNCHER_NAME: &str = "llama-serve";
+
+/// Installed tool binaries exposed on PATH via symlinks in `~/.mlstack/bin`.
+/// Only linked when present — a minimal install (server-only archive) simply
+/// gets fewer symlinks.
+pub const PATH_BINARIES: &[&str] = &["llama-server", "llama-cli", "llama-bench"];
+
 // ===========================================================================
 // Types
 // ===========================================================================
@@ -308,6 +317,72 @@ impl LlamaCppInstaller {
     }
 
     // -------------------------------------------------------------------
+    // User-facing launcher + PATH exposure
+    // -------------------------------------------------------------------
+
+    /// Contents of the `~/.mlstack/bin/llama-serve` launcher shim. Mirrors the
+    /// internal verification harness (`run_rocm_tool_with_env`): sources
+    /// `~/.mlstack_env` (ROCm device mask — iGPUs excluded) and puts the
+    /// component `lib/` dir on LD_LIBRARY_PATH so the server runs even for
+    /// installs whose binaries lack an embedded RPATH (e.g. prebuilt
+    /// archives). Extra args pass straight through to llama-server.
+    pub fn launcher_script(&self) -> String {
+        format!(
+            "#!/bin/sh\n# rusty-stack Rusty Llama launcher: run llama-server with the stack env.\n# Sources ~/.mlstack_env (ROCm device mask, iGPUs excluded) and puts the\n# component lib/ on LD_LIBRARY_PATH so it works even when the installed\n# binaries carry no embedded RPATH. Bypass with the raw binary at\n# ~/.mlstack/components/llama-cpp/bin/llama-server.\n[ -f \"$HOME/.mlstack_env\" ] && . \"$HOME/.mlstack_env\"\nLLAMA_HOME=\"$HOME/.mlstack/components/llama-cpp\"\ncase \":${{LD_LIBRARY_PATH:-}}:\" in\n    *:\"$LLAMA_HOME/lib\":*) ;;\n    *) export LD_LIBRARY_PATH=\"$LLAMA_HOME/lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\" ;;\nesac\nexec \"$LLAMA_HOME/bin/llama-server\" \"$@\"\n"
+        )
+    }
+
+    /// Expose the freshly installed llama.cpp tools to the user's shell: write
+    /// the `llama-serve` launcher and symlink `PATH_BINARIES` into
+    /// `~/.mlstack/bin` (already on PATH via the stack env — the same
+    /// mechanism `vllm-serve` and `ft` rely on). Idempotent: re-installs
+    /// refresh the launcher and re-point stale symlinks. Returns the paths
+    /// created, for the install log.
+    ///
+    /// Without this, a successful install lands binaries in
+    /// `~/.mlstack/components/llama-cpp/bin/` — a directory no shell has on
+    /// PATH — so `llama-server` is "command not found" despite the app
+    /// reporting installed.
+    pub fn expose_on_path(&self, home: &str) -> Result<Vec<String>, String> {
+        let bin_dir = PathBuf::from(home).join(".mlstack").join("bin");
+        fs::create_dir_all(&bin_dir)
+            .map_err(|e| format!("failed to create {}: {e}", bin_dir.display()))?;
+
+        let mut created = Vec::new();
+
+        let launcher_path = bin_dir.join(LAUNCHER_NAME);
+        fs::write(&launcher_path, self.launcher_script())
+            .map_err(|e| format!("failed to write {}: {e}", launcher_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("failed to chmod {}: {e}", launcher_path.display()))?;
+        }
+        created.push(launcher_path.display().to_string());
+
+        let installed_bin = resolve_install_bin_dir(home);
+        for name in PATH_BINARIES {
+            let target = installed_bin.join(name);
+            if !target.exists() {
+                continue; // tool not part of this install; skip, don't fail
+            }
+            let link = bin_dir.join(name);
+            // Remove a stale link from a prior install first; symlink fails
+            // if the path exists.
+            let _ = fs::remove_file(&link);
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&target, &link)
+                    .map_err(|e| format!("failed to symlink {}: {e}", link.display()))?;
+            }
+            created.push(link.display().to_string());
+        }
+
+        Ok(created)
+    }
+
+    // -------------------------------------------------------------------
     // Dependencies
     // -------------------------------------------------------------------
 
@@ -485,6 +560,11 @@ impl LlamaCppInstaller {
         let mut flags = vec![
             "-DGGML_HIP=ON".to_string(),
             format!("-DGPU_TARGETS={}", gpu_targets),
+            // Self-locating install: binaries + libs land in bin/ and lib/
+            // under the prefix. $ORIGIN (resolved against the real binary, so
+            // ~/.mlstack/bin symlinks work too) lets them find libllama*/
+            // libggml* without the user exporting LD_LIBRARY_PATH.
+            "-DCMAKE_INSTALL_RPATH=$ORIGIN/../lib".to_string(),
             // VAL-GUARD-001: force ROCm/HIP-only backend selection.
             "-DGGML_CUDA=OFF".to_string(),
             "-DGGML_VULKAN=OFF".to_string(),
@@ -2328,5 +2408,100 @@ mod tests {
         let result = verify_binary_linkage(std::path::Path::new("/usr/bin/bash"));
         // bash won't have ROCm linkage, so this should be an Err
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cmake_flags_include_install_rpath() {
+        // The installed binaries must be self-locating: without an embedded
+        // RPATH they cannot find libllama*/libggml* in the sibling lib/ dir
+        // and fail with "cannot open shared object file" outside the app.
+        for channel in ["legacy", "stable", "latest"] {
+            let config = LlamaCppConfig {
+                channel: channel.to_string(),
+                ..Default::default()
+            };
+            let flags = LlamaCppInstaller::new(config).cmake_flags();
+            assert!(
+                flags.contains(&"-DCMAKE_INSTALL_RPATH=$ORIGIN/../lib".to_string()),
+                "channel {channel} must embed CMAKE_INSTALL_RPATH"
+            );
+        }
+    }
+
+    #[test]
+    fn test_launcher_script_sources_env_and_sets_lib_path() {
+        let inst = LlamaCppInstaller::with_defaults();
+        let script = inst.launcher_script();
+        assert!(script.starts_with("#!/bin/sh"));
+        assert!(script.contains(". \"$HOME/.mlstack_env\""));
+        assert!(script.contains("LLAMA_HOME=\"$HOME/.mlstack/components/llama-cpp\""));
+        assert!(script.contains("$LLAMA_HOME/lib"));
+        assert!(script.contains("exec \"$LLAMA_HOME/bin/llama-server\""));
+    }
+
+    #[test]
+    fn test_expose_on_path_writes_launcher_and_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_str().unwrap();
+        // Pretend-install the two tools we expose; llama-bench is absent to
+        // verify a missing tool is skipped rather than failing the install.
+        let installed_bin = resolve_install_bin_dir(home);
+        std::fs::create_dir_all(&installed_bin).unwrap();
+        for name in ["llama-server", "llama-cli"] {
+            std::fs::write(installed_bin.join(name), "#!/bin/sh\n").unwrap();
+        }
+
+        let inst = LlamaCppInstaller::with_defaults();
+        let created = inst.expose_on_path(home).expect("expose_on_path failed");
+
+        let bin_dir = PathBuf::from(home).join(".mlstack").join("bin");
+        // Launcher written + executable
+        let launcher = bin_dir.join(LAUNCHER_NAME);
+        assert!(launcher.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "launcher must be executable");
+        }
+        // Symlinks for the present tools, pointing at the real binaries
+        for name in ["llama-server", "llama-cli"] {
+            let link = bin_dir.join(name);
+            let meta = std::fs::symlink_metadata(&link)
+                .unwrap_or_else(|_| panic!("{name} symlink missing"));
+            assert!(meta.file_type().is_symlink(), "{name} must be a symlink");
+            assert_eq!(
+                std::fs::read_link(&link).unwrap(),
+                installed_bin.join(name)
+            );
+        }
+        // Absent tool skipped silently
+        assert!(!bin_dir.join("llama-bench").exists());
+        // Log mentions everything created (launcher + 2 symlinks)
+        assert_eq!(created.len(), 3, "created = {created:?}");
+    }
+
+    #[test]
+    fn test_expose_on_path_repoints_stale_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_str().unwrap();
+        let installed_bin = resolve_install_bin_dir(home);
+        std::fs::create_dir_all(&installed_bin).unwrap();
+        std::fs::write(installed_bin.join("llama-server"), "new").unwrap();
+
+        // A stale link from a previous install points nowhere.
+        let bin_dir = PathBuf::from(home).join(".mlstack").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/gone/old-llama-server", bin_dir.join("llama-server"))
+            .unwrap();
+
+        let inst = LlamaCppInstaller::with_defaults();
+        inst.expose_on_path(home).expect("expose_on_path failed");
+
+        assert_eq!(
+            std::fs::read_link(bin_dir.join("llama-server")).unwrap(),
+            installed_bin.join("llama-server")
+        );
     }
 }
